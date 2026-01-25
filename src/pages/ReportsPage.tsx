@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ClipboardDocumentCheckIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, ArrowLeftIcon, InformationCircleIcon, RectangleStackIcon, DocumentTextIcon } from '@heroicons/react/24/solid';
-import { XMarkIcon, ArrowDownTrayIcon, ScaleIcon, GlobeAltIcon, HomeIcon, ShieldCheckIcon, UsersIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, BuildingOfficeIcon, HeartIcon, CogIcon, CalendarIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, ArrowDownTrayIcon, ScaleIcon, GlobeAltIcon, HomeIcon, ShieldCheckIcon, UsersIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, BuildingOfficeIcon, HeartIcon, CogIcon, CalendarIcon, CurrencyDollarIcon as CurrencyDollarIconOutline } from '@heroicons/react/24/outline';
 import * as XLSX from 'xlsx';
 import { toast } from 'react-hot-toast';
 import FullSearchReport from './FullSearchReport';
@@ -8294,6 +8294,7 @@ const reports: ReportSection[] = [
     items: [
       { label: 'Edit Contracts', icon: DocumentTextIcon, route: '/reports/edit-contracts' },
       { label: 'Employee Unavailabilities', icon: CalendarIcon, route: '/reports/employee-unavailabilities' },
+      { label: 'Employee Salaries', icon: CurrencyDollarIconOutline, route: '/reports/employee-salaries' },
     ],
   },
 ];

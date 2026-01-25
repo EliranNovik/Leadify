@@ -15,6 +15,7 @@ interface EmployeeData {
   photoUrl?: string | null;
   signed: number;
   signedNormalized: number;
+  dueNormalized: number;
   signedPortion: number;
   salaryBudget: number;
   due: number;
@@ -31,6 +32,7 @@ interface DepartmentData {
   totals: {
     signed: number;
     signedNormalized: number;
+    dueNormalized: number;
     signedPortion: number;
     salaryBudget: number;
     due: number;
@@ -74,6 +76,9 @@ const SalesContributionPage = () => {
     storage: 'sessionStorage',
   });
   const [totalIncome, setTotalIncome] = usePersistedState('salesContribution_income', 0, {
+    storage: 'sessionStorage',
+  });
+  const [dueNormalizedPercentage, setDueNormalizedPercentage] = usePersistedState('salesContribution_dueNormalizedPercentage', 0, {
     storage: 'sessionStorage',
   });
   const [employeeSearchTerm, setEmployeeSearchTerm] = useState('');
@@ -126,16 +131,25 @@ const SalesContributionPage = () => {
       // Session storage will be checked first by usePersistedState, so we only update if DB has a value
       const { data: incomeSettings, error: incomeError } = await supabase
         .from('sales_contribution_income')
-        .select('income_amount')
+        .select('income_amount, due_normalized_percentage')
         .order('updated_at', { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (!incomeError && incomeSettings && incomeSettings.income_amount !== null && incomeSettings.income_amount !== undefined) {
-        const incomeAmount = Number(incomeSettings.income_amount);
-        if (!isNaN(incomeAmount) && incomeAmount >= 0) {
-          // Always set from database on initial load (fetchSettings only runs once)
-          setTotalIncome(incomeAmount);
+      if (!incomeError && incomeSettings) {
+        if (incomeSettings.income_amount !== null && incomeSettings.income_amount !== undefined) {
+          const incomeAmount = Number(incomeSettings.income_amount);
+          if (!isNaN(incomeAmount) && incomeAmount >= 0) {
+            // Always set from database on initial load (fetchSettings only runs once)
+            setTotalIncome(incomeAmount);
+          }
+        }
+        if (incomeSettings.due_normalized_percentage !== null && incomeSettings.due_normalized_percentage !== undefined) {
+          const duePercentage = Number(incomeSettings.due_normalized_percentage);
+          if (!isNaN(duePercentage) && duePercentage >= 0 && duePercentage <= 100) {
+            // Always set from database on initial load (fetchSettings only runs once)
+            setDueNormalizedPercentage(duePercentage);
+          }
         }
       }
     } catch (error) {
@@ -143,7 +157,7 @@ const SalesContributionPage = () => {
     } finally {
       setLoadingSettings(false);
     }
-  }, [departmentNames, setTotalIncome, totalIncome]);
+  }, [departmentNames, setTotalIncome, totalIncome, setDueNormalizedPercentage]);
 
   // Fetch role percentages from database
   const fetchRolePercentages = useCallback(async () => {
@@ -165,6 +179,8 @@ const SalesContributionPage = () => {
         defaultRolePercentages.set('HANDLER', 0);
         defaultRolePercentages.set('CLOSER_WITH_HELPER', 20);
         defaultRolePercentages.set('HELPER_CLOSER', 20);
+        defaultRolePercentages.set('HELPER_HANDLER', 0);
+        defaultRolePercentages.set('DEPARTMENT_MANAGER', 0);
         setRolePercentages(defaultRolePercentages);
       } else if (roleSettings && roleSettings.length > 0) {
         const percentagesMap = new Map<string, number>();
@@ -178,7 +194,7 @@ const SalesContributionPage = () => {
           tempMap.set(setting.role_name, setting.percentage.toString());
         });
         // Ensure all roles are in temp map
-        const allRoles = ['CLOSER', 'SCHEDULER', 'MANAGER', 'EXPERT', 'HANDLER', 'CLOSER_WITH_HELPER', 'HELPER_CLOSER'];
+        const allRoles = ['CLOSER', 'SCHEDULER', 'MANAGER', 'EXPERT', 'HANDLER', 'CLOSER_WITH_HELPER', 'HELPER_CLOSER', 'HELPER_HANDLER', 'DEPARTMENT_MANAGER'];
         allRoles.forEach(role => {
           if (!tempMap.has(role)) {
             tempMap.set(role, '0');
@@ -195,6 +211,8 @@ const SalesContributionPage = () => {
         defaultRolePercentages.set('HANDLER', 0);
         defaultRolePercentages.set('CLOSER_WITH_HELPER', 20);
         defaultRolePercentages.set('HELPER_CLOSER', 20);
+        defaultRolePercentages.set('HELPER_HANDLER', 0);
+        defaultRolePercentages.set('DEPARTMENT_MANAGER', 0);
         setRolePercentages(defaultRolePercentages);
         // Initialize temp map with defaults
         const tempMap = new Map<string, string>();
@@ -213,7 +231,7 @@ const SalesContributionPage = () => {
 
   // Helper function to generate a hash of role percentages for cache key
   const getRolePercentagesHash = useCallback((percentages: Map<string, number>): string => {
-    const roleNames = ['CLOSER', 'SCHEDULER', 'MANAGER', 'EXPERT', 'HANDLER', 'CLOSER_WITH_HELPER', 'HELPER_CLOSER'];
+    const roleNames = ['CLOSER', 'SCHEDULER', 'MANAGER', 'EXPERT', 'HANDLER', 'CLOSER_WITH_HELPER', 'HELPER_CLOSER', 'HELPER_HANDLER', 'DEPARTMENT_MANAGER'];
     const values = roleNames.map(role => `${role}:${percentages.get(role) || 0}`).join('|');
     // Simple hash - just use the values string (could use a proper hash function if needed)
     return values;
@@ -226,7 +244,7 @@ const SalesContributionPage = () => {
       const { data: { user } } = await supabase.auth.getUser();
       const userId = user?.id || null;
 
-      const roleNames = ['CLOSER', 'SCHEDULER', 'MANAGER', 'EXPERT', 'HANDLER', 'CLOSER_WITH_HELPER', 'HELPER_CLOSER'];
+      const roleNames = ['CLOSER', 'SCHEDULER', 'MANAGER', 'EXPERT', 'HANDLER', 'CLOSER_WITH_HELPER', 'HELPER_CLOSER', 'HELPER_HANDLER', 'DEPARTMENT_MANAGER'];
       const savePromises = roleNames.map(async (roleName) => {
         // Get value from tempRolePercentages, fallback to rolePercentages, then to '0'
         const percentageStr = tempRolePercentages.get(roleName) || rolePercentages.get(roleName)?.toString() || '0';
@@ -339,7 +357,7 @@ const SalesContributionPage = () => {
         }
       });
 
-      // Save income - get existing row first, then update or insert
+      // Save income and due normalized percentage - get existing row first, then update or insert
       const { data: existingIncome } = await supabase
         .from('sales_contribution_income')
         .select('id')
@@ -353,6 +371,7 @@ const SalesContributionPage = () => {
           .from('sales_contribution_income')
           .update({
             income_amount: totalIncome,
+            due_normalized_percentage: dueNormalizedPercentage,
             updated_at: new Date().toISOString(),
             updated_by: userId,
           })
@@ -364,6 +383,7 @@ const SalesContributionPage = () => {
           .from('sales_contribution_income')
           .insert({
             income_amount: totalIncome,
+            due_normalized_percentage: dueNormalizedPercentage,
             updated_at: new Date().toISOString(),
             updated_by: userId,
           });
@@ -401,7 +421,7 @@ const SalesContributionPage = () => {
     } finally {
       setSavingSettings(false);
     }
-  }, [departmentNames, departmentPercentages, totalIncome, filters.fromDate, filters.toDate, departmentData]);
+  }, [departmentNames, departmentPercentages, totalIncome, dueNormalizedPercentage, filters.fromDate, filters.toDate, departmentData]);
 
   // Fetch all categories with their parent main category names (for mapping text categories)
   useEffect(() => {
@@ -454,7 +474,7 @@ const SalesContributionPage = () => {
         tempMap.set(key, value.toString());
       });
       // Ensure all roles are in temp map
-      const allRoles = ['CLOSER', 'SCHEDULER', 'MANAGER', 'EXPERT', 'CLOSER_WITH_HELPER', 'HELPER_CLOSER'];
+      const allRoles = ['CLOSER', 'SCHEDULER', 'MANAGER', 'EXPERT', 'HANDLER', 'CLOSER_WITH_HELPER', 'HELPER_CLOSER', 'HELPER_HANDLER', 'DEPARTMENT_MANAGER'];
       allRoles.forEach(role => {
         if (!tempMap.has(role)) {
           tempMap.set(role, '0');
@@ -793,12 +813,13 @@ const SalesContributionPage = () => {
 
   // Fetch role data for an employee
   const fetchRoleData = useCallback(async (employeeId: number, employeeName: string) => {
-    // Include date range, income, and role percentages hash in cache key to ensure data is refetched when any of these change
+    // Include date range, income, due normalized percentage, and role percentages hash in cache key to ensure data is refetched when any of these change
     const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
     const incomeKey = totalIncome || 0;
+    const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
     const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
     const employeeKey = `${employeeId}_${dateRangeKey}`;
-    const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${rolePercentagesHash}`;
+    const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
 
     // Check cache - but always recalculate signed portion with current income
     // Skip only if we have cached data for this exact combination (date + income)
@@ -825,9 +846,12 @@ const SalesContributionPage = () => {
       // Fetch due amount for this employee (if they are a handler)
       const dueAmountFromCache = await fetchDueAmounts(employeeId, employeeName);
 
-      // Combine signed and due, then apply normalization
-      const combinedSignedAndDueFromCache = totalSignedFromCache + dueAmountFromCache;
-      const signedNormalized = combinedSignedAndDueFromCache * normalizationRatioFromCache;
+      // Signed normalized: only use signed amounts (no due)
+      const signedNormalized = totalSignedFromCache * normalizationRatioFromCache;
+
+      // Due normalized: use separate percentage from due_normalized_percentage
+      const dueNormalizedPercentageValueFromCache = (dueNormalizedPercentage || 0) / 100; // Convert percentage to decimal
+      const dueNormalized = dueAmountFromCache * dueNormalizedPercentageValueFromCache;
 
       // Calculate signed portion from cached role data
       // We need to recalculate this from the actual leads, but for now use a simplified approach
@@ -845,23 +869,17 @@ const SalesContributionPage = () => {
         updated.forEach((deptData, deptName) => {
           const updatedEmployees = deptData.employees.map(emp => {
             if (emp.employeeId === employeeId) {
-              // Get signed portion from current state or recalculate
-              const currentSignedPortion = emp.signedPortion || 0;
-
-              // Calculate Contribution: signed portion + due portion, then apply normalization
-              const totalContributionBeforeNormalizationFromCache = currentSignedPortion + duePortionFromCache;
-              const contributionFromCache = totalContributionBeforeNormalizationFromCache * normalizationRatioFromCache;
-
-              // Calculate Salary Budget from Contribution
-              const salaryBudgetFromCache = contributionFromCache * 0.4;
-
+              // Note: We can't accurately calculate contribution from cache because we need
+              // the raw totalSignedPortion which is calculated from individual leads.
+              // Contribution will be recalculated in the full fetch below.
+              // For now, just update the normalized values.
               return {
                 ...emp,
                 signed: totalSignedFromCache,
                 due: dueAmountFromCache,
                 signedNormalized: signedNormalized,
-                signedPortion: contributionFromCache, // Use normalized contribution
-                salaryBudget: salaryBudgetFromCache
+                dueNormalized: dueNormalized,
+                // Keep existing signedPortion and salaryBudget - they will be updated in full fetch
               };
             }
             return emp;
@@ -871,6 +889,7 @@ const SalesContributionPage = () => {
           const deptSigned = updatedEmployees.reduce((sum, emp) => sum + emp.signed, 0);
           const deptDue = updatedEmployees.reduce((sum, emp) => sum + (emp.due || 0), 0);
           const deptSignedNormalized = updatedEmployees.reduce((sum, emp) => sum + (emp.signedNormalized || 0), 0);
+          const deptDueNormalized = updatedEmployees.reduce((sum, emp) => sum + (emp.dueNormalized || 0), 0);
           const deptSignedPortion = updatedEmployees.reduce((sum, emp) => sum + emp.signedPortion, 0);
           const deptSalaryBudget = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBudget || 0), 0);
 
@@ -882,6 +901,7 @@ const SalesContributionPage = () => {
               signed: deptSigned,
               due: deptDue,
               signedNormalized: deptSignedNormalized,
+              dueNormalized: deptDueNormalized,
               signedPortion: deptSignedPortion,
               salaryBudget: deptSalaryBudget,
             },
@@ -1766,7 +1786,7 @@ const SalesContributionPage = () => {
       // fetchDueAmounts queries ALL leads where employee is handler and filters payment plans by due_date
       const dueAmountForEmployee = await fetchDueAmounts(employeeId, employeeName);
 
-      // Calculate signed/due normalized: combine signed and due first, then apply normalization ratio
+      // Calculate signed normalized: only use signed amounts, apply normalization ratio based on income
       // IMPORTANT: Use ref to get the latest totalSignedValue to avoid stale closure issues
       const totalSignedOverallForEmployee = totalSignedValueRef.current || 0;
       const incomeAmountForEmployee = totalIncome || 0;
@@ -1775,10 +1795,12 @@ const SalesContributionPage = () => {
         normalizationRatioForEmployee = incomeAmountForEmployee / totalSignedOverallForEmployee;
       }
 
-      // Combine signed and due, then apply normalization
-      // dueAmountForEmployee is the authoritative total from fetchDueAmounts (all handler leads with due dates in range)
-      const combinedSignedAndDue = totalSigned + dueAmountForEmployee;
-      const signedNormalized = combinedSignedAndDue * normalizationRatioForEmployee;
+      // Signed normalized: only use signed amounts (no due)
+      const signedNormalized = totalSigned * normalizationRatioForEmployee;
+
+      // Due normalized: use separate percentage from due_normalized_percentage
+      const dueNormalizedPercentageValue = (dueNormalizedPercentage || 0) / 100; // Convert percentage to decimal
+      const dueNormalized = dueAmountForEmployee * dueNormalizedPercentageValue;
 
       // Calculate due portion: Handler gets a percentage of due amounts
       // Get handler percentage from rolePercentages (0-100, convert to 0-1)
@@ -1788,20 +1810,26 @@ const SalesContributionPage = () => {
 
       const duePortion = dueAmountForEmployee * handlerPercentage;
 
-      // Calculate Contribution: signed portion + due portion, then apply normalization
-      const totalContributionBeforeNormalization = totalSignedPortion + duePortion;
-      const contribution = totalContributionBeforeNormalization * normalizationRatioForEmployee;
+      // Normalize signed portion: apply normalization ratio to signedPortion
+      const signedPortionNormalized = totalSignedPortion * normalizationRatioForEmployee;
+
+      // Normalize due portion: apply due normalized percentage to duePortion
+      const duePortionNormalized = duePortion * dueNormalizedPercentageValue;
+
+      // Calculate Contribution: combine normalized signed portion + normalized due portion
+      const contribution = signedPortionNormalized + duePortionNormalized;
 
       // Calculate Salary Budget from Contribution
       const salaryBudget = contribution * 0.4;
 
       setRoleDataCache(prev => {
         const newCache = new Map(prev);
-        // Include date range, income, and role percentages hash in cache key
+        // Include date range, income, due normalized percentage, and role percentages hash in cache key
         const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
         const incomeKey = totalIncome || 0;
+        const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
         const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
-        const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${rolePercentagesHash}`;
+        const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
         newCache.set(cacheKey, roleDataResults);
         return newCache;
       });
@@ -1817,6 +1845,7 @@ const SalesContributionPage = () => {
                 signed: totalSigned, // Update signed here too to ensure consistency
                 due: dueAmountForEmployee, // Update due amount
                 signedNormalized: signedNormalized,
+                dueNormalized: dueNormalized,
                 signedPortion: contribution, // Use normalized contribution
                 salaryBudget: salaryBudget
               };
@@ -1827,6 +1856,7 @@ const SalesContributionPage = () => {
           // Recalculate department totals from all employees
           const deptSigned = updatedEmployees.reduce((sum, emp) => sum + (emp.signed || 0), 0);
           const deptSignedNormalized = updatedEmployees.reduce((sum, emp) => sum + (emp.signedNormalized || 0), 0);
+          const deptDueNormalized = updatedEmployees.reduce((sum, emp) => sum + (emp.dueNormalized || 0), 0);
           const deptSignedPortion = updatedEmployees.reduce((sum, emp) => sum + (emp.signedPortion || 0), 0);
           const deptSalaryBudget = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBudget || 0), 0);
 
@@ -1837,6 +1867,7 @@ const SalesContributionPage = () => {
               ...deptData.totals,
               signed: deptSigned,
               signedNormalized: deptSignedNormalized,
+              dueNormalized: deptDueNormalized,
               signedPortion: deptSignedPortion,
               salaryBudget: deptSalaryBudget,
             },
@@ -1858,7 +1889,7 @@ const SalesContributionPage = () => {
         return newSet;
       });
     }
-  }, [filters.fromDate, filters.toDate, totalSignedValue, totalIncome, rolePercentages, getRolePercentagesHash]);
+  }, [filters.fromDate, filters.toDate, totalSignedValue, totalIncome, dueNormalizedPercentage, rolePercentages, getRolePercentagesHash]);
 
   // Recalculate signed portions when income changes
   // This ensures signed portions are recalculated with the new income value immediately
@@ -1902,6 +1933,49 @@ const SalesContributionPage = () => {
       refetchAll();
     }
   }, [totalIncome, departmentData, filters.fromDate, filters.toDate, fetchRoleData]);
+
+  // Recalculate due normalized when due normalized percentage changes
+  // This ensures due normalized is recalculated with the new percentage value immediately
+  const prevDueNormalizedPercentageRef = useRef<number>(dueNormalizedPercentage);
+  useEffect(() => {
+    // Only trigger if due normalized percentage actually changed and we have employees loaded
+    if (prevDueNormalizedPercentageRef.current !== dueNormalizedPercentage && departmentData.size > 0 && filters.fromDate && filters.toDate) {
+      prevDueNormalizedPercentageRef.current = dueNormalizedPercentage;
+      // Clear cache to force recalculation (cache key includes due normalized percentage, so old cache won't match)
+      setRoleDataCache(new Map());
+
+      // Trigger refetch for all employees
+      const allEmployeeIds: number[] = [];
+      const employeeNamesMap = new Map<number, string>();
+      departmentData.forEach(deptData => {
+        deptData.employees.forEach(emp => {
+          if (!allEmployeeIds.includes(emp.employeeId)) {
+            allEmployeeIds.push(emp.employeeId);
+            employeeNamesMap.set(emp.employeeId, emp.employeeName);
+          }
+        });
+      });
+
+      // Refetch role data for all employees in parallel batches
+      const refetchAll = async () => {
+        const batchSize = 10;
+        for (let i = 0; i < allEmployeeIds.length; i += batchSize) {
+          const batch = allEmployeeIds.slice(i, i + batchSize);
+          // Fetch all in batch in parallel
+          await Promise.all(
+            batch.map(employeeId => {
+              const employeeName = employeeNamesMap.get(employeeId) || '';
+              return fetchRoleData(employeeId, employeeName).catch(err => {
+                console.error(`Error refetching role data for employee ${employeeId} after due normalized percentage change:`, err);
+              });
+            })
+          );
+        }
+      };
+
+      refetchAll();
+    }
+  }, [dueNormalizedPercentage, departmentData, filters.fromDate, filters.toDate, fetchRoleData]);
 
   // Update employee signed total in department data
   const updateEmployeeSignedTotal = useCallback((employeeId: number, signedTotal: number) => {
@@ -2471,8 +2545,9 @@ const SalesContributionPage = () => {
           // For employee view, fetch role data
           const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
           const incomeKey = totalIncome || 0;
+          const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
           const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
-          const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${rolePercentagesHash}`;
+          const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
           if (!roleDataCache.has(cacheKey)) {
             fetchRoleData(employeeId, employeeName);
           }
@@ -2650,6 +2725,7 @@ const SalesContributionPage = () => {
           photoUrl: emp.photo_url || null,
           signed: 0,
           signedNormalized: 0,
+          dueNormalized: 0,
           signedPortion: 0,
           salaryBudget: 0,
           due: 0,
@@ -2703,6 +2779,7 @@ const SalesContributionPage = () => {
             totals: {
               signed: 0,
               signedNormalized: 0,
+              dueNormalized: 0,
               signedPortion: 0,
               salaryBudget: 0,
               due: 0,
@@ -2719,6 +2796,7 @@ const SalesContributionPage = () => {
         const employees: EmployeeData[] = [];
         let deptSigned = 0;
         let deptSignedNormalized = 0;
+        let deptDueNormalized = 0;
         let deptSignedPortion = 0;
         let deptSalaryBudget = 0;
         let deptDue = 0;
@@ -2728,11 +2806,12 @@ const SalesContributionPage = () => {
 
         empMap.forEach(empData => {
           // Calculate signed total from role breakdown if available
-          // Include date range, income, and role percentages hash in cache key to get correct data
+          // Include date range, income, due normalized percentage, and role percentages hash in cache key to get correct data
           const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
           const incomeKey = totalIncome || 0;
+          const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
           const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
-          const cacheKey = `${empData.employeeId}_${dateRangeKey}_${incomeKey}_${rolePercentagesHash}`;
+          const cacheKey = `${empData.employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
           const roleData = roleDataCache.get(cacheKey) || [];
           if (roleData.length > 0) {
             // Sum up all signedTotal from role combinations for this employee
@@ -2749,6 +2828,7 @@ const SalesContributionPage = () => {
 
           deptSigned += empData.signed;
           deptSignedNormalized += empData.signedNormalized || 0;
+          deptDueNormalized += empData.dueNormalized || 0;
           deptSignedPortion += empData.signedPortion;
           deptSalaryBudget += empData.salaryBudget || 0;
           deptDue += empData.due;
@@ -2766,6 +2846,7 @@ const SalesContributionPage = () => {
           totals: {
             signed: deptSigned,
             signedNormalized: deptSignedNormalized,
+            dueNormalized: deptDueNormalized,
             signedPortion: deptSignedPortion,
             salaryBudget: deptSalaryBudget,
             due: deptDue,
@@ -2804,13 +2885,14 @@ const SalesContributionPage = () => {
       // Fetch role data in the background (non-blocking)
       const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
       const incomeKey = totalIncome || 0;
+      const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
 
       // Collect all employees that need fetching
       const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
       const employeesToFetch: Array<{ id: number; name: string }> = [];
       allEmployeeIds.forEach(employeeId => {
-        const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${rolePercentagesHash}`;
-        // Only fetch if not already cached for current date range, income, and role percentages
+        const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
+        // Only fetch if not already cached for current date range, income, due normalized percentage, and role percentages
         if (!roleDataCache.has(cacheKey)) {
           const employeeName = employeeNamesMap.get(employeeId) || '';
           employeesToFetch.push({ id: employeeId, name: employeeName });
@@ -3262,6 +3344,7 @@ const SalesContributionPage = () => {
               department: '',
               signed: fieldData.signed,
               signedNormalized: signedNormalized,
+              dueNormalized: 0,
               signedPortion: signedPortion,
               salaryBudget: salaryBudget,
               due: 0,
@@ -3274,6 +3357,7 @@ const SalesContributionPage = () => {
             totals: {
               signed: fieldData.signed,
               signedNormalized: signedNormalized,
+              dueNormalized: 0,
               signedPortion: signedPortion,
               salaryBudget: salaryBudget,
               due: 0,
@@ -3321,6 +3405,7 @@ const SalesContributionPage = () => {
             department: '',
             signed: generalFieldData.signed,
             signedNormalized: generalSignedNormalized,
+            dueNormalized: 0,
             signedPortion: generalFieldData.signedPortion,
             salaryBudget: generalSalaryBudget,
             due: 0,
@@ -3333,6 +3418,7 @@ const SalesContributionPage = () => {
           totals: {
             signed: generalFieldData.signed,
             signedNormalized: generalSignedNormalized,
+            dueNormalized: 0,
             signedPortion: generalFieldData.signedPortion,
             salaryBudget: generalSalaryBudget,
             due: 0,
@@ -3614,7 +3700,7 @@ const SalesContributionPage = () => {
 
   const renderTable = (deptData: DepartmentData, hideTitle?: boolean) => {
     const isFieldView = hideTitle === true;
-    const colSpanValue = isFieldView ? 6 : 7; // Updated for new Due column
+    const colSpanValue = isFieldView ? 7 : 8; // Updated for Signed Normalized and Due Normalized columns
 
     return (
       <div key={deptData.departmentName} className="mb-8">
@@ -3625,11 +3711,12 @@ const SalesContributionPage = () => {
               <tr>
                 <th className={isFieldView ? 'w-[20%]' : 'w-[25%]'}>{isFieldView ? 'Category' : 'Employee'}</th>
                 {!isFieldView && <th className="w-[15%]">Department</th>}
-                <th className="text-right w-[12%]">Signed</th>
-                <th className="text-right w-[12%]">Due</th>
-                <th className="text-right w-[12%]">Signed/Due Normalized</th>
-                <th className="text-right w-[12%]">Contribution</th>
-                <th className="text-right w-[12%]">Salary Budget</th>
+                <th className="text-right w-[10%]">Signed</th>
+                <th className="text-right w-[10%]">Due</th>
+                <th className="text-right w-[10%]">Signed Normalized</th>
+                <th className="text-right w-[10%]">Due Normalized</th>
+                <th className="text-right w-[10%]">Contribution</th>
+                <th className="text-right w-[10%]">Salary Budget</th>
               </tr>
             </thead>
             <tbody>
@@ -3647,8 +3734,9 @@ const SalesContributionPage = () => {
                   const employeeKey = isFieldView ? emp.employeeName : `${emp.employeeId}`;
                   const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
                   const incomeKey = totalIncome || 0;
+                  const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
                   const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
-                  const cacheKey = `${emp.employeeId}_${dateRangeKey}_${incomeKey}_${rolePercentagesHash}`;
+                  const cacheKey = `${emp.employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
                   const isExpanded = expandedRows.has(employeeKey);
                   const roleData = roleDataCache.get(cacheKey) || [];
                   const isLoadingRoleData = loadingRoleData.has(employeeKey);
@@ -3677,11 +3765,12 @@ const SalesContributionPage = () => {
                           </div>
                         </td>
                         {!isFieldView && <td className="w-[15%]">{emp.department}</td>}
-                        <td className="text-right w-[12%]">{formatCurrency(emp.signed)}</td>
-                        <td className="text-right w-[12%]">{formatCurrency(emp.due || 0)}</td>
-                        <td className="text-right w-[12%]">{formatCurrency(emp.signedNormalized || 0)}</td>
-                        <td className="text-right w-[12%]">{formatCurrency(emp.signedPortion)}</td>
-                        <td className="text-right w-[12%]">{formatCurrency(emp.salaryBudget || 0)}</td>
+                        <td className="text-right w-[10%]">{formatCurrency(emp.signed)}</td>
+                        <td className="text-right w-[10%]">{formatCurrency(emp.due || 0)}</td>
+                        <td className="text-right w-[10%]">{formatCurrency(emp.signedNormalized || 0)}</td>
+                        <td className="text-right w-[10%]">{formatCurrency(emp.dueNormalized || 0)}</td>
+                        <td className="text-right w-[10%]">{formatCurrency(emp.signedPortion)}</td>
+                        <td className="text-right w-[10%]">{formatCurrency(emp.salaryBudget || 0)}</td>
                       </tr>
                       {isExpanded && (
                         <tr>
@@ -3837,11 +3926,12 @@ const SalesContributionPage = () => {
               <tr className="font-bold bg-base-200">
                 <td className={isFieldView ? 'w-[20%]' : 'w-[25%]'}>Total</td>
                 {!isFieldView && <td className="w-[15%]"></td>}
-                <td className="text-right w-[12%]">{formatCurrency(deptData.totals.signed)}</td>
-                <td className="text-right w-[12%]">{formatCurrency(deptData.totals.due || 0)}</td>
-                <td className="text-right w-[12%]">{formatCurrency(deptData.totals.signedNormalized || 0)}</td>
-                <td className="text-right w-[12%]">{formatCurrency(deptData.totals.signedPortion)}</td>
-                <td className="text-right w-[12%]">{formatCurrency(deptData.totals.salaryBudget || 0)}</td>
+                <td className="text-right w-[10%]"></td>
+                <td className="text-right w-[10%]"></td>
+                <td className="text-right w-[10%]"></td>
+                <td className="text-right w-[10%]"></td>
+                <td className="text-right w-[10%]">{formatCurrency(deptData.totals.signedPortion)}</td>
+                <td className="text-right w-[10%]">{formatCurrency(deptData.totals.salaryBudget || 0)}</td>
               </tr>
             </tbody>
           </table>
@@ -3914,6 +4004,33 @@ const SalesContributionPage = () => {
                 placeholder="Enter income amount"
               />
               <span className="text-sm text-gray-600">₪</span>
+            </div>
+            {/* Due Normalized Percentage Input */}
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium whitespace-nowrap">Due Normalized %:</label>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="0.01"
+                className="input input-bordered w-24 md:w-28 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                value={dueNormalizedPercentage !== null && dueNormalizedPercentage !== undefined
+                  ? dueNormalizedPercentage.toString()
+                  : ''}
+                onChange={(e) => {
+                  const rawValue = e.target.value;
+                  if (rawValue === '') {
+                    setDueNormalizedPercentage(0);
+                  } else {
+                    const numValue = parseFloat(rawValue);
+                    if (!isNaN(numValue) && numValue >= 0 && numValue <= 100) {
+                      setDueNormalizedPercentage(numValue);
+                    }
+                  }
+                }}
+                placeholder="0.00"
+              />
+              <span className="text-sm text-gray-600">%</span>
               <button
                 onClick={saveSettings}
                 disabled={savingSettings}
@@ -3942,7 +4059,7 @@ const SalesContributionPage = () => {
                 title="Configure role percentages"
               >
                 <ChartBarIcon className="w-4 h-4" />
-                Role Percentages
+                Role %
               </button>
             </div>
             {/* Total Signed Value */}
@@ -3994,6 +4111,8 @@ const SalesContributionPage = () => {
                       { role: 'MANAGER', label: 'Meeting Manager', description: 'Meeting Manager percentage' },
                       { role: 'EXPERT', label: 'Expert', description: 'Expert percentage' },
                       { role: 'HANDLER', label: 'Handler', description: 'Handler percentage (typically 0% as Handler is used for due amounts)' },
+                      { role: 'HELPER_HANDLER', label: 'Helper Handler', description: 'Helper Handler percentage' },
+                      { role: 'DEPARTMENT_MANAGER', label: 'Department Manager', description: 'Department Manager percentage' },
                     ].map(({ role, label, description }) => (
                       <div key={role} className="flex items-center gap-4 p-4 bg-base-200 rounded-lg">
                         <div className="flex-1">

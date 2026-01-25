@@ -166,75 +166,75 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const groupIconInputRef = useRef<HTMLInputElement>(null);
   const [isFetchingConversations, setIsFetchingConversations] = useState(false);
   const fetchConversationsAbortControllerRef = useRef<AbortController | null>(null);
-  
+
   // Chat background image state
   const [chatBackgroundImageUrl, setChatBackgroundImageUrl] = useState<string | null>(null);
   const [isUploadingBackground, setIsUploadingBackground] = useState(false);
   const backgroundImageInputRef = useRef<HTMLInputElement>(null);
-  
+
   // File attachment state
   const [isUploadingFile, setIsUploadingFile] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  
+
   // Drag and drop state
   const [isDragOver, setIsDragOver] = useState(false);
-  
+
   // Media gallery state
   const [isMediaModalOpen, setIsMediaModalOpen] = useState(false);
   const [selectedMediaIndex, setSelectedMediaIndex] = useState(0);
   const [conversationMedia, setConversationMedia] = useState<Message[]>([]);
-  
+
   // Emoji picker state
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
-  
+
   // Lead search state
   const [isLeadSearchOpen, setIsLeadSearchOpen] = useState(false);
   const [leadSearchQuery, setLeadSearchQuery] = useState('');
   const [leadSearchResults, setLeadSearchResults] = useState<any[]>([]);
-  
+
   // Employee modal state
   const [showEmployeeInfoModal, setShowEmployeeInfoModal] = useState(false);
   const [showEmployeeProfileModal, setShowEmployeeProfileModal] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<any>(null);
-  
+
   // Employee availability state
   const [isEmployeeUnavailable, setIsEmployeeUnavailable] = useState(false);
   const [unavailabilityReason, setUnavailabilityReason] = useState<string | null>(null);
   const [unavailabilityTimePeriod, setUnavailabilityTimePeriod] = useState<string | null>(null);
-  
+
   // Forward message state
   const [showForwardModal, setShowForwardModal] = useState(false);
   const [messageToForward, setMessageToForward] = useState<Message | null>(null);
   const [forwardSearchQuery, setForwardSearchQuery] = useState('');
-  
+
   // Message actions state (reply, edit, delete)
   const [messageToReply, setMessageToReply] = useState<Message | null>(null);
   const [messageToEdit, setMessageToEdit] = useState<Message | null>(null);
   const [editingMessageText, setEditingMessageText] = useState('');
   const [messageActionMenu, setMessageActionMenu] = useState<number | null>(null);
-  
+
   // Online status state
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
   const [lastOnlineTimes, setLastOnlineTimes] = useState<Map<string, Date>>(new Map());
   const [typingUsers, setTypingUsers] = useState<Map<number, { userId: string; userName: string }>>(new Map());
-  
+
   // Contact availability map (for sidebar)
   const [contactAvailabilityMap, setContactAvailabilityMap] = useState<{ [key: string]: boolean }>({});
   const [isSearchingLeads, setIsSearchingLeads] = useState(false);
   const [selectedLead, setSelectedLead] = useState<any>(null);
   const [showMobileTools, setShowMobileTools] = useState(false);
   const [showDesktopTools, setShowDesktopTools] = useState(false);
-  
+
   // Group member management state
   const [showAddMemberModal, setShowAddMemberModal] = useState(false);
   const [showRemoveMemberModal, setShowRemoveMemberModal] = useState(false);
   const [membersToAdd, setMembersToAdd] = useState<string[]>([]);
   const [memberSearchQuery, setMemberSearchQuery] = useState('');
-  
+
   // Reactions state
   const [showReactionPicker, setShowReactionPicker] = useState<number | null>(null);
   const [reactingMessageId, setReactingMessageId] = useState<number | null>(null);
-  
+
   // Voice recording state
   const [isRecording, setIsRecording] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
@@ -242,15 +242,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
   const [voiceSessionToken, setVoiceSessionToken] = useState<string | null>(null);
   const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
-  
+
   // Voice playback state
   const [playingVoiceId, setPlayingVoiceId] = useState<number | null>(null);
   const [voiceAudio, setVoiceAudio] = useState<HTMLAudioElement | null>(null);
   const [voiceProgress, setVoiceProgress] = useState<{ [key: number]: number }>({});
   const [failedPhotoIds, setFailedPhotoIds] = useState<Record<string, boolean>>({});
-  
+
   // Typing indicators removed - causing too many issues
-  
+
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messageInputRef = useRef<HTMLTextAreaElement>(null);
@@ -262,7 +262,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const mobileMessagesContainerRef = useRef<HTMLDivElement>(null);
   const mobileToolsRef = useRef<HTMLDivElement>(null);
   const desktopToolsRef = useRef<HTMLDivElement>(null);
-  
+
   // Auto-scroll state
   const [isUserScrolling, setIsUserScrolling] = useState(false);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
@@ -316,9 +316,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       'marketing': 'Marketing',
       'sales': 'Sales'
     };
-    
+
     if (!role || role.trim() === '') return 'Employee';
-    
+
     const cleanRole = role.toLowerCase().trim();
     return roleMap[cleanRole] || role || 'Employee';
   };
@@ -400,18 +400,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     const hasHebrew = /[\u0590-\u05FF]/.test(content);
     // Check if content contains English/Latin characters
     const hasLatin = /[a-zA-Z]/.test(content);
-    
+
     // If both Hebrew and Latin are present, use 'auto' to let browser handle bidirectional text
     // This allows the browser's Unicode bidirectional algorithm to correctly handle mixed content
     if (hasHebrew && hasLatin) {
       return 'auto';
     }
-    
+
     // If only Hebrew, use RTL
     if (hasHebrew) {
       return 'rtl';
     }
-    
+
     // Default to LTR for English and other languages
     return 'ltr';
   };
@@ -420,39 +420,39 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     // Simple approach: check if the text length is very short and contains emoji-like characters
     const cleanText = text.trim();
     if (cleanText.length === 0) return false;
-    
+
     // Exclude Hebrew text (Unicode range \u0590-\u05FF) - it should not be treated as emoji
     const hasHebrew = /[\u0590-\u05FF]/.test(cleanText);
     if (hasHebrew) return false;
-    
+
     // Check if the message is very short (likely emoji-only) and contains non-ASCII characters
     const hasNonAscii = /[^\x00-\x7F]/.test(cleanText);
     const isShort = cleanText.length <= 5; // Most emojis are 1-3 characters
-    
+
     // Emoji detection: check for emoji Unicode ranges
     const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]/u;
     const hasEmoji = emojiRegex.test(cleanText);
-    
+
     return hasEmoji && isShort && !hasHebrew;
   };
 
   // Helper function to render clickable links and line breaks in messages
   const renderMessageContent = (content: string, isOwn: boolean = false) => {
     if (!content) return '';
-    
+
     // Clean markdown syntax first
     const cleanedContent = cleanMarkdown(content);
-    
+
     // First, split by line breaks to preserve them
     const lines = cleanedContent.split('\n');
     const result: React.ReactNode[] = [];
-    
+
     lines.forEach((line, lineIndex) => {
       // Add line break before each line except the first
       if (lineIndex > 0) {
         result.push(<br key={`br-${lineIndex}`} />);
       }
-      
+
       // Process each line for markdown-style links
       const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
       const parts: React.ReactNode[] = [];
@@ -465,7 +465,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         if (match.index > lastIndex) {
           parts.push(line.slice(lastIndex, match.index));
         }
-        
+
         // Add the clickable link with appropriate styling based on message ownership
         parts.push(
           <a
@@ -478,20 +478,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             {match[1]}
           </a>
         );
-        
+
         lastIndex = match.index + match[0].length;
       }
-      
+
       // Add remaining text after the last link in this line
       if (lastIndex < line.length) {
         parts.push(line.slice(lastIndex));
       }
-      
+
       // If no links found in this line, just add the line text
       if (parts.length === 0) {
         parts.push(line);
       }
-      
+
       // Add all parts for this line to the result
       result.push(
         <React.Fragment key={`line-${lineIndex}`}>
@@ -499,7 +499,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         </React.Fragment>
       );
     });
-    
+
     return result.length > 0 ? result : cleanedContent;
   };
 
@@ -554,7 +554,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       // Combine and deduplicate results
       const allLeads = [...(leadsData || []), ...(legacyLeadsData || [])];
-      const uniqueLeads = allLeads.filter((lead, index, self) => 
+      const uniqueLeads = allLeads.filter((lead, index, self) =>
         index === self.findIndex(l => l.id === lead.id && l.lead_number === lead.lead_number)
       );
 
@@ -572,7 +572,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     setIsLeadSearchOpen(false);
     setLeadSearchQuery('');
     setLeadSearchResults([]);
-    
+
     // Add lead link to message - use deployed domain
     const deployedDomain = 'https://leadify-crm.onrender.com';
     const leadLink = `[Lead #${lead.lead_number} - ${lead.name}](${deployedDomain}/clients/${lead.lead_number})`;
@@ -583,58 +583,58 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Voice recording functions
   const startVoiceRecording = async () => {
     if (!selectedConversation || !currentUser) return;
-    
+
     try {
       // Request microphone permission
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      
+
       // Create voice message session
       const { data: sessionData, error: sessionError } = await supabase.rpc('create_voice_message_session', {
         p_user_id: currentUser.id,
         p_conversation_id: selectedConversation.id
       });
-      
+
       if (sessionError) throw sessionError;
-      
+
       setVoiceSessionToken(sessionData.session_token);
-      
+
       // Create MediaRecorder
       const recorder = new MediaRecorder(stream, {
         mimeType: 'audio/webm;codecs=opus'
       });
-      
+
       const chunks: Blob[] = [];
-      
+
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           chunks.push(event.data);
         }
       };
-      
+
       recorder.onstop = async () => {
         // Stop all tracks
         stream.getTracks().forEach(track => track.stop());
-        
+
         if (chunks.length > 0) {
           await uploadVoiceMessage(chunks, sessionData.session_token);
         }
       };
-      
+
       recorder.start(1000); // Record in 1-second chunks
       setMediaRecorder(recorder);
       setAudioChunks(chunks);
       setIsRecording(true);
       setRecordingStartTime(Date.now());
       setRecordingDuration(0);
-      
+
       // Start duration timer
       const timer = setInterval(() => {
         setRecordingDuration(prev => prev + 1);
       }, 1000);
-      
+
       // Store timer reference for cleanup
       (recorder as any).timer = timer;
-      
+
     } catch (error) {
       toast.error('Failed to start recording. Please check microphone permissions.');
     }
@@ -644,7 +644,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     if (mediaRecorder && isRecording) {
       mediaRecorder.stop();
       setIsRecording(false);
-      
+
       // Clear timer
       if ((mediaRecorder as any).timer) {
         clearInterval((mediaRecorder as any).timer);
@@ -656,13 +656,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     if (mediaRecorder && isRecording) {
       mediaRecorder.stop();
       setIsRecording(false);
-      
+
       // Clear timer
       if ((mediaRecorder as any).timer) {
         clearInterval((mediaRecorder as any).timer);
       }
     }
-    
+
     // Cancel session if we have a token
     if (voiceSessionToken) {
       try {
@@ -672,7 +672,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       } catch (error) {
       }
     }
-    
+
     // Reset state
     setAudioChunks([]);
     setVoiceSessionToken(null);
@@ -683,18 +683,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const uploadVoiceMessage = async (chunks: Blob[], sessionToken: string) => {
     try {
       setIsSending(true);
-      
+
       // Combine chunks into single audio blob
       const audioBlob = new Blob(chunks, { type: 'audio/webm' });
-      
+
       // Calculate actual duration and generate waveform from audio blob
       let actualDuration = recordingDuration;
       let waveformData: number[] | null = null;
-      
+
       try {
         const audioUrl = URL.createObjectURL(audioBlob);
         const audio = new Audio(audioUrl);
-        
+
         // Get duration
         await new Promise((resolve, reject) => {
           audio.onloadedmetadata = () => {
@@ -711,7 +711,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             resolve(recordingDuration);
           }, 2000);
         });
-        
+
         // Generate waveform
         waveformData = await generateWaveform(audioBlob);
       } catch (error) {
@@ -719,65 +719,65 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         // Generate a simple fallback waveform
         waveformData = Array(50).fill(0).map(() => Math.random() * 0.5 + 0.3);
       }
-      
+
       // Upload chunks to database
       const chunkSize = 64 * 1024; // 64KB chunks
       const totalChunks = Math.ceil(audioBlob.size / chunkSize);
-      
+
       for (let i = 0; i < totalChunks; i++) {
         const start = i * chunkSize;
         const end = Math.min(start + chunkSize, audioBlob.size);
         const chunk = audioBlob.slice(start, end);
-        
+
         // Convert blob to base64 for database storage
         const arrayBuffer = await chunk.arrayBuffer();
         const uint8Array = new Uint8Array(arrayBuffer);
         const base64 = btoa(String.fromCharCode(...uint8Array));
-        
+
         const { error } = await supabase.rpc('upload_voice_chunk', {
           p_session_token: sessionToken,
           p_chunk_number: i,
           p_chunk_data: base64,
           p_chunk_size: chunk.size
         });
-        
+
         if (error) throw error;
       }
-      
+
       // Finalize voice message with actual duration and waveform
       const { data: finalizeData, error: finalizeError } = await supabase.rpc('finalize_voice_message', {
         p_session_token: sessionToken,
         p_duration: actualDuration,
         p_waveform_data: waveformData ? { waveform: waveformData } : null
       });
-      
+
       if (finalizeError) throw finalizeError;
-      
+
       // Send via WebSocket for real-time delivery
       if (websocketService.isSocketConnected()) {
         websocketService.sendMessage(
-          selectedConversation!.id, 
-          'Voice message', 
+          selectedConversation!.id,
+          'Voice message',
           'file', // Use 'file' type for WebSocket compatibility
           `voice_message_${finalizeData.message_id}.webm`,
           'audio/webm',
           audioBlob.size
         );
       }
-      
+
       toast.success('Voice message sent!');
-      
+
       // Refresh messages to get the updated message with correct duration
       if (selectedConversation) {
         await fetchMessages(selectedConversation.id);
       }
-      
+
       // Reset state
       setAudioChunks([]);
       setVoiceSessionToken(null);
       setRecordingDuration(0);
       setRecordingStartTime(null);
-      
+
     } catch (error) {
       toast.error('Failed to send voice message');
     } finally {
@@ -806,7 +806,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // For each message, check if we need to create read receipts
       // This marks that the current user has read these messages
       const receiptsToInsert = [];
-      
+
       for (const messageId of messageIds) {
         // Check if read receipt already exists
         const { data: existingReceipt } = await supabase
@@ -839,7 +839,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Get read receipt status for a message (WhatsApp-style)
   const getReadReceiptStatus = (message: Message): 'sent' | 'delivered' | 'read' => {
     if (!currentUser || !selectedConversation) return 'sent';
-    
+
     // Only show read receipts for messages sent by current user
     if (message.sender_id !== currentUser.id) return 'sent';
 
@@ -848,14 +848,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       const otherParticipant = selectedConversation.participants?.find(
         p => p.user_id !== currentUser.id
       );
-      
+
       if (!otherParticipant) return 'sent';
-      
+
       // Check if the other participant has read this message
       const hasRead = message.read_receipts?.some(
         rr => rr.user_id === otherParticipant.user_id
       );
-      
+
       return hasRead ? 'read' : 'delivered';
     }
 
@@ -864,20 +864,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       const otherParticipants = selectedConversation.participants?.filter(
         p => p.user_id !== currentUser.id && p.is_active
       ) || [];
-      
+
       if (otherParticipants.length === 0) return 'sent';
-      
+
       // Check if all participants have read
       const readCount = message.read_receipts?.filter(rr =>
         otherParticipants.some(p => p.user_id === rr.user_id)
       ).length || 0;
-      
+
       if (readCount === otherParticipants.length) {
         return 'read';
       } else if (readCount > 0) {
         return 'delivered';
       }
-      
+
       return 'delivered'; // Assume delivered when sent
     }
 
@@ -887,7 +887,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Render read receipt checkmarks (WhatsApp-style)
   const renderReadReceipts = (message: Message) => {
     const status = getReadReceiptStatus(message);
-    
+
     if (status === 'sent') {
       // One white checkmark
       return (
@@ -928,12 +928,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       const arrayBuffer = await audioBlob.arrayBuffer();
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
       const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-      
+
       const rawData = audioBuffer.getChannelData(0); // Get first channel
       const samples = 50; // Number of bars in waveform (like WhatsApp)
       const blockSize = Math.floor(rawData.length / samples);
       const filteredData: number[] = [];
-      
+
       for (let i = 0; i < samples; i++) {
         const blockStart = blockSize * i;
         let sum = 0;
@@ -942,13 +942,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         }
         filteredData.push(sum / blockSize);
       }
-      
+
       // Normalize to 0-1 range
       const max = Math.max(...filteredData);
       if (max > 0) {
         return filteredData.map(value => value / max);
       }
-      
+
       return filteredData;
     } catch (error) {
       // Return a simple animated waveform as fallback
@@ -982,7 +982,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         p_message_id: messageId,
         p_user_id: currentUser.id
       });
-      
+
       // Log first chunk data format for debugging
       if (chunksData && chunksData.length > 0) {
         const firstChunk = chunksData[0];
@@ -998,13 +998,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       // Sort chunks by chunk_number and combine them
       const sortedChunks = chunksData.sort((a: any, b: any) => a.chunk_number - b.chunk_number);
-      
+
       // Convert chunks back to binary data (supports both base64 and hex)
       const binaryChunks = sortedChunks.map((chunk: any) => {
         try {
           // Get chunk data
           let data = chunk.chunk_data || '';
-          
+
           // Handle different data formats
           if (typeof data !== 'string') {
             // If it's already binary/array, return as is
@@ -1014,47 +1014,47 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             // Try to convert to string
             data = String(data);
           }
-          
+
           // Clean the data (preserve original for fallback)
           const originalData = data;
           data = data.trim().replace(/\s/g, '');
-          
+
           // Validate data exists
           if (!data || data.length === 0) {
             throw new Error('Empty chunk data');
           }
-          
+
           // Helper function to convert hex to bytes
           // PostgreSQL BYTEA returns hex with 'x' prefix (e.g., 'x476b5866...')
           const hexToBytes = (hexStr: string): Uint8Array => {
             if (!hexStr || typeof hexStr !== 'string') {
               throw new Error('Invalid hex string input');
             }
-            
+
             // PostgreSQL BYTEA hex format starts with 'x' followed by hex digits
             // Remove the 'x' prefix if present
             let hexData = hexStr.trim();
-            
+
             // Handle PostgreSQL BYTEA hex format (starts with 'x')
             if (hexData.startsWith('x') || hexData.startsWith('\\x')) {
               hexData = hexData.substring(hexData.startsWith('\\x') ? 2 : 1);
             } else if (hexData.startsWith('0x')) {
               hexData = hexData.substring(2);
             }
-            
+
             // Remove any non-hex characters (spaces, newlines, etc.)
             hexData = hexData.replace(/[^0-9a-fA-F]/g, '');
-            
+
             if (hexData.length === 0) {
               throw new Error('No valid hex data after cleaning');
             }
-            
+
             // Ensure even length for hex pairs
             if (hexData.length % 2 !== 0) {
               // Pad with leading zero
               hexData = '0' + hexData;
             }
-            
+
             // Convert hex to binary
             const bytes = new Uint8Array(hexData.length / 2);
             for (let i = 0; i < hexData.length; i += 2) {
@@ -1065,27 +1065,27 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               }
               bytes[i / 2] = byteValue;
             }
-            
+
             return bytes;
           };
-          
+
           // PostgreSQL BYTEA returns hex with 'x' prefix, so prioritize hex detection
           // Check for 'x' prefix first (PostgreSQL BYTEA hex format)
           const hasHexPrefix = data.startsWith('x') || data.startsWith('\\x');
           const has0xPrefix = data.startsWith('0x');
-          
+
           let bytes: Uint8Array;
-          
+
           // If it starts with 'x' or '\\x', it's definitely PostgreSQL BYTEA hex format
           if (hasHexPrefix) {
             try {
               bytes = hexToBytes(data);
-              
+
               // Check if the decoded bytes are actually a base64 string
               // (This happens when base64 was stored as text in BYTEA, then retrieved as hex)
               const decodedString = String.fromCharCode(...bytes.slice(0, Math.min(100, bytes.length)));
               const looksLikeBase64 = /^[A-Za-z0-9+/=\s]*$/.test(decodedString) && decodedString.length > 10;
-              
+
               if (looksLikeBase64) {
                 // The hex data is actually a base64 string encoded as hex
                 // Decode hex to get base64 string, then decode base64 to get actual bytes
@@ -1093,7 +1093,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 const base64Cleaned = base64String.replace(/[^A-Za-z0-9+/=]/g, '');
                 const padding = base64Cleaned.length % 4;
                 const base64Padded = padding ? base64Cleaned + '='.repeat(4 - padding) : base64Cleaned;
-                
+
                 try {
                   const binaryString = atob(base64Padded);
                   bytes = new Uint8Array(binaryString.length);
@@ -1129,13 +1129,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           } else {
             // Try base64 first (original format)
             let base64Data = data.replace(/[^A-Za-z0-9+/=]/g, '');
-            
+
             // Ensure proper padding
             const padding = base64Data.length % 4;
             if (padding) {
               base64Data += '='.repeat(4 - padding);
             }
-            
+
             try {
               const binaryString = atob(base64Data);
               bytes = new Uint8Array(binaryString.length);
@@ -1151,7 +1151,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               }
             }
           }
-          
+
           return bytes;
         } catch (chunkError) {
           throw new Error(`Failed to process chunk ${chunk.chunk_number}: ${chunkError instanceof Error ? chunkError.message : 'Unknown error'}`);
@@ -1160,11 +1160,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       // Combine all chunks into a single Uint8Array
       const totalLength = binaryChunks.reduce((sum: number, chunk: Uint8Array) => sum + chunk.length, 0);
-      
+
       if (totalLength === 0) {
         throw new Error('No valid audio data found in chunks');
       }
-      
+
       const combinedArray = new Uint8Array(totalLength);
       let offset = 0;
       for (const chunk of binaryChunks) {
@@ -1175,37 +1175,37 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
 
       // Validate the audio data - check for WebM header (starts with 0x1A 0x45 0xDF 0xA3)
-      const hasWebMHeader = combinedArray.length >= 4 && 
-        combinedArray[0] === 0x1A && 
-        combinedArray[1] === 0x45 && 
-        combinedArray[2] === 0xDF && 
+      const hasWebMHeader = combinedArray.length >= 4 &&
+        combinedArray[0] === 0x1A &&
+        combinedArray[1] === 0x45 &&
+        combinedArray[2] === 0xDF &&
         combinedArray[3] === 0xA3;
-      
+
       // Log first bytes for debugging
       if (combinedArray.length > 0) {
         const firstBytes = Array.from(combinedArray.slice(0, 16))
           .map(b => '0x' + b.toString(16).padStart(2, '0'))
           .join(' ');
       }
-      
+
       if (!hasWebMHeader && combinedArray.length > 0) {
         // Try with different MIME type - maybe it's not WebM
       }
 
       // Create blob from combined data
       const audioBlob = new Blob([combinedArray], { type: 'audio/webm' });
-      
+
       // Validate blob size
       if (audioBlob.size === 0) {
         throw new Error('Created audio blob is empty');
       }
-      
+
       const audioUrl = URL.createObjectURL(audioBlob);
 
       // Create audio element and play
       const audio = new Audio(audioUrl);
       audio.preload = 'metadata';
-      
+
       // Set a timeout to detect if metadata loading fails
       const metadataTimeout = setTimeout(() => {
         if (!audio.readyState || audio.readyState < 2) {
@@ -1215,7 +1215,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           URL.revokeObjectURL(audioUrl);
         }
       }, 5000);
-      
+
       audio.onloadedmetadata = () => {
         clearTimeout(metadataTimeout);
         setPlayingVoiceId(messageId);
@@ -1254,7 +1254,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       audio.onerror = (e) => {
         clearTimeout(metadataTimeout);
-        const errorMessage = audio.error 
+        const errorMessage = audio.error
           ? `Audio error code: ${audio.error.code} (${audio.error.message || 'Unknown error'})`
           : 'Unknown audio playback error';
         toast.error('Failed to play voice message. The audio file may be corrupted or in an unsupported format.');
@@ -1279,7 +1279,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Reaction functions
   const handleAddReaction = async (messageId: number, emoji: string) => {
     if (!currentUser) return;
-    
+
     try {
       const { data, error } = await supabase.rpc('update_message_reaction', {
         message_id_param: messageId,
@@ -1287,18 +1287,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         emoji_param: emoji,
         action_param: 'add'
       });
-      
+
       if (error) throw error;
-      
+
       // Update local message state
-      setMessages(prev => 
-        prev.map(msg => 
-          msg.id === messageId 
+      setMessages(prev =>
+        prev.map(msg =>
+          msg.id === messageId
             ? { ...msg, reactions: data }
             : msg
         )
       );
-      
+
       setShowReactionPicker(null);
       setReactingMessageId(null);
     } catch (error) {
@@ -1308,7 +1308,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
   const handleRemoveReaction = async (messageId: number, emoji: string) => {
     if (!currentUser) return;
-    
+
     try {
       const { data, error } = await supabase.rpc('update_message_reaction', {
         message_id_param: messageId,
@@ -1316,13 +1316,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         emoji_param: emoji,
         action_param: 'remove'
       });
-      
+
       if (error) throw error;
-      
+
       // Update local message state
-      setMessages(prev => 
-        prev.map(msg => 
-          msg.id === messageId 
+      setMessages(prev =>
+        prev.map(msg =>
+          msg.id === messageId
             ? { ...msg, reactions: data }
             : msg
         )
@@ -1346,7 +1346,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
   // Check if current user has reacted with specific emoji
   const hasUserReacted = (reactions: MessageReaction[], emoji: string) => {
-    return reactions.some(reaction => 
+    return reactions.some(reaction =>
       reaction.user_id === currentUser?.id && reaction.emoji === emoji
     );
   };
@@ -1354,7 +1354,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const formatMessageTime = (timestamp: string): string => {
     const date = new Date(timestamp);
     const now = new Date();
-    
+
     if (isToday(date)) {
       return format(date, 'HH:mm');
     } else if (isYesterday(date)) {
@@ -1369,8 +1369,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Helper function to check if two dates are on the same day
   const isSameDay = (date1: Date, date2: Date): boolean => {
     return date1.getFullYear() === date2.getFullYear() &&
-           date1.getMonth() === date2.getMonth() &&
-           date1.getDate() === date2.getDate();
+      date1.getMonth() === date2.getMonth() &&
+      date1.getDate() === date2.getDate();
   };
 
   // Helper function to format date separator
@@ -1378,7 +1378,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     const date = new Date(timestamp);
     const now = new Date();
     const diffInDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
-    
+
     if (isToday(date)) {
       return 'Today';
     } else if (isYesterday(date)) {
@@ -1413,7 +1413,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   };
 
   const navigateMedia = (direction: 'prev' | 'next') => {
-    const newIndex = direction === 'next' 
+    const newIndex = direction === 'next'
       ? (selectedMediaIndex + 1) % conversationMedia.length
       : (selectedMediaIndex - 1 + conversationMedia.length) % conversationMedia.length;
     setSelectedMediaIndex(newIndex);
@@ -1437,8 +1437,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       return `${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
     } else {
       // For longer periods, show the actual date/time
-      return lastOnlineDate.toLocaleDateString('en-US', { 
-        month: 'short', 
+      return lastOnlineDate.toLocaleDateString('en-US', {
+        month: 'short',
         day: 'numeric',
         hour: '2-digit',
         minute: '2-digit'
@@ -1469,18 +1469,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       const unavailableTimes = employeeData.unavailable_times || [];
       const unavailableRanges = employeeData.unavailable_ranges || [];
-      
+
       const now = new Date();
       const currentTime = now.getHours() * 60 + now.getMinutes();
 
       // Check for specific time slots on today's date
       const todayTimes = unavailableTimes.filter((time: any) => time.date === todayString);
-      
+
       // Check if current time is within any unavailable time slot
       for (const time of todayTimes) {
         const startTime = parseInt(time.startTime.split(':')[0]) * 60 + parseInt(time.startTime.split(':')[1]);
         const endTime = parseInt(time.endTime.split(':')[0]) * 60 + parseInt(time.endTime.split(':')[1]);
-        
+
         if (currentTime >= startTime && currentTime <= endTime) {
           setIsEmployeeUnavailable(true);
           setUnavailabilityReason(time.reason || 'Unavailable');
@@ -1490,7 +1490,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
 
       // Check for date ranges that include today
-      const todayRanges = unavailableRanges.filter((range: any) => 
+      const todayRanges = unavailableRanges.filter((range: any) =>
         todayString >= range.startDate && todayString <= range.endDate
       );
 
@@ -1547,12 +1547,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
         // Check for specific time slots on today's date
         const todayTimes = unavailableTimes.filter((time: any) => time.date === todayString);
-        
+
         // Check if current time is within any unavailable time slot
         for (const time of todayTimes) {
           const startTime = parseInt(time.startTime.split(':')[0]) * 60 + parseInt(time.startTime.split(':')[1]);
           const endTime = parseInt(time.endTime.split(':')[0]) * 60 + parseInt(time.endTime.split(':')[1]);
-          
+
           if (currentTime >= startTime && currentTime <= endTime) {
             availabilityMap[employee.display_name] = true;
             return;
@@ -1560,7 +1560,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         }
 
         // Check for date ranges that include today
-        const todayRanges = unavailableRanges.filter((range: any) => 
+        const todayRanges = unavailableRanges.filter((range: any) =>
           todayString >= range.startDate && todayString <= range.endDate
         );
 
@@ -1580,19 +1580,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     if (conversation.title && conversation.title.trim() !== '') {
       return conversation.title;
     }
-    
+
     // For direct conversations (exactly 2 participants)
     if (conversation.type === 'direct' && conversation.participants && conversation.participants.length === 2) {
       const otherParticipant = conversation.participants.find(p => p.user_id !== currentUser?.id);
       if (otherParticipant?.user) {
-        const name = otherParticipant.user.tenants_employee?.official_name || 
-                     otherParticipant.user.tenants_employee?.display_name || 
-                     otherParticipant.user.full_name || 
-                     'Unknown User';
+        const name = otherParticipant.user.tenants_employee?.official_name ||
+          otherParticipant.user.tenants_employee?.display_name ||
+          otherParticipant.user.full_name ||
+          'Unknown User';
         return name;
       }
     }
-    
+
     // For group conversations or if direct chat logic fails
     const participantCount = conversation.participants?.length || 0;
     return `Group Chat (${participantCount} members)`;
@@ -1633,7 +1633,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 console.error('Error fetching employee background photo:', error);
               }
             }
-            
+
             setSelectedEmployee({
               id: otherParticipant.user.employee_id?.toString() || '',
               display_name: employee.display_name || name,
@@ -1660,12 +1660,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             title={`View ${name}'s profile`}
           >
             {renderUserAvatar({
-          userId: avatarKey,
-          name,
-          photoUrl,
-          sizeClass: 'w-14 h-14',
+              userId: avatarKey,
+              name,
+              photoUrl,
+              sizeClass: 'w-14 h-14',
               borderClass: '',
-          textClass: 'text-lg',
+              textClass: 'text-lg',
             })}
           </button>
         );
@@ -1696,7 +1696,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     const renderGroupIcon = () => {
       const iconSize = size === 'xlarge' ? 'w-16 h-16' : size === 'large' ? 'w-14 h-14' : 'w-10 h-10';
       const iconInnerSize = size === 'xlarge' ? 'w-8 h-8' : size === 'large' ? 'w-7 h-7' : 'w-5 h-5';
-      
+
       if (conversation.icon_url) {
         return (
           <img
@@ -1777,14 +1777,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         }
 
         setCurrentUser(userData as unknown as User);
-        
+
         // Set superuser status (check for true, 'true', or 1)
         const superuserStatus = (userData as any).is_superuser === true || (userData as any).is_superuser === 'true' || (userData as any).is_superuser === 1;
         setIsSuperUser(superuserStatus);
         // Set chat background image URL if available
         const backgroundUrl = (userData as any)?.tenants_employee?.chat_background_image_url;
         setChatBackgroundImageUrl(backgroundUrl || null);
-        
+
         // Wait for data to be loaded before connecting WebSocket
         // Initialize WebSocket connection after user data is set
         if (userData && isOpen) {
@@ -1824,13 +1824,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           websocketService.onTyping((data) => {
             console.log('⌨️ Typing event received:', data);
             const { conversation_id, user_id, user_name, is_typing } = data;
-            
+
             // Don't show typing indicator for own messages
             if (user_id === currentUser?.id) {
               console.log('⌨️ Ignoring own typing event');
               return;
             }
-            
+
             if (is_typing) {
               console.log('⌨️ User is typing:', user_name);
               setTypingUsers(prev => {
@@ -1838,7 +1838,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 newMap.set(conversation_id, { userId: user_id, userName: user_name });
                 return newMap;
               });
-              
+
               // Clear typing indicator after 3 seconds
               setTimeout(() => {
                 setTypingUsers(prev => {
@@ -1933,7 +1933,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
 
       const conversationIds = userConversations?.map(c => c.conversation_id) || [];
-      
+
       if (conversationIds.length === 0) {
         return [];
       }
@@ -1942,7 +1942,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Try with icon_url first, fallback without it if column doesn't exist
       let conversationsData: any = null;
       let error: any = null;
-      
+
       // First attempt: try with icon_url
       const queryWithIcon = supabase
         .from('conversations')
@@ -2048,7 +2048,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         const resultWithoutIcon = await queryWithoutIcon;
         conversationsData = resultWithoutIcon.data;
         error = resultWithoutIcon.error;
-        
+
         // Add icon_url as null for all conversations if column doesn't exist
         if (conversationsData) {
           conversationsData = conversationsData.map((conv: any) => ({
@@ -2069,7 +2069,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           const userParticipant = conv.conversation_participants.find(
             (p: ConversationParticipant) => p.user_id === currentUser.id
           );
-          
+
           let unreadCount = 0;
           if (userParticipant) {
             const { data: unreadMessages } = await supabase
@@ -2079,22 +2079,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               .gt('sent_at', userParticipant.last_read_at)
               .neq('sender_id', currentUser.id)
               .eq('is_deleted', false);
-            
+
             unreadCount = unreadMessages?.length || 0;
           }
 
           // Remove duplicate participants and filter only active ones (both participant and user must be active)
           const activeParticipants = conv.conversation_participants.filter((participant: any) => {
             const user = participant.user;
-            const hasValidName = (user?.full_name || user?.tenants_employee?.display_name) && 
-                               (user?.full_name || user?.tenants_employee?.display_name).length > 1;
+            const hasValidName = (user?.full_name || user?.tenants_employee?.display_name) &&
+              (user?.full_name || user?.tenants_employee?.display_name).length > 1;
             const isNotExplicitlyInactive = user?.is_active !== false;
-            return participant.is_active && 
-                   isNotExplicitlyInactive && 
-                   hasValidName;
+            return participant.is_active &&
+              isNotExplicitlyInactive &&
+              hasValidName;
           });
           const uniqueParticipants = activeParticipants.filter(
-            (participant: any, index: number, self: any[]) => 
+            (participant: any, index: number, self: any[]) =>
               index === self.findIndex(p => p.user_id === participant.user_id)
           );
 
@@ -2158,7 +2158,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
 
       const conversationIds = userConversations?.map(c => c.conversation_id) || [];
-      
+
       if (conversationIds.length === 0) {
         setConversations([]);
         return;
@@ -2168,7 +2168,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Try with icon_url first, fallback without it if column doesn't exist
       let conversationsData: any = null;
       let error: any = null;
-      
+
       // First attempt: try with icon_url
       const queryWithIcon = supabase
         .from('conversations')
@@ -2275,7 +2275,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         const resultWithoutIcon = await queryWithoutIcon;
         conversationsData = resultWithoutIcon.data;
         error = resultWithoutIcon.error;
-        
+
         // Add icon_url as null for all conversations if column doesn't exist
         if (conversationsData) {
           conversationsData = conversationsData.map((conv: any) => ({
@@ -2314,7 +2314,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             const userParticipant = conv.conversation_participants.find(
               (p: ConversationParticipant) => p.user_id === currentUser.id
             );
-            
+
             let unreadCount = 0;
             if (userParticipant) {
               const { data: unreadMessages } = await supabase
@@ -2324,22 +2324,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 .gt('sent_at', userParticipant.last_read_at)
                 .neq('sender_id', currentUser.id)
                 .eq('is_deleted', false);
-              
+
               unreadCount = unreadMessages?.length || 0;
             }
 
             // Remove duplicate participants and filter only active ones (both participant and user must be active)
             const activeParticipants = conv.conversation_participants.filter((participant: any) => {
               const user = participant.user;
-              const hasValidName = (user?.full_name || user?.tenants_employee?.display_name) && 
-                                 (user?.full_name || user?.tenants_employee?.display_name).length > 1;
+              const hasValidName = (user?.full_name || user?.tenants_employee?.display_name) &&
+                (user?.full_name || user?.tenants_employee?.display_name).length > 1;
               const isNotExplicitlyInactive = user?.is_active !== false;
-              return participant.is_active && 
-                     isNotExplicitlyInactive && 
-                     hasValidName;
+              return participant.is_active &&
+                isNotExplicitlyInactive &&
+                hasValidName;
             });
             const uniqueParticipants = activeParticipants.filter(
-              (participant: any, index: number, self: any[]) => 
+              (participant: any, index: number, self: any[]) =>
                 index === self.findIndex(p => p.user_id === participant.user_id)
             );
 
@@ -2444,10 +2444,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       if (messagesNeedingReplyFetch.length > 0) {
         const replyMessageIds = messagesNeedingReplyFetch.map((msg: any) => msg.reply_to_message_id);
         const uniqueReplyIds = [...new Set(replyMessageIds.filter(id => id != null))];
-        
+
         if (uniqueReplyIds.length > 0) {
           console.log('🔍 [Reply Debug] Fetching reply messages for IDs:', uniqueReplyIds);
-          
+
           const { data: fetchedReplies, error: replyFetchError } = await supabase
             .from('messages')
             .select(`
@@ -2465,17 +2465,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               )
             `)
             .in('id', uniqueReplyIds);
-          
+
           if (!replyFetchError && fetchedReplies && fetchedReplies.length > 0) {
             // Create a map of reply messages by ID
             const replyMap = new Map(fetchedReplies.map((reply: any) => [reply.id, reply]));
-            
+
             console.log('🔍 [Reply Debug] Fetched reply messages:', {
               count: fetchedReplies.length,
               replyIds: fetchedReplies.map((r: any) => r.id),
               replyMapSize: replyMap.size
             });
-            
+
             // Attach fetched replies to messages
             processedMessages = processedMessages.map((msg: any) => {
               if (msg._needs_reply_fetch && msg.reply_to_message_id) {
@@ -2513,7 +2513,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         const messageIds = processedMessages.map(m => m.id);
         // Filter out undefined/null message IDs
         const validMessageIds = messageIds.filter(id => id != null && id !== undefined);
-        
+
         if (validMessageIds.length === 0) {
           setMessages(processedMessages as unknown as Message[]);
           return;
@@ -2531,7 +2531,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           if (replyMessage && Array.isArray(replyMessage)) {
             replyMessage = replyMessage.length > 0 ? replyMessage[0] : null;
           }
-          
+
           return {
             ...msg,
             reply_to_message: replyMessage,
@@ -2540,39 +2540,39 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         });
 
         setMessages(messagesWithReceipts as unknown as Message[]);
-        
+
         // Mark messages as read for current user when viewing conversation
         await markMessagesAsRead(messageIds, conversationId);
       } else {
         setMessages((processedMessages || []) as unknown as Message[]);
       }
-      
+
       // Mark conversation as read
       if (currentUser) {
         await supabase.rpc('mark_conversation_as_read', {
           conv_id: conversationId,
           user_uuid: currentUser.id
         });
-        
+
         // Update local unread count
-        setConversations(prev => 
-          prev.map(conv => 
-            conv.id === conversationId 
+        setConversations(prev =>
+          prev.map(conv =>
+            conv.id === conversationId
               ? { ...conv, unread_count: 0 }
               : conv
           )
         );
       }
-      
+
       // Ensure auto-scroll is enabled
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
       setNewMessagesCount(0);
-      
+
       // Find first unread message (works for both direct chats and group chats)
       const firstUnreadMessage = findFirstUnreadMessage();
       firstUnreadMessageIdRef.current = firstUnreadMessage?.id || null;
-      
+
       // Force scroll after messages are loaded (works for both desktop and mobile)
       // If there are unread messages, scroll to the first unread message
       // Otherwise, scroll to bottom
@@ -2614,7 +2614,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Fetch all users for contacts
   const fetchAllUsers = useCallback(async () => {
     if (!currentUser) return;
-    
+
     try {
       const { data: usersData, error } = await supabase
         .from('users')
@@ -2647,22 +2647,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Remove duplicates and filter out users without basic info
       const uniqueUsers = (usersData || []).filter((user, index, self) => {
         // Check if user has either full_name or display_name from employee
-        const empData = user.tenants_employee ? 
-          (Array.isArray(user.tenants_employee) ? user.tenants_employee[0] : user.tenants_employee) : 
+        const empData = user.tenants_employee ?
+          (Array.isArray(user.tenants_employee) ? user.tenants_employee[0] : user.tenants_employee) :
           null;
         const hasName = user.full_name || empData?.display_name;
         const isActive = (user as any).is_active === true;
-        
+
         // Include users with proper names, but exclude those explicitly marked as inactive
         const isValidName = hasName && hasName.length > 1; // Filter out single-letter names
         const isNotExplicitlyInactive = (user as any).is_active !== false; // Include if not explicitly false
         const shouldInclude = user.id && isValidName && isNotExplicitlyInactive && index === self.findIndex(u => u.id === user.id);
-        
+
         return shouldInclude;
       });
 
       setAllUsers(uniqueUsers as unknown as User[]);
-      
+
       // Request online status for all users if WebSocket is already connected
       if (websocketService.isSocketConnected() && uniqueUsers.length > 0) {
         const userIds = uniqueUsers.map(u => String(u.id));
@@ -2679,7 +2679,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     try {
       setIsUploadingFile(true);
       setUploadProgress(0);
-      
+
       // Validate file type first
       const allowedTypes = [
         'image/jpeg', 'image/png', 'image/gif', 'image/webp',
@@ -2687,28 +2687,28 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         'text/plain', 'application/zip', 'application/x-rar-compressed',
         'video/mp4', 'video/webm', 'video/ogg', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska'
       ];
-      
+
       if (!allowedTypes.includes(file.type)) {
         toast.error('File type not supported. Please upload images, videos, documents, or text files.');
         return null;
       }
-      
-      // Validate file size - videos have higher limit (200MB), other files 15MB
-      // NOTE: Supabase Free tier has a 50MB limit. Pro tier allows up to 5GB per file.
-      // If you get upload errors, reduce the video limit to match your Supabase plan.
+
+      // Validate file size - no restriction for videos, other files 15MB
       const isVideo = file.type.startsWith('video/');
-      const maxSize = isVideo ? 200 * 1024 * 1024 : 15 * 1024 * 1024; // 200MB for videos, 15MB for others
-      const maxSizeMB = isVideo ? 200 : 15;
-      
-      if (file.size > maxSize) {
-        toast.error(`File size must be less than ${maxSizeMB}MB`);
-        return null;
+
+      // Only check size for non-video files
+      if (!isVideo) {
+        const maxSize = 15 * 1024 * 1024; // 15MB for non-video files
+        if (file.size > maxSize) {
+          toast.error('File size must be less than 15MB');
+          return null;
+        }
       }
-      
+
       // Generate unique filename
       const fileExt = file.name.split('.').pop();
       const fileName = `rmq_${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
-      
+
       // Upload to Supabase storage
       const { data, error } = await supabase.storage
         .from('RMQ-MESSAGES')
@@ -2717,34 +2717,45 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           upsert: false,
           contentType: file.type
         });
-      
+
       if (error) {
         console.error('Error uploading file:', error);
-        
+
+        // Check for 413 Payload too large error (type-safe check)
+        const errorObj = error as any;
+        const isPayloadTooLarge =
+          errorObj.statusCode === '413' ||
+          errorObj.statusCode === 413 ||
+          errorObj.error === 'Payload too large' ||
+          error.message?.includes('exceeded the maximum allowed size') ||
+          error.message?.includes('Payload too large');
+
         // Provide more specific error messages
-        if (error.message?.includes('Bucket not found') || error.message?.includes('does not exist')) {
+        if (isPayloadTooLarge) {
+          toast.error(`File is too large for the storage bucket. ${isVideo ? 'Please check your Supabase bucket file size limit settings.' : 'Files must be less than 15MB.'}`);
+        } else if (error.message?.includes('Bucket not found') || error.message?.includes('does not exist')) {
           toast.error('Storage bucket not found. Please check bucket configuration.');
         } else if (error.message?.includes('new row violates row-level security') || error.message?.includes('permission')) {
           toast.error('Permission denied. Please check bucket policies.');
         } else if (error.message?.includes('NetworkError') || error.message?.includes('Failed to fetch')) {
           toast.error('Network error. Please check your connection and try again.');
         } else if (error.message?.includes('File size') || error.message?.includes('too large')) {
-          toast.error(`File is too large. ${isVideo ? 'Videos must be less than 100MB.' : 'Files must be less than 15MB.'}`);
+          toast.error(`File is too large. ${isVideo ? 'Please check your Supabase bucket settings.' : 'Files must be less than 15MB.'}`);
         } else {
-          toast.error(`Failed to upload file: ${error.message || 'Unknown error'}`);
+          toast.error(`Failed to upload file: ${error.message || errorObj.error || 'Unknown error'}`);
         }
         return null;
       }
-      
+
       // Get public URL
       const { data: { publicUrl } } = supabase.storage
         .from('RMQ-MESSAGES')
         .getPublicUrl(fileName);
-      
+
       setUploadProgress(100);
       toast.success('File uploaded successfully');
       return publicUrl;
-      
+
     } catch (error: any) {
       console.error('Unexpected error uploading file:', error);
       toast.error(`Failed to upload file: ${error?.message || 'Unknown error'}`);
@@ -2764,7 +2775,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
     try {
       setIsUploadingBackground(true);
-      
+
       // Generate unique filename
       const fileExt = file.name.split('.').pop();
       const fileName = `chat_bg_${currentUser.employee_id}_${Date.now()}.${fileExt}`;
@@ -2776,7 +2787,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           upsert: false,
           contentType: file.type
         });
-      
+
       if (error) {
         toast.error('Failed to upload background image');
         return null;
@@ -2790,16 +2801,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .from('tenants_employee')
         .update({ chat_background_image_url: publicUrl })
         .eq('id', currentUser.employee_id);
-      
+
       if (updateError) {
         toast.error('Failed to save background image URL');
         return null;
       }
-      
+
       // Update local state
       setChatBackgroundImageUrl(publicUrl);
       toast.success('Background image uploaded successfully');
-      
+
       return publicUrl;
     } catch (error) {
       toast.error('Failed to upload background image');
@@ -2813,21 +2824,21 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const handleBackgroundImageInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    
+
     // Validate file type
     if (!file.type.startsWith('image/')) {
       toast.error('Please upload an image file');
       return;
     }
-    
+
     // Validate file size (max 10MB)
     if (file.size > 10 * 1024 * 1024) {
       toast.error('Image size must be less than 10MB');
       return;
     }
-    
+
     await uploadChatBackgroundImage(file);
-    
+
     // Reset input
     if (backgroundImageInputRef.current) {
       backgroundImageInputRef.current.value = '';
@@ -2843,18 +2854,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
     try {
       setIsUploadingBackground(true);
-      
+
       // Update database to set chat_background_image_url to null
       const { error: updateError } = await supabase
         .from('tenants_employee')
         .update({ chat_background_image_url: null })
         .eq('id', currentUser.employee_id);
-      
+
       if (updateError) {
         toast.error('Failed to reset background');
         return;
       }
-      
+
       // Update local state
       setChatBackgroundImageUrl(null);
       toast.success('Background reset to default');
@@ -2869,13 +2880,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    
+
     const fileUrl = await uploadFile(file);
     if (fileUrl) {
       // Send message with attachment
       await sendMessageWithAttachment(file, fileUrl);
     }
-    
+
     // Reset file input
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
@@ -2886,14 +2897,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     // Only handle paste if we have a selected conversation
     if (!selectedConversation || !currentUser) return;
-    
+
     const items = e.clipboardData?.items;
     if (!items) return;
 
     // Check for image or video files in clipboard
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
-      
+
       // Check if it's an image
       if (item.type.indexOf('image') !== -1) {
         e.preventDefault();
@@ -2908,7 +2919,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         }
         return;
       }
-      
+
       // Check if it's a video
       if (item.type.indexOf('video') !== -1) {
         e.preventDefault();
@@ -2924,7 +2935,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         return;
       }
     }
-    
+
     // If no image/video found, allow normal paste behavior for text
   };
 
@@ -2932,7 +2943,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    
+
     // Only show drag indicator if we have a selected conversation
     if (selectedConversation && currentUser) {
       setIsDragOver(true);
@@ -2942,13 +2953,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    
+
     // Only hide drag indicator if we're actually leaving the main container
     // Check if we're actually leaving (not just entering a child element)
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX;
     const y = e.clientY;
-    
+
     // Check if mouse is outside the container bounds
     if (x <= rect.left || x >= rect.right || y <= rect.top || y >= rect.bottom) {
       setIsDragOver(false);
@@ -2959,23 +2970,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     e.preventDefault();
     e.stopPropagation();
     setIsDragOver(false);
-    
+
     // Only handle drop if we have a selected conversation
     if (!selectedConversation || !currentUser) return;
-    
+
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
-    
+
     // Filter for images and videos only
-    const mediaFiles = files.filter(file => 
+    const mediaFiles = files.filter(file =>
       file.type.startsWith('image/') || file.type.startsWith('video/')
     );
-    
+
     if (mediaFiles.length === 0) {
       toast.error('Please drop only images or videos');
       return;
     }
-    
+
     // Process each file (upload and send)
     for (const file of mediaFiles) {
       const fileUrl = await uploadFile(file);
@@ -2988,17 +2999,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Forward message to another conversation
   const forwardMessage = async (targetConversationId: number) => {
     if (!messageToForward || !currentUser) return;
-    
+
     setIsSending(true);
     try {
       // Prepare message content - include original sender info if forwarding
-      const originalSender = messageToForward.sender?.tenants_employee?.display_name || 
-                           messageToForward.sender?.full_name || 
-                           'Unknown';
-      const forwardContent = messageToForward.content 
+      const originalSender = messageToForward.sender?.tenants_employee?.display_name ||
+        messageToForward.sender?.full_name ||
+        'Unknown';
+      const forwardContent = messageToForward.content
         ? `Forwarded from ${originalSender}: ${messageToForward.content}`
         : `Forwarded from ${originalSender}`;
-      
+
       // Determine message type
       let messageType: 'text' | 'file' | 'image' | 'system' = 'text';
       if (messageToForward.message_type === 'image' || (messageToForward.attachment_type && messageToForward.attachment_type.startsWith('image/'))) {
@@ -3010,7 +3021,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       } else if (messageToForward.message_type === 'voice') {
         messageType = 'text'; // Voice messages can't be forwarded as voice, convert to text
       }
-      
+
       // Send via WebSocket for real-time delivery
       if (websocketService.isSocketConnected()) {
         // Only send attachment if it's not a voice message
@@ -3027,7 +3038,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           );
         }
       }
-      
+
       // Save to database
       const { data: messageData, error } = await supabase
         .from('messages')
@@ -3066,9 +3077,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           )
         `)
         .single();
-      
+
       if (error) throw error;
-      
+
       // If WebSocket is not connected, trigger push notifications
       if (!websocketService.isSocketConnected()) {
         try {
@@ -3089,13 +3100,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           // Don't throw - this is a background operation
         }
       }
-      
+
       // Update the target conversation's last_message_at if we're viewing it
       if (selectedConversation?.id === targetConversationId) {
         // Refresh messages for the target conversation
         await fetchMessages(targetConversationId);
       }
-      
+
       toast.success('Message forwarded successfully');
       setShowForwardModal(false);
       setMessageToForward(null);
@@ -3110,7 +3121,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Send message with attachment
   const sendMessageWithAttachment = async (file: File, fileUrl: string) => {
     if (!selectedConversation || !currentUser) return;
-    
+
     setIsSending(true);
     try {
       // Determine message type based on file type
@@ -3118,19 +3129,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       if (file.type.startsWith('image/')) {
         messageType = 'image';
       }
-      
+
       // Send via WebSocket for real-time delivery
       if (websocketService.isSocketConnected()) {
         websocketService.sendMessage(
-          selectedConversation.id, 
-          file.name, 
-          messageType, 
-          fileUrl, 
-          file.type, 
+          selectedConversation.id,
+          file.name,
+          messageType,
+          fileUrl,
+          file.type,
           file.size
         );
       }
-      
+
       // Save to database with attachment
       const { data: messageData, error } = await supabase
         .from('messages')
@@ -3169,7 +3180,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           )
         `)
         .single();
-      
+
       if (error) throw error;
 
       // If WebSocket is not connected, trigger push notifications via backend API
@@ -3192,7 +3203,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           // Don't throw - this is a background operation
         }
       }
-      
+
       // Only add message optimistically if WebSocket is NOT connected
       // If WebSocket IS connected, let the WebSocket handler add it to avoid duplicates
       if (!websocketService.isSocketConnected()) {
@@ -3209,7 +3220,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           voice_waveform: undefined,
           is_voice_message: false,
         };
-        
+
         setMessages(prev => {
           // Check if message already exists (shouldn't happen, but safety check)
           const exists = prev.some(m => m.id === enhancedMessage.id);
@@ -3224,23 +3235,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
         });
       }
-      
+
       // Always scroll to bottom when user sends a message
       setTimeout(() => scrollToBottom('smooth'), 100);
-      
+
       // Update conversation list immediately
-      setConversations(prev => 
-        prev.map(conv => 
+      setConversations(prev =>
+        prev.map(conv =>
           conv.id === selectedConversation.id
             ? {
-                ...conv,
-                last_message_at: messageData.sent_at,
-                last_message_preview: `📎 ${file.name}`
-              }
+              ...conv,
+              last_message_at: messageData.sent_at,
+              last_message_preview: `📎 ${file.name}`
+            }
             : conv
         ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())
       );
-      
+
     } catch (error) {
       toast.error('Failed to send attachment');
     } finally {
@@ -3252,7 +3263,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const handleMessageKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Check if mobile (window width < 1024px for lg breakpoint)
     const isMobile = typeof window !== 'undefined' && window.innerWidth < 1024;
-    
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       // On mobile, only allow new line, don't send message
@@ -3270,21 +3281,21 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Delete message function
   const handleDeleteMessage = async (messageId: number) => {
     if (!currentUser || !selectedConversation) return;
-    
+
     try {
       // Update message in database to mark as deleted
       const { error } = await supabase
         .from('messages')
         .update({ is_deleted: true })
         .eq('id', messageId);
-      
+
       if (error) throw error;
-      
+
       // Update local state
-      setMessages(prev => prev.map(msg => 
+      setMessages(prev => prev.map(msg =>
         msg.id === messageId ? { ...msg, is_deleted: true, content: 'This message was deleted' } : msg
       ));
-      
+
       toast.success('Message deleted');
     } catch (error) {
       console.error('Error deleting message:', error);
@@ -3295,26 +3306,26 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Edit message function
   const handleEditMessage = async () => {
     if (!messageToEdit || !editingMessageText.trim() || !currentUser) return;
-    
+
     try {
       // Update message in database
       const { error } = await supabase
         .from('messages')
-        .update({ 
+        .update({
           content: editingMessageText.trim(),
           edited_at: new Date().toISOString()
         })
         .eq('id', messageToEdit.id);
-      
+
       if (error) throw error;
-      
+
       // Update local state
-      setMessages(prev => prev.map(msg => 
-        msg.id === messageToEdit.id 
+      setMessages(prev => prev.map(msg =>
+        msg.id === messageToEdit.id
           ? { ...msg, content: editingMessageText.trim(), edited_at: new Date().toISOString() }
           : msg
       ));
-      
+
       setMessageToEdit(null);
       setEditingMessageText('');
       toast.success('Message edited');
@@ -3330,9 +3341,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       await handleEditMessage();
       return;
     }
-    
+
     if (!selectedConversation || !currentUser || !newMessage.trim()) return;
-    
+
     // Debug: Log reply information
     console.log('🔍 [Reply Debug] Sending message with reply:', {
       hasReply: !!messageToReply,
@@ -3340,7 +3351,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       replyMessageContent: messageToReply?.content,
       replyMessageSender: messageToReply?.sender?.tenants_employee?.display_name || messageToReply?.sender?.full_name
     });
-    
+
     // Stop typing indicator
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
@@ -3355,13 +3366,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         false
       );
     }
-    
+
     setIsSending(true);
     try {
       // Send via WebSocket for real-time delivery
       if (websocketService.isSocketConnected()) {
         console.log('🔍 [Reply Debug] Sending via WebSocket with reply_to_message_id:', messageToReply?.id);
-        
+
         // Add optimistic update even when WebSocket is connected so user sees their message immediately with reply preview
         if (messageToReply) {
           // Create optimistic message with reply data
@@ -3388,23 +3399,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             voice_waveform: undefined,
             is_voice_message: false,
           };
-          
+
           console.log('🔍 [Reply Debug] Adding optimistic message with reply (WebSocket connected):', {
             messageId: optimisticMessage.id,
             replyToMessageId: optimisticMessage.reply_to_message_id,
             hasReplyToMessage: !!optimisticMessage.reply_to_message,
             replyContent: optimisticMessage.reply_to_message?.content?.substring(0, 50)
           });
-          
+
           setMessages(prev => {
             const updated = [...prev, optimisticMessage];
             return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
           });
         }
-        
+
         websocketService.sendMessage(
-          selectedConversation.id, 
-          newMessage.trim(), 
+          selectedConversation.id,
+          newMessage.trim(),
           'text',
           undefined,
           undefined,
@@ -3417,7 +3428,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Also save to database
       const replyToMessageId = messageToReply?.id || null;
       console.log('🔍 [Reply Debug] Inserting message to database with reply_to_message_id:', replyToMessageId);
-      
+
       const { data: messageData, error } = await supabase
         .from('messages')
         .insert({
@@ -3454,7 +3465,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         console.error('🔍 [Reply Debug] Error inserting message:', error);
         throw error;
       }
-      
+
       console.log('🔍 [Reply Debug] Message inserted successfully:', {
         messageId: messageData?.id,
         replyToMessageId: (messageData as any)?.reply_to_message_id,
@@ -3507,7 +3518,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             `)
             .eq('id', (messageData as any)?.reply_to_message_id)
             .single();
-          
+
           if (replyData) {
             processedReplyMessage = replyData;
             console.log('🔍 [Reply Debug] ✅ Fetched reply for optimistic update:', {
@@ -3516,13 +3527,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             });
           }
         }
-        
+
         console.log('🔍 [Reply Debug] Adding message optimistically (WebSocket not connected):', {
           messageId: (messageData as any)?.id,
           replyToMessageId: (messageData as any)?.reply_to_message_id,
           hasReplyMessage: !!processedReplyMessage
         });
-        
+
         const enhancedMessage: Message = {
           ...messageData as unknown as Message,
           read_receipts: [],
@@ -3541,14 +3552,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           voice_waveform: undefined,
           is_voice_message: false,
         };
-        
+
         console.log('🔍 [Reply Debug] Enhanced message with reply data:', {
           messageId: enhancedMessage.id,
           replyToMessageId: enhancedMessage.reply_to_message_id,
           hasReplyToMessage: !!enhancedMessage.reply_to_message,
           replyToMessageContent: enhancedMessage.reply_to_message?.content
         });
-        
+
         setMessages(prev => {
           // Check if message already exists (shouldn't happen, but safety check)
           const exists = prev.some(m => m.id === enhancedMessage.id);
@@ -3563,25 +3574,25 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
         });
       }
-      
+
       setNewMessage('');
       console.log('🔍 [Reply Debug] Clearing reply state after sending');
       setMessageToReply(null); // Clear reply after sending
       resetInputHeights();
-      
+
       // Always scroll to bottom when user sends a message
       setTimeout(() => scrollToBottom('smooth'), 100);
-      
+
       // Update conversation list immediately for optimistic UI update
       // The WebSocket handler will also update it when the message comes back, but this ensures immediate feedback
-      setConversations(prev => 
-        prev.map(conv => 
+      setConversations(prev =>
+        prev.map(conv =>
           conv.id === selectedConversation.id
             ? {
-                ...conv,
-                last_message_at: messageData.sent_at,
-                last_message_preview: messageData.content.substring(0, 100)
-              }
+              ...conv,
+              last_message_at: messageData.sent_at,
+              last_message_preview: messageData.content.substring(0, 100)
+            }
             : conv
         ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())
       );
@@ -3593,9 +3604,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             .from('message_read_receipts')
             .select('user_id, read_at')
             .eq('message_id', messageData.id);
-          
-          setMessages(prev => prev.map(msg => 
-            msg.id === messageData.id 
+
+          setMessages(prev => prev.map(msg =>
+            msg.id === messageData.id
               ? { ...msg, read_receipts: receipts || [] }
               : msg
           ));
@@ -3612,16 +3623,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Start direct conversation with a user
   const startDirectConversation = async (userId: string) => {
     if (!currentUser) return;
-    
+
     try {
       // First check if a direct conversation already exists
-      const existingConv = conversations.find(c => 
-        c.type === 'direct' && 
+      const existingConv = conversations.find(c =>
+        c.type === 'direct' &&
         c.participants?.length === 2 &&
         c.participants.some(p => p.user_id === userId) &&
         c.participants.some(p => p.user_id === currentUser.id)
       );
-      
+
       if (existingConv) {
         setSelectedConversation(existingConv);
         fetchMessages(existingConv.id);
@@ -3629,7 +3640,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         setActiveTab('chats');
         return;
       }
-      
+
       // Create new direct conversation
       const { data: conversationId, error } = await supabase.rpc(
         'create_direct_conversation',
@@ -3647,10 +3658,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       setTimeout(async () => {
         // Fetch conversations and get the updated list
         const updatedConversations = await getUpdatedConversations();
-        
+
         // Find the newly created conversation in the updated list
         const newConv = updatedConversations.find(c => c.id === conversationId);
-          
+
         if (newConv) {
           setSelectedConversation(newConv);
           fetchMessages(newConv.id);
@@ -3674,7 +3685,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           }, 1000);
         }
       }, 500);
-      
+
     } catch (error) {
       toast.error('Failed to start conversation');
     }
@@ -3711,12 +3722,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
 
       toast.success('Group chat deleted successfully');
-      
+
       // Close the modal and refresh conversations
       setShowDeleteGroupModal(false);
       setSelectedConversation(null);
       await fetchConversations();
-      
+
     } catch (error) {
       toast.error('Failed to delete group chat');
     }
@@ -3725,11 +3736,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Delete all group chats (for cleanup)
   const deleteAllGroupChats = async () => {
     if (!currentUser) return;
-    
+
     try {
       // Get all conversations that are not working properly (showing as group chats with 1 member)
-      const conversationsToDelete = conversations.filter(conv => 
-        (conv.type === 'group' && (conv.participants?.length || 0) <= 2) || 
+      const conversationsToDelete = conversations.filter(conv =>
+        (conv.type === 'group' && (conv.participants?.length || 0) <= 2) ||
         (conv.type === 'direct' && (conv.participants?.length || 0) !== 2)
       );
       for (const conv of conversationsToDelete) {
@@ -3738,18 +3749,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           .from('conversations')
           .delete()
           .eq('id', conv.id);
-          
+
         if (error) {
         } else {
         }
       }
-      
+
       // Refresh conversations list
       await fetchConversations();
       setSelectedConversation(null);
-      
+
       toast.success(`Deleted ${conversationsToDelete.length} problematic conversations`);
-      
+
     } catch (error) {
       toast.error('Failed to delete conversations');
     }
@@ -3795,13 +3806,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       // Refresh conversations and wait for the state to update
       await fetchConversations();
-      
+
       // Wait a moment for the conversations state to update, then find the new conversation
       setTimeout(async () => {
         await fetchConversations(); // Fetch again to get the updated state
         const updatedConversations = await getUpdatedConversations();
         const newConversation = updatedConversations.find(c => c.id === conversationData.id);
-        
+
         if (newConversation && newConversation.participants) {
           setSelectedConversation(newConversation);
           fetchMessages(newConversation.id);
@@ -3816,9 +3827,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           };
           setSelectedConversation(tempConversation);
         }
-        
-      setShowMobileConversations(false);
-      setActiveTab('chats');
+
+        setShowMobileConversations(false);
+        setActiveTab('chats');
       }, 100);
 
       // Reset form
@@ -3826,9 +3837,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       setSelectedUsers([]);
       setNewGroupTitle('');
       setNewGroupDescription('');
-      
+
       toast.success('Group chat created successfully!');
-      
+
     } catch (error) {
       toast.error('Failed to create group conversation');
     }
@@ -3860,7 +3871,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       // Refresh conversations to get updated participant list
       await fetchConversations();
-      
+
       // Update selected conversation
       const updatedConversations = await getUpdatedConversations();
       const updatedConversation = updatedConversations.find(c => c.id === conversationId);
@@ -3901,7 +3912,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       const { error } = await supabase
         .from('conversations')
-        .update({ 
+        .update({
           is_locked: newLockStatus,
           updated_at: new Date().toISOString()
         })
@@ -3912,7 +3923,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Update local state
       const updatedConversations = await getUpdatedConversations();
       setConversations(updatedConversations);
-      
+
       // Update selected conversation if it's the one being locked/unlocked
       if (selectedConversation?.id === conversationId) {
         const updatedConversation = updatedConversations.find(c => c.id === conversationId);
@@ -3951,7 +3962,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       // Refresh conversations to get updated participant list
       await fetchConversations();
-      
+
       // Update selected conversation
       const updatedConversations = await getUpdatedConversations();
       const updatedConversation = updatedConversations.find(c => c.id === conversationId);
@@ -3998,7 +4009,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       if (error) {
         console.error('Error uploading icon:', error);
-        
+
         // Provide more specific error messages
         if (error.message?.includes('Bucket not found') || error.message?.includes('does not exist')) {
           toast.error('Storage bucket not found. Please run the SQL migration to create the RMQ-Groups bucket.');
@@ -4020,7 +4031,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       return publicUrl;
     } catch (error: any) {
       console.error('Error uploading icon:', error);
-      
+
       // Handle network errors and other exceptions
       if (error?.name === 'NetworkError' || error?.message?.includes('Failed to fetch') || error?.message?.includes('NetworkError')) {
         toast.error('Network error. Please check your connection and ensure the RMQ-Groups bucket exists.');
@@ -4117,35 +4128,35 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Works for both direct chats and group chats
   const findFirstUnreadMessage = useCallback((): Message | null => {
     if (!selectedConversation || !currentUser || messages.length === 0) return null;
-    
+
     // Get the current user's participant info
     // This works for both direct chats (2 participants) and group chats (multiple participants)
     const userParticipant = selectedConversation.participants?.find(
       p => p.user_id === currentUser.id && p.is_active
     );
-    
+
     if (!userParticipant) {
       // User is not a participant (shouldn't happen, but handle gracefully)
       return null;
     }
-    
+
     if (!userParticipant.last_read_at) {
       // If no last_read_at, all messages are potentially unread
       // For group chats: return first message from any other participant
       // For direct chats: return first message from the other participant
       return messages.find(m => m.sender_id !== currentUser.id && !m.is_deleted) || null;
     }
-    
+
     // Find the first message that:
     // 1. Was sent after the user's last_read_at
     // 2. Was not sent by the current user
     // 3. Is not deleted
     // This logic works for both direct and group chats
     const lastReadAt = new Date(userParticipant.last_read_at);
-    
+
     for (const message of messages) {
       if (message.is_deleted) continue; // Skip deleted messages
-      
+
       const messageSentAt = new Date(message.sent_at);
       // For group chats: any message from any participant after last_read_at is unread
       // For direct chats: any message from the other participant after last_read_at is unread
@@ -4153,7 +4164,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         return message;
       }
     }
-    
+
     return null;
   }, [selectedConversation, currentUser, messages]);
 
@@ -4161,16 +4172,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Works for both direct chats and group chats
   const findNewestUnreadMessage = useCallback((): Message | null => {
     if (!selectedConversation || !currentUser || messages.length === 0) return null;
-    
+
     // Get the current user's participant info
     const userParticipant = selectedConversation.participants?.find(
       p => p.user_id === currentUser.id && p.is_active
     );
-    
+
     if (!userParticipant) {
       return null;
     }
-    
+
     if (!userParticipant.last_read_at) {
       // If no last_read_at, find the newest message from any other participant
       const unreadMessages = messages
@@ -4178,7 +4189,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime());
       return unreadMessages[0] || null;
     }
-    
+
     // Find all unread messages (sent after last_read_at, not by current user, not deleted)
     const lastReadAt = new Date(userParticipant.last_read_at);
     const unreadMessages = messages
@@ -4188,7 +4199,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         return messageSentAt > lastReadAt && m.sender_id !== currentUser.id;
       })
       .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime());
-    
+
     // Return the newest unread message (most recent)
     return unreadMessages[0] || null;
   }, [selectedConversation, currentUser, messages]);
@@ -4197,39 +4208,39 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const scrollToMessage = useCallback((messageId: number, behavior: 'smooth' | 'instant' = 'instant') => {
     // Find the message element in the DOM
     const messageElement = document.querySelector(`[data-message-id="${messageId}"]`);
-    
+
     if (messageElement) {
       // Get the container
       let container: HTMLElement | null = null;
-      
+
       if (desktopMessagesContainerRef.current) {
         const desktopContainer = desktopMessagesContainerRef.current;
         if (desktopContainer.offsetWidth > 0 && desktopContainer.offsetHeight > 0) {
           container = desktopContainer;
         }
       }
-      
+
       if (!container && mobileMessagesContainerRef.current) {
         const mobileContainer = mobileMessagesContainerRef.current;
         if (mobileContainer.offsetWidth > 0 && mobileContainer.offsetHeight > 0) {
           container = mobileContainer;
         }
       }
-      
+
       if (!container && messagesContainerRef.current) {
         const fallbackContainer = messagesContainerRef.current;
         if (fallbackContainer.offsetWidth > 0 && fallbackContainer.offsetHeight > 0) {
           container = fallbackContainer;
         }
       }
-      
+
       if (container && messageElement) {
         // Calculate the position to scroll to (message at top of viewport)
         const containerRect = container.getBoundingClientRect();
         const messageRect = messageElement.getBoundingClientRect();
         const scrollTop = container.scrollTop;
         const relativeTop = messageRect.top - containerRect.top + scrollTop;
-        
+
         if (behavior === 'instant') {
           container.scrollTop = relativeTop;
         } else {
@@ -4253,7 +4264,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const scrollToBottom = (behavior: 'smooth' | 'instant' = 'smooth') => {
     // Try desktop container first
     let container: HTMLDivElement | null = null;
-    
+
     if (desktopMessagesContainerRef.current) {
       const desktopContainer = desktopMessagesContainerRef.current;
       // Check if desktop container is visible (has dimensions)
@@ -4261,7 +4272,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         container = desktopContainer;
       }
     }
-    
+
     // If desktop not visible, try mobile container
     if (!container && mobileMessagesContainerRef.current) {
       const mobileContainer = mobileMessagesContainerRef.current;
@@ -4270,7 +4281,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         container = mobileContainer;
       }
     }
-    
+
     // Fallback to original ref if separate refs don't work
     if (!container && messagesContainerRef.current) {
       const fallbackContainer = messagesContainerRef.current;
@@ -4278,11 +4289,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         container = fallbackContainer;
       }
     }
-    
+
     // Scroll the visible container
     if (container) {
       const targetScroll = container.scrollHeight;
-      
+
       if (behavior === 'instant') {
         container.scrollTop = targetScroll;
       } else {
@@ -4292,10 +4303,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         });
       }
     }
-    
+
     // Method 2: Use scrollIntoView on the end ref (backup)
     if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ 
+      messagesEndRef.current.scrollIntoView({
         behavior: behavior === 'instant' ? 'auto' : behavior,
         block: 'end',
         inline: 'nearest'
@@ -4307,7 +4318,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const isNearBottom = () => {
     // Check desktop container first
     let container: HTMLDivElement | null = null;
-    
+
     if (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetWidth > 0) {
       container = desktopMessagesContainerRef.current;
     } else if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetWidth > 0) {
@@ -4315,7 +4326,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     } else if (messagesContainerRef.current && messagesContainerRef.current.offsetWidth > 0) {
       container = messagesContainerRef.current;
     }
-    
+
     if (!container) return true;
     const { scrollTop, scrollHeight, clientHeight } = container;
     const threshold = 100; // 100px from bottom
@@ -4325,7 +4336,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Handle scroll events to detect user scrolling
   const handleScroll = useCallback(() => {
     const nearBottom = isNearBottom();
-    
+
     // Get current scroll position to detect if scrolling has actually stopped
     let container: HTMLDivElement | null = null;
     if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetWidth > 0) {
@@ -4335,36 +4346,36 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     } else if (messagesContainerRef.current && messagesContainerRef.current.offsetWidth > 0) {
       container = messagesContainerRef.current;
     }
-    
+
     const currentScrollPosition = container ? container.scrollTop : 0;
     const scrollPositionChanged = Math.abs(currentScrollPosition - lastScrollPositionRef.current) > 1;
     lastScrollPositionRef.current = currentScrollPosition;
-    
+
     // If we're fading out, completely ignore all scroll events for a period
     if (isFadingOutRef.current) {
       return;
     }
-    
+
     // Only process if position actually changed
     if (!scrollPositionChanged) {
       return;
     }
-    
+
     // Mark that we're scrolling
     isScrollingForDateRef.current = true;
-    
+
     // Clear any existing floating date timeout
     if (floatingDateTimeoutRef.current) {
       clearTimeout(floatingDateTimeoutRef.current);
       floatingDateTimeoutRef.current = null;
     }
-    
+
     // Clear scroll position check timeout
     if (scrollPositionCheckRef.current) {
       clearTimeout(scrollPositionCheckRef.current);
       scrollPositionCheckRef.current = null;
     }
-    
+
     // Don't clear hideTimeoutRef if we're fading out - let it complete
     if (hideTimeoutRef.current && !nearBottom && !isFadingOutRef.current) {
       clearTimeout(hideTimeoutRef.current);
@@ -4372,7 +4383,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     } else if (hideTimeoutRef.current && isFadingOutRef.current) {
       isScrollingForDateRef.current = false;
     }
-    
+
     // If user scrolls to bottom, enable auto-scroll and reset count
     if (nearBottom) {
       setShouldAutoScroll(true);
@@ -4400,23 +4411,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
       return;
     }
-    
-      // If user scrolls up, disable auto-scroll temporarily
-      setShouldAutoScroll(false);
-      setIsUserScrolling(true);
-    
+
+    // If user scrolls up, disable auto-scroll temporarily
+    setShouldAutoScroll(false);
+    setIsUserScrolling(true);
+
     // Cancel any pending RAF and schedule a new one to batch updates
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
     }
-    
+
     rafRef.current = requestAnimationFrame(() => {
       // Don't update date if we're fading out
       if (isFadingOutRef.current) {
         rafRef.current = null;
         return;
       }
-      
+
       // Calculate which date is visible at the top when scrolling
       let container: HTMLDivElement | null = null;
       if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetWidth > 0) {
@@ -4426,24 +4437,24 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       } else if (messagesContainerRef.current && messagesContainerRef.current.offsetWidth > 0) {
         container = messagesContainerRef.current;
       }
-      
+
       if (container && messages.length > 0) {
         const containerRect = container.getBoundingClientRect();
         const containerTop = containerRect.top;
-        
+
         let visibleDate: string | null = null;
         let closestDistance = Infinity;
         const messageElements = container.querySelectorAll('[data-message-id]');
-        
+
         for (let i = 0; i < messageElements.length; i++) {
           const element = messageElements[i] as HTMLElement;
           const elementRect = element.getBoundingClientRect();
-          
+
           const isVisible = elementRect.top < containerRect.bottom && elementRect.bottom > containerTop;
-          
+
           if (isVisible) {
             const distanceFromTop = elementRect.top - containerTop;
-            
+
             if (distanceFromTop >= -50 && distanceFromTop < 200) {
               const messageId = element.getAttribute('data-message-id');
               if (messageId) {
@@ -4458,7 +4469,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             }
           }
         }
-        
+
         if (visibleDate) {
           if (lastDateRef.current !== visibleDate) {
             lastDateRef.current = visibleDate;
@@ -4476,7 +4487,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           for (let i = 0; i < messageElements.length; i++) {
             const element = messageElements[i] as HTMLElement;
             const elementRect = element.getBoundingClientRect();
-            
+
             if (elementRect.top < containerRect.bottom && elementRect.bottom > containerTop) {
               const messageId = element.getAttribute('data-message-id');
               if (messageId) {
@@ -4496,36 +4507,36 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           }
         }
       }
-      
+
       rafRef.current = null;
     });
-    
+
     // Set timeout to hide floating date after scrolling stops
     if (floatingDateTimeoutRef.current) {
       clearTimeout(floatingDateTimeoutRef.current);
     }
-    
+
     floatingDateTimeoutRef.current = setTimeout(() => {
-      const checkContainer: HTMLDivElement | null = 
+      const checkContainer: HTMLDivElement | null =
         (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetWidth > 0) ? mobileMessagesContainerRef.current :
-        (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetWidth > 0) ? desktopMessagesContainerRef.current :
-        (messagesContainerRef.current && messagesContainerRef.current.offsetWidth > 0) ? messagesContainerRef.current : null;
-      
+          (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetWidth > 0) ? desktopMessagesContainerRef.current :
+            (messagesContainerRef.current && messagesContainerRef.current.offsetWidth > 0) ? messagesContainerRef.current : null;
+
       const checkScrollPosition = checkContainer ? checkContainer.scrollTop : 0;
       const positionStillSame = Math.abs(checkScrollPosition - lastScrollPositionRef.current) <= 1;
-      
+
       if (positionStillSame && !isFadingOutRef.current) {
         isScrollingForDateRef.current = false;
         isFadingOutRef.current = true;
-        
+
         if (rafRef.current !== null) {
           cancelAnimationFrame(rafRef.current);
           rafRef.current = null;
         }
-        
+
         opacityRef.current = 0;
         setFloatingDateOpacity(0);
-        
+
         if (hideTimeoutRef.current) {
           clearTimeout(hideTimeoutRef.current);
         }
@@ -4564,10 +4575,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     if (shouldAutoScroll && messages.length > 0 && selectedConversation && !isScrollingRef.current) {
       // Reset new messages count when auto-scrolling
       setNewMessagesCount(0);
-      
+
       // Find newest unread message first
       const newestUnreadMessage = findNewestUnreadMessage();
-      
+
       // Use a single controlled scroll attempt after DOM updates
       isScrollingRef.current = true;
       scrollTimeoutRef.current = setTimeout(() => {
@@ -4593,7 +4604,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       const newCount = messages.length - prevMessageCountRef.current;
       setNewMessagesCount(prev => prev + newCount);
     }
-    
+
     // Update previous message count
     prevMessageCountRef.current = messages.length;
 
@@ -4613,10 +4624,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       setIsUserScrolling(false);
       setNewMessagesCount(0);
       prevMessageCountRef.current = messages.length;
-      
+
       // Find newest unread message first
       const newestUnreadMessage = findNewestUnreadMessage();
-      
+
       // Wait for messages to load and DOM to render, then scroll
       if (!isScrollingRef.current) {
         isScrollingRef.current = true;
@@ -4693,7 +4704,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Fetch conversations and users when user is loaded (in parallel for faster loading)
   useEffect(() => {
     const loadData = async () => {
-    if (currentUser) {
+      if (currentUser) {
         // Load conversations and users in parallel for faster initial load
         await Promise.all([
           fetchConversations(),
@@ -4701,7 +4712,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         ]);
       }
     };
-    
+
     loadData();
   }, [currentUser, fetchConversations, fetchAllUsers]);
 
@@ -4713,7 +4724,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         const userIds = allUsers.map(u => String(u.id));
         websocketService.requestOnlineStatus(userIds);
       }, 500);
-      
+
       return () => clearTimeout(timeoutId);
     }
   }, [isOpen, allUsers.length]);
@@ -4752,20 +4763,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   useEffect(() => {
     if (selectedConversation && messages.length > 0) {
       const isInitialLoad = initialLoadRef.current !== selectedConversation.id;
-      
+
       if (isInitialLoad) {
         // This is the initial load - use instant scroll only
         initialLoadRef.current = selectedConversation.id;
-        
+
         // Reset scroll state
         setShouldAutoScroll(true);
         setIsUserScrolling(false);
         setNewMessagesCount(0);
-        
+
         // Find newest unread message (works for both direct chats and group chats)
         const newestUnreadMessage = findNewestUnreadMessage();
         firstUnreadMessageIdRef.current = newestUnreadMessage?.id || null;
-        
+
         // Scroll to newest unread message if it exists, otherwise scroll to bottom
         // Works for both direct chats (1-on-1) and group chats (multiple participants)
         // Use instant scroll - no visible animation, appears automatically
@@ -4800,21 +4811,21 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Small delay to ensure conversation is fully loaded
       setTimeout(() => {
         let messageToSet = '';
-        
+
         // Use initialMessage if provided, otherwise construct from lead info
         if (initialMessage) {
           messageToSet = initialMessage;
         } else if (initialLeadNumber && initialLeadName) {
           messageToSet = 'The finance plan is not ready for this lead. Please create the payment plan.';
         }
-        
+
         // Add lead link if we have lead information
         if (initialLeadNumber && initialLeadName) {
           const deployedDomain = 'https://leadify-crm.onrender.com';
           const leadLink = `[Lead #${initialLeadNumber} - ${initialLeadName}](${deployedDomain}/clients/${initialLeadNumber})`;
           messageToSet = messageToSet ? `${messageToSet}\n\n${leadLink}` : leadLink;
         }
-        
+
         if (messageToSet) {
           setNewMessage(messageToSet);
           resetInputHeights();
@@ -4859,7 +4870,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     // Send typing indicator
     if (selectedConversation && currentUser && websocketService.isSocketConnected()) {
       const userName = currentUser.full_name || currentUser.email || 'User';
-      
+
       // Send typing started
       console.log('⌨️ Sending typing indicator: true');
       websocketService.sendTyping(
@@ -4901,11 +4912,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     // Add emoji to message
     setNewMessage(prev => prev + emoji);
     resetInputHeights();
-    
+
     // Close picker after a small delay to ensure emoji is added first
     setTimeout(() => {
       setIsEmojiPickerOpen(false);
-      
+
       // Focus back on the message input
       if (messageInputRef.current) {
         messageInputRef.current.focus();
@@ -4981,38 +4992,38 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Element;
       if (isEmojiPickerOpen) {
-        
+
         // Check if click is inside emoji picker or emoji button
-        const isInsideEmojiPicker = target.closest('[class*="EmojiPicker"]') || 
-                                   target.closest('[class*="epr-"]') ||
-                                   target.closest('button[title="Add emoji"]');
-        
+        const isInsideEmojiPicker = target.closest('[class*="EmojiPicker"]') ||
+          target.closest('[class*="epr-"]') ||
+          target.closest('button[title="Add emoji"]');
+
         if (!isInsideEmojiPicker) {
           setIsEmojiPickerOpen(false);
         }
       }
-      
+
       if (isLeadSearchOpen) {
-        
+
         // Check if click is inside lead search dropdown or plus button
         const isInsideLeadSearch = target.closest('.lead-search-dropdown') ||
-                                  target.closest('button[title="Attach Lead"]');
-        
+          target.closest('button[title="Attach Lead"]');
+
         if (!isInsideLeadSearch) {
           setIsLeadSearchOpen(false);
           setLeadSearchQuery('');
           setLeadSearchResults([]);
         }
       }
-      
+
       if (showReactionPicker) {
         const target = event.target as Element;
-        
+
         // Check if click is inside the reaction picker buttons/container only
         // Don't check for message bubble - clicking on message bubble should close the picker
         const isInsideReactionPicker = target.closest('button[title^="React with"]') ||
-                                      target.closest('.reaction-picker-container');
-        
+          target.closest('.reaction-picker-container');
+
         if (!isInsideReactionPicker) {
           setShowReactionPicker(null);
           setReactingMessageId(null);
@@ -5049,7 +5060,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             .eq('message_id', message.id);
           readReceipts = receipts || [];
         }
-        
+
         // Fetch reply message data if this message is a reply
         let replyToMessage: Message | undefined = undefined;
         if (message.reply_to_message_id) {
@@ -5072,7 +5083,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             `)
             .eq('id', message.reply_to_message_id)
             .single();
-          
+
           if (replyError) {
             console.error('🔍 [Reply Debug] Error fetching reply message:', replyError);
           } else if (replyData) {
@@ -5088,7 +5099,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         } else {
           console.log('🔍 [Reply Debug] WebSocket message has no reply_to_message_id');
         }
-        
+
         setMessages(prev => {
           // Check if message already exists to avoid duplicates
           // First check by exact ID match (if message from DB already exists)
@@ -5103,7 +5114,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   if (processedReplyMessage && Array.isArray(processedReplyMessage)) {
                     processedReplyMessage = processedReplyMessage.length > 0 ? processedReplyMessage[0] : undefined;
                   }
-                  
+
                   return {
                     ...m,
                     ...message,
@@ -5119,15 +5130,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
             }
           }
-          
+
           // Check if this is a duplicate by content, sender, and timing (for messages sent by current user)
           // This prevents duplicates when WebSocket broadcasts back a message we just sent
           const isCurrentUserMessage = message.sender_id === currentUser?.id;
           if (isCurrentUserMessage && message.content) {
-            const duplicateByContent = prev.find(m => 
-              m.conversation_id === message.conversation_id && 
-              m.sender_id === message.sender_id && 
-              m.content === message.content && 
+            const duplicateByContent = prev.find(m =>
+              m.conversation_id === message.conversation_id &&
+              m.sender_id === message.sender_id &&
+              m.content === message.content &&
               Math.abs(new Date(m.sent_at).getTime() - new Date(message.sent_at).getTime()) < 3000);
             if (duplicateByContent) {
               console.log('🔍 [Reply Debug] Found duplicate message by content, updating with reply data:', {
@@ -5137,13 +5148,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 hasReplyToMessage: !!replyToMessage,
                 duplicateHasReply: !!duplicateByContent.reply_to_message_id
               });
-              
+
               // Handle reply_to_message - ensure it's an object, not an array
               let processedReplyMessage = replyToMessage;
               if (processedReplyMessage && Array.isArray(processedReplyMessage)) {
                 processedReplyMessage = processedReplyMessage.length > 0 ? processedReplyMessage[0] : undefined;
               }
-              
+
               // Always update the duplicate with the latest data from WebSocket, including reply data
               const updated = prev.map(m => {
                 if (m.id === duplicateByContent.id) {
@@ -5156,38 +5167,38 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     reply_to_message_id: message.reply_to_message_id || m.reply_to_message_id,
                     reply_to_message: processedReplyMessage || m.reply_to_message
                   } as Message;
-                  
+
                   console.log('🔍 [Reply Debug] Updated duplicate message with reply data:', {
                     messageId: updatedMessage.id,
                     replyToMessageId: updatedMessage.reply_to_message_id,
                     hasReplyToMessage: !!updatedMessage.reply_to_message,
                     replyContent: updatedMessage.reply_to_message?.content?.substring(0, 50)
                   });
-                  
+
                   return updatedMessage;
                 }
                 return m;
               });
-              
+
               return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
             }
           }
-          
+
           // Enhance WebSocket message with real user data from conversation participants
           // Handle reply_to_message - ensure it's an object, not an array
           let processedReplyMessage = replyToMessage;
           if (processedReplyMessage && Array.isArray(processedReplyMessage)) {
             processedReplyMessage = processedReplyMessage.length > 0 ? processedReplyMessage[0] : undefined;
           }
-          
-          const enhancedMessage = { 
+
+          const enhancedMessage = {
             ...message,
             read_receipts: readReceipts,
             delivery_status: 'sent',
             reply_to_message_id: message.reply_to_message_id || undefined,
             reply_to_message: processedReplyMessage || undefined
           } as unknown as Message;
-          
+
           // Find the sender in the conversation participants to get real user data
           const senderParticipant = selectedConversation.participants.find(p => p.user_id === message.sender_id);
           if (senderParticipant && senderParticipant.user) {
@@ -5198,7 +5209,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             } as User;
             enhancedMessage.sender = senderUser;
           }
-          
+
           // Ensure attachment fields are properly set
           if (message.attachment_url && !enhancedMessage.attachment_url) {
             enhancedMessage.attachment_url = message.attachment_url;
@@ -5210,20 +5221,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           const updated = [...prev, enhancedMessage];
           return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
         });
-        
+
         // Scroll to bottom when new message arrives
         setTimeout(() => {
           setShouldAutoScroll(true);
           scrollToBottom('smooth');
         }, 100);
-        
+
         // Mark message as read if current user is viewing the conversation
         if (message.id && message.sender_id !== currentUser.id) {
           await markMessagesAsRead([message.id], selectedConversation.id);
         }
       } else {
       }
-      
+
       // Update conversation preview for all conversations
       setConversations(prev => {
         // Format preview text based on message type
@@ -5235,15 +5246,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         } else {
           previewText = 'New message';
         }
-        
-        return prev.map(conv => 
+
+        return prev.map(conv =>
           conv.id === message.conversation_id
             ? {
-                ...conv,
-                last_message_at: message.sent_at,
-                last_message_preview: previewText,
-                unread_count: conv.id === selectedConversation?.id ? 0 : (conv.unread_count || 0) + 1
-              }
+              ...conv,
+              last_message_at: message.sent_at,
+              last_message_preview: previewText,
+              unread_count: conv.id === selectedConversation?.id ? 0 : (conv.unread_count || 0) + 1
+            }
             : conv
         ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
       });
@@ -5264,7 +5275,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       websocketService.joinConversation(selectedConversation.id);
       websocketService.markAsRead(selectedConversation.id, currentUser.id);
     }
-    
+
     return () => {
       if (selectedConversation && currentUser) {
         websocketService.leaveConversation(selectedConversation.id);
@@ -5281,7 +5292,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .filter(msg => msg.sender_id === currentUser.id && msg.id != null) // Only refresh for own messages with valid IDs
         .map(msg => msg.id)
         .filter(id => id != null && id !== undefined); // Filter out any undefined/null values
-      
+
       if (messageIds.length === 0) return;
 
       const { data: receipts } = await supabase
@@ -5365,7 +5376,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         // Find the last message in this conversation that was sent by current user
         // Sort messages by sent_at descending and find the first one sent by current user
         const lastOwnMessage = messages
-          .filter(msg => 
+          .filter(msg =>
             msg.conversation_id === directConversation?.id &&
             msg.sender_id === currentUser.id &&
             !msg.is_deleted
@@ -5378,7 +5389,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           const otherParticipant = directConversation.participants?.find(
             p => p.user_id !== currentUser.id
           );
-          
+
           if (otherParticipant) {
             const hasRead = lastOwnMessage.read_receipts?.some(
               rr => rr.user_id === otherParticipant.user_id
@@ -5424,20 +5435,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     return (
       <div className="fixed inset-0 z-50 bg-white dark:bg-gradient-to-br dark:from-[rgba(62,40,205,0.05)] dark:to-[rgba(59,130,246,0.05)]">
         <div className="flex items-center justify-center h-full">
-        <div className="text-center">
-          <div className="loading loading-spinner loading-lg text-primary mb-4"></div>
-          <p className="text-gray-600 dark:text-gray-300 font-medium">Loading RMQ Messages...</p>
-        </div>
+          <div className="text-center">
+            <div className="loading loading-spinner loading-lg text-primary mb-4"></div>
+            <p className="text-gray-600 dark:text-gray-300 font-medium">Loading RMQ Messages...</p>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div 
-      className={`fixed inset-0 z-50 bg-white dark:bg-gradient-to-br dark:from-[rgba(62,40,205,0.05)] dark:to-[rgba(59,130,246,0.05)] flex overflow-hidden transition-all duration-200 ${
-        isDragOver ? 'bg-blue-50/50 dark:bg-blue-900/20' : ''
-      }`}
+    <div
+      className={`fixed inset-0 z-50 bg-white dark:bg-gradient-to-br dark:from-[rgba(62,40,205,0.05)] dark:to-[rgba(59,130,246,0.05)] flex overflow-hidden transition-all duration-200 ${isDragOver ? 'bg-blue-50/50 dark:bg-blue-900/20' : ''
+        }`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -5470,36 +5480,32 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         <div className="flex gap-2 p-2 bg-base-100 rounded-lg mx-4 mt-3 mb-0">
           <button
             onClick={() => setActiveTab('chats')}
-            className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${
-              activeTab === 'chats'
-                ? 'text-white shadow-md'
-                : 'text-base-content/80 hover:text-base-content hover:bg-base-200/50'
-            }`}
+            className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${activeTab === 'chats'
+              ? 'text-white shadow-md'
+              : 'text-base-content/80 hover:text-base-content hover:bg-base-200/50'
+              }`}
             style={activeTab === 'chats' ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' } : {}}
           >
             Chats
-            <span className={`ml-2 text-xs ${
-              activeTab === 'chats' ? 'text-white/80' : 'text-base-content/60'
-            }`}>
+            <span className={`ml-2 text-xs ${activeTab === 'chats' ? 'text-white/80' : 'text-base-content/60'
+              }`}>
               {allUsers.length}
             </span>
           </button>
           <button
             onClick={() => setActiveTab('groups')}
-            className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${
-              activeTab === 'groups'
-                ? 'text-white shadow-md'
-                : 'text-base-content/80 hover:text-base-content hover:bg-base-200/50'
-            }`}
+            className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${activeTab === 'groups'
+              ? 'text-white shadow-md'
+              : 'text-base-content/80 hover:text-base-content hover:bg-base-200/50'
+              }`}
             style={activeTab === 'groups' ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' } : {}}
           >
             Groups
             {filteredGroupConversations.length > 0 && (
-              <span className={`ml-2 text-xs rounded-full px-2 py-0.5 ${
-                activeTab === 'groups' 
-                  ? 'bg-white/20 text-white' 
-                  : 'bg-base-200 text-base-content/80'
-              }`}>
+              <span className={`ml-2 text-xs rounded-full px-2 py-0.5 ${activeTab === 'groups'
+                ? 'bg-white/20 text-white'
+                : 'bg-base-200 text-base-content/80'
+                }`}>
                 {filteredGroupConversations.length}
               </span>
             )}
@@ -5532,10 +5538,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             ) : (
               contactsWithLastMessage.map(({ user, lastMessageAt, lastMessagePreview, lastMessageReadStatus, unreadCount }) => {
                 const rawDisplayName = user.tenants_employee?.display_name || user.full_name;
-                const userName = (rawDisplayName && rawDisplayName.trim().length > 1) 
-                  ? rawDisplayName.trim() 
+                const userName = (rawDisplayName && rawDisplayName.trim().length > 1)
+                  ? rawDisplayName.trim()
                   : `User ${user.id.slice(-4)}`;
-                
+
                 const rawRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
                 const userRole = rawRole && rawRole.trim().length > 0 ? rawRole.trim() : 'Employee';
                 const userPhoto = user.tenants_employee?.photo_url;
@@ -5551,14 +5557,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   >
                     <div className="flex items-center gap-3">
                       <div className="relative">
-                      {renderUserAvatar({
-                        userId: user.id,
-                        name: userName,
-                        photoUrl: userPhoto,
-                        sizeClass: 'w-14 h-14',
+                        {renderUserAvatar({
+                          userId: user.id,
+                          name: userName,
+                          photoUrl: userPhoto,
+                          sizeClass: 'w-14 h-14',
                           borderClass: '',
-                        textClass: 'text-base',
-                      })}
+                          textClass: 'text-base',
+                        })}
                         {isUnavailable && (
                           <div className="absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center border-2 border-base-100">
                             <ClockIcon className="w-3 h-3 text-white" />
@@ -5570,7 +5576,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           </div>
                         )}
                       </div>
-                    
+
                       <div className="flex-1 min-w-0">
                         <div className="font-semibold text-base-content truncate flex items-center gap-2 flex-wrap">
                           {userName || `User ${user.id.slice(-4)}`}
@@ -5629,7 +5635,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           )}
                         </div>
                       </div>
-                      
+
                       <div className="flex items-center gap-1">
                         <ChatBubbleLeftRightIcon className="w-5 h-5 text-base-content/60" />
                         {unreadCount > 0 ? (
@@ -5661,9 +5667,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     fetchMessages(conversation.id);
                     setShowMobileConversations(false);
                   }}
-                  className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors bg-white ${
-                    selectedConversation?.id === conversation.id ? 'border-l-4' : ''
-                  }`}
+                  className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors bg-white ${selectedConversation?.id === conversation.id ? 'border-l-4' : ''
+                    }`}
                   style={selectedConversation?.id === conversation.id ? { backgroundColor: 'rgba(62, 40, 205, 0.05)', borderLeftColor: '#3E28CD' } : {}}
                 >
                   <div className="flex items-center gap-3">
@@ -5703,23 +5708,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       <div className={`lg:hidden ${showMobileConversations ? 'block' : 'hidden'} w-full bg-base-100 flex flex-col`}>
         {/* Mobile Header */}
         <div className="p-4 bg-white">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                {activeTab === 'groups' && (
-                  <button
-                    onClick={() => setShowCreateGroupModal(true)}
-                    className="btn btn-ghost btn-circle text-base-content/70 hover:bg-base-200"
-                    title="Create Group"
-                  >
-                    <PlusIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                  </button>
-                )}
-                <ChatBubbleLeftRightIcon className="w-7 h-7" style={{ color: '#3E28CD' }} />
-                <div>
-                  <h1 className="text-lg font-bold text-base-content">Messages</h1>
-                  <p className="text-xs text-base-content/70">Internal Communications</p>
-                </div>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              {activeTab === 'groups' && (
+                <button
+                  onClick={() => setShowCreateGroupModal(true)}
+                  className="btn btn-ghost btn-circle text-base-content/70 hover:bg-base-200"
+                  title="Create Group"
+                >
+                  <PlusIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                </button>
+              )}
+              <ChatBubbleLeftRightIcon className="w-7 h-7" style={{ color: '#3E28CD' }} />
+              <div>
+                <h1 className="text-lg font-bold text-base-content">Messages</h1>
+                <p className="text-xs text-base-content/70">Internal Communications</p>
               </div>
+            </div>
             <div className="flex items-center gap-2">
               <button
                 onClick={onClose}
@@ -5736,36 +5741,32 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         <div className="flex gap-2 p-2 bg-base-100 rounded-lg mx-4 mt-3 mb-0">
           <button
             onClick={() => setActiveTab('chats')}
-            className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${
-              activeTab === 'chats'
-                ? 'text-white shadow-md'
-                : 'text-base-content/80 hover:text-base-content hover:bg-base-200/50'
-            }`}
+            className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${activeTab === 'chats'
+              ? 'text-white shadow-md'
+              : 'text-base-content/80 hover:text-base-content hover:bg-base-200/50'
+              }`}
             style={activeTab === 'chats' ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' } : {}}
           >
             Chats
-            <span className={`ml-2 text-xs ${
-              activeTab === 'chats' ? 'text-white/80' : 'text-base-content/60'
-            }`}>
+            <span className={`ml-2 text-xs ${activeTab === 'chats' ? 'text-white/80' : 'text-base-content/60'
+              }`}>
               {allUsers.length}
             </span>
           </button>
           <button
             onClick={() => setActiveTab('groups')}
-            className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${
-              activeTab === 'groups'
-                ? 'text-white shadow-md'
-                : 'text-base-content/80 hover:text-base-content hover:bg-base-200/50'
-            }`}
+            className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${activeTab === 'groups'
+              ? 'text-white shadow-md'
+              : 'text-base-content/80 hover:text-base-content hover:bg-base-200/50'
+              }`}
             style={activeTab === 'groups' ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' } : {}}
           >
             Groups
             {filteredGroupConversations.length > 0 && (
-              <span className={`ml-2 text-xs rounded-full px-2 py-0.5 ${
-                activeTab === 'groups' 
-                  ? 'bg-white/20 text-white' 
-                  : 'bg-base-200 text-base-content/80'
-              }`}>
+              <span className={`ml-2 text-xs rounded-full px-2 py-0.5 ${activeTab === 'groups'
+                ? 'bg-white/20 text-white'
+                : 'bg-base-200 text-base-content/80'
+                }`}>
                 {filteredGroupConversations.length}
               </span>
             )}
@@ -5798,10 +5799,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             ) : (
               contactsWithLastMessage.map(({ user, lastMessageAt, lastMessagePreview, lastMessageReadStatus, unreadCount }) => {
                 const rawDisplayName = user.tenants_employee?.display_name || user.full_name;
-                const userName = (rawDisplayName && rawDisplayName.trim().length > 1) 
-                  ? rawDisplayName.trim() 
+                const userName = (rawDisplayName && rawDisplayName.trim().length > 1)
+                  ? rawDisplayName.trim()
                   : `User ${user.id.slice(-4)}`;
-                
+
                 const rawRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
                 const userRole = rawRole && rawRole.trim().length > 0 ? rawRole.trim() : 'Employee';
                 const userPhoto = user.tenants_employee?.photo_url;
@@ -5817,14 +5818,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   >
                     <div className="flex items-center gap-3">
                       <div className="relative">
-                      {renderUserAvatar({
-                        userId: user.id,
-                        name: userName,
-                        photoUrl: userPhoto,
-                        sizeClass: 'w-14 h-14',
+                        {renderUserAvatar({
+                          userId: user.id,
+                          name: userName,
+                          photoUrl: userPhoto,
+                          sizeClass: 'w-14 h-14',
                           borderClass: '',
-                        textClass: 'text-base',
-                      })}
+                          textClass: 'text-base',
+                        })}
                         {isUnavailable && (
                           <div className="absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center border-2 border-base-100">
                             <ClockIcon className="w-3 h-3 text-white" />
@@ -5836,7 +5837,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           </div>
                         )}
                       </div>
-                    
+
                       <div className="flex-1 min-w-0">
                         <div className="font-semibold text-base-content truncate flex items-center gap-2 flex-wrap">
                           {userName || `User ${user.id.slice(-4)}`}
@@ -5895,7 +5896,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           )}
                         </div>
                       </div>
-                      
+
                       <div className="flex items-center gap-1">
                         <ChatBubbleLeftRightIcon className="w-5 h-5 text-base-content/60" />
                         {unreadCount > 0 ? (
@@ -5967,9 +5968,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         {selectedConversation ? (
           <>
             {/* Chat Header */}
-            <div 
+            <div
               className="p-4 border-b border-base-300 bg-base-100 absolute top-0 left-0 right-0 z-20"
-              style={{ 
+              style={{
                 boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
               }}
             >
@@ -5983,19 +5984,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   </button>
                   {getConversationAvatar(selectedConversation, 'xlarge')}
                   <div className="flex-1">
-                      {selectedConversation.type === 'direct' ? (
-                        (() => {
-                          const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
+                    {selectedConversation.type === 'direct' ? (
+                      (() => {
+                        const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
                         if (otherParticipant?.user) {
                           const employee = otherParticipant.user.tenants_employee;
                           const role = employee ? getRoleDisplayName(employee.bonuses_role || '') : '';
                           const department = employee?.tenant_departement?.name || '';
-                          
+
                           const otherUserId = otherParticipant.user.id ? String(otherParticipant.user.id) : null;
                           const isOnline = otherUserId ? onlineUsers.has(otherUserId) : false;
                           if (otherUserId && process.env.NODE_ENV === 'development') {
                           }
-                          
+
                           return (
                             <>
                               <div className="flex flex-wrap items-center gap-3 text-base-content">
@@ -6003,13 +6004,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   {getConversationTitle(selectedConversation)}
                                 </h2>
                                 {role && (
-                                    <div className="inline-flex items-center gap-1.5 text-base font-medium text-base-content/90">
+                                  <div className="inline-flex items-center gap-1.5 text-base font-medium text-base-content/90">
                                     <BriefcaseIcon className="w-4 h-4" style={{ color: '#059669' }} />
                                     <span>{role}</span>
                                   </div>
                                 )}
                                 {department && (
-                                    <div className="inline-flex items-center gap-1.5 text-base font-medium text-base-content/90">
+                                  <div className="inline-flex items-center gap-1.5 text-base font-medium text-base-content/90">
                                     <BuildingOfficeIcon className="w-4 h-4" style={{ color: '#059669' }} />
                                     <span>{department}</span>
                                   </div>
@@ -6029,7 +6030,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     <span className="relative inline-flex rounded-full h-2 w-2 bg-gray-400"></span>
                                   </span>
                                   <span className="text-xs font-medium text-base-content/70">
-                                    {otherUserId && lastOnlineTimes.has(otherUserId) 
+                                    {otherUserId && lastOnlineTimes.has(otherUserId)
                                       ? `Last online: ${formatLastOnlineTime(lastOnlineTimes.get(otherUserId)!)}`
                                       : 'Offline'
                                     }
@@ -6055,8 +6056,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             <p className="text-sm text-base-content/90">Direct message</p>
                           </>
                         );
-                        })()
-                      ) : (
+                      })()
+                    ) : (
                       <>
                         <h2 className="font-semibold text-gray-900">
                           {getConversationTitle(selectedConversation)}
@@ -6103,11 +6104,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       {isSuperUser && (
                         <button
                           onClick={() => toggleGroupLock(selectedConversation.id)}
-                          className={`btn btn-ghost btn-sm btn-circle ${
-                            isGroupLocked(selectedConversation)
-                              ? 'text-yellow-600 hover:bg-yellow-500/20'
-                              : 'text-base-content/70 hover:bg-base-200'
-                          }`}
+                          className={`btn btn-ghost btn-sm btn-circle ${isGroupLocked(selectedConversation)
+                            ? 'text-yellow-600 hover:bg-yellow-500/20'
+                            : 'text-base-content/70 hover:bg-base-200'
+                            }`}
                           title={isGroupLocked(selectedConversation) ? "Unlock Group" : "Lock Group"}
                         >
                           {isGroupLocked(selectedConversation) ? (
@@ -6148,7 +6148,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       )}
                     </>
                   )}
-                  <button 
+                  <button
                     onClick={onClose}
                     className="btn btn-ghost btn-circle text-base-content/70 hover:bg-base-200"
                     title="Close Messages"
@@ -6157,7 +6157,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   </button>
                 </div>
               </div>
-              
+
               {/* Group Members List - Desktop (Collapsible) */}
               {selectedConversation.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 && (
                 <div className="mt-3 border-t border-base-300">
@@ -6176,35 +6176,35 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   </button>
                   {showDesktopGroupMembers && (
                     <div className="px-3 pb-3">
-                  <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
-                    <div className="flex gap-4 pb-2 min-w-max">
-                      {selectedConversation.participants.map((participant) => {
-                        const userName = participant.user?.tenants_employee?.display_name || 
-                                       participant.user?.full_name || 
-                                       `User ${participant.user_id?.slice(-4)}`;
-                        const userPhoto = participant.user?.tenants_employee?.photo_url;
-                        const isCurrentUser = participant.user_id === currentUser?.id;
-                        
-                        return (
-                          <div 
-                            key={participant.id} 
-                            onClick={() => !isCurrentUser && startDirectConversation(participant.user_id)}
-                            className={`flex flex-col items-center gap-1 flex-shrink-0 ${!isCurrentUser ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
-                          >
-                            {renderUserAvatar({
-                              userId: participant.user_id,
-                              name: userName,
-                              photoUrl: userPhoto,
-                              sizeClass: 'w-14 h-14',
-                              borderClass: 'border-2 border-base-300',
-                              textClass: 'text-sm',
-                            })}
+                      <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
+                        <div className="flex gap-4 pb-2 min-w-max">
+                          {selectedConversation.participants.map((participant) => {
+                            const userName = participant.user?.tenants_employee?.display_name ||
+                              participant.user?.full_name ||
+                              `User ${participant.user_id?.slice(-4)}`;
+                            const userPhoto = participant.user?.tenants_employee?.photo_url;
+                            const isCurrentUser = participant.user_id === currentUser?.id;
+
+                            return (
+                              <div
+                                key={participant.id}
+                                onClick={() => !isCurrentUser && startDirectConversation(participant.user_id)}
+                                className={`flex flex-col items-center gap-1 flex-shrink-0 ${!isCurrentUser ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                              >
+                                {renderUserAvatar({
+                                  userId: participant.user_id,
+                                  name: userName,
+                                  photoUrl: userPhoto,
+                                  sizeClass: 'w-14 h-14',
+                                  borderClass: 'border-2 border-base-300',
+                                  textClass: 'text-sm',
+                                })}
                                 <span className="text-xs font-medium text-center max-w-[80px] truncate text-base-content" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.9)' }}>{userName}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -6212,7 +6212,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             </div>
 
             {/* Messages Area */}
-            <div 
+            <div
               ref={desktopMessagesContainerRef}
               onScroll={handleScroll}
               className="flex-1 overflow-y-auto p-4 pb-24 space-y-4 relative rmq-messages-area"
@@ -6227,9 +6227,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               }}
             >
               {/* Floating Date Indicator - Desktop */}
-              <div 
+              <div
                 className="fixed top-20 left-1/2 -translate-x-1/2 z-50 pointer-events-none"
-                style={{ 
+                style={{
                   opacity: showFloatingDate && floatingDate ? floatingDateOpacity : 0,
                   visibility: showFloatingDate && floatingDate ? 'visible' : 'hidden',
                   transition: 'opacity 200ms cubic-bezier(0.4, 0, 0.2, 1)',
@@ -6251,537 +6251,529 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               ) : (
                 <AnimatePresence initial={false}>
                   {messages.map((message, index) => {
-                  const isOwn = message.sender_id === currentUser?.id;
-                  const senderName = message.sender?.tenants_employee?.display_name || 
-                                   message.sender?.full_name || 
-                                   'Unknown User';
-                  const senderPhoto = message.sender?.tenants_employee?.photo_url;
+                    const isOwn = message.sender_id === currentUser?.id;
+                    const senderName = message.sender?.tenants_employee?.display_name ||
+                      message.sender?.full_name ||
+                      'Unknown User';
+                    const senderPhoto = message.sender?.tenants_employee?.photo_url;
 
                     // Check if we need to show a date separator (removed - using floating indicator instead)
                     const showDateSeparator = false; // Disabled inline separators
 
-                  return (
+                    return (
                       <motion.div
                         key={message.id}
                         initial={{ opacity: 0, y: 20, scale: 0.95 }}
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, scale: 0.95 }}
-                        transition={{ 
+                        transition={{
                           duration: 0.3,
                           ease: [0.4, 0, 0.2, 1]
                         }}
                         className="relative"
                         data-message-id={message.id}
                       >
-                      {/* Unread messages indicator - Desktop */}
-                      {firstUnreadMessageIdRef.current === message.id && (
-                        <div className="flex items-center gap-3 my-4 px-2">
-                          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
-                          <div className="flex items-center gap-2 px-3 py-1 bg-blue-500/10 rounded-full border border-blue-500/30">
-                            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-                            <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">New messages</span>
-                          </div>
-                          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
-                        </div>
-                      )}
-                      {/* Date Separator - Removed inline separators */}
-                      
-                      {/* Image, video and emoji messages - render outside bubble */}
-                      {isImageMessage(message) ? (
-                        <div className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
-                          <div 
-                            className="relative cursor-pointer group"
-                            onClick={() => openMediaModal(message)}
-                          >
-                            <img
-                              src={message.attachment_url}
-                              alt={message.attachment_name}
-                              className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
-                            />
-                            <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                              <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
-                              </svg>
+                        {/* Unread messages indicator - Desktop */}
+                        {firstUnreadMessageIdRef.current === message.id && (
+                          <div className="flex items-center gap-3 my-4 px-2">
+                            <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
+                            <div className="flex items-center gap-2 px-3 py-1 bg-blue-500/10 rounded-full border border-blue-500/30">
+                              <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                              <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">New messages</span>
                             </div>
+                            <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
                           </div>
-                          {/* Timestamp and read receipts at bottom of image */}
-                          <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                            <span className="text-xs text-base-content/70" style={{ 
-                              textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
-                            }}>
-                              {formatMessageTime(message.sent_at)}
-                            </span>
-                            {isOwn && renderReadReceipts(message)}
-                          </div>
-                        </div>
-                      ) : isVideoMessage(message) ? (
-                        <div className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
-                          <div 
-                            className="relative cursor-pointer group"
-                            onClick={() => openMediaModal(message)}
-                          >
-                            <video
-                              src={message.attachment_url}
-                              className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
-                              controls
-                              preload="metadata"
-                            />
-                            <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                              <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
-                              </svg>
-                            </div>
-                          </div>
-                          {/* Timestamp and read receipts at bottom of video */}
-                          <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                            <span className="text-xs text-base-content/70" style={{ 
-                              textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
-                            }}>
-                              {formatMessageTime(message.sent_at)}
-                            </span>
-                            {isOwn && renderReadReceipts(message)}
-                          </div>
-                        </div>
-                      ) : isEmojiOnly(message.content || '') ? (
-                        <div 
-                          className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}
-                          dir={getTextDirection(message.content || '')}
-                        >
-                          <div className="text-6xl">
-                            {renderMessageContent(message.content || '', isOwn)}
-                          </div>
-                          {/* Timestamp and read receipts at bottom of emoji */}
-                          <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                            <span className="text-xs text-base-content/70" style={{ 
-                              textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
-                            }}>
-                              {formatMessageTime(message.sent_at)}
-                            </span>
-                            {isOwn && renderReadReceipts(message)}
-                          </div>
-                        </div>
-                      ) : (
-                        <div
-                          className={`flex gap-3 group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
-                        >
-                          
-                          {/* Avatar for group chats */}
-                          {!isOwn && selectedConversation.type !== 'direct' && (
-                            <div className="flex-shrink-0">
-                              {renderUserAvatar({
-                                userId: message.sender_id,
-                                name: senderName,
-                                photoUrl: senderPhoto,
-                                sizeClass: 'w-8 h-8',
-                                borderClass: 'border border-base-300',
-                                textClass: 'text-xs',
-                                loading: 'lazy',
-                              })}
-                            </div>
-                          )}
-                          
-                          <div className={`max-w-xs sm:max-w-md ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
-                            {!isOwn && selectedConversation.type !== 'direct' && (
-                              <span 
-                                className="text-xs font-medium mb-1 px-2 py-0.5 rounded-full inline-block"
-                                style={{
-                                  backgroundColor: 'rgba(255, 255, 255, 0.7)',
-                                  backdropFilter: 'blur(10px)',
-                                  WebkitBackdropFilter: 'blur(10px)',
-                                  color: '#374151',
-                                  border: '1px solid rgba(255, 255, 255, 0.3)',
-                                  textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)'
-                                }}
-                              >
-                                {senderName}
-                              </span>
-                            )}
-                            
-                            <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative`}>
-                              {/* Message actions dropdown - positioned directly next to message box */}
-                              {/* For sent messages (isOwn): left side, for received messages: right side */}
-                              <div className={`absolute ${isOwn ? '-left-8 top-1/2 -translate-y-1/2' : '-right-8 top-1/2 -translate-y-1/2'} opacity-0 group-hover:opacity-100 transition-opacity z-10`}>
-                                <div className="relative message-action-menu">
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setMessageActionMenu(messageActionMenu === message.id ? null : message.id);
-                                    }}
-                                    className="p-1.5 rounded-full bg-white/90 hover:bg-white shadow-md border border-gray-200 transition-colors"
-                                    title="Message options"
-                                  >
-                                    <EllipsisVerticalIcon className="w-4 h-4 text-gray-700" />
-                                  </button>
-                                  
-                                  {/* Dropdown menu */}
-                                  {messageActionMenu === message.id && (
-                                    <div className={`absolute bottom-full ${isOwn ? 'left-0' : 'right-0'} mb-1 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[140px] z-50`}>
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setMessageToForward(message);
-                                          setShowForwardModal(true);
-                                          setMessageActionMenu(null);
-                                        }}
-                                        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
-                                      >
-                                        <ArrowRightIcon className="w-4 h-4" />
-                                        Forward
-                                      </button>
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setMessageToReply(message);
-                                          setMessageActionMenu(null);
-                                          // Focus input field
-                                          setTimeout(() => {
-                                            if (messageInputRef.current) {
-                                              messageInputRef.current.focus();
-                                            }
-                                            if (mobileMessageInputRef.current) {
-                                              mobileMessageInputRef.current.focus();
-                                            }
-                                          }, 100);
-                                        }}
-                                        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
-                                      >
-                                        <ChatBubbleBottomCenterTextIcon className="w-4 h-4" />
-                                        Reply
-                                      </button>
-                                      {isOwn && (
-                                        <>
-                                          <button
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              setMessageToEdit(message);
-                                              setEditingMessageText(message.content || '');
-                                              setMessageActionMenu(null);
-                                              // Focus input field
-                                              setTimeout(() => {
-                                                if (messageInputRef.current) {
-                                                  messageInputRef.current.focus();
-                                                }
-                                                if (mobileMessageInputRef.current) {
-                                                  mobileMessageInputRef.current.focus();
-                                                }
-                                              }, 100);
-                                            }}
-                                            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
-                                          >
-                                            <PencilIcon className="w-4 h-4" />
-                                            Edit
-                                          </button>
-                                          <button
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              handleDeleteMessage(message.id);
-                                              setMessageActionMenu(null);
-                                            }}
-                                            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors text-left"
-                                          >
-                                            <TrashIcon className="w-4 h-4" />
-                                            Delete
-                                          </button>
-                                        </>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
+                        )}
+                        {/* Date Separator - Removed inline separators */}
+
+                        {/* Image, video and emoji messages - render outside bubble */}
+                        {isImageMessage(message) ? (
+                          <div className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
+                            <div
+                              className="relative cursor-pointer group"
+                              onClick={() => openMediaModal(message)}
+                            >
+                              <img
+                                src={message.attachment_url}
+                                alt={message.attachment_name}
+                                className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
+                              />
+                              <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                                </svg>
                               </div>
-                              
-                              <div
-                                data-message-id={message.id}
-                                onClick={() => {
-                                  setShowReactionPicker(showReactionPicker === message.id ? null : message.id);
-                                  setReactingMessageId(message.id);
-                                }}
-                                className={`px-4 py-3 rounded-2xl shadow-sm cursor-pointer hover:shadow-md transition-shadow relative ${
-                                  isOwn
-                                    ? isEmojiOnly(message.content) 
+                            </div>
+                            {/* Timestamp and read receipts at bottom of image */}
+                            <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                              <span className="text-xs text-base-content/70" style={{
+                                textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
+                              }}>
+                                {formatMessageTime(message.sent_at)}
+                              </span>
+                              {isOwn && renderReadReceipts(message)}
+                            </div>
+                          </div>
+                        ) : isVideoMessage(message) ? (
+                          <div className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
+                            <div
+                              className="relative cursor-pointer group"
+                              onClick={() => openMediaModal(message)}
+                            >
+                              <video
+                                src={message.attachment_url}
+                                className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
+                                controls
+                                preload="metadata"
+                              />
+                              <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                                <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                                </svg>
+                              </div>
+                            </div>
+                            {/* Timestamp and read receipts at bottom of video */}
+                            <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                              <span className="text-xs text-base-content/70" style={{
+                                textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
+                              }}>
+                                {formatMessageTime(message.sent_at)}
+                              </span>
+                              {isOwn && renderReadReceipts(message)}
+                            </div>
+                          </div>
+                        ) : isEmojiOnly(message.content || '') ? (
+                          <div
+                            className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}
+                            dir={getTextDirection(message.content || '')}
+                          >
+                            <div className="text-6xl">
+                              {renderMessageContent(message.content || '', isOwn)}
+                            </div>
+                            {/* Timestamp and read receipts at bottom of emoji */}
+                            <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                              <span className="text-xs text-base-content/70" style={{
+                                textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
+                              }}>
+                                {formatMessageTime(message.sent_at)}
+                              </span>
+                              {isOwn && renderReadReceipts(message)}
+                            </div>
+                          </div>
+                        ) : (
+                          <div
+                            className={`flex gap-3 group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
+                          >
+
+                            {/* Avatar for group chats */}
+                            {!isOwn && selectedConversation.type !== 'direct' && (
+                              <div className="flex-shrink-0">
+                                {renderUserAvatar({
+                                  userId: message.sender_id,
+                                  name: senderName,
+                                  photoUrl: senderPhoto,
+                                  sizeClass: 'w-8 h-8',
+                                  borderClass: 'border border-base-300',
+                                  textClass: 'text-xs',
+                                  loading: 'lazy',
+                                })}
+                              </div>
+                            )}
+
+                            <div className={`max-w-xs sm:max-w-md ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
+                              {!isOwn && selectedConversation.type !== 'direct' && (
+                                <span
+                                  className="text-xs font-medium mb-1 px-2 py-0.5 rounded-full inline-block"
+                                  style={{
+                                    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+                                    backdropFilter: 'blur(10px)',
+                                    WebkitBackdropFilter: 'blur(10px)',
+                                    color: '#374151',
+                                    border: '1px solid rgba(255, 255, 255, 0.3)',
+                                    textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)'
+                                  }}
+                                >
+                                  {senderName}
+                                </span>
+                              )}
+
+                              <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative`}>
+                                {/* Message actions dropdown - positioned directly next to message box */}
+                                {/* For sent messages (isOwn): left side, for received messages: right side */}
+                                <div className={`absolute ${isOwn ? '-left-8 top-1/2 -translate-y-1/2' : '-right-8 top-1/2 -translate-y-1/2'} opacity-0 group-hover:opacity-100 transition-opacity z-10`}>
+                                  <div className="relative message-action-menu">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setMessageActionMenu(messageActionMenu === message.id ? null : message.id);
+                                      }}
+                                      className="p-1.5 rounded-full bg-white/90 hover:bg-white shadow-md border border-gray-200 transition-colors"
+                                      title="Message options"
+                                    >
+                                      <EllipsisVerticalIcon className="w-4 h-4 text-gray-700" />
+                                    </button>
+
+                                    {/* Dropdown menu */}
+                                    {messageActionMenu === message.id && (
+                                      <div className={`absolute bottom-full ${isOwn ? 'left-0' : 'right-0'} mb-1 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[140px] z-50`}>
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setMessageToForward(message);
+                                            setShowForwardModal(true);
+                                            setMessageActionMenu(null);
+                                          }}
+                                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                        >
+                                          <ArrowRightIcon className="w-4 h-4" />
+                                          Forward
+                                        </button>
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setMessageToReply(message);
+                                            setMessageActionMenu(null);
+                                            // Focus input field
+                                            setTimeout(() => {
+                                              if (messageInputRef.current) {
+                                                messageInputRef.current.focus();
+                                              }
+                                              if (mobileMessageInputRef.current) {
+                                                mobileMessageInputRef.current.focus();
+                                              }
+                                            }, 100);
+                                          }}
+                                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                        >
+                                          <ChatBubbleBottomCenterTextIcon className="w-4 h-4" />
+                                          Reply
+                                        </button>
+                                        {isOwn && (
+                                          <>
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setMessageToEdit(message);
+                                                setEditingMessageText(message.content || '');
+                                                setMessageActionMenu(null);
+                                                // Focus input field
+                                                setTimeout(() => {
+                                                  if (messageInputRef.current) {
+                                                    messageInputRef.current.focus();
+                                                  }
+                                                  if (mobileMessageInputRef.current) {
+                                                    mobileMessageInputRef.current.focus();
+                                                  }
+                                                }, 100);
+                                              }}
+                                              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                            >
+                                              <PencilIcon className="w-4 h-4" />
+                                              Edit
+                                            </button>
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleDeleteMessage(message.id);
+                                                setMessageActionMenu(null);
+                                              }}
+                                              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors text-left"
+                                            >
+                                              <TrashIcon className="w-4 h-4" />
+                                              Delete
+                                            </button>
+                                          </>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div
+                                  data-message-id={message.id}
+                                  onClick={() => {
+                                    setShowReactionPicker(showReactionPicker === message.id ? null : message.id);
+                                    setReactingMessageId(message.id);
+                                  }}
+                                  className={`px-4 py-3 rounded-2xl shadow-sm cursor-pointer hover:shadow-md transition-shadow relative ${isOwn
+                                    ? isEmojiOnly(message.content)
                                       ? 'bg-base-100 text-base-content rounded-br-md'
                                       : 'text-white rounded-br-md'
                                     : 'border rounded-bl-md bg-white border-gray-200 text-base-content shadow-sm'
-                                }`}
-                              style={isOwn && !isEmojiOnly(message.content) 
-                                ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' } 
-                                : {}
-                              }
-                              >
-                              {/* Reply preview - only show if message actually has a reply with valid data */}
-                              {(() => {
-                                const hasReplyId = !!message.reply_to_message_id;
-                                
-                                // Handle both array and object cases from Supabase
-                                let replyMessage: Message | null = null;
-                                if (message.reply_to_message) {
-                                  // Supabase might return it as an array or object
-                                  if (Array.isArray(message.reply_to_message)) {
-                                    replyMessage = message.reply_to_message.length > 0 ? message.reply_to_message[0] : null;
-                                  } else {
-                                    replyMessage = message.reply_to_message;
-                                  }
-                                }
-                                
-                                const hasValidReplyData = replyMessage && 
-                                  (replyMessage.sender || replyMessage.content || replyMessage.attachment_url);
-                                
-                                // Debug logging
-                                if (hasReplyId && !hasValidReplyData) {
-                                  console.warn('🔍 [Reply Debug] Message has reply_to_message_id but invalid reply data:', {
-                                    messageId: message.id,
-                                    replyToMessageId: message.reply_to_message_id,
-                                    replyToMessageRaw: message.reply_to_message,
-                                    replyToMessageProcessed: replyMessage,
-                                    isArray: Array.isArray(message.reply_to_message)
-                                  });
-                                }
-                                
-                                return hasReplyId && hasValidReplyData && replyMessage ? (
-                                  <div className={`mb-2 p-2 rounded-lg border-l-4 ${
-                                    isOwn ? 'bg-white/20 border-white/40' : 'bg-green-50 border-green-300'
-                                  }`}>
-                                    <div className="text-xs font-semibold opacity-80 mb-1">
-                                      {replyMessage.sender?.tenants_employee?.display_name || 
-                                       replyMessage.sender?.full_name || 
-                                       'Unknown'}
-                                    </div>
-                                    {/* Only show content if it exists, don't show "Media" placeholder */}
-                                    {replyMessage.content && (
-                                      <div className="text-xs opacity-70 line-clamp-2">
-                                        {replyMessage.content}
-                                      </div>
-                                    )}
-                                    {/* Show attachment indicator if no content but has attachment */}
-                                    {!replyMessage.content && replyMessage.attachment_url && (
-                                      <div className="text-xs opacity-70 italic">
-                                        {replyMessage.message_type === 'image' ? '📷 Image' : 
-                                         replyMessage.message_type === 'voice' ? '🎤 Voice message' :
-                                         replyMessage.message_type === 'file' ? '📎 File' : '📎 Attachment'}
-                                      </div>
-                                    )}
-                                  </div>
-                                ) : null;
-                              })()}
-                              
-                              {/* Message content */}
-                              {message.content && (
-                                <div className="flex items-end gap-2">
-                                  <div 
-                                    className="break-words text-base whitespace-pre-wrap flex-1"
-                                    dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
-                                    style={{ 
-                                      textAlign: getTextDirection(message.content) === 'rtl' ? 'right' : 
-                                                 getTextDirection(message.content) === 'auto' ? 'start' : 'left',
-                                      ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
-                                      fontSize: '1rem',
-                                      lineHeight: '1.5',
-                                      wordBreak: 'break-word',
-                                      overflowWrap: 'break-word',
-                                      whiteSpace: 'pre-wrap',
-                                      unicodeBidi: 'plaintext' // Ensures proper bidirectional text handling
-                                    }}
-                                  >
-                                    {renderMessageContent(message.content, isOwn)}
-                                  </div>
-                                  {message.edited_at && (
-                                    <span className="text-xs opacity-60 italic" style={{ fontSize: '0.75rem' }}>
-                                      (edited)
-                                    </span>
-                                  )}
-                                </div>
-                              )}
-                              
-                              {/* File attachment */}
-                              {message.attachment_url && (
-                                <div className={`mt-2 rounded-lg ${
-                                  `border ${isOwn ? 'bg-white/10 border-white/20' : 'bg-gray-50 border-gray-200'}`
-                                }`}>
-                              {message.message_type === 'voice' ? (
-                                // Voice message player
-                                <div className="p-3 flex items-center gap-3">
-                                  {/* Employee image for own messages (all conversation types) and group chats */}
-                                  {(isOwn || selectedConversation.type !== 'direct') && (
-                                    <div className="flex-shrink-0">
-                                      {renderUserAvatar({
-                                        userId: message.sender_id,
-                                        name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
-                                        photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
-                                        sizeClass: 'w-8 h-8',
-                                        borderClass: 'border border-base-300',
-                                        textClass: 'text-xs',
-                                        loading: 'lazy',
-                                      })}
-                                    </div>
-                                  )}
-                                  <button
-                                    onClick={() => playVoiceMessage(message.id)}
-                                    className={`p-2 rounded-full transition-all flex-shrink-0 ${
-                                      isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'text-white hover:opacity-80'
                                     }`}
-                                    style={!isOwn ? { backgroundColor: '#3E28CD' } : {}}
-                                    onMouseEnter={(e) => {
-                                      if (!isOwn) {
-                                        e.currentTarget.style.opacity = '0.8';
+                                  style={isOwn && !isEmojiOnly(message.content)
+                                    ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' }
+                                    : {}
+                                  }
+                                >
+                                  {/* Reply preview - only show if message actually has a reply with valid data */}
+                                  {(() => {
+                                    const hasReplyId = !!message.reply_to_message_id;
+
+                                    // Handle both array and object cases from Supabase
+                                    let replyMessage: Message | null = null;
+                                    if (message.reply_to_message) {
+                                      // Supabase might return it as an array or object
+                                      if (Array.isArray(message.reply_to_message)) {
+                                        replyMessage = message.reply_to_message.length > 0 ? message.reply_to_message[0] : null;
+                                      } else {
+                                        replyMessage = message.reply_to_message;
                                       }
-                                    }}
-                                    onMouseLeave={(e) => {
-                                      if (!isOwn) {
-                                        e.currentTarget.style.opacity = '1';
-                                      }
-                                    }}
-                                    title={playingVoiceId === message.id ? "Pause voice message" : "Play voice message"}
-                                  >
-                                    {playingVoiceId === message.id ? (
-                                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
-                                      </svg>
-                                    ) : (
-                                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M8 5v14l11-7z"/>
-                                      </svg>
-                                    )}
-                                  </button>
-                                  <div className="flex-1"></div>
-                                    <div className="flex items-center gap-2">
-                                      {/* Waveform visualization */}
-                                      <div className="flex-1 flex items-end gap-0.5 h-8 px-1">
-                                        {(() => {
-                                          const waveform = message.voice_waveform?.waveform || 
-                                                          (Array.isArray(message.voice_waveform) ? message.voice_waveform : null) ||
-                                                          Array(50).fill(0).map(() => Math.random() * 0.5 + 0.3);
-                                          const isPlaying = playingVoiceId === message.id;
-                                          const progress = voiceProgress[message.id] || 0;
-                                          
-                                          return waveform.map((value: number, index: number) => {
-                                            const barHeight = Math.max(value * 100, 15); // Min 15% height
-                                            const isActive = isPlaying && (index / waveform.length) * 100 <= progress;
-                                            
-                                            return (
-                                              <div
-                                                key={index}
-                                                className="transition-all duration-75"
-                                                style={{
-                                                  width: '2px',
-                                                  height: `${barHeight}%`,
-                                                  minHeight: '3px',
-                                                  borderRadius: '1px',
-                                                  backgroundColor: isOwn 
-                                                    ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.4)')
-                                                    : chatBackgroundImageUrl
-                                                      ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.5)')
-                                                    : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
-                                                }}
-                                              />
-                                            );
-                                          });
-                                        })()}
+                                    }
+
+                                    const hasValidReplyData = replyMessage &&
+                                      (replyMessage.sender || replyMessage.content || replyMessage.attachment_url);
+
+                                    // Debug logging
+                                    if (hasReplyId && !hasValidReplyData) {
+                                      console.warn('🔍 [Reply Debug] Message has reply_to_message_id but invalid reply data:', {
+                                        messageId: message.id,
+                                        replyToMessageId: message.reply_to_message_id,
+                                        replyToMessageRaw: message.reply_to_message,
+                                        replyToMessageProcessed: replyMessage,
+                                        isArray: Array.isArray(message.reply_to_message)
+                                      });
+                                    }
+
+                                    return hasReplyId && hasValidReplyData && replyMessage ? (
+                                      <div className={`mb-2 p-2 rounded-lg border-l-4 ${isOwn ? 'bg-white/20 border-white/40' : 'bg-green-50 border-green-300'
+                                        }`}>
+                                        <div className="text-xs font-semibold opacity-80 mb-1">
+                                          {replyMessage.sender?.tenants_employee?.display_name ||
+                                            replyMessage.sender?.full_name ||
+                                            'Unknown'}
+                                        </div>
+                                        {/* Only show content if it exists, don't show "Media" placeholder */}
+                                        {replyMessage.content && (
+                                          <div className="text-xs opacity-70 line-clamp-2">
+                                            {replyMessage.content}
+                                          </div>
+                                        )}
+                                        {/* Show attachment indicator if no content but has attachment */}
+                                        {!replyMessage.content && replyMessage.attachment_url && (
+                                          <div className="text-xs opacity-70 italic">
+                                            {replyMessage.message_type === 'image' ? '📷 Image' :
+                                              replyMessage.message_type === 'voice' ? '🎤 Voice message' :
+                                                replyMessage.message_type === 'file' ? '📎 File' : '📎 Attachment'}
+                                          </div>
+                                        )}
                                       </div>
-                                      <span className="text-sm font-mono whitespace-nowrap" style={{
-                                        color: isOwn 
-                                          ? 'rgba(255, 255, 255, 0.8)' 
-                                          : chatBackgroundImageUrl 
-                                            ? 'rgba(255, 255, 255, 0.9)' 
-                                            : '#4b5563'
-                                      }}>
-                                        {formatVoiceDuration(message.voice_duration)}
-                                      </span>
+                                    ) : null;
+                                  })()}
+
+                                  {/* Message content */}
+                                  {message.content && (
+                                    <div className="flex items-end gap-2">
+                                      <div
+                                        className="break-words text-base whitespace-pre-wrap flex-1"
+                                        dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
+                                        style={{
+                                          textAlign: getTextDirection(message.content) === 'rtl' ? 'right' :
+                                            getTextDirection(message.content) === 'auto' ? 'start' : 'left',
+                                          ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
+                                          fontSize: '1rem',
+                                          lineHeight: '1.5',
+                                          wordBreak: 'break-word',
+                                          overflowWrap: 'break-word',
+                                          whiteSpace: 'pre-wrap',
+                                          unicodeBidi: 'plaintext' // Ensures proper bidirectional text handling
+                                        }}
+                                      >
+                                        {renderMessageContent(message.content, isOwn)}
+                                      </div>
+                                      {message.edited_at && (
+                                        <span className="text-xs opacity-60 italic" style={{ fontSize: '0.75rem' }}>
+                                          (edited)
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {/* File attachment */}
+                                  {message.attachment_url && (
+                                    <div className={`mt-2 rounded-lg ${`border ${isOwn ? 'bg-white/10 border-white/20' : 'bg-gray-50 border-gray-200'}`
+                                      }`}>
+                                      {message.message_type === 'voice' ? (
+                                        // Voice message player
+                                        <div className="p-3 flex items-center gap-3">
+                                          {/* Employee image for own messages (all conversation types) and group chats */}
+                                          {(isOwn || selectedConversation.type !== 'direct') && (
+                                            <div className="flex-shrink-0">
+                                              {renderUserAvatar({
+                                                userId: message.sender_id,
+                                                name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
+                                                photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
+                                                sizeClass: 'w-8 h-8',
+                                                borderClass: 'border border-base-300',
+                                                textClass: 'text-xs',
+                                                loading: 'lazy',
+                                              })}
+                                            </div>
+                                          )}
+                                          <button
+                                            onClick={() => playVoiceMessage(message.id)}
+                                            className={`p-2 rounded-full transition-all flex-shrink-0 ${isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'text-white hover:opacity-80'
+                                              }`}
+                                            style={!isOwn ? { backgroundColor: '#3E28CD' } : {}}
+                                            onMouseEnter={(e) => {
+                                              if (!isOwn) {
+                                                e.currentTarget.style.opacity = '0.8';
+                                              }
+                                            }}
+                                            onMouseLeave={(e) => {
+                                              if (!isOwn) {
+                                                e.currentTarget.style.opacity = '1';
+                                              }
+                                            }}
+                                            title={playingVoiceId === message.id ? "Pause voice message" : "Play voice message"}
+                                          >
+                                            {playingVoiceId === message.id ? (
+                                              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                                <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+                                              </svg>
+                                            ) : (
+                                              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                                <path d="M8 5v14l11-7z" />
+                                              </svg>
+                                            )}
+                                          </button>
+                                          <div className="flex-1"></div>
+                                          <div className="flex items-center gap-2">
+                                            {/* Waveform visualization */}
+                                            <div className="flex-1 flex items-end gap-0.5 h-8 px-1">
+                                              {(() => {
+                                                const waveform = message.voice_waveform?.waveform ||
+                                                  (Array.isArray(message.voice_waveform) ? message.voice_waveform : null) ||
+                                                  Array(50).fill(0).map(() => Math.random() * 0.5 + 0.3);
+                                                const isPlaying = playingVoiceId === message.id;
+                                                const progress = voiceProgress[message.id] || 0;
+
+                                                return waveform.map((value: number, index: number) => {
+                                                  const barHeight = Math.max(value * 100, 15); // Min 15% height
+                                                  const isActive = isPlaying && (index / waveform.length) * 100 <= progress;
+
+                                                  return (
+                                                    <div
+                                                      key={index}
+                                                      className="transition-all duration-75"
+                                                      style={{
+                                                        width: '2px',
+                                                        height: `${barHeight}%`,
+                                                        minHeight: '3px',
+                                                        borderRadius: '1px',
+                                                        backgroundColor: isOwn
+                                                          ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.4)')
+                                                          : chatBackgroundImageUrl
+                                                            ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.5)')
+                                                            : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
+                                                      }}
+                                                    />
+                                                  );
+                                                });
+                                              })()}
+                                            </div>
+                                            <span className="text-sm font-mono whitespace-nowrap" style={{
+                                              color: isOwn
+                                                ? 'rgba(255, 255, 255, 0.8)'
+                                                : chatBackgroundImageUrl
+                                                  ? 'rgba(255, 255, 255, 0.9)'
+                                                  : '#4b5563'
+                                            }}>
+                                              {formatVoiceDuration(message.voice_duration)}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        // File attachment
+                                        <div className="flex items-center gap-3 p-3">
+                                          <div className={`p-3 rounded-lg ${isOwn ? 'bg-white/20' : chatBackgroundImageUrl ? 'bg-white/10' : 'bg-gray-100'
+                                            }`}>
+                                            <PaperClipIcon className={`w-5 h-5 ${isOwn ? 'text-white' : chatBackgroundImageUrl ? 'text-white' : 'text-gray-600'
+                                              }`} />
+                                          </div>
+                                          <div className="flex-1 min-w-0">
+                                            <button
+                                              onClick={() => window.open(message.attachment_url, '_blank')}
+                                              className="text-sm font-medium hover:underline truncate block"
+                                              style={{ color: chatBackgroundImageUrl ? 'white' : 'inherit' }}
+                                            >
+                                              {message.attachment_name}
+                                            </button>
+                                            <p className="text-xs opacity-75" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
+                                              {Math.round((message.attachment_size || 0) / 1024)} KB •
+                                              {message.attachment_type?.split('/')[1]?.toUpperCase() || 'FILE'}
+                                            </p>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {/* Timestamp inside message bubble */}
+                                  <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                                    <span className={`text-xs ${isOwn
+                                      ? ''
+                                      : 'text-base-content/60'
+                                      }`}
+                                      style={isOwn ? { color: 'rgba(255, 255, 255, 0.7)' } : {}}
+                                    >
+                                      {formatMessageTime(message.sent_at)}
+                                    </span>
+                                    {isOwn && renderReadReceipts(message)}
                                   </div>
                                 </div>
-                              ) : (
-                                // File attachment
-                                <div className="flex items-center gap-3 p-3">
-                                  <div className={`p-3 rounded-lg ${
-                                    isOwn ? 'bg-white/20' : chatBackgroundImageUrl ? 'bg-white/10' : 'bg-gray-100'
-                                  }`}>
-                                    <PaperClipIcon className={`w-5 h-5 ${
-                                      isOwn ? 'text-white' : chatBackgroundImageUrl ? 'text-white' : 'text-gray-600'
-                                    }`} />
-                                  </div>
-                                  <div className="flex-1 min-w-0">
+                              </div>
+
+                              {/* Reaction picker */}
+                              {showReactionPicker === message.id && (
+                                <div className={`reaction-picker-container absolute ${isOwn ? 'bottom-6 right-0' : 'bottom-6 left-0'} bg-white border border-gray-200 rounded-lg shadow-lg p-2 flex gap-1 z-50`}>
+                                  {['👍', '❤️', '😂', '😮', '😢', '😡', '👏'].map((emoji) => (
                                     <button
-                                      onClick={() => window.open(message.attachment_url, '_blank')}
-                                      className="text-sm font-medium hover:underline truncate block"
-                                      style={{ color: chatBackgroundImageUrl ? 'white' : 'inherit' }}
+                                      key={emoji}
+                                      onClick={() => handleAddReaction(message.id, emoji)}
+                                      className="p-2 hover:bg-base-200 rounded transition-colors"
+                                      title={`React with ${emoji}`}
                                     >
-                                      {message.attachment_name}
+                                      <span className="text-lg">{emoji}</span>
                                     </button>
-                                    <p className="text-xs opacity-75" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
-                                      {Math.round((message.attachment_size || 0) / 1024)} KB • 
-                                      {message.attachment_type?.split('/')[1]?.toUpperCase() || 'FILE'}
-                                    </p>
-                                  </div>
+                                  ))}
+                                </div>
+                              )}
+
+
+                              {/* Reactions */}
+                              {message.reactions && message.reactions.length > 0 && (
+                                <div className={`flex flex-wrap gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                                  {Object.entries(getReactionsByEmoji(message.reactions)).map(([emoji, reactions]) => (
+                                    <button
+                                      key={emoji}
+                                      onClick={() => {
+                                        if (hasUserReacted(message.reactions, emoji)) {
+                                          handleRemoveReaction(message.id, emoji);
+                                        } else {
+                                          handleAddReaction(message.id, emoji);
+                                        }
+                                      }}
+                                      className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs border transition-colors ${hasUserReacted(message.reactions, emoji)
+                                        ? 'bg-blue-100 border-blue-300 text-blue-700'
+                                        : 'bg-gray-100 border-gray-200 text-gray-600 hover:bg-gray-200'
+                                        }`}
+                                    >
+                                      <span>{emoji}</span>
+                                      <span>{reactions.length}</span>
+                                    </button>
+                                  ))}
                                 </div>
                               )}
                             </div>
-                          )}
-                          
-                              {/* Timestamp inside message bubble */}
-                              <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                                <span className={`text-xs ${
-                                  isOwn 
-                                    ? '' 
-                                    : 'text-base-content/60'
-                                }`}
-                                style={isOwn ? { color: 'rgba(255, 255, 255, 0.7)' } : {}}
-                                >
-                                  {formatMessageTime(message.sent_at)}
-                                </span>
-                                {isOwn && renderReadReceipts(message)}
-                              </div>
-                              </div>
-                            </div>
-                          
-                          {/* Reaction picker */}
-                          {showReactionPicker === message.id && (
-                            <div className={`reaction-picker-container absolute ${isOwn ? 'bottom-6 right-0' : 'bottom-6 left-0'} bg-white border border-gray-200 rounded-lg shadow-lg p-2 flex gap-1 z-50`}>
-                              {['👍', '❤️', '😂', '😮', '😢', '😡', '👏'].map((emoji) => (
-                                <button
-                                  key={emoji}
-                                  onClick={() => handleAddReaction(message.id, emoji)}
-                                  className="p-2 hover:bg-base-200 rounded transition-colors"
-                                  title={`React with ${emoji}`}
-                                >
-                                  <span className="text-lg">{emoji}</span>
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                          
-                          
-                          {/* Reactions */}
-                          {message.reactions && message.reactions.length > 0 && (
-                            <div className={`flex flex-wrap gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                              {Object.entries(getReactionsByEmoji(message.reactions)).map(([emoji, reactions]) => (
-                                <button
-                                  key={emoji}
-                                  onClick={() => {
-                                    if (hasUserReacted(message.reactions, emoji)) {
-                                      handleRemoveReaction(message.id, emoji);
-                                    } else {
-                                      handleAddReaction(message.id, emoji);
-                                    }
-                                  }}
-                                  className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs border transition-colors ${
-                                    hasUserReacted(message.reactions, emoji)
-                                      ? 'bg-blue-100 border-blue-300 text-blue-700'
-                                      : 'bg-gray-100 border-gray-200 text-gray-600 hover:bg-gray-200'
-                                  }`}
-                                >
-                                  <span>{emoji}</span>
-                                  <span>{reactions.length}</span>
-                                </button>
-                              ))}
-                            </div>
-                          )}
                           </div>
-                        </div>
-                      )}
+                        )}
                       </motion.div>
                     );
                   })}
                 </AnimatePresence>
               )}
-              
+
               {/* Typing indicator */}
               {selectedConversation && typingUsers.has(selectedConversation.id) && (
                 <div className="flex items-center gap-2 px-4 py-2">
@@ -6797,7 +6789,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   </div>
                 </div>
               )}
-              
+
               {/* New messages indicator when user is scrolled up */}
               {isUserScrolling && !shouldAutoScroll && (
                 <div className="fixed bottom-20 right-4 z-10">
@@ -6823,7 +6815,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   </button>
                 </div>
               )}
-              
+
               <div ref={messagesEndRef} />
             </div>
 
@@ -6863,7 +6855,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       </span>
                     </div>
                   )}
-                  
+
                   {/* Tools Dropdown Menu */}
                   {showDesktopTools && !isRecording && (
                     <div className="absolute bottom-12 left-0 z-50 bg-base-100 border border-base-300 rounded-lg shadow-lg min-w-[180px]">
@@ -6903,10 +6895,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     </div>
                   )}
                 </div>
-                
+
                 <div className="relative">
-                  
-                  
+
+
                   {/* Emoji Picker */}
                   {isEmojiPickerOpen && (
                     <div className="absolute bottom-12 left-0 z-50">
@@ -6925,7 +6917,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       />
                     </div>
                   )}
-                  
+
                   {/* Lead Search Dropdown */}
                   {isLeadSearchOpen && (
                     <div className="absolute bottom-12 left-0 z-50 bg-base-100 border border-base-300 rounded-lg shadow-lg w-80 max-h-96 overflow-hidden lead-search-dropdown">
@@ -6950,7 +6942,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           )}
                         </div>
                       </div>
-                      
+
                       <div className="max-h-64 overflow-y-auto">
                         {leadSearchResults.length > 0 ? (
                           leadSearchResults.map((lead) => (
@@ -6984,7 +6976,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           </div>
                         )}
                       </div>
-                      
+
                       <div className="p-2 border-t border-base-300">
                         <button
                           onClick={() => {
@@ -7000,7 +6992,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     </div>
                   )}
                 </div>
-                
+
                 <div className="flex-1 flex flex-col gap-2">
                   {/* Reply preview - Desktop */}
                   {(messageToReply || messageToEdit) && (
@@ -7039,7 +7031,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       </button>
                     </div>
                   )}
-                  
+
                   <textarea
                     ref={messageInputRef}
                     value={messageToEdit ? editingMessageText : newMessage}
@@ -7056,10 +7048,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     className="textarea w-full resize-none max-h-32 border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
                     rows={1}
                     disabled={isSending}
-                    style={{ 
+                    style={{
                       height: '48px',
                       minHeight: '48px',
-                      backgroundColor: 'rgba(255, 255, 255, 0.8)', 
+                      backgroundColor: 'rgba(255, 255, 255, 0.8)',
                       backdropFilter: 'blur(10px)',
                       boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
                       padding: '12px 16px',
@@ -7067,12 +7059,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     }}
                   />
                 </div>
-                
+
                 <button
                   onClick={!newMessage.trim() && !messageToEdit ? startVoiceRecording : sendMessage}
                   disabled={isSending}
                   className="btn btn-circle w-12 h-12 text-gray-600 shadow-lg hover:shadow-xl transition-shadow flex-shrink-0"
-                  style={{ 
+                  style={{
                     backgroundColor: 'rgba(255, 255, 255, 0.8)',
                     backdropFilter: 'blur(10px)',
                     WebkitBackdropFilter: 'blur(10px)',
@@ -7097,9 +7089,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         ) : (
           <>
             {/* Chat Header - No Conversation Selected */}
-            <div 
+            <div
               className="p-4 border-b border-white/30 sticky top-0 z-20"
-              style={{ 
+              style={{
                 backgroundColor: 'rgba(255, 255, 255, 0.6)',
                 backdropFilter: 'blur(10px)',
                 WebkitBackdropFilter: 'blur(10px)',
@@ -7107,7 +7099,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               }}
             >
               <div className="flex items-center justify-end">
-                <button 
+                <button
                   onClick={onClose}
                   className="btn btn-ghost btn-circle text-base-content/70 hover:bg-base-200"
                   title="Close Messages"
@@ -7116,7 +7108,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </button>
               </div>
             </div>
-            <div 
+            <div
               className="flex-1 flex items-center justify-center relative rmq-messages-area"
               style={{
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
@@ -7128,7 +7120,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               }}
             >
               <div className="text-center relative z-10">
-                <div 
+                <div
                   className="inline-block px-8 py-6 rounded-2xl backdrop-blur-md shadow-xl"
                   style={{
                     backgroundColor: 'rgba(255, 255, 255, 0.7)',
@@ -7137,15 +7129,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     border: '1px solid rgba(255, 255, 255, 0.3)'
                   }}
                 >
-                <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-6" style={{ color: '#3E28CD' }} />
-                <h3 className="text-xl font-bold text-base-content mb-2">Welcome to RMQ Messages</h3>
-                <p className="text-base-content/80 mb-6 max-w-md">
-                  Pick your <span className="font-semibold" style={{ color: '#3E28CD' }}>Employee</span> that you want to chat with.
-                </p>
-                <div className="flex items-center justify-center gap-4 text-sm text-base-content/70">
-                  <div className="flex items-center gap-2">
-                    
-                    
+                  <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-6" style={{ color: '#3E28CD' }} />
+                  <h3 className="text-xl font-bold text-base-content mb-2">Welcome to RMQ Messages</h3>
+                  <p className="text-base-content/80 mb-6 max-w-md">
+                    Pick your <span className="font-semibold" style={{ color: '#3E28CD' }}>Employee</span> that you want to chat with.
+                  </p>
+                  <div className="flex items-center justify-center gap-4 text-sm text-base-content/70">
+                    <div className="flex items-center gap-2">
+
+
                     </div>
                   </div>
                 </div>
@@ -7160,7 +7152,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         {selectedConversation && (
           <>
             {/* Mobile Chat Header */}
-            <div 
+            <div
               className={`absolute top-0 left-0 right-0 z-30 ${selectedConversation.type === 'group' ? 'p-4 bg-base-100 border-b border-base-300' : 'p-3 pointer-events-none'}`}
               style={selectedConversation.type === 'group' ? { boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)' } : {}}
             >
@@ -7172,7 +7164,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     <button
                       onClick={() => setShowMobileConversations(true)}
                       className="btn btn-circle w-12 h-12 text-gray-600 shadow-lg hover:shadow-xl transition-shadow"
-                      style={{ 
+                      style={{
                         backgroundColor: 'rgba(255, 255, 255, 0.8)',
                         backdropFilter: 'blur(10px)',
                         WebkitBackdropFilter: 'blur(10px)',
@@ -7183,7 +7175,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       <ArrowLeftIcon className="w-5 h-5" />
                     </button>
                   </div>
-                  
+
                   {/* Center: Profile Image with Name - Separate Floating Box */}
                   <div className="flex-1 flex flex-col items-center justify-center min-w-0 px-2 pointer-events-auto">
                     {(() => {
@@ -7216,7 +7208,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 console.error('Error fetching employee background photo:', error);
                               }
                             }
-                            
+
                             setSelectedEmployee({
                               id: otherParticipant.user.employee_id?.toString() || '',
                               display_name: employee.display_name || name,
@@ -7240,7 +7232,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           <div
                             className="flex flex-col items-center px-4 py-2 rounded-2xl shadow-lg hover:shadow-xl transition-shadow cursor-pointer"
                             onClick={handleAvatarClick}
-                            style={{ 
+                            style={{
                               backgroundColor: 'rgba(255, 255, 255, 0.8)',
                               backdropFilter: 'blur(10px)',
                               WebkitBackdropFilter: 'blur(10px)',
@@ -7260,7 +7252,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 textClass: 'text-base',
                               })}
                               {/* Online/Offline Indicator Circle */}
-                              <div 
+                              <div
                                 className="absolute -top-1 -right-1 w-4 h-4 rounded-full border-2 border-white shadow-sm"
                                 style={{
                                   backgroundColor: isOnline ? '#10b981' : '#9ca3af'
@@ -7276,7 +7268,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       return null;
                     })()}
                   </div>
-                  
+
                   {/* Right: Image Button and Exit Button - Separate Floating Boxes */}
                   <div className="flex-shrink-0 flex items-center gap-2 pointer-events-auto">
                     {/* Background Image Upload Button - Separate Floating Box */}
@@ -7284,7 +7276,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       onClick={() => backgroundImageInputRef.current?.click()}
                       disabled={isUploadingBackground}
                       className="btn btn-circle w-12 h-12 text-gray-600 shadow-lg hover:shadow-xl transition-shadow"
-                      style={{ 
+                      style={{
                         backgroundColor: 'rgba(255, 255, 255, 0.8)',
                         backdropFilter: 'blur(10px)',
                         WebkitBackdropFilter: 'blur(10px)',
@@ -7300,10 +7292,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       )}
                     </button>
                     {/* Exit Button - Separate Floating Box */}
-                    <button 
+                    <button
                       onClick={onClose}
                       className="btn btn-circle w-12 h-12 text-gray-600 shadow-lg hover:shadow-xl transition-shadow"
-                      style={{ 
+                      style={{
                         backgroundColor: 'rgba(255, 255, 255, 0.8)',
                         backdropFilter: 'blur(10px)',
                         WebkitBackdropFilter: 'blur(10px)',
@@ -7319,32 +7311,32 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               ) : (
                 /* Original Layout for Group Chats */
                 <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => setShowMobileConversations(true)}
-                    className="btn btn-ghost btn-sm btn-circle text-base-content/70 hover:bg-base-200"
-                  >
-                    <ArrowLeftIcon className="w-5 h-5" />
-                  </button>
-                  {getConversationAvatar(selectedConversation)}
-                  <div className="flex-1 min-w-0">
-                    <h2 className="font-semibold text-gray-900 truncate">
-                      {getConversationTitle(selectedConversation)}
-                    </h2>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => setShowMobileConversations(true)}
+                      className="btn btn-ghost btn-sm btn-circle text-base-content/70 hover:bg-base-200"
+                    >
+                      <ArrowLeftIcon className="w-5 h-5" />
+                    </button>
+                    {getConversationAvatar(selectedConversation)}
+                    <div className="flex-1 min-w-0">
+                      <h2 className="font-semibold text-gray-900 truncate">
+                        {getConversationTitle(selectedConversation)}
+                      </h2>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={onClose}
+                      className="btn btn-ghost btn-circle text-base-content/70 hover:bg-base-200"
+                      title="Close Messages"
+                    >
+                      <XMarkIcon className="w-7 h-7" />
+                    </button>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button 
-                    onClick={onClose}
-                    className="btn btn-ghost btn-circle text-base-content/70 hover:bg-base-200"
-                    title="Close Messages"
-                  >
-                    <XMarkIcon className="w-7 h-7" />
-                  </button>
-                </div>
-              </div>
               )}
-              
+
               {/* Group Members List - Mobile (Collapsible) */}
               {selectedConversation.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 && (
                 <div className="mt-3 border-t border-gray-200">
@@ -7366,15 +7358,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
                         <div className="flex gap-4 pb-2 min-w-max">
                           {selectedConversation.participants.map((participant) => {
-                            const userName = participant.user?.tenants_employee?.display_name || 
-                                           participant.user?.full_name || 
-                                           `User ${participant.user_id?.slice(-4)}`;
+                            const userName = participant.user?.tenants_employee?.display_name ||
+                              participant.user?.full_name ||
+                              `User ${participant.user_id?.slice(-4)}`;
                             const userPhoto = participant.user?.tenants_employee?.photo_url;
                             const isCurrentUser = participant.user_id === currentUser?.id;
-                            
+
                             return (
-                              <div 
-                                key={participant.id} 
+                              <div
+                                key={participant.id}
                                 onClick={() => !isCurrentUser && startDirectConversation(participant.user_id)}
                                 className={`flex flex-col items-center gap-1 flex-shrink-0 ${!isCurrentUser ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
                               >
@@ -7426,11 +7418,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           <div className="flex items-center justify-center mb-3">
                             <button
                               onClick={() => toggleGroupLock(selectedConversation.id)}
-                              className={`btn btn-ghost btn-sm ${
-                                isGroupLocked(selectedConversation)
-                                  ? 'text-yellow-600 hover:bg-yellow-500/20'
-                                  : 'text-gray-700 hover:bg-gray-100'
-                              }`}
+                              className={`btn btn-ghost btn-sm ${isGroupLocked(selectedConversation)
+                                ? 'text-yellow-600 hover:bg-yellow-500/20'
+                                : 'text-gray-700 hover:bg-gray-100'
+                                }`}
                               title={isGroupLocked(selectedConversation) ? "Unlock Group" : "Lock Group"}
                             >
                               {isGroupLocked(selectedConversation) ? (
@@ -7476,7 +7467,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             </div>
 
             {/* Top Blur Overlay - Mobile - At top edge of screen */}
-            <div 
+            <div
               className="fixed left-0 right-0 top-0 pointer-events-none"
               style={{
                 height: '40px',
@@ -7487,7 +7478,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               }}
             />
             {/* Bottom Blur Overlay - Mobile - At bottom edge of screen */}
-            <div 
+            <div
               className="fixed left-0 right-0 bottom-0 pointer-events-none"
               style={{
                 height: '25px',
@@ -7499,11 +7490,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             />
 
             {/* Mobile Messages */}
-            <div 
+            <div
               ref={mobileMessagesContainerRef}
               onScroll={handleScroll}
               className="flex-1 overflow-y-auto p-4 pb-24 space-y-4 min-h-0 overscroll-contain relative rmq-messages-area"
-              style={{ 
+              style={{
                 paddingTop: selectedConversation?.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 ? '180px' : '120px',
                 WebkitOverflowScrolling: 'touch',
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
@@ -7515,9 +7506,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               }}
             >
               {/* Floating Date Indicator - Mobile */}
-              <div 
+              <div
                 className="fixed top-32 left-1/2 -translate-x-1/2 z-[60] pointer-events-none"
-                style={{ 
+                style={{
                   opacity: showFloatingDate && floatingDate ? floatingDateOpacity : 0,
                   visibility: showFloatingDate && floatingDate ? 'visible' : 'hidden',
                   transition: 'opacity 200ms cubic-bezier(0.4, 0, 0.2, 1)',
@@ -7533,506 +7524,499 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               <AnimatePresence initial={false}>
                 {messages.map((message, index) => {
                   const isOwn = message.sender_id === currentUser?.id;
-                  const senderName = message.sender?.tenants_employee?.display_name || 
-                                   message.sender?.full_name || 
-                                   'Unknown User';
+                  const senderName = message.sender?.tenants_employee?.display_name ||
+                    message.sender?.full_name ||
+                    'Unknown User';
                   const senderPhoto = message.sender?.tenants_employee?.photo_url;
 
                   // Date separators removed - using floating indicator instead
 
-                return (
+                  return (
                     <motion.div
                       key={message.id}
                       initial={{ opacity: 0, y: 20, scale: 0.95 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, scale: 0.95 }}
-                      transition={{ 
+                      transition={{
                         duration: 0.3,
                         ease: [0.4, 0, 0.2, 1]
                       }}
                       data-message-id={message.id}
                     >
-                    {/* Unread messages indicator - Mobile */}
-                    {firstUnreadMessageIdRef.current === message.id && (
-                      <div className="flex items-center gap-3 my-4 px-2">
-                        <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
-                        <div className="flex items-center gap-2 px-3 py-1 bg-blue-500/10 rounded-full border border-blue-500/30">
-                          <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-                          <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">New messages</span>
-                        </div>
-                        <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
-                      </div>
-                    )}
-                    {/* Date Separator - Removed inline separators */}
-                    
-                    {/* Image, video and emoji messages - render outside bubble - Mobile */}
-                    {isImageMessage(message) ? (
-                      <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}>
-                        <div 
-                          className="relative cursor-pointer group"
-                          onClick={() => openMediaModal(message)}
-                        >
-                          <img
-                            src={message.attachment_url}
-                            alt={message.attachment_name}
-                            className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
-                          />
-                          <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                            <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
-                            </svg>
+                      {/* Unread messages indicator - Mobile */}
+                      {firstUnreadMessageIdRef.current === message.id && (
+                        <div className="flex items-center gap-3 my-4 px-2">
+                          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
+                          <div className="flex items-center gap-2 px-3 py-1 bg-blue-500/10 rounded-full border border-blue-500/30">
+                            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                            <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">New messages</span>
                           </div>
+                          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
                         </div>
-                        {/* Timestamp and read receipts at bottom of image - Mobile */}
-                        <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                          <span className="text-xs text-gray-500" style={{ 
-                            textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
-                          }}>
-                            {formatMessageTime(message.sent_at)}
-                          </span>
-                          {isOwn && renderReadReceipts(message)}
-                        </div>
-                      </div>
-                    ) : isVideoMessage(message) ? (
-                      <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}>
-                        <div 
-                          className="relative cursor-pointer group"
-                          onClick={() => openMediaModal(message)}
-                        >
-                          <video
-                            src={message.attachment_url}
-                            className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
-                            controls
-                            preload="metadata"
-                          />
-                          <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                            <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
-                            </svg>
-                          </div>
-                        </div>
-                        {/* Timestamp and read receipts at bottom of video - Mobile */}
-                        <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                          <span className="text-xs text-gray-500" style={{ 
-                            textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
-                          }}>
-                            {formatMessageTime(message.sent_at)}
-                          </span>
-                          {isOwn && renderReadReceipts(message)}
-                        </div>
-                      </div>
-                    ) : isEmojiOnly(message.content || '') ? (
-                      <div 
-                        className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}
-                        dir={getTextDirection(message.content || '')}
-                      >
-                        <div className="text-6xl">
-                          {renderMessageContent(message.content || '', isOwn)}
-                        </div>
-                        {/* Timestamp and read receipts at bottom of emoji - Mobile */}
-                        <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                          <span className="text-xs text-gray-500" style={{ 
-                            textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
-                          }}>
-                            {formatMessageTime(message.sent_at)}
-                          </span>
-                          {isOwn && renderReadReceipts(message)}
-                        </div>
-                      </div>
-                    ) : (
-                      <div
-                        className={`flex gap-2 group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
-                      >
-                        
-                        {/* Avatar for group chats - Mobile */}
-                        {!isOwn && selectedConversation.type !== 'direct' && (
-                          <div className="flex-shrink-0">
-                            {renderUserAvatar({
-                              userId: message.sender_id,
-                              name: senderName,
-                              photoUrl: message.sender?.tenants_employee?.photo_url,
-                              sizeClass: 'w-8 h-8',
-                              borderClass: 'border border-gray-200',
-                              textClass: 'text-xs',
-                              loading: 'lazy',
-                            })}
-                          </div>
-                        )}
-                        
-                        <div className={`max-w-[75%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
-                          {!isOwn && selectedConversation.type !== 'direct' && (
-                            <span 
-                              className="text-xs font-medium mb-1 px-2 py-0.5 rounded-full inline-block"
-                              style={{
-                                backgroundColor: 'rgba(255, 255, 255, 0.7)',
-                                backdropFilter: 'blur(10px)',
-                                WebkitBackdropFilter: 'blur(10px)',
-                                color: '#374151',
-                                border: '1px solid rgba(255, 255, 255, 0.3)',
-                                textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)'
-                              }}
-                            >
-                              {senderName}
-                            </span>
-                          )}
-                          <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative group`}>
-                            {/* Message actions dropdown - Mobile - positioned directly next to message box */}
-                            {/* For sent messages (isOwn): left side, for received messages: right side */}
-                            <div className={`absolute ${isOwn ? '-left-8 top-1/2 -translate-y-1/2' : '-right-8 top-1/2 -translate-y-1/2'} opacity-0 group-hover:opacity-100 transition-opacity z-10`}>
-                              <div className="relative message-action-menu">
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setMessageActionMenu(messageActionMenu === message.id ? null : message.id);
-                                  }}
-                                  className="p-1.5 rounded-full bg-white/90 hover:bg-white shadow-md border border-gray-200 transition-colors"
-                                  title="Message options"
-                                >
-                                  <EllipsisVerticalIcon className="w-4 h-4 text-gray-700" />
-                                </button>
-                                
-                                {/* Dropdown menu */}
-                                {messageActionMenu === message.id && (
-                                  <div className={`absolute ${isOwn ? 'left-0' : 'right-0'} bottom-full mb-1 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[140px] z-50`}>
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setMessageToForward(message);
-                                        setShowForwardModal(true);
-                                        setMessageActionMenu(null);
-                                      }}
-                                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
-                                    >
-                                      <ArrowRightIcon className="w-4 h-4" />
-                                      Forward
-                                    </button>
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setMessageToReply(message);
-                                        setMessageActionMenu(null);
-                                        // Focus input field
-                                        setTimeout(() => {
-                                          if (mobileMessageInputRef.current) {
-                                            mobileMessageInputRef.current.focus();
-                                          }
-                                        }, 100);
-                                      }}
-                                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
-                                    >
-                                      <ChatBubbleBottomCenterTextIcon className="w-4 h-4" />
-                                      Reply
-                                    </button>
-                                    {isOwn && (
-                                      <>
-                                        <button
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setMessageToEdit(message);
-                                            setEditingMessageText(message.content || '');
-                                            setMessageActionMenu(null);
-                                            // Focus input field
-                                            setTimeout(() => {
-                                              if (mobileMessageInputRef.current) {
-                                                mobileMessageInputRef.current.focus();
-                                              }
-                                            }, 100);
-                                          }}
-                                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
-                                        >
-                                          <PencilIcon className="w-4 h-4" />
-                                          Edit
-                                        </button>
-                                        <button
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleDeleteMessage(message.id);
-                                            setMessageActionMenu(null);
-                                          }}
-                                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors text-left"
-                                        >
-                                          <TrashIcon className="w-4 h-4" />
-                                          Delete
-                                        </button>
-                                      </>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
+                      )}
+                      {/* Date Separator - Removed inline separators */}
+
+                      {/* Image, video and emoji messages - render outside bubble - Mobile */}
+                      {isImageMessage(message) ? (
+                        <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}>
+                          <div
+                            className="relative cursor-pointer group"
+                            onClick={() => openMediaModal(message)}
+                          >
+                            <img
+                              src={message.attachment_url}
+                              alt={message.attachment_name}
+                              className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
+                            />
+                            <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                              </svg>
                             </div>
-                            
-                            <div
-                              data-message-id={message.id}
-                              onClick={() => {
-                                setShowReactionPicker(showReactionPicker === message.id ? null : message.id);
-                                setReactingMessageId(message.id);
-                              }}
-                              className={`px-4 py-3 rounded-2xl text-base cursor-pointer hover:shadow-md transition-shadow relative ${
-                                isOwn
-                                  ? isEmojiOnly(message.content) 
+                          </div>
+                          {/* Timestamp and read receipts at bottom of image - Mobile */}
+                          <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                            <span className="text-xs text-gray-500" style={{
+                              textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
+                            }}>
+                              {formatMessageTime(message.sent_at)}
+                            </span>
+                            {isOwn && renderReadReceipts(message)}
+                          </div>
+                        </div>
+                      ) : isVideoMessage(message) ? (
+                        <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}>
+                          <div
+                            className="relative cursor-pointer group"
+                            onClick={() => openMediaModal(message)}
+                          >
+                            <video
+                              src={message.attachment_url}
+                              className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
+                              controls
+                              preload="metadata"
+                            />
+                            <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                              </svg>
+                            </div>
+                          </div>
+                          {/* Timestamp and read receipts at bottom of video - Mobile */}
+                          <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                            <span className="text-xs text-gray-500" style={{
+                              textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
+                            }}>
+                              {formatMessageTime(message.sent_at)}
+                            </span>
+                            {isOwn && renderReadReceipts(message)}
+                          </div>
+                        </div>
+                      ) : isEmojiOnly(message.content || '') ? (
+                        <div
+                          className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}
+                          dir={getTextDirection(message.content || '')}
+                        >
+                          <div className="text-6xl">
+                            {renderMessageContent(message.content || '', isOwn)}
+                          </div>
+                          {/* Timestamp and read receipts at bottom of emoji - Mobile */}
+                          <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                            <span className="text-xs text-gray-500" style={{
+                              textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
+                            }}>
+                              {formatMessageTime(message.sent_at)}
+                            </span>
+                            {isOwn && renderReadReceipts(message)}
+                          </div>
+                        </div>
+                      ) : (
+                        <div
+                          className={`flex gap-2 group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
+                        >
+
+                          {/* Avatar for group chats - Mobile */}
+                          {!isOwn && selectedConversation.type !== 'direct' && (
+                            <div className="flex-shrink-0">
+                              {renderUserAvatar({
+                                userId: message.sender_id,
+                                name: senderName,
+                                photoUrl: message.sender?.tenants_employee?.photo_url,
+                                sizeClass: 'w-8 h-8',
+                                borderClass: 'border border-gray-200',
+                                textClass: 'text-xs',
+                                loading: 'lazy',
+                              })}
+                            </div>
+                          )}
+
+                          <div className={`max-w-[75%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
+                            {!isOwn && selectedConversation.type !== 'direct' && (
+                              <span
+                                className="text-xs font-medium mb-1 px-2 py-0.5 rounded-full inline-block"
+                                style={{
+                                  backgroundColor: 'rgba(255, 255, 255, 0.7)',
+                                  backdropFilter: 'blur(10px)',
+                                  WebkitBackdropFilter: 'blur(10px)',
+                                  color: '#374151',
+                                  border: '1px solid rgba(255, 255, 255, 0.3)',
+                                  textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)'
+                                }}
+                              >
+                                {senderName}
+                              </span>
+                            )}
+                            <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative group`}>
+                              {/* Message actions dropdown - Mobile - positioned directly next to message box */}
+                              {/* For sent messages (isOwn): left side, for received messages: right side */}
+                              <div className={`absolute ${isOwn ? '-left-8 top-1/2 -translate-y-1/2' : '-right-8 top-1/2 -translate-y-1/2'} opacity-0 group-hover:opacity-100 transition-opacity z-10`}>
+                                <div className="relative message-action-menu">
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setMessageActionMenu(messageActionMenu === message.id ? null : message.id);
+                                    }}
+                                    className="p-1.5 rounded-full bg-white/90 hover:bg-white shadow-md border border-gray-200 transition-colors"
+                                    title="Message options"
+                                  >
+                                    <EllipsisVerticalIcon className="w-4 h-4 text-gray-700" />
+                                  </button>
+
+                                  {/* Dropdown menu */}
+                                  {messageActionMenu === message.id && (
+                                    <div className={`absolute ${isOwn ? 'left-0' : 'right-0'} bottom-full mb-1 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[140px] z-50`}>
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setMessageToForward(message);
+                                          setShowForwardModal(true);
+                                          setMessageActionMenu(null);
+                                        }}
+                                        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                      >
+                                        <ArrowRightIcon className="w-4 h-4" />
+                                        Forward
+                                      </button>
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setMessageToReply(message);
+                                          setMessageActionMenu(null);
+                                          // Focus input field
+                                          setTimeout(() => {
+                                            if (mobileMessageInputRef.current) {
+                                              mobileMessageInputRef.current.focus();
+                                            }
+                                          }, 100);
+                                        }}
+                                        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                      >
+                                        <ChatBubbleBottomCenterTextIcon className="w-4 h-4" />
+                                        Reply
+                                      </button>
+                                      {isOwn && (
+                                        <>
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setMessageToEdit(message);
+                                              setEditingMessageText(message.content || '');
+                                              setMessageActionMenu(null);
+                                              // Focus input field
+                                              setTimeout(() => {
+                                                if (mobileMessageInputRef.current) {
+                                                  mobileMessageInputRef.current.focus();
+                                                }
+                                              }, 100);
+                                            }}
+                                            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                          >
+                                            <PencilIcon className="w-4 h-4" />
+                                            Edit
+                                          </button>
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleDeleteMessage(message.id);
+                                              setMessageActionMenu(null);
+                                            }}
+                                            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors text-left"
+                                          >
+                                            <TrashIcon className="w-4 h-4" />
+                                            Delete
+                                          </button>
+                                        </>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div
+                                data-message-id={message.id}
+                                onClick={() => {
+                                  setShowReactionPicker(showReactionPicker === message.id ? null : message.id);
+                                  setReactingMessageId(message.id);
+                                }}
+                                className={`px-4 py-3 rounded-2xl text-base cursor-pointer hover:shadow-md transition-shadow relative ${isOwn
+                                  ? isEmojiOnly(message.content)
                                     ? 'bg-base-100 text-base-content rounded-br-md'
                                     : 'text-white rounded-br-md'
                                   : 'border rounded-bl-md bg-white border-gray-200 text-base-content shadow-sm'
-                              }`}
-                              style={isOwn && !isEmojiOnly(message.content) 
-                                ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' } 
-                                : {}
-                              }
-                            >
-                            {/* Reply preview - Mobile - only show if message actually has a reply with valid data */}
-                            {(() => {
-                              const hasReplyId = !!message.reply_to_message_id;
-                              
-                              // Handle both array and object cases from Supabase
-                              let replyMessage: Message | null = null;
-                              if (message.reply_to_message) {
-                                // Supabase might return it as an array or object
-                                if (Array.isArray(message.reply_to_message)) {
-                                  replyMessage = message.reply_to_message.length > 0 ? message.reply_to_message[0] : null;
-                                } else {
-                                  replyMessage = message.reply_to_message;
+                                  }`}
+                                style={isOwn && !isEmojiOnly(message.content)
+                                  ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' }
+                                  : {}
                                 }
-                              }
-                              
-                              const hasValidReplyData = replyMessage && 
-                                (replyMessage.sender || replyMessage.content || replyMessage.attachment_url);
-                              
-                              return hasReplyId && hasValidReplyData && replyMessage ? (
-                                <div className={`mb-2 p-2 rounded-lg border-l-4 ${
-                                  isOwn ? 'bg-white/20 border-white/40' : 'bg-green-50 border-green-300'
-                                }`}>
-                                  <div className="text-xs font-semibold opacity-80 mb-1">
-                                    {replyMessage.sender?.tenants_employee?.display_name || 
-                                     replyMessage.sender?.full_name || 
-                                     'Unknown'}
-                                  </div>
-                                  {/* Only show content if it exists, don't show "Media" placeholder */}
-                                  {replyMessage.content && (
-                                    <div className="text-xs opacity-70 line-clamp-2">
-                                      {replyMessage.content}
-                                    </div>
-                                  )}
-                                  {/* Show attachment indicator if no content but has attachment */}
-                                  {!replyMessage.content && replyMessage.attachment_url && (
-                                    <div className="text-xs opacity-70 italic">
-                                      {replyMessage.message_type === 'image' ? '📷 Image' : 
-                                       replyMessage.message_type === 'voice' ? '🎤 Voice message' :
-                                       replyMessage.message_type === 'file' ? '📎 File' : '📎 Attachment'}
-                                    </div>
-                                  )}
-                                </div>
-                              ) : null;
-                            })()}
-                            
-                            {/* Message content */}
-                            {message.content && (
-                              <div 
-                                className="break-words text-base whitespace-pre-wrap"
-                                dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
-                                style={{ 
-                                  textAlign: getTextDirection(message.content) === 'rtl' ? 'right' : 
-                                             getTextDirection(message.content) === 'auto' ? 'start' : 'left',
-                                  ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
-                                  fontSize: '1rem',
-                                  lineHeight: '1.5',
-                                  wordBreak: 'break-word',
-                                  overflowWrap: 'break-word',
-                                  whiteSpace: 'pre-wrap',
-                                  unicodeBidi: 'plaintext' // Ensures proper bidirectional text handling
-                                }}
                               >
-                                {renderMessageContent(message.content, isOwn)}
-                              </div>
-                            )}
-                            
-                            {/* File attachment */}
-                            {message.attachment_url && (
-                              <div className={`mt-2 rounded-lg ${
-                                `border ${isOwn ? 'bg-white/10 border-white/20' : 'bg-gray-50 border-gray-200'}`
-                              }`}>
-                            {message.message_type === 'voice' ? (
-                              // Mobile voice message player
-                              <div className="p-2 flex items-center gap-2">
-                                {/* Employee image for own messages (all conversation types) and group chats */}
-                                {(isOwn || selectedConversation.type !== 'direct') && (
-                                  <div className="flex-shrink-0">
-                                    {renderUserAvatar({
-                                      userId: message.sender_id,
-                                      name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
-                                      photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
-                                      sizeClass: 'w-7 h-7',
-                                      borderClass: 'border border-base-300',
-                                      textClass: 'text-xs',
-                                      loading: 'lazy',
-                                    })}
+                                {/* Reply preview - Mobile - only show if message actually has a reply with valid data */}
+                                {(() => {
+                                  const hasReplyId = !!message.reply_to_message_id;
+
+                                  // Handle both array and object cases from Supabase
+                                  let replyMessage: Message | null = null;
+                                  if (message.reply_to_message) {
+                                    // Supabase might return it as an array or object
+                                    if (Array.isArray(message.reply_to_message)) {
+                                      replyMessage = message.reply_to_message.length > 0 ? message.reply_to_message[0] : null;
+                                    } else {
+                                      replyMessage = message.reply_to_message;
+                                    }
+                                  }
+
+                                  const hasValidReplyData = replyMessage &&
+                                    (replyMessage.sender || replyMessage.content || replyMessage.attachment_url);
+
+                                  return hasReplyId && hasValidReplyData && replyMessage ? (
+                                    <div className={`mb-2 p-2 rounded-lg border-l-4 ${isOwn ? 'bg-white/20 border-white/40' : 'bg-green-50 border-green-300'
+                                      }`}>
+                                      <div className="text-xs font-semibold opacity-80 mb-1">
+                                        {replyMessage.sender?.tenants_employee?.display_name ||
+                                          replyMessage.sender?.full_name ||
+                                          'Unknown'}
+                                      </div>
+                                      {/* Only show content if it exists, don't show "Media" placeholder */}
+                                      {replyMessage.content && (
+                                        <div className="text-xs opacity-70 line-clamp-2">
+                                          {replyMessage.content}
+                                        </div>
+                                      )}
+                                      {/* Show attachment indicator if no content but has attachment */}
+                                      {!replyMessage.content && replyMessage.attachment_url && (
+                                        <div className="text-xs opacity-70 italic">
+                                          {replyMessage.message_type === 'image' ? '📷 Image' :
+                                            replyMessage.message_type === 'voice' ? '🎤 Voice message' :
+                                              replyMessage.message_type === 'file' ? '📎 File' : '📎 Attachment'}
+                                        </div>
+                                      )}
+                                    </div>
+                                  ) : null;
+                                })()}
+
+                                {/* Message content */}
+                                {message.content && (
+                                  <div
+                                    className="break-words text-base whitespace-pre-wrap"
+                                    dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
+                                    style={{
+                                      textAlign: getTextDirection(message.content) === 'rtl' ? 'right' :
+                                        getTextDirection(message.content) === 'auto' ? 'start' : 'left',
+                                      ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
+                                      fontSize: '1rem',
+                                      lineHeight: '1.5',
+                                      wordBreak: 'break-word',
+                                      overflowWrap: 'break-word',
+                                      whiteSpace: 'pre-wrap',
+                                      unicodeBidi: 'plaintext' // Ensures proper bidirectional text handling
+                                    }}
+                                  >
+                                    {renderMessageContent(message.content, isOwn)}
                                   </div>
                                 )}
-                                <button
-                                  onClick={() => playVoiceMessage(message.id)}
-                                  className={`p-2 rounded-full transition-all flex-shrink-0 ${
-                                    isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'text-white hover:opacity-80'
-                                  }`}
-                                  style={!isOwn ? { backgroundColor: '#3E28CD' } : {}}
-                                  onMouseEnter={(e) => {
-                                    if (!isOwn) {
-                                      e.currentTarget.style.opacity = '0.8';
-                                    }
-                                  }}
-                                  onMouseLeave={(e) => {
-                                    if (!isOwn) {
-                                      e.currentTarget.style.opacity = '1';
-                                    }
-                                  }}
-                                  title={playingVoiceId === message.id ? "Pause voice message" : "Play voice message"}
-                                >
-                                  {playingVoiceId === message.id ? (
-                                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                                      <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
-                                    </svg>
-                                  ) : (
-                                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                                      <path d="M8 5v14l11-7z"/>
-                                    </svg>
-                                  )}
-                                </button>
-                                <div className="flex-1">
-                                  <div className="flex items-center gap-2">
-                                    {/* Waveform visualization */}
-                                    <div className="flex-1 flex items-end gap-0.5 h-6 px-1">
-                                      {(() => {
-                                        const waveform = message.voice_waveform?.waveform || 
-                                                        (Array.isArray(message.voice_waveform) ? message.voice_waveform : null) ||
-                                                        Array(50).fill(0).map(() => Math.random() * 0.5 + 0.3);
-                                        const isPlaying = playingVoiceId === message.id;
-                                        const progress = voiceProgress[message.id] || 0;
-                                        
-                                        return waveform.map((value: number, index: number) => {
-                                          const barHeight = Math.max(value * 100, 15); // Min 15% height
-                                          const isActive = isPlaying && (index / waveform.length) * 100 <= progress;
-                                          
-                                          return (
-                                            <div
-                                              key={index}
-                                              className="transition-all duration-75"
-                                              style={{
-                                                width: '1.5px',
-                                                height: `${barHeight}%`,
-                                                minHeight: '2px',
-                                                borderRadius: '0.75px',
-                                                backgroundColor: isOwn 
-                                                  ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.4)')
-                                                  : chatBackgroundImageUrl
-                                                    ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.5)')
-                                                  : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
-                                              }}
-                                            />
-                                          );
-                                        });
-                                      })()}
-                                    </div>
-                                    <span className="text-xs font-mono whitespace-nowrap" style={{
-                                      color: isOwn 
-                                        ? 'rgba(255, 255, 255, 0.8)' 
-                                        : chatBackgroundImageUrl 
-                                          ? 'rgba(255, 255, 255, 0.9)' 
-                                          : '#4b5563'
-                                    }}>
-                                      {formatVoiceDuration(message.voice_duration)}
-                                    </span>
+
+                                {/* File attachment */}
+                                {message.attachment_url && (
+                                  <div className={`mt-2 rounded-lg ${`border ${isOwn ? 'bg-white/10 border-white/20' : 'bg-gray-50 border-gray-200'}`
+                                    }`}>
+                                    {message.message_type === 'voice' ? (
+                                      // Mobile voice message player
+                                      <div className="p-2 flex items-center gap-2">
+                                        {/* Employee image for own messages (all conversation types) and group chats */}
+                                        {(isOwn || selectedConversation.type !== 'direct') && (
+                                          <div className="flex-shrink-0">
+                                            {renderUserAvatar({
+                                              userId: message.sender_id,
+                                              name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
+                                              photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
+                                              sizeClass: 'w-7 h-7',
+                                              borderClass: 'border border-base-300',
+                                              textClass: 'text-xs',
+                                              loading: 'lazy',
+                                            })}
+                                          </div>
+                                        )}
+                                        <button
+                                          onClick={() => playVoiceMessage(message.id)}
+                                          className={`p-2 rounded-full transition-all flex-shrink-0 ${isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'text-white hover:opacity-80'
+                                            }`}
+                                          style={!isOwn ? { backgroundColor: '#3E28CD' } : {}}
+                                          onMouseEnter={(e) => {
+                                            if (!isOwn) {
+                                              e.currentTarget.style.opacity = '0.8';
+                                            }
+                                          }}
+                                          onMouseLeave={(e) => {
+                                            if (!isOwn) {
+                                              e.currentTarget.style.opacity = '1';
+                                            }
+                                          }}
+                                          title={playingVoiceId === message.id ? "Pause voice message" : "Play voice message"}
+                                        >
+                                          {playingVoiceId === message.id ? (
+                                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                                              <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+                                            </svg>
+                                          ) : (
+                                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                                              <path d="M8 5v14l11-7z" />
+                                            </svg>
+                                          )}
+                                        </button>
+                                        <div className="flex-1">
+                                          <div className="flex items-center gap-2">
+                                            {/* Waveform visualization */}
+                                            <div className="flex-1 flex items-end gap-0.5 h-6 px-1">
+                                              {(() => {
+                                                const waveform = message.voice_waveform?.waveform ||
+                                                  (Array.isArray(message.voice_waveform) ? message.voice_waveform : null) ||
+                                                  Array(50).fill(0).map(() => Math.random() * 0.5 + 0.3);
+                                                const isPlaying = playingVoiceId === message.id;
+                                                const progress = voiceProgress[message.id] || 0;
+
+                                                return waveform.map((value: number, index: number) => {
+                                                  const barHeight = Math.max(value * 100, 15); // Min 15% height
+                                                  const isActive = isPlaying && (index / waveform.length) * 100 <= progress;
+
+                                                  return (
+                                                    <div
+                                                      key={index}
+                                                      className="transition-all duration-75"
+                                                      style={{
+                                                        width: '1.5px',
+                                                        height: `${barHeight}%`,
+                                                        minHeight: '2px',
+                                                        borderRadius: '0.75px',
+                                                        backgroundColor: isOwn
+                                                          ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.4)')
+                                                          : chatBackgroundImageUrl
+                                                            ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.5)')
+                                                            : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
+                                                      }}
+                                                    />
+                                                  );
+                                                });
+                                              })()}
+                                            </div>
+                                            <span className="text-xs font-mono whitespace-nowrap" style={{
+                                              color: isOwn
+                                                ? 'rgba(255, 255, 255, 0.8)'
+                                                : chatBackgroundImageUrl
+                                                  ? 'rgba(255, 255, 255, 0.9)'
+                                                  : '#4b5563'
+                                            }}>
+                                              {formatVoiceDuration(message.voice_duration)}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      // File attachment
+                                      <div className="flex items-center gap-2 p-3">
+                                        <div className={`p-2 rounded ${isOwn ? 'bg-white/20' : chatBackgroundImageUrl ? 'bg-white/10' : 'bg-gray-100'
+                                          }`}>
+                                          <PaperClipIcon className={`w-4 h-4 ${isOwn ? 'text-white' : chatBackgroundImageUrl ? 'text-white' : 'text-gray-600'
+                                            }`} />
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                          <button
+                                            onClick={() => window.open(message.attachment_url, '_blank')}
+                                            className="text-xs font-medium hover:underline truncate block"
+                                            style={{ color: chatBackgroundImageUrl ? 'white' : 'inherit' }}
+                                          >
+                                            {message.attachment_name}
+                                          </button>
+                                          <p className="text-xs opacity-75" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
+                                            {Math.round((message.attachment_size || 0) / 1024)} KB
+                                          </p>
+                                        </div>
+                                      </div>
+                                    )}
                                   </div>
+                                )}
+
+                                {/* Timestamp inside message bubble - Mobile */}
+                                <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                                  <span className="text-xs" style={{
+                                    color: isOwn
+                                      ? 'rgba(255, 255, 255, 0.7)'
+                                      : '#6b7280'
+                                  }}>
+                                    {formatMessageTime(message.sent_at)}
+                                  </span>
+                                  {isOwn && renderReadReceipts(message)}
                                 </div>
                               </div>
-                            ) : (
-                              // File attachment
-                              <div className="flex items-center gap-2 p-3">
-                                <div className={`p-2 rounded ${
-                                    isOwn ? 'bg-white/20' : chatBackgroundImageUrl ? 'bg-white/10' : 'bg-gray-100'
-                                }`}>
-                                  <PaperClipIcon className={`w-4 h-4 ${
-                                      isOwn ? 'text-white' : chatBackgroundImageUrl ? 'text-white' : 'text-gray-600'
-                                  }`} />
-                                </div>
-                                <div className="flex-1 min-w-0">
+                            </div>
+
+                            {/* Reaction picker - Mobile */}
+                            {showReactionPicker === message.id && (
+                              <div className={`absolute ${isOwn ? 'bottom-6 right-0' : 'bottom-6 left-0'} bg-white border border-gray-200 rounded-lg shadow-lg p-2 flex gap-1 z-50`}>
+                                {['👍', '❤️', '😂', '😮', '😢', '😡', '👏'].map((emoji) => (
                                   <button
-                                    onClick={() => window.open(message.attachment_url, '_blank')}
-                                    className="text-xs font-medium hover:underline truncate block"
-                                      style={{ color: chatBackgroundImageUrl ? 'white' : 'inherit' }}
+                                    key={emoji}
+                                    onClick={() => handleAddReaction(message.id, emoji)}
+                                    className="p-2 hover:bg-base-200 rounded transition-colors"
+                                    title={`React with ${emoji}`}
                                   >
-                                    {message.attachment_name}
+                                    <span className="text-lg">{emoji}</span>
                                   </button>
-                                    <p className="text-xs opacity-75" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
-                                    {Math.round((message.attachment_size || 0) / 1024)} KB
-                                  </p>
-                                </div>
+                                ))}
                               </div>
                             )}
-                          </div>
-                        )}
-                        
-                            {/* Timestamp inside message bubble - Mobile */}
-                            <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                              <span className="text-xs" style={{
-                                color: isOwn 
-                                  ? 'rgba(255, 255, 255, 0.7)' 
-                                  : '#6b7280'
-                              }}>
-                                {formatMessageTime(message.sent_at)}
-                              </span>
-                              {isOwn && renderReadReceipts(message)}
-                            </div>
-                            </div>
-                          </div>
-                        
-                          {/* Reaction picker - Mobile */}
-                          {showReactionPicker === message.id && (
-                            <div className={`absolute ${isOwn ? 'bottom-6 right-0' : 'bottom-6 left-0'} bg-white border border-gray-200 rounded-lg shadow-lg p-2 flex gap-1 z-50`}>
-                              {['👍', '❤️', '😂', '😮', '😢', '😡', '👏'].map((emoji) => (
-                                <button
-                                  key={emoji}
-                                  onClick={() => handleAddReaction(message.id, emoji)}
-                                  className="p-2 hover:bg-base-200 rounded transition-colors"
-                                  title={`React with ${emoji}`}
-                                >
-                                  <span className="text-lg">{emoji}</span>
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                          
-                          
-                          {/* Reactions - Mobile */}
-                          {message.reactions && message.reactions.length > 0 && (
-                            <div className={`flex flex-wrap gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                              {Object.entries(getReactionsByEmoji(message.reactions)).map(([emoji, reactions]) => (
-                                <button
-                                  key={emoji}
-                                  onClick={() => {
-                                    if (hasUserReacted(message.reactions, emoji)) {
-                                      handleRemoveReaction(message.id, emoji);
-                                    } else {
-                                      handleAddReaction(message.id, emoji);
-                                    }
-                                  }}
-                                  className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs border transition-colors ${
-                                    hasUserReacted(message.reactions, emoji)
+
+
+                            {/* Reactions - Mobile */}
+                            {message.reactions && message.reactions.length > 0 && (
+                              <div className={`flex flex-wrap gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                                {Object.entries(getReactionsByEmoji(message.reactions)).map(([emoji, reactions]) => (
+                                  <button
+                                    key={emoji}
+                                    onClick={() => {
+                                      if (hasUserReacted(message.reactions, emoji)) {
+                                        handleRemoveReaction(message.id, emoji);
+                                      } else {
+                                        handleAddReaction(message.id, emoji);
+                                      }
+                                    }}
+                                    className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs border transition-colors ${hasUserReacted(message.reactions, emoji)
                                       ? 'bg-blue-100 border-blue-300 text-blue-700'
                                       : 'bg-gray-100 border-gray-200 text-gray-600 hover:bg-gray-200'
-                                  }`}
-                                >
-                                  <span>{emoji}</span>
-                                  <span>{reactions.length}</span>
-                                </button>
-                              ))}
-                            </div>
-                          )}
+                                      }`}
+                                  >
+                                    <span>{emoji}</span>
+                                    <span>{reactions.length}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         </div>
                       )}
-                      </motion.div>
-                );
-              })}
-                </AnimatePresence>
-              
+                    </motion.div>
+                  );
+                })}
+              </AnimatePresence>
+
               {/* New messages indicator when user is scrolled up - Mobile */}
               {isUserScrolling && !shouldAutoScroll && (
                 <div className="fixed bottom-20 right-4 z-50">
@@ -8057,7 +8041,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   </button>
                 </div>
               )}
-              
+
               {/* Mobile Typing indicator */}
               {selectedConversation && typingUsers.has(selectedConversation.id) && (
                 <div className="flex items-center gap-2 px-4 py-2">
@@ -8073,7 +8057,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   </div>
                 </div>
               )}
-              
+
               <div ref={messagesEndRef} />
             </div>
 
@@ -8125,7 +8109,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       </div>
                     )}
                   </div>
-                  
+
                   <div className="flex-1 flex flex-col gap-2">
                     {/* Reply preview - Mobile */}
                     {(messageToReply || messageToEdit) && (
@@ -8145,9 +8129,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               {/* Show attachment indicator if no content but has attachment */}
                               {!messageToReply.content && messageToReply.attachment_url && (
                                 <div className="text-sm text-gray-700 italic">
-                                  {messageToReply.message_type === 'image' ? '📷 Image' : 
-                                   messageToReply.message_type === 'voice' ? '🎤 Voice message' :
-                                   messageToReply.message_type === 'file' ? '📎 File' : '📎 Attachment'}
+                                  {messageToReply.message_type === 'image' ? '📷 Image' :
+                                    messageToReply.message_type === 'voice' ? '🎤 Voice message' :
+                                      messageToReply.message_type === 'file' ? '📎 File' : '📎 Attachment'}
                                 </div>
                               )}
                             </>
@@ -8175,7 +8159,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         </button>
                       </div>
                     )}
-                    
+
                     <textarea
                       ref={mobileMessageInputRef}
                       value={messageToEdit ? editingMessageText : newMessage}
@@ -8192,11 +8176,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       className="textarea w-full resize-none text-sm max-h-40 border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
                       rows={1}
                       disabled={isSending}
-                      style={{ 
+                      style={{
                         height: '48px',
                         minHeight: '48px',
-                        lineHeight: '1.4', 
-                        backgroundColor: 'rgba(255, 255, 255, 0.8)', 
+                        lineHeight: '1.4',
+                        backgroundColor: 'rgba(255, 255, 255, 0.8)',
                         backdropFilter: 'blur(10px)',
                         boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
                         padding: '12px 16px',
@@ -8204,12 +8188,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       }}
                     />
                   </div>
-                  
+
                   <button
                     onClick={!newMessage.trim() && !messageToEdit ? startVoiceRecording : sendMessage}
                     disabled={isSending}
                     className="btn btn-circle w-12 h-12 text-gray-600 shadow-lg hover:shadow-xl transition-shadow flex-shrink-0"
-                    style={{ 
+                    style={{
                       backgroundColor: 'rgba(255, 255, 255, 0.8)',
                       backdropFilter: 'blur(10px)',
                       WebkitBackdropFilter: 'blur(10px)',
@@ -8267,7 +8251,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     />
                   </div>
                 )}
-                
+
                 {/* Mobile Lead Search Dropdown */}
                 {isLeadSearchOpen && (
                   <div className="absolute bottom-16 left-0 z-50 bg-white border border-gray-200 rounded-lg shadow-lg w-72 max-h-80 overflow-hidden lead-search-dropdown">
@@ -8292,7 +8276,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         )}
                       </div>
                     </div>
-                    
+
                     <div className="max-h-48 overflow-y-auto">
                       {leadSearchResults.length > 0 ? (
                         leadSearchResults.map((lead) => (
@@ -8326,7 +8310,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         </div>
                       )}
                     </div>
-                    
+
                     <div className="p-2 border-t border-gray-200">
                       <button
                         onClick={() => {
@@ -8403,7 +8387,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <label className="block text-sm font-semibold text-gray-700 mb-3">
                   Add Members <span className="text-red-500">*</span>
                 </label>
-                
+
                 <div className="space-y-2 max-h-60 overflow-y-auto border border-gray-200 rounded-lg p-3">
                   {allUsers.map((user) => {
                     const isSelected = selectedUsers.includes(user.id);
@@ -8416,17 +8400,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       <div
                         key={user.id}
                         onClick={() => {
-                          setSelectedUsers(prev => 
-                            isSelected 
+                          setSelectedUsers(prev =>
+                            isSelected
                               ? prev.filter(id => id !== user.id)
                               : [...prev, user.id]
                           );
                         }}
-                        className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all border-2 ${
-                          isSelected 
-                            ? '' 
-                            : 'hover:bg-gray-50 border-transparent'
-                        }`}
+                        className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all border-2 ${isSelected
+                          ? ''
+                          : 'hover:bg-gray-50 border-transparent'
+                          }`}
                         style={isSelected ? { backgroundColor: 'rgba(62, 40, 205, 0.05)', borderColor: 'rgba(62, 40, 205, 0.2)' } : {}}
                       >
                         <div className="relative">
@@ -8444,7 +8427,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </div>
                           )}
                         </div>
-                        
+
                         <div className="flex-1 min-w-0">
                           <div className="font-semibold text-gray-900 truncate">
                             {userName}
@@ -8457,7 +8440,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     );
                   })}
                 </div>
-                
+
                 {selectedUsers.length > 0 && (
                   <div className="mt-3 text-sm text-gray-600">
                     {selectedUsers.length} member{selectedUsers.length !== 1 ? 's' : ''} selected
@@ -8541,7 +8524,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   .filter(conv => {
                     // Exclude current conversation
                     if (conv.id === selectedConversation?.id) return false;
-                    
+
                     // Filter by search query
                     if (forwardSearchQuery.trim()) {
                       const query = forwardSearchQuery.toLowerCase();
@@ -8570,7 +8553,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       <ArrowRightIcon className="w-5 h-5 text-gray-400 flex-shrink-0" />
                     </button>
                   ))}
-                
+
                 {conversations.filter(conv => {
                   if (conv.id === selectedConversation?.id) return false;
                   if (forwardSearchQuery.trim()) {
@@ -8581,13 +8564,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   }
                   return true;
                 }).length === 0 && (
-                  <div className="text-center py-8 text-gray-500">
-                    <p className="text-sm">No conversations found</p>
-                    {forwardSearchQuery.trim() && (
-                      <p className="text-xs mt-1">Try a different search term</p>
-                    )}
-                  </div>
-                )}
+                    <div className="text-center py-8 text-gray-500">
+                      <p className="text-sm">No conversations found</p>
+                      {forwardSearchQuery.trim() && (
+                        <p className="text-xs mt-1">Try a different search term</p>
+                      )}
+                    </div>
+                  )}
               </div>
             </div>
 
@@ -8627,7 +8610,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </button>
               </div>
             </div>
-            
+
             <div className="p-4 border-b border-gray-200">
               <div className="relative">
                 <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-base-content/60" />
@@ -8640,7 +8623,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 />
               </div>
             </div>
-            
+
             <div className="flex-1 overflow-y-auto p-4">
               {allUsers
                 .filter(user => {
@@ -8650,13 +8633,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     p => p.user_id === user.id && p.is_active
                   );
                   if (isAlreadyMember) return false;
-                  
+
                   // Filter by search query
                   if (memberSearchQuery.trim()) {
                     const searchLower = memberSearchQuery.toLowerCase();
                     const name = user.tenants_employee?.display_name || user.full_name || '';
-                    return name.toLowerCase().includes(searchLower) || 
-                           user.email?.toLowerCase().includes(searchLower);
+                    return name.toLowerCase().includes(searchLower) ||
+                      user.email?.toLowerCase().includes(searchLower);
                   }
                   return true;
                 })
@@ -8664,7 +8647,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   const userName = user.tenants_employee?.display_name || user.full_name || `User ${user.id.slice(-4)}`;
                   const userPhoto = user.tenants_employee?.photo_url;
                   const isSelected = membersToAdd.includes(user.id);
-                  
+
                   return (
                     <div
                       key={user.id}
@@ -8675,9 +8658,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           setMembersToAdd([...membersToAdd, user.id]);
                         }
                       }}
-                      className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors border-2 ${
-                        isSelected ? '' : 'hover:bg-gray-50 border-transparent'
-                      }`}
+                      className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors border-2 ${isSelected ? '' : 'hover:bg-gray-50 border-transparent'
+                        }`}
                       style={isSelected ? { backgroundColor: 'rgba(62, 40, 205, 0.05)', borderColor: '#3E28CD' } : {}}
                     >
                       {renderUserAvatar({
@@ -8699,7 +8681,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   );
                 })}
             </div>
-            
+
             <div className="p-4 border-t border-gray-200 flex justify-end gap-2">
               <button
                 onClick={() => {
@@ -8742,16 +8724,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </button>
               </div>
             </div>
-            
+
             <div className="flex-1 overflow-y-auto p-4">
               {selectedConversation.participants
                 ?.filter(p => p.is_active && p.user_id !== currentUser?.id)
                 .map((participant) => {
-                  const userName = participant.user?.tenants_employee?.display_name || 
-                                 participant.user?.full_name || 
-                                 `User ${participant.user_id?.slice(-4)}`;
+                  const userName = participant.user?.tenants_employee?.display_name ||
+                    participant.user?.full_name ||
+                    `User ${participant.user_id?.slice(-4)}`;
                   const userPhoto = participant.user?.tenants_employee?.photo_url;
-                  
+
                   return (
                     <div
                       key={participant.id}
@@ -8791,7 +8773,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </div>
               )}
             </div>
-            
+
             <div className="p-4 border-t border-gray-200 flex justify-end">
               <button
                 onClick={() => setShowRemoveMemberModal(false)}
@@ -8819,7 +8801,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </div>
               </div>
               <p className="text-gray-700 mb-6">
-                Are you sure you want to delete <strong>"{selectedConversation.title || 'this group chat'}"</strong>? 
+                Are you sure you want to delete <strong>"{selectedConversation.title || 'this group chat'}"</strong>?
                 All messages and participants will be permanently removed.
               </p>
               <div className="flex justify-end gap-3">
@@ -8855,17 +8837,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
           <div className="bg-blue-500/20 backdrop-blur-sm border-4 border-dashed border-blue-500 rounded-2xl p-12 m-8 pointer-events-none">
             <div className="flex flex-col items-center gap-4 text-blue-600 dark:text-blue-400">
-              <svg 
-                className="w-16 h-16" 
-                fill="none" 
-                stroke="currentColor" 
+              <svg
+                className="w-16 h-16"
+                fill="none"
+                stroke="currentColor"
                 viewBox="0 0 24 24"
               >
-                <path 
-                  strokeLinecap="round" 
-                  strokeLinejoin="round" 
-                  strokeWidth={2} 
-                  d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" 
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
                 />
               </svg>
               <p className="text-2xl font-bold">Drop image or video here</p>
@@ -8925,9 +8907,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
           {/* Main Media Display */}
           <div className="flex-1 flex items-center justify-center relative">
-            {conversationMedia[selectedMediaIndex]?.message_type === 'image' || 
-             (conversationMedia[selectedMediaIndex]?.attachment_type && 
-              conversationMedia[selectedMediaIndex]?.attachment_type.startsWith('image/')) ? (
+            {conversationMedia[selectedMediaIndex]?.message_type === 'image' ||
+              (conversationMedia[selectedMediaIndex]?.attachment_type &&
+                conversationMedia[selectedMediaIndex]?.attachment_type.startsWith('image/')) ? (
               <img
                 src={conversationMedia[selectedMediaIndex]?.attachment_url}
                 alt={conversationMedia[selectedMediaIndex]?.attachment_name}
@@ -9003,11 +8985,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <div
                   key={media.id}
                   onClick={() => setSelectedMediaIndex(index)}
-                  className={`flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden cursor-pointer border-2 transition-all ${
-                    index === selectedMediaIndex 
-                      ? 'border-blue-500 scale-110' 
-                      : 'border-transparent hover:border-white/30'
-                  }`}
+                  className={`flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden cursor-pointer border-2 transition-all ${index === selectedMediaIndex
+                    ? 'border-blue-500 scale-110'
+                    : 'border-transparent hover:border-white/30'
+                    }`}
                 >
                   {media.message_type === 'image' ? (
                     <img
@@ -9035,7 +9016,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             <div className="relative">
               {/* Background Image with Overlay */}
               {selectedEmployee.photo && (
-                <div 
+                <div
                   className="absolute inset-0 bg-cover bg-center bg-no-repeat"
                   style={{ backgroundImage: `url(${selectedEmployee.photo})` }}
                 >
@@ -9072,12 +9053,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       {getInitials(selectedEmployee.official_name || selectedEmployee.display_name)}
                     </div>
                   )}
-                  
+
                   {/* Employee Name */}
                   <h2 className={`text-2xl font-bold mb-2 ${selectedEmployee.photo ? 'text-white drop-shadow-lg' : 'text-gray-900'}`}>
                     {selectedEmployee.official_name || selectedEmployee.display_name}
                   </h2>
-                  
+
                   {/* Employee Email */}
                   {selectedEmployee.email && (
                     <p className={`mb-3 ${selectedEmployee.photo ? 'text-white/90 drop-shadow-md' : 'text-gray-600'}`}>

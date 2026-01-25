@@ -10,6 +10,7 @@ interface DocumentViewerModalProps {
   employeeName?: string;
   uploadedAt?: string;
   sickDaysReason?: string;
+  bucketName?: string; // Optional bucket name, defaults to 'employee-unavailability-documents'
 }
 
 const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
@@ -20,6 +21,7 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   employeeName,
   uploadedAt,
   sickDaysReason,
+  bucketName = 'employee-unavailability-documents',
 }) => {
   const [imageError, setImageError] = useState(false);
   const [pdfError, setPdfError] = useState(false);
@@ -33,41 +35,68 @@ const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
       setImageError(false);
       setPdfError(false);
       
-      // Check if documentUrl is already a full URL or just a file path
-      if (documentUrl.startsWith('http://') || documentUrl.startsWith('https://')) {
-        // It's already a full URL (might be from old data or public bucket)
-        setSignedUrl(documentUrl);
-        setLoadingUrl(false);
-      } else {
-        // It's a file path, generate signed URL
-        const generateSignedUrl = async () => {
-          try {
-            const { data, error } = await supabase.storage
-              .from('employee-unavailability-documents')
-              .createSignedUrl(documentUrl, 3600); // 1 hour expiry
-
-            if (error) {
-              console.error('Error generating signed URL:', error);
-              setImageError(true);
-              setPdfError(true);
-              setLoadingUrl(false);
-              return;
+      // Extract file path from URL if it's a full URL, otherwise use as-is
+      const generateSignedUrl = async () => {
+        try {
+          let filePath = documentUrl;
+          
+          // If it's a Supabase storage URL, extract the path
+          if (documentUrl.includes('/storage/v1/object/')) {
+            // Format: https://...supabase.co/storage/v1/object/public|sign/bucket-name/path/to/file
+            const urlParts = documentUrl.split('/storage/v1/object/');
+            if (urlParts.length > 1) {
+              const afterStorage = urlParts[1];
+              // Remove bucket name and public/sign prefix
+              const pathParts = afterStorage.split('/');
+              if (pathParts.length > 1) {
+                // Skip 'public' or 'sign' and bucket name, get the rest
+                filePath = pathParts.slice(2).join('/');
+              }
             }
+          } else if (documentUrl.startsWith('http://') || documentUrl.startsWith('https://')) {
+            // Try to extract path from any HTTP URL
+            try {
+              const url = new URL(documentUrl);
+              // Remove leading slash and bucket name if present
+              let pathname = url.pathname.startsWith('/') ? url.pathname.slice(1) : url.pathname;
+              // If pathname starts with bucket name, remove it
+              if (pathname.startsWith(bucketName + '/')) {
+                pathname = pathname.substring(bucketName.length + 1);
+              }
+              filePath = pathname;
+            } catch (e) {
+              // If URL parsing fails, use the original documentUrl
+              filePath = documentUrl;
+            }
+          }
 
-            setSignedUrl(data.signedUrl);
-          } catch (error) {
+          console.log('Generating signed URL for bucket:', bucketName, 'path:', filePath);
+
+          const { data, error } = await supabase.storage
+            .from(bucketName)
+            .createSignedUrl(filePath, 3600); // 1 hour expiry
+
+          if (error) {
             console.error('Error generating signed URL:', error);
             setImageError(true);
             setPdfError(true);
-          } finally {
             setLoadingUrl(false);
+            return;
           }
-        };
 
-        generateSignedUrl();
-      }
+          setSignedUrl(data.signedUrl);
+        } catch (error) {
+          console.error('Error generating signed URL:', error);
+          setImageError(true);
+          setPdfError(true);
+        } finally {
+          setLoadingUrl(false);
+        }
+      };
+
+      generateSignedUrl();
     }
-  }, [isOpen, documentUrl]);
+  }, [isOpen, documentUrl, bucketName]);
 
   if (!isOpen) return null;
 
