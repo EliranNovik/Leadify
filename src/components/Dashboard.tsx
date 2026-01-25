@@ -22,25 +22,38 @@ import EmployeeScoreboard from './EmployeeScoreboard';
 import { formatMeetingValue } from '../lib/meetingValue';
 import { toast } from 'react-hot-toast';
 import CompactAvailabilityCalendar, { CompactAvailabilityCalendarRef } from './CompactAvailabilityCalendar';
+import SickDaysDocumentUploadModal from './SickDaysDocumentUploadModal';
+import { DocumentArrowUpIcon } from '@heroicons/react/24/outline';
 
 
 // My Availability Section Component
-const MyAvailabilitySection: React.FC<{ onAvailabilityChange?: () => void }> = ({ onAvailabilityChange }) => {
+const MyAvailabilitySection: React.FC<{ onAvailabilityChange?: () => void; onOpenUploadDocs?: () => void }> = ({ onAvailabilityChange, onOpenUploadDocs }) => {
   const calendarRef = React.useRef<CompactAvailabilityCalendarRef>(null);
 
   return (
     <>
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold text-gray-900">My Availability</h3>
-        <button
-          onClick={() => {
-            calendarRef.current?.openAddRangeModal();
-          }}
-          className="btn btn-sm btn-primary btn-circle"
-          title="Add Range"
-        >
-          <PlusIcon className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          {onOpenUploadDocs && (
+            <button
+              onClick={onOpenUploadDocs}
+              className="btn btn-sm btn-outline btn-circle"
+              title="Upload Docs"
+            >
+              <DocumentArrowUpIcon className="w-4 h-4" />
+            </button>
+          )}
+          <button
+            onClick={() => {
+              calendarRef.current?.openAddRangeModal();
+            }}
+            className="btn btn-sm btn-primary btn-circle"
+            title="Add Range"
+          >
+            <PlusIcon className="w-4 h-4" />
+          </button>
+        </div>
       </div>
       <CompactAvailabilityCalendar ref={calendarRef} onAvailabilityChange={onAvailabilityChange} />
     </>
@@ -81,6 +94,7 @@ const Dashboard: React.FC = () => {
   const [isAISuggestionsModalOpen, setIsAISuggestionsModalOpen] = useState(false);
   const [isUnavailableEmployeesModalOpen, setIsUnavailableEmployeesModalOpen] = useState(false);
   const [isMyAvailabilityModalOpen, setIsMyAvailabilityModalOpen] = useState(false);
+  const [isSickDaysUploadModalOpen, setIsSickDaysUploadModalOpen] = useState(false);
   const [unavailableEmployeesCount, setUnavailableEmployeesCount] = useState(0);
   const [currentlyUnavailableCount, setCurrentlyUnavailableCount] = useState(0);
   const [scheduledTimeOffCount, setScheduledTimeOffCount] = useState(0);
@@ -7475,7 +7489,10 @@ const Dashboard: React.FC = () => {
           {/* My Availability Calendar - Desktop Only */}
           <div className="hidden lg:block">
             <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-6 h-full">
-              <MyAvailabilitySection onAvailabilityChange={() => fetchUnavailableEmployeesData(teamAvailabilityDate)} />
+              <MyAvailabilitySection
+                onAvailabilityChange={() => fetchUnavailableEmployeesData(teamAvailabilityDate)}
+                onOpenUploadDocs={() => setIsSickDaysUploadModalOpen(true)}
+              />
             </div>
           </div>
         </div>
@@ -7729,11 +7746,24 @@ const Dashboard: React.FC = () => {
               </button>
             </div>
             <div className="p-6">
-              <MyAvailabilitySection onAvailabilityChange={() => fetchUnavailableEmployeesData(teamAvailabilityDate)} />
+              <MyAvailabilitySection
+                onAvailabilityChange={() => fetchUnavailableEmployeesData(teamAvailabilityDate)}
+                onOpenUploadDocs={() => setIsSickDaysUploadModalOpen(true)}
+              />
             </div>
           </div>
         </div>
       )}
+
+      {/* Sick Days Document Upload Modal */}
+      <SickDaysDocumentUploadModal
+        isOpen={isSickDaysUploadModalOpen}
+        onClose={() => setIsSickDaysUploadModalOpen(false)}
+        onDocumentUploaded={() => {
+          // Refresh availability data if needed
+          fetchUnavailableEmployeesData(teamAvailabilityDate);
+        }}
+      />
 
     </div>
   );

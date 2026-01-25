@@ -1172,8 +1172,11 @@ const PipelinePage: React.FC = () => {
                 `)
                 .eq('closer', currentUserFullName);
               
-              // For closer pipeline, only filter by stage (no eligible filter)
-              newLeadsQuery = newLeadsQuery.in('stage', allowedStageIds);
+              // For closer pipeline, filter by stage and exclude inactive leads
+              newLeadsQuery = newLeadsQuery
+                .is('unactivated_at', null) // Only active leads (unactivated_at IS NULL)
+                .neq('stage', 91) // Exclude inactive/dropped leads (stage 91)
+                .in('stage', allowedStageIds);
             } else {
               // Use direct employee name filtering (more reliable than complex JOINs)
               newLeadsQuery = supabase
@@ -1227,6 +1230,7 @@ const PipelinePage: React.FC = () => {
                 .eq('eligible', true)
                 .not('eligible', 'is', null) // Explicitly exclude null values
                 .is('unactivated_at', null) // Only active leads (unactivated_at IS NULL)
+                .neq('stage', 91) // Exclude inactive/dropped leads (stage 91)
                 .in('stage', allowedStageIds);
             }
           } else {
@@ -1308,9 +1312,10 @@ const PipelinePage: React.FC = () => {
             }
             
             // Only show active leads (unactivated_at IS NULL) - apply to both scheduler and closer
-            newLeadsQuery = newLeadsQuery.is('unactivated_at', null);
-            
-            newLeadsQuery = newLeadsQuery.in('stage', allowedStageIds);
+            newLeadsQuery = newLeadsQuery
+              .is('unactivated_at', null) // Only active leads (unactivated_at IS NULL)
+              .neq('stage', 91) // Exclude inactive/dropped leads (stage 91)
+              .in('stage', allowedStageIds);
           }
           
           const { data: newLeadsData, error: newLeadsError } = await newLeadsQuery.order('created_at', { ascending: false });
