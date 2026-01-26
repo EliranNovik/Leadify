@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ClientTabProps } from '../../types/client';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
-import { 
-  AcademicCapIcon, 
-  ShareIcon, 
-  PencilSquareIcon, 
+import {
+  AcademicCapIcon,
+  ShareIcon,
+  PencilSquareIcon,
   DocumentArrowUpIcon,
   PaperClipIcon,
   HashtagIcon,
@@ -15,11 +15,13 @@ import {
   MagnifyingGlassIcon,
   XCircleIcon,
   SparklesIcon,
-  ArrowPathIcon
+  ArrowPathIcon,
+  ArrowsPointingOutIcon
 } from '@heroicons/react/24/outline';
 import { FolderIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../../lib/supabase';
 import DocumentModal from '../DocumentModal';
+import ExpertNotesModal from '../ExpertNotesModal';
 import { toast } from 'react-hot-toast';
 
 interface UploadedFile {
@@ -53,7 +55,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Helper function to clean up text formatting
   const formatNoteText = (text: string): string => {
     if (!text) return '';
-    
+
     // Replace \r\n with \n, then \r with \n for proper line breaks
     // Also handle escaped \r characters (\\r)
     const cleaned = text
@@ -62,35 +64,35 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       .replace(/\r\n/g, '\n')    // Handle actual \r\n
       .replace(/\r/g, '\n')      // Handle actual \r
       .trim();
-    
+
     return cleaned;
   };
 
   // Function to clean up existing notes in the database
   const cleanupExistingNotes = async () => {
     if (!client.expert_notes || client.expert_notes.length === 0) return;
-    
-    const hasUncleanNotes = client.expert_notes.some((note: any) => 
+
+    const hasUncleanNotes = client.expert_notes.some((note: any) =>
       note.content && (note.content.includes('\r') || note.content.includes('\\r'))
     );
-    
+
     if (hasUncleanNotes) {
       const cleanedNotes = client.expert_notes.map((note: any) => ({
         ...note,
         content: formatNoteText(note.content)
       }));
-      
+
       setExpertNotes(cleanedNotes);
-      
+
       // Save cleaned notes back to database
       // Check if this is a legacy lead
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      
+
       if (isLegacyLead) {
         // For legacy leads, save to leads_lead table using the actual integer ID
         const legacyIdStr = client.id.toString().replace('legacy_', '');
         const legacyId = parseInt(legacyIdStr, 10);
-        
+
         if (!isNaN(legacyId)) {
           await supabase
             .from('leads_lead')
@@ -104,7 +106,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .update({ expert_notes: cleanedNotes })
           .eq('id', client.id);
       }
-      
+
       if (onClientUpdate) await onClientUpdate();
     }
   };
@@ -114,18 +116,18 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user?.id) return 'Unknown';
-      
+
       // Get user's full name from users table
       const { data: userData, error } = await supabase
         .from('users')
         .select('full_name')
         .eq('auth_id', user.id)
         .single();
-      
+
       if (error || !userData?.full_name) {
         return user?.email || 'Unknown';
       }
-      
+
       return userData.full_name;
     } catch (error) {
       console.error('Error getting user name:', error);
@@ -138,7 +140,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Helper function to get expert name from expert_id
   const getExpertName = async (expertId: string | number): Promise<string> => {
     if (!expertId) return 'Not assigned';
-    
+
     try {
       // Try to get expert name from tenants_employee table
       const { data: employeeData, error: employeeError } = await supabase
@@ -146,22 +148,22 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         .select('id, display_name')
         .eq('id', expertId)
         .single();
-      
+
       if (!employeeError && employeeData?.display_name) {
         return employeeData.display_name;
       }
-      
+
       // If not found in tenants_employee, try employees table as fallback
       const { data: fallbackData, error: fallbackError } = await supabase
         .from('employees')
         .select('full_name')
         .eq('id', expertId)
         .single();
-      
+
       if (!fallbackError && fallbackData?.full_name) {
         return fallbackData.full_name;
       }
-      
+
       // If not found in either table, return the ID as string
       return String(expertId);
     } catch (error) {
@@ -173,7 +175,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Helper function to fetch legacy expert data
   const fetchLegacyExpertData = async () => {
     if (!client.id || !client.id.toString().startsWith('legacy_')) return;
-    
+
     try {
       const legacyId = client.id.toString().replace('legacy_', '');
       const { data: legacyData, error } = await supabase
@@ -181,40 +183,40 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         .select('expert_id, expert_opinion')
         .eq('id', legacyId)
         .single();
-      
+
       if (error) {
         console.error('Error fetching legacy expert data:', error);
         return;
       }
-      
+
       if (legacyData) {
         // Get expert name from expert_id
         const expertName = await getExpertName(legacyData.expert_id);
-        
+
         // Update the expert name state
         setExpertName(expertName);
-        
+
         // Add expert_opinion to expert notes if it exists
         if (legacyData.expert_opinion && legacyData.expert_opinion.trim()) {
           const existingNotes = client.expert_notes || [];
-          const hasExpertOpinion = existingNotes.some((note: any) => 
+          const hasExpertOpinion = existingNotes.some((note: any) =>
             note.content.includes('Expert Opinion:') || note.content.includes(legacyData.expert_opinion)
           );
-          
+
           if (!hasExpertOpinion) {
             const expertOpinionNote = {
               id: `legacy_opinion_${Date.now()}`,
               content: `Expert Opinion: ${formatNoteText(legacyData.expert_opinion)}`,
               timestamp: new Date().toLocaleString()
             };
-            
+
             const updatedNotes = [...existingNotes, expertOpinionNote];
             setExpertNotes(updatedNotes);
-            
+
             // Save to database
             const legacyIdStr = client.id.toString().replace('legacy_', '');
             const legacyId = parseInt(legacyIdStr, 10);
-            
+
             if (!isNaN(legacyId)) {
               await supabase
                 .from('leads_lead')
@@ -223,7 +225,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             }
           }
         }
-        
+
         // Update client expert name if it's different
         if (expertName !== client.expert) {
           // Update the client object locally
@@ -241,18 +243,18 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
     const tableName = isLegacyLead ? 'leads_lead' : 'leads';
     const recordId = isLegacyLead ? client.id.toString().replace('legacy_', '') : client.id;
-    
+
     try {
       const { data, error } = await supabase
         .from(tableName)
         .select('expert_notes_last_edited_by, expert_notes_last_edited_at, handler_notes_last_edited_by, handler_notes_last_edited_at')
         .eq('id', recordId)
         .single();
-      
+
       if (error) {
         return;
       }
-      
+
       // Update expert notes with tracking info if available
       if (data.expert_notes_last_edited_by && expertNotes.length > 0) {
         const updatedExpertNotes = expertNotes.map(note => ({
@@ -262,7 +264,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         }));
         setExpertNotes(updatedExpertNotes);
       }
-      
+
       // Update handler notes with tracking info if available
       if (data.handler_notes_last_edited_by && handlerNotes.length > 0) {
         const updatedHandlerNotes = handlerNotes.map(note => ({
@@ -280,7 +282,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Function to fetch docs_url for legacy leads
   const fetchDocsUrl = async () => {
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-    
+
     if (isLegacyLead) {
       try {
         const legacyId = client.id.toString().replace('legacy_', '');
@@ -289,11 +291,11 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .select('docs_url')
           .eq('id', legacyId)
           .single();
-        
+
         if (error) {
           return;
         }
-        
+
         if (data && data.docs_url) {
           setDocsUrl(data.docs_url);
         }
@@ -306,7 +308,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Function to fetch the assigned expert (legacy + new leads)
   const fetchAssignedExpert = async () => {
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-    
+
     if (isLegacyLead) {
       try {
         const legacyId = client.id.toString().replace('legacy_', '');
@@ -315,13 +317,13 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .select('expert_id')
           .eq('id', legacyId)
           .single();
-        
+
         if (error) {
           console.error('Error fetching expert_id:', error);
           setExpertName('Not assigned');
           return;
         }
-        
+
         if (data && data.expert_id) {
           const resolvedName = await getExpertName(data.expert_id);
           setExpertName(resolvedName || 'Not assigned');
@@ -354,29 +356,29 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // it's only called in useEffect which runs after render when state exists
   const fetchLegacyEligibilityData = async () => {
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-    
+
     if (!isLegacyLead) {
       return;
     }
-    
+
     try {
       const legacyId = client.id.toString().replace('legacy_', '');
-      
+
       const { data, error } = await supabase
         .from('leads_lead')
         .select('expert_examination, section_eligibility, eligibilty_date, section_eligibility_last_edited_by, section_eligibility_last_edited_at, eligibility_status, eligibility_status_timestamp')
         .eq('id', legacyId)
         .single();
-      
+
       if (error) {
         return;
       }
-      
+
       if (data) {
         // Priority: Use eligibility_status if it exists, otherwise map from expert_examination
         let eligibilityValue = '';
         let eligibilityTimestamp = '';
-        
+
         // First, try to use eligibility_status column (like new leads)
         if (data.eligibility_status) {
           eligibilityValue = data.eligibility_status;
@@ -394,16 +396,16 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           }
           eligibilityTimestamp = data.eligibilty_date || new Date().toISOString();
         }
-        
+
         // Update eligibility status (always set, even if empty, to ensure state is updated)
         setEligibilityStatus({
           value: eligibilityValue,
           timestamp: eligibilityTimestamp
         });
-        
+
         // Update section eligibility (optional for legacy leads, can be null)
         setSelectedSection(data.section_eligibility || '');
-        
+
         // Update section eligibility tracking info
         if (data.section_eligibility_last_edited_by) {
           setSectionEligibilityLastEditedBy(data.section_eligibility_last_edited_by);
@@ -422,7 +424,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     const fetchCurrentUserInfo = async () => {
       try {
         const { data: { user }, error: authError } = await supabase.auth.getUser();
-        
+
         if (authError || !user) {
           setIsSuperuser(false);
           setCurrentUserEmployeeId(null);
@@ -435,7 +437,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .select('is_superuser, employee_id, tenants_employee!employee_id(display_name)')
           .eq('auth_id', user.id)
           .maybeSingle();
-        
+
         // If not found by auth_id, try by email
         if (!userData && user.email) {
           const { data: userByEmail, error: emailError } = await supabase
@@ -443,29 +445,29 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             .select('is_superuser, employee_id, tenants_employee!employee_id(display_name)')
             .eq('email', user.email)
             .maybeSingle();
-          
+
           userData = userByEmail;
           error = emailError;
         }
 
         if (!error && userData) {
           // Check if user is superuser (handle boolean, string, or number)
-          const superuserStatus = userData.is_superuser === true || 
-                                  userData.is_superuser === 'true' || 
-                                  userData.is_superuser === 1;
+          const superuserStatus = userData.is_superuser === true ||
+            userData.is_superuser === 'true' ||
+            userData.is_superuser === 1;
           setIsSuperuser(superuserStatus);
-          
+
           // Set employee ID
           if (userData.employee_id && typeof userData.employee_id === 'number') {
             setCurrentUserEmployeeId(userData.employee_id);
           } else {
             setCurrentUserEmployeeId(null);
           }
-          
+
           // Set display name from employee relationship
           if (userData.tenants_employee) {
-            const employee = Array.isArray(userData.tenants_employee) 
-              ? userData.tenants_employee[0] 
+            const employee = Array.isArray(userData.tenants_employee)
+              ? userData.tenants_employee[0]
               : userData.tenants_employee;
             if (employee && employee.display_name) {
               setCurrentUserDisplayName(employee.display_name);
@@ -497,7 +499,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   useEffect(() => {
     const fetchAssignedExpert = async () => {
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      
+
       if (isLegacyLead) {
         try {
           const legacyId = client.id.toString().replace('legacy_', '');
@@ -506,7 +508,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             .select('expert_id')
             .eq('id', legacyId)
             .single();
-          
+
           if (!error && data && data.expert_id) {
             const expertIdNum = typeof data.expert_id === 'string' ? parseInt(data.expert_id, 10) : Number(data.expert_id);
             if (!isNaN(expertIdNum)) {
@@ -535,7 +537,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             .select('expert')
             .eq('id', client.id)
             .single();
-          
+
           if (!error && data && data.expert) {
             // Expert is stored as employee ID (number) in 'expert' column for new leads
             const expertIdNum = typeof data.expert === 'string' ? parseInt(data.expert, 10) : Number(data.expert);
@@ -566,11 +568,11 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Fetch notes from database on component mount and when client.id changes
   const fetchNotesFromDatabase = async () => {
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-    
+
     if (isLegacyLead) {
       const legacyIdStr = client.id.toString().replace('legacy_', '');
       const legacyId = parseInt(legacyIdStr, 10);
-      
+
       if (!isNaN(legacyId)) {
         try {
           const { data, error } = await supabase
@@ -578,7 +580,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             .select('expert_notes, handler_notes')
             .eq('id', legacyId)
             .single();
-          
+
           if (!error && data) {
             if (data.expert_notes && Array.isArray(data.expert_notes)) {
               setExpertNotes(data.expert_notes);
@@ -599,7 +601,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .select('expert_notes, handler_notes')
           .eq('id', client.id)
           .single();
-        
+
         if (!error && data) {
           if (data.expert_notes && Array.isArray(data.expert_notes)) {
             setExpertNotes(data.expert_notes);
@@ -640,21 +642,21 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       summary += `Lead #${client.lead_number}\n`;
     }
     summary += `${'='.repeat(50)}\n\n`;
-    
+
     // Parse and format the sections
     const sections: { [key: string]: string[] } = {};
     let currentSection = '';
-    
+
     lines.forEach(line => {
-      if (line.includes('Special Notes:') || line.includes('General Notes:') || 
-          line.includes('Facts of Case:') || line.includes('Manager Notes:')) {
+      if (line.includes('Special Notes:') || line.includes('General Notes:') ||
+        line.includes('Facts of Case:') || line.includes('Manager Notes:')) {
         currentSection = line.replace(':', '').trim();
         sections[currentSection] = [];
       } else if (currentSection && line.trim() && !line.includes('No ')) {
         sections[currentSection].push(line.trim());
       }
     });
-    
+
     Object.entries(sections).forEach(([section, content]) => {
       if (content.length > 0) {
         summary += `\n${section}:\n`;
@@ -663,7 +665,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         });
       }
     });
-    
+
     return summary;
   };
 
@@ -671,7 +673,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const generateAISummary = async () => {
     setIsGeneratingSummary(true);
     setAiSummary('');
-    
+
     try {
       // Debug: Log individual field data
       console.log('🔍 [AI Summary Debug] Field Data:', {
@@ -715,7 +717,7 @@ ${summaryData.managerNotes || 'No manager notes'}
       // Debug: Log combined text info
       const combinedLength = combinedText.length;
       const nonEmptyLength = combinedText.replace(/No (special notes|general notes|facts available|manager notes)/g, '').trim().length;
-      
+
       console.log('🔍 [AI Summary Debug] Combined Text:', {
         totalLength: combinedLength,
         nonEmptyLength: nonEmptyLength,
@@ -743,7 +745,7 @@ ${summaryData.managerNotes || 'No manager notes'}
           leadNumber: client.lead_number,
           clientName: client.name
         };
-        
+
         console.log('🔍 [AI Summary Debug] Calling Supabase function with:', {
           contentLength: combinedText.length,
           leadNumber: client.lead_number,
@@ -777,18 +779,18 @@ ${summaryData.managerNotes || 'No manager notes'}
           await saveAiSummaryToDatabase(generatedSummary);
           return;
         }
-        
+
         // If there's an error from the function, check if it's a rate limit or quota
         if (error) {
           const errorMessage = error.message || '';
           const errorCode = (error as any).code || '';
-          
+
           console.error('❌ [AI Summary Debug] Supabase function error:', {
             message: errorMessage,
             code: errorCode,
             fullError: error
           });
-          
+
           // Check for quota errors
           if (errorMessage.includes('quota') || errorMessage.includes('billing') || errorCode === 'QUOTA_EXCEEDED') {
             console.warn('⚠️ [AI Summary Debug] Quota exceeded detected from Supabase function');
@@ -799,7 +801,7 @@ ${summaryData.managerNotes || 'No manager notes'}
             setIsGeneratingSummary(false);
             return;
           }
-          
+
           // Check for rate limit errors
           if (errorMessage.includes('429') || errorMessage.includes('rate limit') || errorCode === 'RATE_LIMIT') {
             console.warn('⚠️ [AI Summary Debug] Rate limit detected from Supabase function');
@@ -812,7 +814,7 @@ ${summaryData.managerNotes || 'No manager notes'}
             return;
           }
         }
-        
+
         // If function returned an error response with status 429
         if (data?.code === 'QUOTA_EXCEEDED') {
           console.warn('⚠️ [AI Summary Debug] Quota exceeded in response data');
@@ -823,7 +825,7 @@ ${summaryData.managerNotes || 'No manager notes'}
           setIsGeneratingSummary(false);
           return;
         }
-        
+
         if (data?.code === 'RATE_LIMIT' || data?.status === 429) {
           console.warn('⚠️ [AI Summary Debug] Rate limit in response data');
           toast.error('AI service rate limit reached. Showing formatted summary instead.');
@@ -867,10 +869,10 @@ ${combinedText}`;
 
         const requestBody = {
           model: 'gpt-3.5-turbo',
-            messages: [
-              { role: 'system', content: 'You are an expert legal CRM assistant. Create clear, concise summaries. Always write in clean, plain text paragraphs without any markdown formatting, bullet points, or special characters.' },
-              { role: 'user', content: prompt }
-            ],
+          messages: [
+            { role: 'system', content: 'You are an expert legal CRM assistant. Create clear, concise summaries. Always write in clean, plain text paragraphs without any markdown formatting, bullet points, or special characters.' },
+            { role: 'user', content: prompt }
+          ],
           max_tokens: 500,
           temperature: 0.4,
         };
@@ -898,7 +900,7 @@ ${combinedText}`;
           const errorMessage = errorData.error?.message || `HTTP ${response.status}`;
           const errorType = errorData.error?.type || '';
           const errorCode = errorData.error?.code || '';
-          
+
           console.error('❌ [AI Summary Debug] OpenAI API error:', {
             status: response.status,
             statusText: response.statusText,
@@ -916,13 +918,13 @@ ${combinedText}`;
               message: errorMessage
             } : null
           });
-          
+
           // Handle quota/billing errors specifically
           if (response.status === 429) {
-            const isQuotaError = errorMessage.toLowerCase().includes('quota') || 
-                                 errorMessage.toLowerCase().includes('billing') ||
-                                 errorMessage.toLowerCase().includes('exceeded');
-            
+            const isQuotaError = errorMessage.toLowerCase().includes('quota') ||
+              errorMessage.toLowerCase().includes('billing') ||
+              errorMessage.toLowerCase().includes('exceeded');
+
             if (isQuotaError) {
               console.warn('⚠️ [AI Summary Debug] Quota/billing limit exceeded');
               toast.error('AI service quota exceeded. Please check billing or use the individual fields view. Showing formatted summary instead.');
@@ -933,7 +935,7 @@ ${combinedText}`;
               setIsGeneratingSummary(false);
               return;
             }
-            
+
             // Regular rate limit (not quota)
             const retryAfter = response.headers.get('retry-after');
             console.warn('⚠️ [AI Summary Debug] Rate limit hit. Retry after:', retryAfter, 'seconds');
@@ -941,19 +943,19 @@ ${combinedText}`;
             setIsGeneratingSummary(false);
             return;
           }
-          
+
           throw new Error(`OpenAI API error: ${response.status} - ${errorMessage}`);
         }
 
         const data = await response.json();
         let summary = data.choices?.[0]?.message?.content || 'Unable to generate summary';
-        
+
         // Clean up any markdown formatting that might have slipped through
         // But preserve bullet points in the "Actionable Insights" section
         const actionableInsightsMatch = summary.match(/Actionable Insights:[\s\S]*$/i);
         const mainSummary = actionableInsightsMatch ? summary.substring(0, summary.indexOf('Actionable Insights:')) : summary;
         const actionableInsights = actionableInsightsMatch ? actionableInsightsMatch[0] : '';
-        
+
         // Clean main summary (no markdown, no bullets)
         let cleanedMain = mainSummary
           .replace(/\*\*/g, '') // Remove bold markdown
@@ -963,7 +965,7 @@ ${combinedText}`;
           .replace(/^\d+\.\s+/gm, '') // Remove numbered lists
           .replace(/\n{3,}/g, '\n\n') // Normalize multiple line breaks to double
           .trim();
-        
+
         // Clean actionable insights (allow bullets but remove markdown)
         let cleanedInsights = actionableInsights
           .replace(/\*\*/g, '') // Remove bold markdown
@@ -971,10 +973,10 @@ ${combinedText}`;
           .replace(/#{1,6}\s+/g, '') // Remove headers
           .replace(/\n{3,}/g, '\n\n') // Normalize multiple line breaks
           .trim();
-        
+
         // Recombine
         summary = cleanedMain + (cleanedInsights ? '\n\n' + cleanedInsights : '');
-        
+
         console.log('✅ [AI Summary Debug] Successfully received OpenAI summary:', {
           summaryLength: summary.length,
           tokensUsed: data.usage?.total_tokens || 'unknown'
@@ -996,7 +998,7 @@ ${combinedText}`;
         name: error.name,
         fullError: error
       });
-      
+
       // If API fails, show a formatted fallback summary
       if (error.message?.includes('429') || error.message?.includes('rate limit')) {
         console.warn('⚠️ [AI Summary Debug] Rate limit in final catch');
@@ -1005,7 +1007,7 @@ ${combinedText}`;
         console.warn('⚠️ [AI Summary Debug] Other error, showing fallback');
         toast.error('AI summary unavailable. Showing formatted summary instead.');
       }
-      
+
       // Fallback: Create a formatted summary
       const fallbackSummary = createFormattedSummary(combinedText);
       console.log('📋 [AI Summary Debug] Using fallback formatted summary');
@@ -1019,7 +1021,7 @@ ${combinedText}`;
   // Function to fetch saved AI summary from database
   const fetchSavedAiSummary = async () => {
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-    
+
     // First check if client object already has the summary
     const aiSummaryFromClient = (client as any).ai_summary;
     if (aiSummaryFromClient) {
@@ -1027,7 +1029,7 @@ ${combinedText}`;
       console.log('✅ [AI Summary] Loaded saved summary from client object');
       return;
     }
-    
+
     try {
       if (isLegacyLead) {
         const legacyId = client.id.toString().replace('legacy_', '');
@@ -1036,7 +1038,7 @@ ${combinedText}`;
           .select('ai_summary')
           .eq('id', legacyId)
           .single();
-        
+
         if (!error && data?.ai_summary) {
           setSavedAiSummary(data.ai_summary);
           console.log('✅ [AI Summary] Loaded saved summary from database (legacy)');
@@ -1047,7 +1049,7 @@ ${combinedText}`;
           .select('ai_summary')
           .eq('id', client.id)
           .single();
-        
+
         if (!error && data?.ai_summary) {
           setSavedAiSummary(data.ai_summary);
           console.log('✅ [AI Summary] Loaded saved summary from database (new lead)');
@@ -1061,7 +1063,7 @@ ${combinedText}`;
   // Function to save AI summary to database
   const saveAiSummaryToDatabase = async (summary: string) => {
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-    
+
     try {
       if (isLegacyLead) {
         const legacyId = client.id.toString().replace('legacy_', '');
@@ -1069,7 +1071,7 @@ ${combinedText}`;
           .from('leads_lead')
           .update({ ai_summary: summary })
           .eq('id', legacyId);
-        
+
         if (error) {
           console.error('Error saving AI summary (legacy):', error);
           throw error;
@@ -1080,17 +1082,17 @@ ${combinedText}`;
           .from('leads')
           .update({ ai_summary: summary })
           .eq('id', client.id);
-        
+
         if (error) {
           console.error('Error saving AI summary (new lead):', error);
           throw error;
         }
         console.log('✅ [AI Summary] Saved summary to database (new lead)');
       }
-      
+
       // Update saved summary state
       setSavedAiSummary(summary);
-      
+
       // Refresh client data
       if (onClientUpdate) {
         await onClientUpdate();
@@ -1104,7 +1106,7 @@ ${combinedText}`;
   // Function to fetch summary data
   const fetchSummaryData = async () => {
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-    
+
     try {
       if (isLegacyLead) {
         // For legacy leads, try to use client data first, then fetch from database
@@ -1112,7 +1114,7 @@ ${combinedText}`;
         const notes = (client as any).notes || '';
         const description = (client as any).description || '';
         const managementNotes = (client as any).management_notes || '';
-        
+
         // If we have all data from client, use it; otherwise fetch from database
         if (specialNotes || notes || description || managementNotes) {
           setSummaryData({
@@ -1128,7 +1130,7 @@ ${combinedText}`;
             .select('special_notes, notes, description, management_notes')
             .eq('id', legacyId)
             .single();
-          
+
           if (!error && data) {
             setSummaryData({
               specialNotes: formatNoteText(data.special_notes || ''),
@@ -1144,7 +1146,7 @@ ${combinedText}`;
         const generalNotes = client.general_notes || '';
         const facts = client.facts || '';
         const managerNotes = (client as any).manager_notes || '';
-        
+
         // If we have all data from client, use it; otherwise fetch from database
         if (specialNotes || generalNotes || facts || managerNotes) {
           setSummaryData({
@@ -1159,7 +1161,7 @@ ${combinedText}`;
             .select('special_notes, general_notes, facts, manager_notes')
             .eq('id', client.id)
             .single();
-          
+
           if (!error && data) {
             setSummaryData({
               specialNotes: formatNoteText(data.special_notes || ''),
@@ -1232,7 +1234,7 @@ ${combinedText}`;
   useEffect(() => {
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
     const aiSummaryFromClient = (client as any).ai_summary;
-    
+
     if (aiSummaryFromClient) {
       setSavedAiSummary(aiSummaryFromClient);
       // If we're in AI summary view and don't have a current summary, use the saved one
@@ -1248,6 +1250,7 @@ ${combinedText}`;
   const [isAddingExpertNote, setIsAddingExpertNote] = useState(false);
   const [editingExpertNoteId, setEditingExpertNoteId] = useState<string | null>(null);
   const [newExpertNoteContent, setNewExpertNoteContent] = useState('');
+  const [isExpertNotesModalOpen, setIsExpertNotesModalOpen] = useState(false);
 
   // Handler Notes
   const [handlerNotes, setHandlerNotes] = useState<Note[]>(client.handler_notes || []);
@@ -1269,7 +1272,7 @@ ${combinedText}`;
     if (!client.lead_number) {
       return;
     }
-    
+
     try {
       const { data, error } = await supabase.functions.invoke('list-lead-documents', {
         body: { leadNumber: client.lead_number }
@@ -1300,10 +1303,10 @@ ${combinedText}`;
     if (isFetchingCountRef.current || !client.lead_number) {
       return;
     }
-    
+
     const fetchCount = async () => {
       isFetchingCountRef.current = true;
-      
+
       try {
         const { data, error } = await supabase.functions.invoke('list-lead-documents', {
           body: { leadNumber: client.lead_number }
@@ -1326,23 +1329,23 @@ ${combinedText}`;
         isFetchingCountRef.current = false;
       }
     };
-    
+
     fetchCount();
   }, [client.lead_number]);
 
   // Placeholder for document count and link
   const documentLink = client.onedrive_folder_link || '#';
-  
+
   // Get docs_url for legacy leads
   const [docsUrl, setDocsUrl] = useState<string>('');
   const hasDocsUrl = !!docsUrl;
-  
+
   // Check if this is a legacy lead (used elsewhere in the component)
   const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-  
+
   // Expert name state
   const [expertName, setExpertName] = useState<string>(client.expert || 'Not assigned');
-  
+
   // Current user state
   const [isSuperuser, setIsSuperuser] = useState<boolean>(false);
   const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
@@ -1366,36 +1369,36 @@ ${combinedText}`;
   // Save section/eligibility to DB
   const handleSectionChange = async (value: string) => {
     setSelectedSection(value);
-    
+
     // Check if this is a legacy lead
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
     const currentUser = await getCurrentUserName();
-    
+
     if (isLegacyLead) {
       // For legacy leads, save to leads_lead table using the actual integer ID
       const legacyId = client.id.toString().replace('legacy_', '');
-      
+
       try {
         // First, try to update with tracking columns
         // section_eligibility can be null (empty string becomes null)
         const { error: updateError } = await supabase
           .from('leads_lead')
-          .update({ 
+          .update({
             section_eligibility: value || null,
             section_eligibility_last_edited_by: currentUser,
             section_eligibility_last_edited_at: new Date().toISOString()
           })
           .eq('id', legacyId);
-        
+
         if (updateError) {
           console.error('Error updating section eligibility with tracking (legacy):', updateError);
-          
+
           // Fallback: try without tracking columns
           const { error: fallbackError } = await supabase
             .from('leads_lead')
             .update({ section_eligibility: value || null })
             .eq('id', legacyId);
-          
+
           if (fallbackError) {
             console.error('Error updating section eligibility (fallback - legacy):', fallbackError);
             throw fallbackError;
@@ -1416,22 +1419,22 @@ ${combinedText}`;
         // First, try to update with tracking columns
         const { error: updateError } = await supabase
           .from('leads')
-          .update({ 
+          .update({
             section_eligibility: value,
             section_eligibility_last_edited_by: currentUser,
             section_eligibility_last_edited_at: timestamp
           })
           .eq('id', client.id);
-        
+
         if (updateError) {
           console.error('Error updating section eligibility with tracking (new leads):', updateError);
-          
+
           // Fallback: try without tracking columns
           const { error: fallbackError } = await supabase
             .from('leads')
             .update({ section_eligibility: value })
             .eq('id', client.id);
-          
+
           if (fallbackError) {
             console.error('Error updating section eligibility (fallback - new leads):', fallbackError);
             throw fallbackError;
@@ -1446,7 +1449,7 @@ ${combinedText}`;
         throw error;
       }
     }
-    
+
     if (onClientUpdate) await onClientUpdate();
   };
 
@@ -1456,21 +1459,21 @@ ${combinedText}`;
     if (newValue === 'not_feasible') {
       setSelectedSection(''); // Clear section selection
     }
-    
+
     // Only update expert assessment columns if this is the first time setting eligibility
     // or if the eligibility status is being changed from empty/null to a valid value
     const shouldUpdateExpertAssessment = !client.eligibility_status || client.eligibility_status === '';
-    
+
     let updateData: any = {
-      eligibility_status: newValue, 
-      eligibility_status_timestamp: timestamp, 
+      eligibility_status: newValue,
+      eligibility_status_timestamp: timestamp,
       section_eligibility: newValue === 'not_feasible' ? '' : selectedSection
     };
-    
+
     // Only update expert assessment columns when actually completing an assessment
     if (shouldUpdateExpertAssessment && newValue && newValue !== '') {
       const currentUser = await getCurrentUserName();
-      
+
       updateData = {
         ...updateData,
         expert_eligibility_assessed: true,
@@ -1478,15 +1481,15 @@ ${combinedText}`;
         expert_eligibility_assessed_by: currentUser
       };
     }
-    
+
     // Check if this is a legacy lead
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
     const currentUser = await getCurrentUserName();
-    
+
     if (isLegacyLead) {
       // For legacy leads, save to leads_lead table using the actual integer ID
       const legacyId = client.id.toString().replace('legacy_', '');
-      
+
       // Map eligibility status back to expert_examination value for legacy table
       let expertExaminationValue = null;
       if (newValue === 'feasible_no_check') {
@@ -1496,7 +1499,7 @@ ${combinedText}`;
       } else if (newValue === 'feasible_check') {
         expertExaminationValue = 5;
       }
-      
+
       // Prepare update data for legacy table
       const legacyUpdateData: any = {
         expert_examination: expertExaminationValue,
@@ -1505,14 +1508,14 @@ ${combinedText}`;
         section_eligibility: newValue === 'not_feasible' ? '' : selectedSection,
         eligibilty_date: timestamp // Always update eligibilty_date when eligibility changes (legacy compatibility)
       };
-      
+
       // Add tracking data if available
       if (shouldUpdateExpertAssessment && newValue && newValue !== '') {
         legacyUpdateData.expert_eligibility_assessed = true;
         legacyUpdateData.expert_eligibility_date = timestamp;
         legacyUpdateData.expert_eligibility_assessed_by = currentUser;
       }
-      
+
       try {
         // First, try to update with tracking columns
         const { error: updateError } = await supabase
@@ -1523,16 +1526,16 @@ ${combinedText}`;
             eligibility_status_last_edited_at: new Date().toISOString()
           })
           .eq('id', legacyId);
-        
+
         if (updateError) {
           console.error('Error updating eligibility status with tracking (legacy):', updateError);
-          
+
           // Fallback: try without tracking columns
           const { error: fallbackError } = await supabase
             .from('leads_lead')
             .update(legacyUpdateData)
             .eq('id', legacyId);
-          
+
           if (fallbackError) {
             console.error('Error updating eligibility status (fallback - legacy):', fallbackError);
             throw fallbackError;
@@ -1554,16 +1557,16 @@ ${combinedText}`;
             eligibility_status_last_edited_at: new Date().toISOString()
           })
           .eq('id', client.id);
-        
+
         if (updateError) {
           console.error('Error updating eligibility status with tracking (new leads):', updateError);
-          
+
           // Fallback: try without tracking columns
           const { error: fallbackError } = await supabase
             .from('leads')
             .update(updateData)
             .eq('id', client.id);
-          
+
           if (fallbackError) {
             console.error('Error updating eligibility status (fallback - new leads):', fallbackError);
             throw fallbackError;
@@ -1574,34 +1577,34 @@ ${combinedText}`;
         throw error;
       }
     }
-    
+
     if (onClientUpdate) await onClientUpdate();
   };
 
   // Save expert notes to DB
   const handleSaveExpertNotes = async (notes: Note[]) => {
     setExpertNotes(notes);
-    
+
     // Check if this is a legacy lead
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
     const currentUser = await getCurrentUserName();
-    
+
     if (isLegacyLead) {
       // For legacy leads, save to leads_lead table using the actual integer ID
       const legacyIdStr = client.id.toString().replace('legacy_', '');
       const legacyId = parseInt(legacyIdStr, 10);
-      
+
       if (isNaN(legacyId)) {
         console.error('Invalid legacy ID:', legacyIdStr);
         throw new Error('Invalid legacy ID');
       }
-      
+
       try {
-        
+
         // First, try to update with tracking columns
         const { data, error: updateError } = await supabase
           .from('leads_lead')
-          .update({ 
+          .update({
             expert_notes: notes,
             expert_notes_last_edited_by: currentUser,
             expert_notes_last_edited_at: new Date().toISOString()
@@ -1609,10 +1612,10 @@ ${combinedText}`;
           .eq('id', legacyId)
           .select('expert_notes')
           .single();
-        
+
         if (updateError) {
           console.error('❌ Error updating expert notes with tracking:', updateError);
-          
+
           // Fallback: try without tracking columns
           const { data: fallbackData, error: fallbackError } = await supabase
             .from('leads_lead')
@@ -1620,31 +1623,31 @@ ${combinedText}`;
             .eq('id', legacyId)
             .select('expert_notes')
             .single();
-          
+
           if (fallbackError) {
             console.error('❌ Error updating expert notes (fallback):', fallbackError);
             throw fallbackError;
           }
-          
+
           // Update local state with what was saved
           if (fallbackData?.expert_notes) {
             setExpertNotes(fallbackData.expert_notes);
           }
         } else {
-          
+
           // Update local state with what was saved
           if (data?.expert_notes) {
             setExpertNotes(data.expert_notes);
           }
         }
-        
+
         // Fetch the saved data to ensure it's persisted (separate query)
         const { data: verifyData, error: verifyError } = await supabase
           .from('leads_lead')
           .select('expert_notes')
           .eq('id', legacyId)
           .single();
-        
+
         if (verifyError) {
           // Don't throw - the update might have succeeded even if verification fails
         } else if (verifyData) {
@@ -1657,12 +1660,12 @@ ${combinedText}`;
         console.error('Error in handleSaveExpertNotes:', error);
         throw error;
       }
-      
+
       // Refresh client data to ensure notes are synced
       if (onClientUpdate) {
         await onClientUpdate();
       }
-      
+
       // Also fetch notes directly from database to ensure we have the latest
       await fetchNotesFromDatabase();
     } else {
@@ -1671,7 +1674,7 @@ ${combinedText}`;
         // First, try to update with tracking columns
         const { data, error: updateError } = await supabase
           .from('leads')
-          .update({ 
+          .update({
             expert_notes: notes,
             expert_notes_last_edited_by: currentUser,
             expert_notes_last_edited_at: new Date().toISOString()
@@ -1679,10 +1682,10 @@ ${combinedText}`;
           .eq('id', client.id)
           .select('expert_notes')
           .single();
-        
+
         if (updateError) {
-          console.error('Error updating expert notes with tracking (new leads):', updateError);
-          
+          console.error('❌ Error updating expert notes with tracking (new leads):', updateError);
+
           // Fallback: try without tracking columns
           const { data: fallbackData, error: fallbackError } = await supabase
             .from('leads')
@@ -1690,60 +1693,78 @@ ${combinedText}`;
             .eq('id', client.id)
             .select('expert_notes')
             .single();
-          
+
           if (fallbackError) {
-            console.error('Error updating expert notes (fallback - new leads):', fallbackError);
+            console.error('❌ Error updating expert notes (fallback - new leads):', fallbackError);
             throw fallbackError;
           }
-          
-          // Verify the data was saved
-          if (!fallbackData || JSON.stringify(fallbackData.expert_notes) !== JSON.stringify(notes)) {
-            console.error('Expert notes were not saved correctly (new leads)');
-            throw new Error('Failed to save expert notes');
+
+          // Update local state with what was saved
+          if (fallbackData?.expert_notes) {
+            setExpertNotes(fallbackData.expert_notes);
           }
         } else {
-          // Verify the data was saved
-          if (!data || JSON.stringify(data.expert_notes) !== JSON.stringify(notes)) {
-            console.error('Expert notes were not saved correctly (new leads)');
-            throw new Error('Failed to save expert notes');
+          // Update local state with what was saved
+          if (data?.expert_notes) {
+            setExpertNotes(data.expert_notes);
+          }
+        }
+
+        // Fetch the saved data to ensure it's persisted (separate query)
+        const { data: verifyData, error: verifyError } = await supabase
+          .from('leads')
+          .select('expert_notes')
+          .eq('id', client.id)
+          .single();
+
+        if (verifyError) {
+          // Don't throw - the update might have succeeded even if verification fails
+          console.warn('Warning: Could not verify expert notes save (new leads):', verifyError);
+        } else if (verifyData) {
+          // Update local state with verified data
+          if (verifyData.expert_notes) {
+            setExpertNotes(verifyData.expert_notes);
           }
         }
       } catch (error) {
         console.error('Error in handleSaveExpertNotes (new leads):', error);
         throw error;
       }
-    }
-    
-    // Refresh client data to ensure notes are synced
-    if (onClientUpdate) {
-      await onClientUpdate();
+
+      // Refresh client data to ensure notes are synced
+      if (onClientUpdate) {
+        await onClientUpdate();
+      }
+
+      // Also fetch notes directly from database to ensure we have the latest
+      await fetchNotesFromDatabase();
     }
   };
 
   // Save handler notes to DB
   const handleSaveHandlerNotes = async (notes: Note[]) => {
     setHandlerNotes(notes);
-    
+
     // Check if this is a legacy lead
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
     const currentUser = await getCurrentUserName();
-    
+
     if (isLegacyLead) {
       // For legacy leads, save to leads_lead table using the actual integer ID
       const legacyIdStr = client.id.toString().replace('legacy_', '');
       const legacyId = parseInt(legacyIdStr, 10);
-      
+
       if (isNaN(legacyId)) {
         console.error('Invalid legacy ID:', legacyIdStr);
         throw new Error('Invalid legacy ID');
       }
-      
+
       try {
-        
+
         // First, try to update with tracking columns
         const { data, error: updateError } = await supabase
           .from('leads_lead')
-          .update({ 
+          .update({
             handler_notes: notes,
             handler_notes_last_edited_by: currentUser,
             handler_notes_last_edited_at: new Date().toISOString()
@@ -1751,10 +1772,10 @@ ${combinedText}`;
           .eq('id', legacyId)
           .select('handler_notes')
           .single();
-        
+
         if (updateError) {
           console.error('❌ Error updating handler notes with tracking:', updateError);
-          
+
           // Fallback: try without tracking columns
           const { data: fallbackData, error: fallbackError } = await supabase
             .from('leads_lead')
@@ -1762,31 +1783,31 @@ ${combinedText}`;
             .eq('id', legacyId)
             .select('handler_notes')
             .single();
-          
+
           if (fallbackError) {
             console.error('❌ Error updating handler notes (fallback):', fallbackError);
             throw fallbackError;
           }
-          
+
           // Update local state with what was saved
           if (fallbackData?.handler_notes) {
             setHandlerNotes(fallbackData.handler_notes);
           }
         } else {
-          
+
           // Update local state with what was saved
           if (data?.handler_notes) {
             setHandlerNotes(data.handler_notes);
           }
         }
-        
+
         // Fetch the saved data to ensure it's persisted (separate query)
         const { data: verifyData, error: verifyError } = await supabase
           .from('leads_lead')
           .select('handler_notes')
           .eq('id', legacyId)
           .single();
-        
+
         if (verifyError) {
           // Don't throw - the update might have succeeded even if verification fails
         } else if (verifyData) {
@@ -1799,12 +1820,12 @@ ${combinedText}`;
         console.error('Error in handleSaveHandlerNotes:', error);
         throw error;
       }
-      
+
       // Refresh client data to ensure notes are synced
       if (onClientUpdate) {
         await onClientUpdate();
       }
-      
+
       // Also fetch notes directly from database to ensure we have the latest
       await fetchNotesFromDatabase();
     } else {
@@ -1813,7 +1834,7 @@ ${combinedText}`;
         // First, try to update with tracking columns
         const { data, error: updateError } = await supabase
           .from('leads')
-          .update({ 
+          .update({
             handler_notes: notes,
             handler_notes_last_edited_by: currentUser,
             handler_notes_last_edited_at: new Date().toISOString()
@@ -1821,10 +1842,10 @@ ${combinedText}`;
           .eq('id', client.id)
           .select('handler_notes')
           .single();
-        
+
         if (updateError) {
-          console.error('Error updating handler notes with tracking (new leads):', updateError);
-          
+          console.error('❌ Error updating handler notes with tracking (new leads):', updateError);
+
           // Fallback: try without tracking columns
           const { data: fallbackData, error: fallbackError } = await supabase
             .from('leads')
@@ -1832,33 +1853,51 @@ ${combinedText}`;
             .eq('id', client.id)
             .select('handler_notes')
             .single();
-          
+
           if (fallbackError) {
-            console.error('Error updating handler notes (fallback - new leads):', fallbackError);
+            console.error('❌ Error updating handler notes (fallback - new leads):', fallbackError);
             throw fallbackError;
           }
-          
-          // Verify the data was saved
-          if (!fallbackData || JSON.stringify(fallbackData.handler_notes) !== JSON.stringify(notes)) {
-            console.error('Handler notes were not saved correctly (new leads)');
-            throw new Error('Failed to save handler notes');
+
+          // Update local state with what was saved
+          if (fallbackData?.handler_notes) {
+            setHandlerNotes(fallbackData.handler_notes);
           }
         } else {
-          // Verify the data was saved
-          if (!data || JSON.stringify(data.handler_notes) !== JSON.stringify(notes)) {
-            console.error('Handler notes were not saved correctly (new leads)');
-            throw new Error('Failed to save handler notes');
+          // Update local state with what was saved
+          if (data?.handler_notes) {
+            setHandlerNotes(data.handler_notes);
+          }
+        }
+
+        // Fetch the saved data to ensure it's persisted (separate query)
+        const { data: verifyData, error: verifyError } = await supabase
+          .from('leads')
+          .select('handler_notes')
+          .eq('id', client.id)
+          .single();
+
+        if (verifyError) {
+          // Don't throw - the update might have succeeded even if verification fails
+          console.warn('Warning: Could not verify handler notes save (new leads):', verifyError);
+        } else if (verifyData) {
+          // Update local state with verified data
+          if (verifyData.handler_notes) {
+            setHandlerNotes(verifyData.handler_notes);
           }
         }
       } catch (error) {
         console.error('Error in handleSaveHandlerNotes (new leads):', error);
         throw error;
       }
-    }
-    
-    // Refresh client data to ensure notes are synced
-    if (onClientUpdate) {
-      await onClientUpdate();
+
+      // Refresh client data to ensure notes are synced
+      if (onClientUpdate) {
+        await onClientUpdate();
+      }
+
+      // Also fetch notes directly from database to ensure we have the latest
+      await fetchNotesFromDatabase();
     }
   };
 
@@ -1869,10 +1908,10 @@ ${combinedText}`;
       const cleanedContent = formatNoteText(newExpertNoteContent);
       const currentUser = await getCurrentUserName();
       const currentTime = new Date().toLocaleString();
-      
+
       if (editingExpertNoteId) {
-        updatedNotes = expertNotes.map(note => 
-          note.id === editingExpertNoteId 
+        updatedNotes = expertNotes.map(note =>
+          note.id === editingExpertNoteId
             ? { ...note, content: cleanedContent, edited_by: currentUser, edited_at: currentTime }
             : note
         );
@@ -1915,10 +1954,10 @@ ${combinedText}`;
       const cleanedContent = formatNoteText(newHandlerNoteContent);
       const currentUser = await getCurrentUserName();
       const currentTime = new Date().toLocaleString();
-      
+
       if (editingHandlerNoteId) {
-        updatedNotes = handlerNotes.map(note => 
-          note.id === editingHandlerNoteId 
+        updatedNotes = handlerNotes.map(note =>
+          note.id === editingHandlerNoteId
             ? { ...note, content: cleanedContent, edited_by: currentUser, edited_at: currentTime }
             : note
         );
@@ -1988,34 +2027,34 @@ ${combinedText}`;
       const targetProgress = 90; // Stop at 90% until upload completes
       const progressRange = targetProgress - initialProgress; // Range to animate through
       const startTime = Date.now();
-      
+
       // Calculate timing based on file size (larger files take longer)
       const estimatedDuration = Math.max(2000, Math.min(10000, fileSize / 1024)); // 2-10 seconds
       const updateInterval = 100; // Update every 100ms for smooth animation
-      
+
       const interval = setInterval(() => {
         const elapsed = Date.now() - startTime;
         const progressRatio = Math.min(elapsed / estimatedDuration, 0.95); // Cap at 95% of range
-        
+
         // Use easing function for smooth progress (ease-out cubic)
         const easedProgress = 1 - Math.pow(1 - progressRatio, 3);
         currentProgress = Math.min(
-          Math.floor(initialProgress + (easedProgress * progressRange)), 
+          Math.floor(initialProgress + (easedProgress * progressRange)),
           targetProgress
         );
-        
+
         if (currentProgress >= targetProgress) {
           clearInterval(interval);
           progressIntervals.delete(fileName);
         }
-        
-        setUploadedFiles(prev => prev.map(f => 
+
+        setUploadedFiles(prev => prev.map(f =>
           f.name === fileName && f.status === 'uploading'
             ? { ...f, progress: currentProgress }
             : f
         ));
       }, updateInterval);
-      
+
       progressIntervals.set(fileName, interval);
       return interval;
     };
@@ -2032,7 +2071,7 @@ ${combinedText}`;
     for (const file of files) {
       // Start progress simulation immediately
       startProgressSimulation(file.name, file.size);
-      
+
       try {
         const formData = new FormData();
         formData.append('file', file);
@@ -2052,70 +2091,70 @@ ${combinedText}`;
 
         const folderUrl = data.folderUrl;
         if (folderUrl && folderUrl !== client.onedrive_folder_link) {
-            // Get current user for tracking who uploaded documents
-            const currentUser = await getCurrentUserName();
-            
-            // Check if this is a legacy lead
-            const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-            
-            if (isLegacyLead) {
-              // For legacy leads, save to leads_lead table using the actual integer ID
-              const legacyId = client.id.toString().replace('legacy_', '');
-              await supabase
-                  .from('leads_lead')
-                  .update({ 
-                      onedrive_folder_link: folderUrl,
-                      // Update new AI notification columns
-                      documents_uploaded_date: new Date().toISOString(),
-                      documents_uploaded_by: currentUser
-                  })
-                  .eq('id', legacyId);
-            } else {
-              // For new leads, save to leads table
-              await supabase
-                  .from('leads')
-                  .update({ 
-                      onedrive_folder_link: folderUrl,
-                      // Update new AI notification columns
-                      documents_uploaded_date: new Date().toISOString(),
-                      documents_uploaded_by: currentUser
-                  })
-                  .eq('id', client.id);
-            }
-            if (onClientUpdate) {
-                await onClientUpdate();
-            }
+          // Get current user for tracking who uploaded documents
+          const currentUser = await getCurrentUserName();
+
+          // Check if this is a legacy lead
+          const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+
+          if (isLegacyLead) {
+            // For legacy leads, save to leads_lead table using the actual integer ID
+            const legacyId = client.id.toString().replace('legacy_', '');
+            await supabase
+              .from('leads_lead')
+              .update({
+                onedrive_folder_link: folderUrl,
+                // Update new AI notification columns
+                documents_uploaded_date: new Date().toISOString(),
+                documents_uploaded_by: currentUser
+              })
+              .eq('id', legacyId);
+          } else {
+            // For new leads, save to leads table
+            await supabase
+              .from('leads')
+              .update({
+                onedrive_folder_link: folderUrl,
+                // Update new AI notification columns
+                documents_uploaded_date: new Date().toISOString(),
+                documents_uploaded_by: currentUser
+              })
+              .eq('id', client.id);
+          }
+          if (onClientUpdate) {
+            await onClientUpdate();
+          }
         }
 
         // Update file status to success with smooth transition to 100%
-        setUploadedFiles(prev => prev.map(f => 
-          f.name === file.name 
-            ? { ...f, status: 'success' as const, progress: 100 } 
+        setUploadedFiles(prev => prev.map(f =>
+          f.name === file.name
+            ? { ...f, status: 'success' as const, progress: 100 }
             : f
         ));
-        
+
       } catch (err) {
         // Stop progress simulation on error
         stopProgressSimulation(file.name);
-        
+
         const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred';
         // Update file status to error
-        setUploadedFiles(prev => prev.map(f => 
-          f.name === file.name 
-            ? { ...f, status: 'error' as const, error: errorMessage, progress: 0 } 
+        setUploadedFiles(prev => prev.map(f =>
+          f.name === file.name
+            ? { ...f, status: 'error' as const, error: errorMessage, progress: 0 }
             : f
         ));
         console.error(`Error uploading ${file.name}:`, err);
       }
     }
-    
+
     // Cleanup: clear any remaining intervals
     progressIntervals.forEach((interval) => clearInterval(interval));
     progressIntervals.clear();
-    
+
     // Refresh document count after all uploads complete
     await fetchDocumentCount();
-    
+
     setIsUploading(false);
   };
 
@@ -2128,21 +2167,21 @@ ${combinedText}`;
   ];
 
   const eligibilityOptions: EligibilityOption[] = [
-    { 
-      value: 'feasible_no_check', 
-      label: 'Feasible (no check)', 
+    {
+      value: 'feasible_no_check',
+      label: 'Feasible (no check)',
       icon: CheckCircleIcon,
       color: 'text-success'
     },
-    { 
-      value: 'feasible_check', 
-      label: 'Feasible (further check)', 
+    {
+      value: 'feasible_check',
+      label: 'Feasible (further check)',
       icon: MagnifyingGlassIcon,
       color: 'text-warning'
     },
-    { 
-      value: 'not_feasible', 
-      label: 'No feasibility', 
+    {
+      value: 'not_feasible',
+      label: 'No feasibility',
       icon: XCircleIcon,
       color: 'text-error'
     }
@@ -2150,7 +2189,7 @@ ${combinedText}`;
 
   const selectedSectionLabel = sections.find(s => s.value === selectedSection)?.label.split(' - ')[1] || '';
   const selectedEligibilityLabel = eligibilityOptions.find(opt => opt.value === eligibilityStatus.value)?.label || '';
-  
+
 
   const selectedEligibility = eligibilityOptions.find(opt => opt.value === eligibilityStatus.value);
 
@@ -2162,13 +2201,13 @@ ${combinedText}`;
   //    - Check by display_name if expert is stored as display_name
   const canEditEligibility = isSuperuser || (
     // Check by employee_id match
-    (assignedExpertId !== null && 
-     currentUserEmployeeId !== null && 
-     Number(assignedExpertId) === Number(currentUserEmployeeId)) ||
+    (assignedExpertId !== null &&
+      currentUserEmployeeId !== null &&
+      Number(assignedExpertId) === Number(currentUserEmployeeId)) ||
     // Check by display_name match
-    (assignedExpertDisplayName !== null && 
-     currentUserDisplayName !== null && 
-     assignedExpertDisplayName.trim().toLowerCase() === currentUserDisplayName.trim().toLowerCase())
+    (assignedExpertDisplayName !== null &&
+      currentUserDisplayName !== null &&
+      assignedExpertDisplayName.trim().toLowerCase() === currentUserDisplayName.trim().toLowerCase())
   );
 
 
@@ -2209,364 +2248,479 @@ ${combinedText}`;
 
           {/* Expert Information */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-        <div className="pl-6 pt-2 pb-2 w-2/5">
-          <h4 className="text-lg font-semibold text-black">Expert Information</h4>
-          <div className="border-b border-gray-200 mt-2"></div>
-        </div>
-        <div className="p-6">
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
-            <div className="space-y-4">
-              <div className="flex items-center gap-3">
-                <label className="text-base font-medium text-gray-500 uppercase tracking-wide">Assigned Expert</label>
-                <span className="text-2xl font-bold text-gray-900">{expertName}</span>
-              </div>
-              <div className="space-y-2">
-                <label className="text-base font-medium text-gray-500 uppercase tracking-wide">Eligibility Status</label>
-                <span className={`inline-flex items-center px-3 py-1 rounded-full text-base font-medium ${
-                  eligibilityStatus.value === 'Not checked' ? 'bg-gray-100 text-gray-800' :
-                  eligibilityStatus.value.includes('feasible_no_check') ? 'bg-green-100 text-green-800' :
-                  eligibilityStatus.value.includes('feasible_check') ? 'bg-yellow-100 text-yellow-800' :
-                  eligibilityStatus.value.includes('not_feasible') ? 'bg-red-100 text-red-800' :
-                  'bg-gray-100 text-gray-800'
-                }`}>
-                  {selectedEligibilityLabel}
-                  {selectedSection && ['feasible_no_check', 'feasible_check'].includes(eligibilityStatus.value) && (
-                    <span className="ml-2 px-2 py-0.5 rounded text-white font-semibold text-xs bg-[#3b28c7]">
-                      {selectedSectionLabel}
-                    </span>
-                  )}
-                </span>
-              </div>
+            <div className="pl-6 pt-2 pb-2 w-2/5">
+              <h4 className="text-lg font-semibold text-black">Expert Information</h4>
+              <div className="border-b border-gray-200 mt-2"></div>
             </div>
-            <div className="flex flex-col items-center gap-2">
-              {/* Documents Link button for legacy leads */}
-              {hasDocsUrl && (
-                <button
-                  onClick={() => window.open(docsUrl, '_blank')}
-                  className="btn btn-outline bg-white shadow-sm w-full"
-                  style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = '#f3f0ff';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = 'white';
-                  }}
-                  title="Open Documents Link"
-                >
-                  <PaperClipIcon className="w-5 h-5" />
-                  Documents Link
-                </button>
-              )}
-              
-              <button
-                onClick={() => setIsDocumentModalOpen(true)}
-                className="btn btn-outline bg-white shadow-sm w-full"
-                style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = '#f3f0ff';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = 'white';
-                }}
-              >
-                <FolderIcon className="w-5 h-5" />
-                Documents
-                <span className="badge badge-primary text-white ml-2" style={{ backgroundColor: '#3b28c7', minWidth: '24px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
-                  {documentCount}
-                </span>
-              </button>
+            <div className="p-6">
+              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <label className="text-base font-medium text-gray-500 uppercase tracking-wide">Assigned Expert</label>
+                    <span className="text-2xl font-bold text-gray-900">{expertName}</span>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-base font-medium text-gray-500 uppercase tracking-wide">Eligibility Status</label>
+                    <span className={`inline-flex items-center px-3 py-1 rounded-full text-base font-medium ${eligibilityStatus.value === 'Not checked' ? 'bg-gray-100 text-gray-800' :
+                      eligibilityStatus.value.includes('feasible_no_check') ? 'bg-green-100 text-green-800' :
+                        eligibilityStatus.value.includes('feasible_check') ? 'bg-yellow-100 text-yellow-800' :
+                          eligibilityStatus.value.includes('not_feasible') ? 'bg-red-100 text-red-800' :
+                            'bg-gray-100 text-gray-800'
+                      }`}>
+                      {selectedEligibilityLabel}
+                      {selectedSection && ['feasible_no_check', 'feasible_check'].includes(eligibilityStatus.value) && (
+                        <span className="ml-2 px-2 py-0.5 rounded text-white font-semibold text-xs bg-[#3b28c7]">
+                          {selectedSectionLabel}
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex flex-col items-center gap-2">
+                  {/* Documents Link button for legacy leads */}
+                  {hasDocsUrl && (
+                    <button
+                      onClick={() => window.open(docsUrl, '_blank')}
+                      className="btn btn-outline bg-white shadow-sm w-full"
+                      style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor = '#f3f0ff';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = 'white';
+                      }}
+                      title="Open Documents Link"
+                    >
+                      <PaperClipIcon className="w-5 h-5" />
+                      Documents Link
+                    </button>
+                  )}
+
+                  <button
+                    onClick={() => setIsDocumentModalOpen(true)}
+                    className="btn btn-outline bg-white shadow-sm w-full"
+                    style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = '#f3f0ff';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = 'white';
+                    }}
+                  >
+                    <FolderIcon className="w-5 h-5" />
+                    Documents
+                    <span className="badge badge-primary text-white ml-2" style={{ backgroundColor: '#3b28c7', minWidth: '24px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {documentCount}
+                    </span>
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-      </div>
 
           {/* Section Eligibility and Document Upload Row */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Section Eligibility */}
             <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-          <div className="pl-6 pt-2 pb-2 w-2/5">
-            <h4 className="text-lg font-semibold text-black">Section Eligibility</h4>
-            <div className="border-b border-gray-200 mt-2"></div>
-          </div>
-          <div className="p-6">
-            <div className="space-y-4">
-              {/* Eligibility Dropdown */}
-              <div className="space-y-2">
-                <label className="text-base font-medium text-gray-500 uppercase tracking-wide">Eligibility Assessment</label>
-                <div className={!canEditEligibility ? "tooltip tooltip-top w-full" : ""} data-tip={!canEditEligibility ? "Only the assigned expert is able to save changes" : ""}>
-                  <select 
-                    className="select select-bordered w-full"
-                    value={eligibilityStatus.value}
-                    onChange={(e) => handleEligibilityChange(e.target.value)}
-                    disabled={!canEditEligibility}
-                  >
-                    <option value="">Set Eligibility...</option>
-                    {eligibilityOptions.map((option) => (
-                      <option 
-                        key={option.value} 
-                        value={option.value}
+              <div className="pl-6 pt-2 pb-2 w-2/5">
+                <h4 className="text-lg font-semibold text-black">Section Eligibility</h4>
+                <div className="border-b border-gray-200 mt-2"></div>
+              </div>
+              <div className="p-6">
+                <div className="space-y-4">
+                  {/* Eligibility Dropdown */}
+                  <div className="space-y-2">
+                    <label className="text-base font-medium text-gray-500 uppercase tracking-wide">Eligibility Assessment</label>
+                    <div className={!canEditEligibility ? "tooltip tooltip-top w-full" : ""} data-tip={!canEditEligibility ? "Only the assigned expert is able to save changes" : ""}>
+                      <select
+                        className="select select-bordered w-full"
+                        value={eligibilityStatus.value}
+                        onChange={(e) => handleEligibilityChange(e.target.value)}
+                        disabled={!canEditEligibility}
                       >
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-              
-              {/* Citizenship Section Dropdown */}
-              <div className="space-y-2">
-                <label className="text-base font-medium text-gray-500 uppercase tracking-wide">
-                  Citizenship Section
-                  {isLegacyLead && (
-                    <span className="text-sm font-normal text-gray-400 ml-2">(Optional)</span>
-                  )}
-                </label>
-                <div className="relative">
-                  <div className={!canEditEligibility ? "tooltip tooltip-top w-full" : ""} data-tip={!canEditEligibility ? "Only the assigned expert is able to save changes" : ""}>
-                    <select 
-                      className="select select-bordered w-full"
-                      value={selectedSection}
-                      onChange={(e) => handleSectionChange(e.target.value)}
-                      disabled={!canEditEligibility || !eligibilityStatus.value || eligibilityStatus.value === 'not_feasible'}
-                    >
-                      <option value="">Select citizenship section...</option>
-                      {sections.map((section) => (
-                        <option 
-                          key={section.value} 
-                          value={section.value}
-                        >
-                          {section.label}
-                        </option>
-                      ))}
-                    </select>
+                        <option value="">Set Eligibility...</option>
+                        {eligibilityOptions.map((option) => (
+                          <option
+                            key={option.value}
+                            value={option.value}
+                          >
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
-                  <HashtagIcon className="w-5 h-5 absolute right-10 top-1/2 transform -translate-y-1/2 pointer-events-none text-gray-400" />
+
+                  {/* Citizenship Section Dropdown */}
+                  <div className="space-y-2">
+                    <label className="text-base font-medium text-gray-500 uppercase tracking-wide">
+                      Citizenship Section
+                      {isLegacyLead && (
+                        <span className="text-sm font-normal text-gray-400 ml-2">(Optional)</span>
+                      )}
+                    </label>
+                    <div className="relative">
+                      <div className={!canEditEligibility ? "tooltip tooltip-top w-full" : ""} data-tip={!canEditEligibility ? "Only the assigned expert is able to save changes" : ""}>
+                        <select
+                          className="select select-bordered w-full"
+                          value={selectedSection}
+                          onChange={(e) => handleSectionChange(e.target.value)}
+                          disabled={!canEditEligibility || !eligibilityStatus.value || eligibilityStatus.value === 'not_feasible'}
+                        >
+                          <option value="">Select citizenship section...</option>
+                          {sections.map((section) => (
+                            <option
+                              key={section.value}
+                              value={section.value}
+                            >
+                              {section.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <HashtagIcon className="w-5 h-5 absolute right-10 top-1/2 transform -translate-y-1/2 pointer-events-none text-gray-400" />
+                    </div>
+                  </div>
+
+                  {/* Section Eligibility Last Edited */}
+                  {sectionEligibilityLastEditedBy && sectionEligibilityLastEditedAt && (
+                    <div className="text-sm text-gray-400 flex justify-between border-t border-gray-100 pt-3">
+                      <span>Last edited by {sectionEligibilityLastEditedBy}</span>
+                      <span>{new Date(sectionEligibilityLastEditedAt).toLocaleString()}</span>
+                    </div>
+                  )}
                 </div>
               </div>
-              
-              {/* Section Eligibility Last Edited */}
-              {sectionEligibilityLastEditedBy && sectionEligibilityLastEditedAt && (
-                <div className="text-sm text-gray-400 flex justify-between border-t border-gray-100 pt-3">
-                  <span>Last edited by {sectionEligibilityLastEditedBy}</span>
-                  <span>{new Date(sectionEligibilityLastEditedAt).toLocaleString()}</span>
-                </div>
-              )}
             </div>
-          </div>
-        </div>
 
             {/* Document Upload Section */}
             <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-          <div className="pl-6 pt-2 pb-2 w-2/5">
-            <h4 className="text-lg font-semibold text-black">Document Upload</h4>
-            <div className="border-b border-gray-200 mt-2"></div>
-          </div>
-          <div className="p-6">
-            <div className="space-y-4">
-              {/* Upload Area */}
-              <div 
-                className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors duration-200 ${
-                  isUploading 
-                    ? 'bg-gray-50 border-gray-300' 
-                    : 'bg-gray-50 border-gray-300'
-                }`}
-                style={{
-                  borderColor: isUploading ? '#3b28c7' : '',
-                  backgroundColor: isUploading ? '#f3f0ff' : ''
-                }}
-                onMouseEnter={(e) => {
-                  if (!isUploading) {
-                    e.currentTarget.style.borderColor = '#3b28c7';
-                    e.currentTarget.style.backgroundColor = '#f3f0ff';
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (!isUploading) {
-                    e.currentTarget.style.borderColor = '#d1d5db';
-                    e.currentTarget.style.backgroundColor = '#f9fafb';
-                  }
-                }}
-                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                onDrop={handleFileDrop}
-              >
-                <DocumentArrowUpIcon className="w-12 h-12 mx-auto text-gray-400 mb-4" />
-                <div className="text-base text-gray-600 mb-4">
-                  {isUploading ? 'Processing files...' : 'Drag and drop files here, or click to select files'}
-                </div>
-                <input
-                  type="file"
-                  className="hidden"
-                  id="file-upload"
-                  multiple
-                  onChange={handleFileInput}
-                  disabled={isUploading}
-                />
-                <label
-                  htmlFor="file-upload"
-                  className={`btn btn-outline bg-white ${isUploading ? 'btn-disabled' : ''}`}
-                  style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
-                  onMouseEnter={(e) => {
-                    if (!isUploading) {
-                      e.currentTarget.style.backgroundColor = '#f3f0ff';
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!isUploading) {
-                      e.currentTarget.style.backgroundColor = 'white';
-                    }
-                  }}
-                >
-                  <PaperClipIcon className="w-5 h-5" />
-                  Choose Files
-                </label>
+              <div className="pl-6 pt-2 pb-2 w-2/5">
+                <h4 className="text-lg font-semibold text-black">Document Upload</h4>
+                <div className="border-b border-gray-200 mt-2"></div>
               </div>
-
-              {/* Uploaded Files List */}
-              {uploadedFiles.length > 0 && (
-                <div className="space-y-2">
-                  {uploadedFiles.map((file, index) => (
-                    <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
-                      <div className="flex items-center gap-3">
-                        <PaperClipIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
-                        <span className="text-base font-medium text-gray-900">{file.name}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {file.status === 'uploading' && (
-                          <div className="flex items-center gap-2">
-                            <div className="radial-progress text-xs" style={{ "--value": file.progress || 0, "--size": "2.5rem", color: '#3b28c7' } as any}>
-                              <span className="text-xs font-semibold">{Math.round(file.progress || 0)}%</span>
-                            </div>
-                            <div className="text-xs text-gray-500 font-medium">
-                              Uploading...
-                            </div>
-                          </div>
-                        )}
-                        {file.status === 'success' && (
-                          <div className="flex items-center gap-2">
-                            <CheckCircleIcon className="w-6 h-6 text-green-500" />
-                            <span className="text-xs text-green-600 font-medium">Complete</span>
-                          </div>
-                        )}
-                        {file.status === 'error' && (
-                          <div className="tooltip tooltip-error" data-tip={file.error}>
-                            <div className="flex items-center gap-2">
-                              <XCircleIcon className="w-6 h-6 text-red-500" />
-                              <span className="text-xs text-red-600 font-medium">Failed</span>
-                            </div>
-                          </div>
-                        )}
-                      </div>
+              <div className="p-6">
+                <div className="space-y-4">
+                  {/* Upload Area */}
+                  <div
+                    className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors duration-200 ${isUploading
+                      ? 'bg-gray-50 border-gray-300'
+                      : 'bg-gray-50 border-gray-300'
+                      }`}
+                    style={{
+                      borderColor: isUploading ? '#3b28c7' : '',
+                      backgroundColor: isUploading ? '#f3f0ff' : ''
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isUploading) {
+                        e.currentTarget.style.borderColor = '#3b28c7';
+                        e.currentTarget.style.backgroundColor = '#f3f0ff';
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isUploading) {
+                        e.currentTarget.style.borderColor = '#d1d5db';
+                        e.currentTarget.style.backgroundColor = '#f9fafb';
+                      }
+                    }}
+                    onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                    onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                    onDrop={handleFileDrop}
+                  >
+                    <DocumentArrowUpIcon className="w-12 h-12 mx-auto text-gray-400 mb-4" />
+                    <div className="text-base text-gray-600 mb-4">
+                      {isUploading ? 'Processing files...' : 'Drag and drop files here, or click to select files'}
                     </div>
-                  ))}
+                    <input
+                      type="file"
+                      className="hidden"
+                      id="file-upload"
+                      multiple
+                      onChange={handleFileInput}
+                      disabled={isUploading}
+                    />
+                    <label
+                      htmlFor="file-upload"
+                      className={`btn btn-outline bg-white ${isUploading ? 'btn-disabled' : ''}`}
+                      style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
+                      onMouseEnter={(e) => {
+                        if (!isUploading) {
+                          e.currentTarget.style.backgroundColor = '#f3f0ff';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isUploading) {
+                          e.currentTarget.style.backgroundColor = 'white';
+                        }
+                      }}
+                    >
+                      <PaperClipIcon className="w-5 h-5" />
+                      Choose Files
+                    </label>
+                  </div>
+
+                  {/* Uploaded Files List */}
+                  {uploadedFiles.length > 0 && (
+                    <div className="space-y-2">
+                      {uploadedFiles.map((file, index) => (
+                        <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
+                          <div className="flex items-center gap-3">
+                            <PaperClipIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+                            <span className="text-base font-medium text-gray-900">{file.name}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {file.status === 'uploading' && (
+                              <div className="flex items-center gap-2">
+                                <div className="radial-progress text-xs" style={{ "--value": file.progress || 0, "--size": "2.5rem", color: '#3b28c7' } as any}>
+                                  <span className="text-xs font-semibold">{Math.round(file.progress || 0)}%</span>
+                                </div>
+                                <div className="text-xs text-gray-500 font-medium">
+                                  Uploading...
+                                </div>
+                              </div>
+                            )}
+                            {file.status === 'success' && (
+                              <div className="flex items-center gap-2">
+                                <CheckCircleIcon className="w-6 h-6 text-green-500" />
+                                <span className="text-xs text-green-600 font-medium">Complete</span>
+                              </div>
+                            )}
+                            {file.status === 'error' && (
+                              <div className="tooltip tooltip-error" data-tip={file.error}>
+                                <div className="flex items-center gap-2">
+                                  <XCircleIcon className="w-6 h-6 text-red-500" />
+                                  <span className="text-xs text-red-600 font-medium">Failed</span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
           </div>
-        </div>
-      </div>
 
           {/* Expert Notes Row */}
           <div className="grid grid-cols-1 gap-6">
             {/* Expert Opinion Notes */}
             <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-          <div className="pl-6 pt-2 pb-2 w-2/5">
-            <div className="flex items-center justify-between">
-              <h4 className="text-lg font-semibold text-black">Expert Notes</h4>
-              <div className="flex gap-2">
-                {!isAddingExpertNote && !editingExpertNoteId && (
-                  <button 
-                    className="btn btn-ghost btn-md bg-transparent hover:bg-transparent shadow-none"
-                    onClick={() => {
-                      setIsAddingExpertNote(true);
-                      setNewExpertNoteContent('');
-                    }}
-                  >
-                    <PencilSquareIcon className="w-5 h-5 text-black" />
-                  </button>
-                )}
+              <div className="pl-6 pt-2 pb-2 w-2/5">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-lg font-semibold text-black">Expert Notes</h4>
+                  <div className="flex gap-2">
+                    {!isAddingExpertNote && !editingExpertNoteId && (
+                      <>
+                        <button
+                          className="btn btn-ghost btn-md bg-transparent hover:bg-transparent shadow-none"
+                          onClick={() => setIsExpertNotesModalOpen(true)}
+                          title="View full screen"
+                        >
+                          <ArrowsPointingOutIcon className="w-5 h-5 text-black" />
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-md bg-transparent hover:bg-transparent shadow-none"
+                          onClick={() => {
+                            setIsAddingExpertNote(true);
+                            setNewExpertNoteContent('');
+                          }}
+                          title="Add note"
+                        >
+                          <PencilSquareIcon className="w-5 h-5 text-black" />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="border-b border-gray-200 mt-2"></div>
               </div>
-            </div>
-            <div className="border-b border-gray-200 mt-2"></div>
-          </div>
-          <div className="p-6">
-            {/* Add Expert Note Form */}
-            {isAddingExpertNote && !editingExpertNoteId && (
-              <div className="mb-6 border border-gray-200 rounded-lg bg-white p-4">
-                <textarea
-                  className="textarea textarea-bordered w-full h-32 mb-3"
-                  placeholder="Enter your note..."
-                  value={newExpertNoteContent}
-                  onChange={(e) => setNewExpertNoteContent(e.target.value)}
-                />
-                <div className="flex justify-end gap-2">
-                  <button 
-                    className="btn btn-ghost btn-sm hover:bg-red-50"
-                    onClick={handleCancelExpertEdit}
-                  >
-                    <XMarkIcon className="w-4 h-4 text-red-600" />
-                    Cancel
-                  </button>
-                  <button 
-                    className="btn btn-sm"
-                    style={{ backgroundColor: '#3b28c7', color: 'white' }}
-                    onClick={handleSaveExpertNote}
-                    disabled={!newExpertNoteContent.trim()}
-                  >
-                    <CheckIcon className="w-4 h-4" />
-                    Save
-                  </button>
+              <div className="p-6">
+                {/* Add Expert Note Form */}
+                {isAddingExpertNote && !editingExpertNoteId && (
+                  <div className="mb-6 border border-gray-200 rounded-lg bg-white p-4">
+                    <textarea
+                      className="textarea textarea-bordered w-full h-32 mb-3"
+                      placeholder="Enter your note..."
+                      value={newExpertNoteContent}
+                      onChange={(e) => setNewExpertNoteContent(e.target.value)}
+                    />
+                    <div className="flex justify-end gap-2">
+                      <button
+                        className="btn btn-ghost btn-sm hover:bg-red-50"
+                        onClick={handleCancelExpertEdit}
+                      >
+                        <XMarkIcon className="w-4 h-4 text-red-600" />
+                        Cancel
+                      </button>
+                      <button
+                        className="btn btn-sm"
+                        style={{ backgroundColor: '#3b28c7', color: 'white' }}
+                        onClick={handleSaveExpertNote}
+                        disabled={!newExpertNoteContent.trim()}
+                      >
+                        <CheckIcon className="w-4 h-4" />
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Expert Notes List */}
+                <div className="space-y-4 overflow-y-auto max-h-[300px]">
+                  {expertNotes.length > 0 ? (
+                    expertNotes.map((note, index) => (
+                      <div
+                        key={note.id}
+                        className={`border border-gray-200 rounded-lg transition-all duration-200 hover:shadow-sm ${editingExpertNoteId === note.id ? 'ring-2 ring-purple-200 bg-purple-50' : 'bg-white'
+                          }`}
+                        style={editingExpertNoteId === note.id ? { '--tw-ring-color': '#3b28c7', '--tw-ring-opacity': '0.2' } as React.CSSProperties : {}}
+                      >
+                        {/* Note Content */}
+                        {editingExpertNoteId === note.id ? (
+                          <div className="p-4">
+                            <textarea
+                              className="textarea textarea-bordered w-full h-32 mb-3"
+                              value={newExpertNoteContent}
+                              onChange={(e) => setNewExpertNoteContent(e.target.value)}
+                            />
+                            <div className="flex justify-end gap-2">
+                              <button
+                                className="btn btn-ghost btn-sm hover:bg-red-50"
+                                onClick={handleCancelExpertEdit}
+                              >
+                                <XMarkIcon className="w-4 h-4 text-red-600" />
+                                Cancel
+                              </button>
+                              <button
+                                className="btn btn-sm"
+                                style={{ backgroundColor: '#3b28c7', color: 'white' }}
+                                onClick={handleSaveExpertNote}
+                                disabled={!newExpertNoteContent.trim()}
+                              >
+                                <CheckIcon className="w-4 h-4" />
+                                Save
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-4">
+                            {note.content && note.content.trim().startsWith('<') ? (
+                              // Render HTML content
+                              <div
+                                className="text-base text-gray-800 leading-relaxed mb-3 prose max-w-none"
+                                dangerouslySetInnerHTML={{ __html: note.content }}
+                              />
+                            ) : (
+                              // Render plain text
+                              <p className="text-base text-gray-800 whitespace-pre-wrap leading-relaxed mb-3">{formatNoteText(note.content)}</p>
+                            )}
+
+                            {/* Note Footer - Simple and Clean */}
+                            {note.edited_by && (
+                              <div className="pt-3 border-t border-gray-100">
+                                <div className="flex items-center gap-2 text-sm text-gray-500">
+                                  <span>Edited by {note.edited_by}</span>
+                                  <span>•</span>
+                                  <span>{note.timestamp}</span>
+                                  {note.edited_at && note.edited_at !== note.timestamp && (
+                                    <>
+                                      <span>•</span>
+                                      <span>Updated: {note.edited_at}</span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-center py-8 text-gray-500">
+                      <div className="min-h-[80px]">
+                        <p className="text-lg font-medium mb-1">No expert notes yet</p>
+                        <p className="text-base">Expert opinions and assessments will appear here</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
-            )}
+            </div>
+          </div>
 
-            {/* Expert Notes List */}
-            <div className="space-y-4 overflow-y-auto max-h-[300px]">
-              {expertNotes.length > 0 ? (
-                expertNotes.map((note, index) => (
-                  <div 
-                    key={note.id} 
-                    className={`border border-gray-200 rounded-lg transition-all duration-200 hover:shadow-sm ${
-                      editingExpertNoteId === note.id ? 'ring-2 ring-purple-200 bg-purple-50' : 'bg-white'
-                    }`}
-                    style={editingExpertNoteId === note.id ? { '--tw-ring-color': '#3b28c7', '--tw-ring-opacity': '0.2' } as React.CSSProperties : {}}
-                  >
-                    {/* Note Content */}
-                    {editingExpertNoteId === note.id ? (
-                      <div className="p-4">
-                        <textarea
-                          className="textarea textarea-bordered w-full h-32 mb-3"
-                          value={newExpertNoteContent}
-                          onChange={(e) => setNewExpertNoteContent(e.target.value)}
-                        />
-                        <div className="flex justify-end gap-2">
-                          <button 
-                            className="btn btn-ghost btn-sm hover:bg-red-50"
-                            onClick={handleCancelExpertEdit}
-                          >
-                            <XMarkIcon className="w-4 h-4 text-red-600" />
-                            Cancel
-                          </button>
-                          <button 
-                            className="btn btn-sm"
-                            style={{ backgroundColor: '#3b28c7', color: 'white' }}
-                            onClick={handleSaveExpertNote}
-                            disabled={!newExpertNoteContent.trim()}
-                          >
-                            <CheckIcon className="w-4 h-4" />
-                            Save
-                          </button>
+          {/* Handler Notes Row */}
+          <div className="grid grid-cols-1 gap-6">
+            {/* Handler Opinion Section */}
+            <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+              <div className="pl-6 pt-2 pb-2 w-2/5">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-lg font-semibold text-black">Handler Notes</h4>
+                  {!isAddingHandlerNote && !editingHandlerNoteId && (
+                    <button
+                      className="btn btn-ghost btn-md bg-transparent hover:bg-transparent shadow-none"
+                      onClick={() => {
+                        setIsAddingHandlerNote(true);
+                        setNewHandlerNoteContent('');
+                      }}
+                      title="Add Handler Note"
+                    >
+                      <PencilSquareIcon className="w-5 h-5 text-black" />
+                    </button>
+                  )}
+                </div>
+                <div className="border-b border-gray-200 mt-2"></div>
+              </div>
+              <div className="p-6">
+                {/* Add/Edit Handler Note Form */}
+                {(isAddingHandlerNote || editingHandlerNoteId) && (
+                  <div className="mb-6">
+                    <textarea
+                      className="textarea textarea-bordered w-full h-32 mb-3"
+                      placeholder="Enter your note..."
+                      value={newHandlerNoteContent}
+                      onChange={(e) => setNewHandlerNoteContent(e.target.value)}
+                    />
+                    <div className="flex justify-end gap-2">
+                      <button
+                        className="btn btn-ghost btn-sm hover:bg-red-50"
+                        onClick={handleCancelHandlerEdit}
+                      >
+                        <XMarkIcon className="w-4 h-4 text-red-600" />
+                        Cancel
+                      </button>
+                      <button
+                        className="btn btn-sm"
+                        style={{ backgroundColor: '#3b28c7', color: 'white' }}
+                        onClick={handleSaveHandlerNote}
+                        disabled={!newHandlerNoteContent.trim()}
+                      >
+                        <CheckIcon className="w-4 h-4" />
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Handler Notes List */}
+                <div className="space-y-4 overflow-y-auto max-h-[300px]">
+                  {handlerNotes.length > 0 ? (
+                    handlerNotes.map((note, index) => (
+                      <div
+                        key={note.id}
+                        className="relative p-4 rounded-lg transition-all duration-200 hover:shadow-sm bg-white"
+                      >
+                        {/* Note Content */}
+                        <div className="p-4">
+                          <p className="text-base text-gray-800 whitespace-pre-wrap leading-relaxed">{formatNoteText(note.content)}</p>
                         </div>
-                      </div>
-                    ) : (
-                      <div className="p-4">
-                        <p className="text-base text-gray-800 whitespace-pre-wrap leading-relaxed mb-3">{formatNoteText(note.content)}</p>
-                        
-                        {/* Note Footer - Simple and Clean */}
+
+                        {/* Note Footer */}
                         {note.edited_by && (
-                          <div className="pt-3 border-t border-gray-100">
-                            <div className="flex items-center gap-2 text-sm text-gray-500">
-                              <span>Edited by {note.edited_by}</span>
+                          <div className="mt-3 pt-2 bg-[#391BCB] rounded-b-lg -mx-4 -mb-4 px-4 pb-3">
+                            <div className="flex items-center gap-2 text-sm text-white">
+                              <span className="font-medium">Edited by {note.edited_by}</span>
                               <span>•</span>
                               <span>{note.timestamp}</span>
                               {note.edited_at && note.edited_at !== note.timestamp && (
@@ -2579,118 +2733,19 @@ ${combinedText}`;
                           </div>
                         )}
                       </div>
-                    )}
-                  </div>
-                ))
-              ) : (
-                <div className="text-center py-8 text-gray-500">
-                  <div className="min-h-[80px]">
-                    <p className="text-lg font-medium mb-1">No expert notes yet</p>
-                    <p className="text-base">Expert opinions and assessments will appear here</p>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-
-          {/* Handler Notes Row */}
-          <div className="grid grid-cols-1 gap-6">
-            {/* Handler Opinion Section */}
-            <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-          <div className="pl-6 pt-2 pb-2 w-2/5">
-            <div className="flex items-center justify-between">
-              <h4 className="text-lg font-semibold text-black">Handler Notes</h4>
-              {!isAddingHandlerNote && !editingHandlerNoteId && (
-                <button
-                  className="btn btn-ghost btn-md bg-transparent hover:bg-transparent shadow-none"
-                  onClick={() => {
-                    setIsAddingHandlerNote(true);
-                    setNewHandlerNoteContent('');
-                  }}
-                  title="Add Handler Note"
-                >
-                  <PencilSquareIcon className="w-5 h-5 text-black" />
-                </button>
-              )}
-            </div>
-            <div className="border-b border-gray-200 mt-2"></div>
-          </div>
-          <div className="p-6">
-            {/* Add/Edit Handler Note Form */}
-            {(isAddingHandlerNote || editingHandlerNoteId) && (
-              <div className="mb-6">
-                <textarea
-                  className="textarea textarea-bordered w-full h-32 mb-3"
-                  placeholder="Enter your note..."
-                  value={newHandlerNoteContent}
-                  onChange={(e) => setNewHandlerNoteContent(e.target.value)}
-                />
-                <div className="flex justify-end gap-2">
-                  <button 
-                    className="btn btn-ghost btn-sm hover:bg-red-50"
-                    onClick={handleCancelHandlerEdit}
-                  >
-                    <XMarkIcon className="w-4 h-4 text-red-600" />
-                    Cancel
-                  </button>
-                  <button 
-                    className="btn btn-sm"
-                    style={{ backgroundColor: '#3b28c7', color: 'white' }}
-                    onClick={handleSaveHandlerNote}
-                    disabled={!newHandlerNoteContent.trim()}
-                  >
-                    <CheckIcon className="w-4 h-4" />
-                    Save
-                  </button>
+                    ))
+                  ) : (
+                    <div className="text-center py-8 text-gray-500">
+                      <div className="min-h-[80px]">
+                        <p className="text-lg font-medium mb-1">No handler notes yet</p>
+                        <p className="text-base">Case handling notes and updates will appear here</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
-            )}
-
-            {/* Handler Notes List */}
-            <div className="space-y-4 overflow-y-auto max-h-[300px]">
-              {handlerNotes.length > 0 ? (
-                handlerNotes.map((note, index) => (
-                  <div 
-                    key={note.id} 
-                    className="relative p-4 rounded-lg transition-all duration-200 hover:shadow-sm bg-white"
-                  >
-                    {/* Note Content */}
-                    <div className="p-4">
-                      <p className="text-base text-gray-800 whitespace-pre-wrap leading-relaxed">{formatNoteText(note.content)}</p>
-                    </div>
-
-                    {/* Note Footer */}
-                    {note.edited_by && (
-                      <div className="mt-3 pt-2 bg-[#391BCB] rounded-b-lg -mx-4 -mb-4 px-4 pb-3">
-                        <div className="flex items-center gap-2 text-sm text-white">
-                          <span className="font-medium">Edited by {note.edited_by}</span>
-                          <span>•</span>
-                          <span>{note.timestamp}</span>
-                          {note.edited_at && note.edited_at !== note.timestamp && (
-                            <>
-                              <span>•</span>
-                              <span>Updated: {note.edited_at}</span>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))
-              ) : (
-                <div className="text-center py-8 text-gray-500">
-                  <div className="min-h-[80px]">
-                    <p className="text-lg font-medium mb-1">No handler notes yet</p>
-                    <p className="text-base">Case handling notes and updates will appear here</p>
-                  </div>
-                </div>
-              )}
             </div>
           </div>
-        </div>
-      </div>
         </div>
 
         {/* Right Column - Summary Box */}
@@ -2800,53 +2855,53 @@ ${combinedText}`;
                 </div>
               ) : (
                 <div className="space-y-6">
-              {/* Special Notes */}
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Special Notes</label>
-                <div className="bg-gray-50 rounded-lg p-4 min-h-[80px] border border-gray-200">
-                  {summaryData.specialNotes ? (
-                    <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{summaryData.specialNotes}</p>
-                  ) : (
-                    <p className="text-sm text-gray-400 italic">No special notes</p>
-                  )}
-                </div>
-              </div>
+                  {/* Special Notes */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Special Notes</label>
+                    <div className="bg-gray-50 rounded-lg p-4 min-h-[80px] border border-gray-200">
+                      {summaryData.specialNotes ? (
+                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{summaryData.specialNotes}</p>
+                      ) : (
+                        <p className="text-sm text-gray-400 italic">No special notes</p>
+                      )}
+                    </div>
+                  </div>
 
-              {/* General Notes */}
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">General Notes</label>
-                <div className="bg-gray-50 rounded-lg p-4 min-h-[80px] border border-gray-200">
-                  {summaryData.generalNotes ? (
-                    <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{summaryData.generalNotes}</p>
-                  ) : (
-                    <p className="text-sm text-gray-400 italic">No general notes</p>
-                  )}
-                </div>
-              </div>
+                  {/* General Notes */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">General Notes</label>
+                    <div className="bg-gray-50 rounded-lg p-4 min-h-[80px] border border-gray-200">
+                      {summaryData.generalNotes ? (
+                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{summaryData.generalNotes}</p>
+                      ) : (
+                        <p className="text-sm text-gray-400 italic">No general notes</p>
+                      )}
+                    </div>
+                  </div>
 
-              {/* Facts of Case */}
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Facts of Case</label>
-                <div className="bg-gray-50 rounded-lg p-4 min-h-[80px] border border-gray-200">
-                  {summaryData.facts ? (
-                    <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{summaryData.facts}</p>
-                  ) : (
-                    <p className="text-sm text-gray-400 italic">No facts available</p>
-                  )}
-                </div>
-              </div>
+                  {/* Facts of Case */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Facts of Case</label>
+                    <div className="bg-gray-50 rounded-lg p-4 min-h-[80px] border border-gray-200">
+                      {summaryData.facts ? (
+                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{summaryData.facts}</p>
+                      ) : (
+                        <p className="text-sm text-gray-400 italic">No facts available</p>
+                      )}
+                    </div>
+                  </div>
 
-              {/* Manager Notes */}
-              <div className="space-y-2">
-                <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Manager Notes</label>
-                <div className="bg-gray-50 rounded-lg p-4 min-h-[80px] border border-gray-200">
-                  {summaryData.managerNotes ? (
-                    <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{summaryData.managerNotes}</p>
-                  ) : (
-                    <p className="text-sm text-gray-400 italic">No manager notes</p>
-                  )}
-                </div>
-              </div>
+                  {/* Manager Notes */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Manager Notes</label>
+                    <div className="bg-gray-50 rounded-lg p-4 min-h-[80px] border border-gray-200">
+                      {summaryData.managerNotes ? (
+                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{summaryData.managerNotes}</p>
+                      ) : (
+                        <p className="text-sm text-gray-400 italic">No manager notes</p>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -2862,7 +2917,21 @@ ${combinedText}`;
         clientName={client.name || ''}
         onDocumentCountChange={handleDocumentCountChange}
       />
-      
+
+      {/* Expert Notes Modal */}
+      <ExpertNotesModal
+        isOpen={isExpertNotesModalOpen}
+        onClose={() => setIsExpertNotesModalOpen(false)}
+        notes={expertNotes}
+        formatNoteText={formatNoteText}
+        isSuperuser={isSuperuser}
+        currentUserEmployeeId={currentUserEmployeeId}
+        currentUserDisplayName={currentUserDisplayName}
+        assignedExpertId={assignedExpertId}
+        getCurrentUserName={getCurrentUserName}
+        onSave={handleSaveExpertNotes}
+      />
+
       <TimelineHistoryButtons client={client} />
     </div>
   );
