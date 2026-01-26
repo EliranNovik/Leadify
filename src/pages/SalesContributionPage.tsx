@@ -7,6 +7,13 @@ import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedSta
 import { ChevronDownIcon, ChevronRightIcon, EyeIcon, ChartBarIcon, UserGroupIcon, BuildingOfficeIcon, SpeakerWaveIcon, CurrencyDollarIcon, PencilIcon, CheckIcon, XMarkIcon, GlobeAltIcon, FlagIcon, BriefcaseIcon, HomeIcon, AcademicCapIcon, RocketLaunchIcon, MapPinIcon, DocumentTextIcon, ScaleIcon, ShieldCheckIcon, BanknotesIcon, CogIcon, HeartIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, UsersIcon, Squares2X2Icon } from '@heroicons/react/24/outline';
 import EmployeeRoleLeadsModal from '../components/EmployeeRoleLeadsModal';
 import { calculateSignedPortionAmount } from '../utils/rolePercentageCalculator';
+import { 
+  calculateEmployeeMetrics, 
+  batchCalculateEmployeeMetrics,
+  type EmployeeCalculationInput,
+  type EmployeeCalculationResult 
+} from '../utils/salesContributionCalculator';
+import { calculateFieldViewDueByCategory } from '../utils/fieldViewDueCalculator';
 
 interface EmployeeData {
   employeeId: number;
@@ -70,6 +77,7 @@ const SalesContributionPage = () => {
   const [fieldViewData, setFieldViewData] = useState<Map<string, DepartmentData>>(new Map());
   const [viewMode, setViewMode] = useState<'employee' | 'field'>('employee');
   const [loading, setLoading] = useState(false);
+  const [isCalculating, setIsCalculating] = useState(false);
   const [allCategories, setAllCategories] = useState<any[]>([]);
   const [categoryNameToDataMap, setCategoryNameToDataMap] = useState<Map<string, any>>(new Map());
   const [searchPerformed, setSearchPerformed] = usePersistedState('salesContribution_performed', true, {
@@ -426,6 +434,7 @@ const SalesContributionPage = () => {
   // Fetch all categories with their parent main category names (for mapping text categories)
   useEffect(() => {
     const fetchCategories = async () => {
+      // Fetch categories
       const { data: categoriesData, error: categoriesError } = await supabase
         .from('misc_category')
         .select(`
@@ -439,18 +448,83 @@ const SalesContributionPage = () => {
         `)
         .order('name', { ascending: true });
 
+      // Fetch main categories directly
+      const { data: mainCategoriesData, error: mainCategoriesError } = await supabase
+        .from('misc_maincategory')
+        .select('id, name')
+        .order('name', { ascending: true });
+
       if (!categoriesError && categoriesData) {
         setAllCategories(categoriesData);
 
         // Create a map from category name (normalized) to category data (including main category)
         const nameToDataMap = new Map<string, any>();
+        
+        // First, add all categories to the map
         categoriesData.forEach((category: any) => {
           if (category.name) {
             const normalizedName = category.name.trim().toLowerCase();
             nameToDataMap.set(normalizedName, category);
+            
+            // Also map the main category name if it exists
+            const mainCategory = Array.isArray(category.misc_maincategory)
+              ? category.misc_maincategory[0]
+              : category.misc_maincategory;
+            
+            if (mainCategory && mainCategory.name) {
+              const normalizedMainCategoryName = mainCategory.name.trim().toLowerCase();
+              // Always add main category name mapping (even if same as category name)
+              // This ensures we can match text categories that are main category names
+              if (!nameToDataMap.has(normalizedMainCategoryName)) {
+                nameToDataMap.set(normalizedMainCategoryName, category);
+              }
+            }
           }
         });
+        
+        // Also add main categories directly to the map
+        // This helps when leads have text categories that match main category names exactly
+        if (!mainCategoriesError && mainCategoriesData) {
+          mainCategoriesData.forEach((mainCategory: any) => {
+            if (mainCategory.name) {
+              const normalizedMainCategoryName = mainCategory.name.trim().toLowerCase();
+              
+              // Find a category that belongs to this main category
+              const categoryForMainCategory = categoriesData.find((cat: any) => {
+                const catMainCategory = Array.isArray(cat.misc_maincategory)
+                  ? cat.misc_maincategory[0]
+                  : cat.misc_maincategory;
+                return catMainCategory && catMainCategory.id === mainCategory.id;
+              });
+              
+              // If we found a category, use it; otherwise create a synthetic entry
+              if (categoryForMainCategory) {
+                if (!nameToDataMap.has(normalizedMainCategoryName)) {
+                  nameToDataMap.set(normalizedMainCategoryName, categoryForMainCategory);
+                }
+              } else {
+                // Create a synthetic category entry for this main category
+                const syntheticCategory = {
+                  id: null,
+                  name: mainCategory.name,
+                  parent_id: mainCategory.id,
+                  misc_maincategory: mainCategory
+                };
+                nameToDataMap.set(normalizedMainCategoryName, syntheticCategory);
+              }
+            }
+          });
+        }
+        
         setCategoryNameToDataMap(nameToDataMap);
+        
+        // Debug: Log the map size and sample keys
+        console.log('🔍 Category Name to Data Map populated:', {
+          size: nameToDataMap.size,
+          sampleKeys: Array.from(nameToDataMap.keys()).slice(0, 30),
+          hasSmallWithoutMeeting: nameToDataMap.has('small without meetin'),
+          mainCategoriesCount: mainCategoriesData?.length || 0
+        });
       }
     };
     fetchCategories();
@@ -1039,6 +1113,7 @@ const SalesContributionPage = () => {
             meeting_manager_id,
             expert_id,
             category_id,
+            category,
             accounting_currencies!leads_lead_currency_id_fkey(name, iso_code),
             misc_category!category_id(
               id,
@@ -1310,8 +1385,8 @@ const SalesContributionPage = () => {
         }
       }
 
-      // Process field view data (grouped by main category) - do this before role processing
-      await processFieldViewData(newLeadsMap, legacyLeadsMap, newPaymentsMap, legacyPaymentsMap);
+      // Note: Field view data processing is now done in handleSearch batch calculation
+      // to avoid multiple calls and ensure due amounts are calculated correctly
 
       // Step 6: Group leads by role combinations
       // Map to store role combinations and their totals
@@ -2333,6 +2408,7 @@ const SalesContributionPage = () => {
             currency_id,
             subcontractor_fee,
             category_id,
+            category,
             accounting_currencies!leads_currency_id_fkey(name, iso_code),
             misc_category!category_id(
               id,
@@ -2347,6 +2423,9 @@ const SalesContributionPage = () => {
           .in('id', newLeadIdsArray);
 
         if (!newLeadsError && newLeads) {
+          // Debug: Track uncategorized leads
+          const uncategorizedLeads: any[] = [];
+          
           newLeads.forEach((lead: any) => {
             // Get main category name using helper function
             const mainCategoryNameFromLead = resolveMainCategory(
@@ -2354,6 +2433,17 @@ const SalesContributionPage = () => {
               lead.category_id, // category ID
               lead.misc_category // joined misc_category data
             );
+
+            // Debug: Track leads that resolve to Uncategorized
+            if (mainCategoryNameFromLead === 'Uncategorized' && mainCategoryName === 'Uncategorized') {
+              uncategorizedLeads.push({
+                leadId: lead.id,
+                leadNumber: lead.lead_number,
+                categoryText: lead.category,
+                categoryId: lead.category_id,
+                hasMiscCategory: !!lead.misc_category
+              });
+            }
 
             // Get sub category name
             let subCategoryName = 'Uncategorized';
@@ -2389,6 +2479,15 @@ const SalesContributionPage = () => {
               });
             }
           });
+          
+          // Debug: Log uncategorized leads found
+          if (mainCategoryName === 'Uncategorized' && uncategorizedLeads.length > 0) {
+            console.log('🔍 Category Breakdown (New Leads) - Uncategorized leads found:', {
+              count: uncategorizedLeads.length,
+              totalNewLeads: newLeads.length,
+              samples: uncategorizedLeads.slice(0, 5)
+            });
+          }
         }
       }
 
@@ -2407,6 +2506,7 @@ const SalesContributionPage = () => {
             subcontractor_fee,
             meeting_total_currency_id,
             category_id,
+            category,
             accounting_currencies!leads_lead_currency_id_fkey(name, iso_code),
             misc_category!category_id(
               id,
@@ -2421,6 +2521,9 @@ const SalesContributionPage = () => {
           .in('id', legacyLeadIdsArray);
 
         if (!legacyLeadsError && legacyLeads) {
+          // Debug: Track uncategorized leads
+          const uncategorizedLegacyLeads: any[] = [];
+          
           legacyLeads.forEach((lead: any) => {
             // Get main category name using helper function
             const mainCategoryNameFromLead = resolveMainCategory(
@@ -2428,6 +2531,17 @@ const SalesContributionPage = () => {
               lead.category_id, // category ID
               lead.misc_category // joined misc_category data
             );
+
+            // Debug: Track leads that resolve to Uncategorized
+            if (mainCategoryNameFromLead === 'Uncategorized' && mainCategoryName === 'Uncategorized') {
+              uncategorizedLegacyLeads.push({
+                leadId: lead.id,
+                leadNumber: lead.lead_number,
+                categoryText: lead.category,
+                categoryId: lead.category_id,
+                hasMiscCategory: !!lead.misc_category
+              });
+            }
 
             // Get sub category name
             let subCategoryName = 'Uncategorized';
@@ -2522,7 +2636,7 @@ const SalesContributionPage = () => {
         return newSet;
       });
     }
-  }, [filters.fromDate, filters.toDate, categoryBreakdownCache]);
+  }, [filters.fromDate, filters.toDate, categoryBreakdownCache, categoryNameToDataMap, allCategories]);
 
   // Toggle row expansion
   const toggleRowExpansion = useCallback((employeeId: number, employeeName: string) => {
@@ -2899,32 +3013,388 @@ const SalesContributionPage = () => {
         }
       });
 
-      // Fetch in larger batches (20 at a time) and run batches in parallel for faster loading
-      // This allows the table to render immediately while data loads in background
-      const batchSize = 20;
-      const batches: Array<Array<{ id: number; name: string }>> = [];
-      for (let i = 0; i < employeesToFetch.length; i += batchSize) {
-        batches.push(employeesToFetch.slice(i, i + batchSize));
-      }
-
-      // Run all batches in parallel (up to 3 batches at once to avoid overwhelming)
-      const maxConcurrentBatches = 3;
+      // Batch calculate all employees at once to prevent "popcorn" rendering
+      // This ensures all calculations are done before any state updates
+      if (employeesToFetch.length > 0) {
+        setIsCalculating(true);
+        
+        // Fetch all data first, then calculate everything, then update state once
       (async () => {
-        for (let i = 0; i < batches.length; i += maxConcurrentBatches) {
-          const concurrentBatches = batches.slice(i, i + maxConcurrentBatches);
-          await Promise.all(
-            concurrentBatches.map(batch =>
-              Promise.all(
-                batch.map(({ id, name }) =>
-                  fetchRoleData(id, name).catch(err => {
-                    console.error(`Error fetching role data for employee ${id}:`, err);
-                  })
-                )
+          try {
+            const fromDateTime = filters.fromDate ? `${filters.fromDate}T00:00:00.000Z` : null;
+            const toDateTime = filters.toDate ? `${filters.toDate}T23:59:59.999Z` : null;
+
+            // Step 1: Fetch all signed leads (stage 60) - ONCE for all employees
+            let stageHistoryQuery = supabase
+              .from('leads_leadstage')
+              .select('id, stage, date, cdate, lead_id, newlead_id')
+              .eq('stage', 60);
+
+            if (fromDateTime) {
+              stageHistoryQuery = stageHistoryQuery.gte('date', fromDateTime);
+            }
+            if (toDateTime) {
+              stageHistoryQuery = stageHistoryQuery.lte('date', toDateTime);
+            }
+
+            const { data: stageHistoryData, error: stageHistoryError } = await stageHistoryQuery;
+            if (stageHistoryError) throw stageHistoryError;
+
+            // Separate new and legacy lead IDs
+            const allNewLeadIds = new Set<string>();
+            const allLegacyLeadIds = new Set<number>();
+
+            stageHistoryData?.forEach((entry: any) => {
+              if (entry.newlead_id) {
+                allNewLeadIds.add(entry.newlead_id.toString());
+              }
+              if (entry.lead_id !== null && entry.lead_id !== undefined) {
+                allLegacyLeadIds.add(Number(entry.lead_id));
+              }
+            });
+
+            // Step 2: Fetch all new leads - ONCE
+            const newLeadsMap = new Map();
+            if (allNewLeadIds.size > 0) {
+              const newLeadIdsArray = Array.from(allNewLeadIds);
+              const { data: newLeads, error: newLeadsError } = await supabase
+                .from('leads')
+                .select(`
+                  id,
+                  balance,
+                  balance_currency,
+                  proposal_total,
+                  proposal_currency,
+                  currency_id,
+                  closer,
+                  scheduler,
+                  handler,
+                  helper,
+                  expert,
+                  case_handler_id,
+                  meeting_manager_id,
+                  subcontractor_fee,
+                  category_id,
+                  category,
+                  accounting_currencies!leads_currency_id_fkey(name, iso_code),
+                  misc_category!category_id(
+                    id,
+                    name,
+                    parent_id,
+                    misc_maincategory!parent_id(
+                      id,
+                      name
+                    )
+                  )
+                `)
+                .in('id', newLeadIdsArray);
+
+              if (!newLeadsError && newLeads) {
+                newLeads.forEach(lead => {
+                  newLeadsMap.set(lead.id, lead);
+                });
+              }
+            }
+
+            // Step 3: Fetch all legacy leads - ONCE
+            const legacyLeadsMap = new Map();
+            if (allLegacyLeadIds.size > 0) {
+              const legacyLeadIdsArray = Array.from(allLegacyLeadIds);
+              const { data: legacyLeads, error: legacyLeadsError } = await supabase
+          .from('leads_lead')
+          .select(`
+            id,
+            total,
+            total_base,
+            currency_id,
+            subcontractor_fee,
+            meeting_total_currency_id,
+            closer_id,
+            meeting_scheduler_id,
+            meeting_lawyer_id,
+            case_handler_id,
+            meeting_manager_id,
+            expert_id,
+            category_id,
+            category,
+            accounting_currencies!leads_lead_currency_id_fkey(name, iso_code),
+            misc_category!category_id(
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id(
+                id,
+                name
               )
             )
-          );
-        }
-      })(); // Immediately invoke async function - don't await
+          `)
+          .in('id', legacyLeadIdsArray);
+
+              if (!legacyLeadsError && legacyLeads) {
+                legacyLeads.forEach(lead => {
+                  legacyLeadsMap.set(Number(lead.id), lead);
+                });
+              }
+            }
+
+            // Step 4: Fetch all payment plans - ONCE
+            const newPaymentsMap = new Map<string, number>();
+            const legacyPaymentsMap = new Map<number, number>();
+
+            if (allNewLeadIds.size > 0) {
+              const newLeadIdsArray = Array.from(allNewLeadIds);
+              let newPaymentsQuery = supabase
+                .from('payment_plans')
+                .select('lead_id, value, currency, due_date')
+                .eq('ready_to_pay', true)
+                .eq('paid', false)
+                .not('due_date', 'is', null)
+                .is('cancel_date', null)
+                .in('lead_id', newLeadIdsArray);
+
+              if (fromDateTime) {
+                newPaymentsQuery = newPaymentsQuery.gte('due_date', fromDateTime);
+              }
+              if (toDateTime) {
+                newPaymentsQuery = newPaymentsQuery.lte('due_date', toDateTime);
+              }
+
+              const { data: newPayments } = await newPaymentsQuery;
+              newPayments?.forEach((payment: any) => {
+                const leadId = payment.lead_id;
+                const value = Number(payment.value || 0);
+                const currency = payment.currency || '₪';
+                const normalizedCurrency = currency === '₪' ? 'NIS' :
+                  currency === '€' ? 'EUR' :
+                    currency === '$' ? 'USD' :
+                      currency === '£' ? 'GBP' : currency;
+                const amountNIS = convertToNIS(value, normalizedCurrency);
+                const current = newPaymentsMap.get(leadId) || 0;
+                newPaymentsMap.set(leadId, current + amountNIS);
+              });
+            }
+
+            if (allLegacyLeadIds.size > 0) {
+              const legacyLeadIdsArray = Array.from(allLegacyLeadIds);
+              let legacyPaymentsQuery = supabase
+                .from('finances_paymentplanrow')
+                .select('lead_id, value, value_base, currency_id, due_date, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)')
+                .is('actual_date', null)
+                .eq('ready_to_pay', true)
+                .not('due_date', 'is', null)
+                .in('lead_id', legacyLeadIdsArray);
+
+              if (fromDateTime) {
+                legacyPaymentsQuery = legacyPaymentsQuery.gte('due_date', fromDateTime);
+              }
+              if (toDateTime) {
+                legacyPaymentsQuery = legacyPaymentsQuery.lte('due_date', toDateTime);
+              }
+
+              const { data: legacyPayments } = await legacyPaymentsQuery;
+              legacyPayments?.forEach((payment: any) => {
+                const leadId = Number(payment.lead_id);
+                const value = Number(payment.value || payment.value_base || 0);
+                const accountingCurrency: any = payment.accounting_currencies
+                  ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies)
+                  : null;
+                let currency = '₪';
+                if (accountingCurrency?.name) {
+                  currency = accountingCurrency.name;
+                } else if (accountingCurrency?.iso_code) {
+                  currency = accountingCurrency.iso_code;
+                }
+                const normalizedCurrency = currency === '₪' ? 'NIS' :
+                  currency === '€' ? 'EUR' :
+                    currency === '$' ? 'USD' :
+                      currency === '£' ? 'GBP' : currency;
+                const amountNIS = convertToNIS(value, normalizedCurrency);
+                const current = legacyPaymentsMap.get(leadId) || 0;
+                legacyPaymentsMap.set(leadId, current + amountNIS);
+              });
+            }
+
+            // Step 5: Process field view data (grouped by main category) - do this once for all employees
+            await processFieldViewData(newLeadsMap, legacyLeadsMap, newPaymentsMap, legacyPaymentsMap);
+
+            // Step 6: Fetch due amounts for all handlers in parallel
+            const dueAmountsMap = new Map<number, number>();
+          await Promise.all(
+              employeesToFetch.map(async ({ id, name }) => {
+                const dueAmount = await fetchDueAmounts(id, name);
+                if (dueAmount > 0) {
+                  dueAmountsMap.set(id, dueAmount);
+                }
+              })
+            );
+
+            // Step 7: Filter leads for each employee and prepare calculation inputs
+            const calculationInputs: EmployeeCalculationInput[] = [];
+            const totalSignedOverall = totalSignedValueRef.current || 0;
+
+            employeesToFetch.forEach(({ id: employeeId, name: employeeName }) => {
+              // Helper to check if employee is in a role for a new lead
+              const checkEmployeeInRole = (lead: any, roleField: string): boolean => {
+                if (roleField === 'closer' && lead.closer) {
+                  const closerValue = lead.closer;
+                  return typeof closerValue === 'string'
+                    ? closerValue.toLowerCase() === employeeName.toLowerCase()
+                    : Number(closerValue) === employeeId;
+                } else if (roleField === 'scheduler' && lead.scheduler) {
+                  const schedulerValue = lead.scheduler;
+                  return typeof schedulerValue === 'string'
+                    ? schedulerValue.toLowerCase() === employeeName.toLowerCase()
+                    : Number(schedulerValue) === employeeId;
+                } else if (roleField === 'handler') {
+                  if (lead.handler) {
+                    const handlerValue = lead.handler;
+                    if (typeof handlerValue === 'string' && handlerValue.toLowerCase() === employeeName.toLowerCase()) {
+                      return true;
+                    }
+                    if (Number(handlerValue) === employeeId) {
+                      return true;
+                    }
+                  }
+                  if (lead.case_handler_id && Number(lead.case_handler_id) === employeeId) {
+                    return true;
+                  }
+                  return false;
+                } else if (roleField === 'helper' && lead.helper) {
+                  const helperValue = lead.helper;
+                  return typeof helperValue === 'string'
+                    ? helperValue.toLowerCase() === employeeName.toLowerCase()
+                    : Number(helperValue) === employeeId;
+                } else if (roleField === 'expert' && lead.expert) {
+                  return Number(lead.expert) === employeeId;
+                } else if (roleField === 'meeting_manager_id' && lead.meeting_manager_id) {
+                  return Number(lead.meeting_manager_id) === employeeId;
+                }
+                return false;
+              };
+
+              // Filter new leads for this employee
+              const employeeNewLeads = Array.from(newLeadsMap.values()).filter(lead => {
+                return (
+                  checkEmployeeInRole(lead, 'closer') ||
+                  checkEmployeeInRole(lead, 'scheduler') ||
+                  checkEmployeeInRole(lead, 'handler') ||
+                  checkEmployeeInRole(lead, 'helper') ||
+                  checkEmployeeInRole(lead, 'expert') ||
+                  checkEmployeeInRole(lead, 'meeting_manager_id')
+                );
+              });
+
+              // Filter legacy leads for this employee
+              const employeeLegacyLeads = Array.from(legacyLeadsMap.values()).filter(lead => {
+                return (
+                  (lead.closer_id && Number(lead.closer_id) === employeeId) ||
+                  (lead.meeting_scheduler_id && Number(lead.meeting_scheduler_id) === employeeId) ||
+                  (lead.meeting_lawyer_id && Number(lead.meeting_lawyer_id) === employeeId) ||
+                  (lead.case_handler_id && Number(lead.case_handler_id) === employeeId) ||
+                  (lead.expert_id && Number(lead.expert_id) === employeeId) ||
+                  (lead.meeting_manager_id && Number(lead.meeting_manager_id) === employeeId)
+                );
+              });
+
+              calculationInputs.push({
+                employeeId,
+                employeeName,
+                leads: {
+                  newLeads: employeeNewLeads,
+                  legacyLeads: employeeLegacyLeads,
+                },
+                payments: {
+                  newPayments: newPaymentsMap,
+                  legacyPayments: legacyPaymentsMap,
+                },
+                totalDueAmount: dueAmountsMap.get(employeeId) || 0,
+                totalSignedOverall,
+                totalIncome,
+                dueNormalizedPercentage,
+                rolePercentages,
+              });
+            });
+
+            // Step 8: Calculate ALL employee metrics in one batch (PURE calculation, no async)
+            const calculationResults = batchCalculateEmployeeMetrics(calculationInputs);
+
+            // Step 9: Update state ONCE with all results
+            const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
+            const incomeKey = totalIncome || 0;
+            const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
+            const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
+
+            // Update role data cache
+            setRoleDataCache(prev => {
+              const newCache = new Map(prev);
+              calculationResults.forEach((result, employeeId) => {
+                const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
+                newCache.set(cacheKey, result.roleBreakdown.map(r => ({
+                  role: r.role,
+                  signedTotal: r.signedTotal,
+                  dueTotal: r.dueTotal,
+                  roles: r.roles,
+                  action: '',
+                })));
+              });
+              return newCache;
+            });
+
+            // Update department data ONCE
+            setDepartmentData(prev => {
+              const updated = new Map(prev);
+              
+              updated.forEach((deptData, deptName) => {
+                const updatedEmployees = deptData.employees.map(emp => {
+                  const result = calculationResults.get(emp.employeeId);
+                  if (result) {
+                    return {
+                      ...emp,
+                      signed: result.signed,
+                      due: result.due,
+                      signedNormalized: result.signedNormalized,
+                      dueNormalized: result.dueNormalized,
+                      signedPortion: result.contribution,
+                      salaryBudget: result.salaryBudget,
+                    };
+                  }
+                  return emp;
+                });
+
+                // Recalculate department totals
+                const deptSigned = updatedEmployees.reduce((sum, emp) => sum + (emp.signed || 0), 0);
+                const deptDue = updatedEmployees.reduce((sum, emp) => sum + (emp.due || 0), 0);
+                const deptSignedNormalized = updatedEmployees.reduce((sum, emp) => sum + (emp.signedNormalized || 0), 0);
+                const deptDueNormalized = updatedEmployees.reduce((sum, emp) => sum + (emp.dueNormalized || 0), 0);
+                const deptSignedPortion = updatedEmployees.reduce((sum, emp) => sum + (emp.signedPortion || 0), 0);
+                const deptSalaryBudget = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBudget || 0), 0);
+
+                updated.set(deptName, {
+                  ...deptData,
+                  employees: updatedEmployees,
+                  totals: {
+                    ...deptData.totals,
+                    signed: deptSigned,
+                    due: deptDue,
+                    signedNormalized: deptSignedNormalized,
+                    dueNormalized: deptDueNormalized,
+                    signedPortion: deptSignedPortion,
+                    salaryBudget: deptSalaryBudget,
+                  },
+                });
+              });
+
+              return updated;
+            });
+
+            setIsCalculating(false);
+          } catch (error) {
+            console.error('Error in batch calculation:', error);
+            toast.error('Failed to calculate employee metrics');
+            setIsCalculating(false);
+          }
+        })();
+      }
     } catch (error) {
       console.error('❌ Sales Contribution Report - Error:', error);
       toast.error('Failed to fetch sales contribution data');
@@ -2945,17 +3415,10 @@ const SalesContributionPage = () => {
       !(Array.isArray(miscCategory) && miscCategory.length === 0) &&
       (Array.isArray(miscCategory) ? miscCategory.length > 0 && miscCategory[0] : miscCategory);
 
-    // If we have categoryValue but no miscCategory, try to look it up in the map
+    // First, try to use the joined miscCategory if it's valid
     let resolvedMiscCategory = hasMiscCategory ? (Array.isArray(miscCategory) ? miscCategory[0] : miscCategory) : null;
-    if (!hasMiscCategory && categoryValue && typeof categoryValue === 'string' && categoryValue.trim() !== '' && categoryNameToDataMap.size > 0) {
-      const normalizedName = categoryValue.trim().toLowerCase();
-      const mappedCategory = categoryNameToDataMap.get(normalizedName);
-      if (mappedCategory) {
-        resolvedMiscCategory = mappedCategory;
-      }
-    }
 
-    // If we still don't have a category, try to look up by category_id
+    // If we don't have a valid miscCategory, try to look up by category_id first
     if (!resolvedMiscCategory && categoryId && allCategories.length > 0) {
       const categoryById = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
       if (categoryById) {
@@ -2963,8 +3426,102 @@ const SalesContributionPage = () => {
       }
     }
 
+    // If we still don't have a category, try to look it up by text category name in the map
+    // This is important for new leads that have category saved as text
+    if (!resolvedMiscCategory && categoryValue && typeof categoryValue === 'string' && categoryValue.trim() !== '' && categoryNameToDataMap.size > 0) {
+      const trimmedValue = categoryValue.trim();
+      const normalizedName = trimmedValue.toLowerCase();
+      
+      // Try exact match first (normalized)
+      let mappedCategory = categoryNameToDataMap.get(normalizedName);
+      
+      // If no exact match, try matching the category name part (before parentheses)
+      // Categories might be stored as "CategoryName (MainCategoryName)" format
+      if (!mappedCategory && trimmedValue.includes('(')) {
+        const categoryNamePart = trimmedValue.split('(')[0].trim().toLowerCase();
+        mappedCategory = categoryNameToDataMap.get(categoryNamePart);
+      }
+      
+      // If still no match, try partial/fuzzy matching
+      if (!mappedCategory) {
+        // First, try removing all spaces and special characters for comparison
+        const normalizedValueNoSpaces = normalizedName.replace(/[\s_-]/g, '');
+        
+        for (const [mapKey, mapValue] of categoryNameToDataMap.entries()) {
+          const normalizedMapKey = mapKey.replace(/[\s_-]/g, '');
+          
+          // Exact match after normalization
+          if (normalizedMapKey === normalizedValueNoSpaces) {
+            mappedCategory = mapValue;
+            break;
+          }
+        }
+        
+        // If still no match, try more aggressive fuzzy matching
+        if (!mappedCategory) {
+          for (const [mapKey, mapValue] of categoryNameToDataMap.entries()) {
+            const normalizedMapKey = mapKey.replace(/[\s_-]/g, '');
+            const normalizedValue = normalizedValueNoSpaces;
+            
+            // Try matching just the category name part (before parentheses in map key)
+            const mapKeyNamePart = mapKey.split('(')[0].trim().toLowerCase().replace(/[\s_-]/g, '');
+            if (mapKeyNamePart === normalizedValue || normalizedValue === mapKeyNamePart) {
+              mappedCategory = mapValue;
+              break;
+            }
+            
+            // Try substring matching (one contains the other) - be more lenient
+            if (normalizedMapKey.includes(normalizedValue) || normalizedValue.includes(normalizedMapKey)) {
+              // Use substring match if the lengths are reasonably similar
+              const lengthDiff = Math.abs(normalizedMapKey.length - normalizedValue.length);
+              const minLength = Math.min(normalizedMapKey.length, normalizedValue.length);
+              // Allow match if difference is small relative to the shorter string
+              if (lengthDiff <= Math.max(3, minLength * 0.3)) {
+                mappedCategory = mapValue;
+                break;
+              }
+            }
+            
+            // Try word-by-word matching (for cases like "Small without meetin" vs "Small Without Meeting")
+            const mapKeyWords = mapKey.split(/[\s_-]+/).filter(w => w.length > 0);
+            const valueWords = normalizedName.split(/[\s_-]+/).filter(w => w.length > 0);
+            if (mapKeyWords.length > 0 && valueWords.length > 0) {
+              const matchingWords = mapKeyWords.filter(word => 
+                valueWords.some(vw => vw.toLowerCase() === word.toLowerCase() || 
+                  word.toLowerCase().includes(vw.toLowerCase()) || 
+                  vw.toLowerCase().includes(word.toLowerCase()))
+              );
+              // If most words match, consider it a match
+              if (matchingWords.length >= Math.min(mapKeyWords.length, valueWords.length) * 0.7) {
+                mappedCategory = mapValue;
+                break;
+              }
+            }
+          }
+        }
+      }
+      
+      if (mappedCategory) {
+        resolvedMiscCategory = mappedCategory;
+      }
+    }
+
     // If we still don't have a category, return 'Uncategorized'
     if (!resolvedMiscCategory) {
+      // Log for debugging - helps identify which categories are not being mapped
+      if (categoryValue && categoryValue.trim() !== '') {
+        const normalizedValue = categoryValue.trim().toLowerCase();
+        const sampleMapKeys = Array.from(categoryNameToDataMap.keys()).slice(0, 10);
+        console.warn('⚠️ Sales Contribution - Could not resolve category:', {
+          categoryValue,
+          normalizedValue,
+          categoryId,
+          hasMiscCategory: !!hasMiscCategory,
+          mapSize: categoryNameToDataMap.size,
+          sampleMapKeys,
+          allCategoriesCount: allCategories.length
+        });
+      }
       return 'Uncategorized';
     }
 
@@ -2987,12 +3544,20 @@ const SalesContributionPage = () => {
   };
 
   // Process data for field view (grouped by main category)
+  const processFieldViewDataRef = useRef<Promise<void> | null>(null);
   const processFieldViewData = async (
     newLeadsMap: Map<string, any>,
     legacyLeadsMap: Map<number, any>,
     newPaymentsMap: Map<string, number>,
     legacyPaymentsMap: Map<number, number>
   ) => {
+    // Prevent multiple simultaneous calls
+    if (processFieldViewDataRef.current) {
+      await processFieldViewDataRef.current;
+      return;
+    }
+
+    const processPromise = (async () => {
     try {
       // First, fetch ALL main categories from the database
       const { data: allMainCategoriesData, error: mainCategoriesError } = await supabase
@@ -3010,13 +3575,45 @@ const SalesContributionPage = () => {
       }
       console.log('🔍 Field View - All main categories from DB:', Array.from(allMainCategoryNames));
 
+      // Define main categories that should be shown separately (not in General)
+      // These are the main categories we want to display as individual fields
+      const separateMainCategories = new Set([
+        'Immigration Israel',
+        'Germany',
+        'Small without meetin',
+        'Uncategorized',
+        'USA',
+        'Austria',
+        'Damages',
+        'Commer/Civil/Adm/Fam',
+        'Other Citizenships',
+        'Poland',
+        'German\\Austrian',
+        'Referral Commission'
+      ]);
+
       const fieldDataMap = new Map<string, {
         mainCategoryName: string;
         signed: number;
         signedNormalized: number;
         signedPortion: number;
         salaryBudget: number;
+        due: number;
+        dueNormalized: number;
       }>();
+
+      // Initialize all separate categories with zero values so they always appear
+      separateMainCategories.forEach(categoryName => {
+        fieldDataMap.set(categoryName, {
+          mainCategoryName: categoryName,
+          signed: 0,
+          signedNormalized: 0,
+          signedPortion: 0,
+          salaryBudget: 0,
+          due: 0,
+          dueNormalized: 0,
+        });
+      });
 
       // Helper functions for calculating amounts
       const parseNumericAmount = (val: any): number => {
@@ -3075,6 +3672,16 @@ const SalesContributionPage = () => {
           lead.misc_category // joined misc_category data
         );
 
+        // Debug logging for uncategorized leads
+        if (mainCategoryName === 'Uncategorized' && lead.category && lead.category.trim() !== '') {
+          console.warn('⚠️ Field View - New lead categorized as Uncategorized:', {
+            leadId: lead.id,
+            categoryText: lead.category,
+            categoryId: lead.category_id,
+            hasMiscCategory: !!lead.misc_category
+          });
+        }
+
         // Calculate amount
         const balanceAmount = parseFloat(lead.balance || 0);
         const proposalAmount = parseFloat(lead.proposal_total || 0);
@@ -3096,6 +3703,8 @@ const SalesContributionPage = () => {
             signedNormalized: 0,
             signedPortion: 0,
             salaryBudget: 0,
+            due: 0,
+            dueNormalized: 0,
           });
         }
 
@@ -3111,6 +3720,16 @@ const SalesContributionPage = () => {
           lead.category_id, // category ID
           lead.misc_category // joined misc_category data
         );
+
+        // Debug logging for uncategorized leads
+        if (mainCategoryName === 'Uncategorized' && lead.category && lead.category.trim() !== '') {
+          console.warn('⚠️ Field View - Legacy lead categorized as Uncategorized:', {
+            leadId: lead.id,
+            categoryText: lead.category,
+            categoryId: lead.category_id,
+            hasMiscCategory: !!lead.misc_category
+          });
+        }
 
         // Calculate amount (same logic as fetchRoleData)
         const currencyId = lead.currency_id;
@@ -3141,12 +3760,358 @@ const SalesContributionPage = () => {
             signedNormalized: 0,
             signedPortion: 0,
             salaryBudget: 0,
+            due: 0,
+            dueNormalized: 0,
           });
         }
 
         const fieldData = fieldDataMap.get(mainCategoryName)!;
         fieldData.signed += amountAfterFee;
       });
+
+      // Calculate due amounts from ALL handler leads (not just signed ones)
+      // This matches the logic in fetchDueAmounts - query all leads with handlers
+      const fromDateTime = filters.fromDate ? `${filters.fromDate}T00:00:00` : null;
+      const toDateTime = filters.toDate ? `${filters.toDate}T23:59:59` : null;
+
+      try {
+        // Step 1: Fetch all payment plans for new leads with handlers, filtered by due_date
+        let newPaymentsQuery = supabase
+          .from('payment_plans')
+          .select('lead_id, value, currency, due_date')
+          .eq('ready_to_pay', true)
+          .eq('paid', false)
+          .not('due_date', 'is', null)
+          .is('cancel_date', null);
+
+        if (fromDateTime) {
+          newPaymentsQuery = newPaymentsQuery.gte('due_date', fromDateTime);
+        }
+        if (toDateTime) {
+          newPaymentsQuery = newPaymentsQuery.lte('due_date', toDateTime);
+        }
+
+        const { data: allNewPayments, error: newPaymentsError } = await newPaymentsQuery;
+        
+        if (!newPaymentsError && allNewPayments && allNewPayments.length > 0) {
+          // Step 2: Get unique lead IDs from payments
+          const paymentLeadIds = [...new Set(allNewPayments.map((p: any) => p.lead_id).filter(Boolean))];
+          
+          // Step 3: Fetch leads that have handlers OR are in the signed leads map (they might have handlers too)
+          // First, get all lead IDs that might have handlers (from payments + from signed leads)
+          const signedLeadIds = Array.from(newLeadsMap.keys());
+          const allPotentialLeadIds = [...new Set([...paymentLeadIds, ...signedLeadIds])];
+          
+          const { data: handlerLeads, error: handlerLeadsError } = await supabase
+            .from('leads')
+            .select(`
+              id,
+              handler,
+              case_handler_id,
+              category_id,
+              category,
+              misc_category!category_id(
+                id,
+                name,
+                parent_id,
+                misc_maincategory!parent_id(
+                  id,
+                  name
+                )
+              )
+            `)
+            .in('id', allPotentialLeadIds)
+            .or('handler.not.is.null,case_handler_id.not.is.null');
+
+          if (!handlerLeadsError && handlerLeads) {
+            // Step 4: Create a map of lead_id to category
+            const leadToCategoryMap = new Map<string, string>();
+            const categoryMappingDebug: any[] = [];
+            handlerLeads.forEach((lead: any) => {
+              const mainCategoryName = resolveMainCategory(
+                lead.category,
+                lead.category_id,
+                lead.misc_category
+              );
+              leadToCategoryMap.set(lead.id, mainCategoryName);
+              
+              // Debug logging for category mapping issues
+              if (mainCategoryName === 'Uncategorized' && lead.category && lead.category.trim() !== '') {
+                categoryMappingDebug.push({
+                  leadId: lead.id,
+                  categoryText: lead.category,
+                  categoryId: lead.category_id,
+                  hasMiscCategory: !!lead.misc_category,
+                  miscCategoryName: lead.misc_category?.name
+                });
+              }
+            });
+            
+            // Log category mapping debug info
+            if (categoryMappingDebug.length > 0) {
+              console.warn('⚠️ Field View Due (New Leads) - Handler leads mapped to Uncategorized:', {
+                count: categoryMappingDebug.length,
+                samples: categoryMappingDebug.slice(0, 5),
+                categoryNameToDataMapSize: categoryNameToDataMap.size,
+                sampleMapKeys: Array.from(categoryNameToDataMap.keys()).slice(0, 10)
+              });
+            }
+
+            // Step 5: Group payments by category using utility function
+            const categoryDueMap = calculateFieldViewDueByCategory({
+              payments: allNewPayments.map((p: any) => ({
+                lead_id: p.lead_id,
+                value: p.value,
+                currency: p.currency
+              })),
+              leadToCategoryMap: leadToCategoryMap
+            });
+            
+            // Debug logging for category mapping
+            const categoriesWithDueArray = Array.from(categoryDueMap.entries()).map(([cat, amount]) => ({ category: cat, amount }));
+            const smallWithoutMeetingAmount = categoryDueMap.get('Small without meetin') || 0;
+            const uncategorizedAmount = categoryDueMap.get('Uncategorized') || 0;
+            
+            console.log('🔍 Field View Due (New Leads) - Category mapping:', {
+              totalPayments: allNewPayments.length,
+              handlerLeadsFound: handlerLeads.length,
+              leadToCategoryMapSize: leadToCategoryMap.size,
+              categoriesWithDue: categoriesWithDueArray,
+              hasSmallWithoutMeeting: categoryDueMap.has('Small without meetin'),
+              smallWithoutMeetingAmount: smallWithoutMeetingAmount,
+              uncategorizedAmount: uncategorizedAmount,
+              // Show sample of lead to category mappings
+              sampleLeadMappings: Array.from(leadToCategoryMap.entries()).slice(0, 10).map(([leadId, cat]) => ({ leadId, category: cat }))
+            });
+
+            // Step 6: Also check signed leads for due payments (they might have handlers too)
+            // Process signed leads that have handlers and due payments
+            newLeadsMap.forEach((lead: any) => {
+              // Check if this lead has a handler
+              const hasHandler = (lead.handler || lead.case_handler_id);
+              if (!hasHandler) return;
+              
+              // Check if this lead has due payments
+              const leadDueAmount = newPaymentsMap.get(lead.id) || 0;
+              if (leadDueAmount <= 0) return;
+              
+              // Get main category name
+              const mainCategoryName = resolveMainCategory(
+                lead.category,
+                lead.category_id,
+                lead.misc_category
+              );
+              
+              // Add to category due map
+              const current = categoryDueMap.get(mainCategoryName) || 0;
+              categoryDueMap.set(mainCategoryName, current + leadDueAmount);
+            });
+
+            // Step 7: Add due amounts to categories (separate categories are already initialized)
+            categoryDueMap.forEach((dueAmount, mainCategoryName) => {
+              // Separate categories are already initialized, so they should exist
+              // But also allow adding to any category that exists (for categories with signed data)
+              if (fieldDataMap.has(mainCategoryName)) {
+                const existingDue = fieldDataMap.get(mainCategoryName)!.due;
+                fieldDataMap.get(mainCategoryName)!.due = existingDue + dueAmount;
+                
+                // Debug logging for "Small without meetin"
+                if (mainCategoryName === 'Small without meetin') {
+                  console.log('🔍 Field View Due (New Leads) - Adding due to Small without meetin:', {
+                    existingDue,
+                    newDueAmount: dueAmount,
+                    totalDue: existingDue + dueAmount
+                  });
+                }
+              } else if (separateMainCategories.has(mainCategoryName)) {
+                // This shouldn't happen since we initialize them, but just in case
+                fieldDataMap.set(mainCategoryName, {
+                  mainCategoryName,
+                  signed: 0,
+                  signedNormalized: 0,
+                  signedPortion: 0,
+                  salaryBudget: 0,
+                  due: dueAmount,
+                  dueNormalized: 0,
+                });
+                
+                // Debug logging for "Small without meetin"
+                if (mainCategoryName === 'Small without meetin') {
+                  console.log('🔍 Field View Due (New Leads) - Creating Small without meetin with due:', dueAmount);
+                }
+              } else {
+                // Log for debugging - category not found and not in separate list
+                console.warn('⚠️ Field View Due (New Leads) - Category not found for due amount:', {
+                  mainCategoryName,
+                  dueAmount,
+                  isSeparateCategory: separateMainCategories.has(mainCategoryName),
+                  hasFieldData: fieldDataMap.has(mainCategoryName)
+                });
+              }
+            });
+          }
+        }
+
+        // Step 1: Fetch all payment plans for legacy leads with handlers, filtered by due_date
+        let legacyPaymentsQuery = supabase
+          .from('finances_paymentplanrow')
+          .select('lead_id, value, value_base, currency_id, due_date, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)')
+          .is('actual_date', null)
+          .eq('ready_to_pay', true)
+          .not('due_date', 'is', null)
+          .is('cancel_date', null);
+
+        if (fromDateTime) {
+          legacyPaymentsQuery = legacyPaymentsQuery.gte('due_date', fromDateTime);
+        }
+        if (toDateTime) {
+          legacyPaymentsQuery = legacyPaymentsQuery.lte('due_date', toDateTime);
+        }
+
+        const { data: allLegacyPayments, error: legacyPaymentsError } = await legacyPaymentsQuery;
+        
+        if (!legacyPaymentsError && allLegacyPayments && allLegacyPayments.length > 0) {
+          // Step 2: Get unique lead IDs from payments
+          const paymentLeadIds = [...new Set(allLegacyPayments.map((p: any) => Number(p.lead_id)).filter(Boolean))];
+          
+          // Step 3: Fetch leads that have handlers
+          const { data: handlerLeads, error: handlerLeadsError } = await supabase
+            .from('leads_lead')
+            .select(`
+              id,
+              case_handler_id,
+              category_id,
+              category,
+              misc_category!category_id(
+                id,
+                name,
+                parent_id,
+                misc_maincategory!parent_id(
+                  id,
+                  name
+                )
+              )
+            `)
+            .in('id', paymentLeadIds)
+            .not('case_handler_id', 'is', null);
+
+          if (!handlerLeadsError && handlerLeads) {
+            // Step 4: Create a map of lead_id to category
+            const leadToCategoryMap = new Map<number, string>();
+            const categoryMappingDebug: any[] = [];
+            handlerLeads.forEach((lead: any) => {
+              const mainCategoryName = resolveMainCategory(
+                lead.category,
+                lead.category_id,
+                lead.misc_category
+              );
+              leadToCategoryMap.set(Number(lead.id), mainCategoryName);
+              
+              // Debug logging for category mapping issues
+              if (mainCategoryName === 'Uncategorized' && lead.category && lead.category.trim() !== '') {
+                categoryMappingDebug.push({
+                  leadId: lead.id,
+                  categoryText: lead.category,
+                  categoryId: lead.category_id,
+                  hasMiscCategory: !!lead.misc_category,
+                  miscCategoryName: lead.misc_category?.name
+                });
+              }
+            });
+            
+            // Log category mapping debug info
+            if (categoryMappingDebug.length > 0) {
+              console.warn('⚠️ Field View Due (Legacy Leads) - Handler leads mapped to Uncategorized:', {
+                count: categoryMappingDebug.length,
+                samples: categoryMappingDebug.slice(0, 5),
+                categoryNameToDataMapSize: categoryNameToDataMap.size,
+                sampleMapKeys: Array.from(categoryNameToDataMap.keys()).slice(0, 10)
+              });
+            }
+
+            // Step 5: Group payments by category using utility function
+            // Create a map with numeric keys for legacy leads
+            const legacyLeadToCategoryMap = new Map<string | number, string>();
+            leadToCategoryMap.forEach((category, leadId) => {
+              legacyLeadToCategoryMap.set(leadId, category);
+              legacyLeadToCategoryMap.set(Number(leadId), category);
+            });
+            
+            const categoryDueMap = calculateFieldViewDueByCategory({
+              payments: allLegacyPayments.map((p: any) => ({
+                lead_id: Number(p.lead_id),
+                value: p.value || p.value_base || 0,
+                currency_id: p.currency_id,
+                accounting_currencies: p.accounting_currencies
+              })),
+              leadToCategoryMap: legacyLeadToCategoryMap
+            });
+            
+            // Debug logging for category mapping
+            const legacyCategoriesWithDueArray = Array.from(categoryDueMap.entries()).map(([cat, amount]) => ({ category: cat, amount }));
+            const smallWithoutMeetingAmount = categoryDueMap.get('Small without meetin') || 0;
+            const uncategorizedAmount = categoryDueMap.get('Uncategorized') || 0;
+            
+            console.log('🔍 Field View Due (Legacy Leads) - Category mapping:', {
+              totalPayments: allLegacyPayments.length,
+              handlerLeadsFound: handlerLeads.length,
+              leadToCategoryMapSize: leadToCategoryMap.size,
+              categoriesWithDue: legacyCategoriesWithDueArray,
+              hasSmallWithoutMeeting: categoryDueMap.has('Small without meetin'),
+              smallWithoutMeetingAmount: smallWithoutMeetingAmount,
+              uncategorizedAmount: uncategorizedAmount,
+              // Show sample of lead to category mappings
+              sampleLeadMappings: Array.from(leadToCategoryMap.entries()).slice(0, 10).map(([leadId, cat]) => ({ leadId, category: cat }))
+            });
+
+            // Step 6: Add due amounts to categories (separate categories are already initialized)
+            categoryDueMap.forEach((dueAmount, mainCategoryName) => {
+              // Separate categories are already initialized, so they should exist
+              // But also allow adding to any category that exists (for categories with signed data)
+              if (fieldDataMap.has(mainCategoryName)) {
+                const existingDue = fieldDataMap.get(mainCategoryName)!.due;
+                fieldDataMap.get(mainCategoryName)!.due = existingDue + dueAmount;
+                
+                // Debug logging for "Small without meetin"
+                if (mainCategoryName === 'Small without meetin') {
+                  console.log('🔍 Field View Due (Legacy Leads) - Adding due to Small without meetin:', {
+                    existingDue,
+                    newDueAmount: dueAmount,
+                    totalDue: existingDue + dueAmount
+                  });
+                }
+              } else if (separateMainCategories.has(mainCategoryName)) {
+                // This shouldn't happen since we initialize them, but just in case
+                fieldDataMap.set(mainCategoryName, {
+                  mainCategoryName,
+                  signed: 0,
+                  signedNormalized: 0,
+                  signedPortion: 0,
+                  salaryBudget: 0,
+                  due: dueAmount,
+                  dueNormalized: 0,
+                });
+                
+                // Debug logging for "Small without meetin"
+                if (mainCategoryName === 'Small without meetin') {
+                  console.log('🔍 Field View Due (Legacy Leads) - Creating Small without meetin with due:', dueAmount);
+                }
+              } else {
+                // Log for debugging - category not found and not in separate list
+                console.warn('⚠️ Field View Due (Legacy Leads) - Category not found for due amount:', {
+                  mainCategoryName,
+                  dueAmount,
+                  isSeparateCategory: separateMainCategories.has(mainCategoryName),
+                  hasFieldData: fieldDataMap.has(mainCategoryName)
+                });
+              }
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching due amounts for field view:', error);
+        // Continue processing even if due amounts fail
+      }
 
       // Calculate signed normalized and signed portion for each field
       const totalSignedOverall = totalSignedValueRef.current || 0;
@@ -3290,22 +4255,30 @@ const SalesContributionPage = () => {
         categorySignedPortionMap.set(mainCategoryName, current + leadTotalSignedPortion);
       });
 
-      // Define main categories that should be shown separately (not in General)
-      // These are the main categories we want to display as individual fields
-      const separateMainCategories = new Set([
-        'Immigration Israel',
-        'Germany',
-        'Small without meetin',
-        'Uncategorized',
-        'USA',
-        'Austria',
-        'Damages',
-        'Commer/Civil/Adm/Fam',
-        'Other Citizenships',
-        'Poland',
-        'German\\Austrian',
-        'Referral Commission'
-      ]);
+      // Calculate due normalized for each category
+      const dueNormalizedPercentageValue = (dueNormalizedPercentage || 0) / 100; // Convert percentage to decimal
+      fieldDataMap.forEach((fieldData) => {
+        fieldData.dueNormalized = fieldData.due * dueNormalizedPercentageValue;
+      });
+      
+      // Debug: Log due amounts for "Small without meetin" specifically
+      const smallWithoutMeetingData = fieldDataMap.get('Small without meetin');
+      if (smallWithoutMeetingData) {
+        console.log('🔍 Field View - Small without meetin due data (after normalization):', {
+          due: smallWithoutMeetingData.due,
+          dueNormalized: smallWithoutMeetingData.dueNormalized,
+          signed: smallWithoutMeetingData.signed,
+          dueNormalizedPercentage: dueNormalizedPercentage
+        });
+      } else {
+        console.log('⚠️ Field View - Small without meetin not found in fieldDataMap');
+      }
+      
+      // Debug: Log all categories with due amounts
+      const categoriesWithDue = Array.from(fieldDataMap.entries())
+        .filter(([name, data]) => data.due > 0)
+        .map(([name, data]) => ({ category: name, due: data.due, dueNormalized: data.dueNormalized }));
+      console.log('🔍 Field View - All categories with due amounts:', categoriesWithDue);
 
       // Separate main categories into those that should be shown separately and those that go to General
       const generalFieldData = {
@@ -3314,6 +4287,8 @@ const SalesContributionPage = () => {
         signedNormalized: 0,
         signedPortion: 0,
         salaryBudget: 0,
+        due: 0,
+        dueNormalized: 0,
       };
 
       // Log all main categories found
@@ -3324,6 +4299,13 @@ const SalesContributionPage = () => {
       // Convert to DepartmentData format for consistency
       const fieldViewDataMap = new Map<string, DepartmentData>();
       const categoriesGoingToGeneral: string[] = [];
+
+      // Debug: Log due amounts before processing
+      console.log('🔍 Field View - Due amounts before processing:', 
+        Array.from(fieldDataMap.entries())
+          .filter(([name, data]) => data.due > 0)
+          .map(([name, data]) => ({ category: name, due: data.due }))
+      );
 
       // First, process all categories that have data
       fieldDataMap.forEach((fieldData, mainCategoryName) => {
@@ -3344,10 +4326,10 @@ const SalesContributionPage = () => {
               department: '',
               signed: fieldData.signed,
               signedNormalized: signedNormalized,
-              dueNormalized: 0,
+              dueNormalized: fieldData.dueNormalized,
               signedPortion: signedPortion,
               salaryBudget: salaryBudget,
-              due: 0,
+              due: fieldData.due || 0, // Ensure we use the calculated due amount
               duePortion: 0,
               total: fieldData.signed,
               totalPortionDue: 0,
@@ -3357,10 +4339,10 @@ const SalesContributionPage = () => {
             totals: {
               signed: fieldData.signed,
               signedNormalized: signedNormalized,
-              dueNormalized: 0,
+              dueNormalized: fieldData.dueNormalized,
               signedPortion: signedPortion,
               salaryBudget: salaryBudget,
-              due: 0,
+              due: fieldData.due || 0, // Ensure we use the calculated due amount
               duePortion: 0,
               total: fieldData.signed,
               totalPortionDue: 0,
@@ -3373,6 +4355,8 @@ const SalesContributionPage = () => {
           categoriesGoingToGeneral.push(mainCategoryName);
           generalFieldData.signed += fieldData.signed;
           generalFieldData.signedPortion += signedPortion;
+          generalFieldData.due += fieldData.due;
+          generalFieldData.dueNormalized += fieldData.dueNormalized;
         }
       });
 
@@ -3405,10 +4389,10 @@ const SalesContributionPage = () => {
             department: '',
             signed: generalFieldData.signed,
             signedNormalized: generalSignedNormalized,
-            dueNormalized: 0,
+            dueNormalized: generalFieldData.dueNormalized,
             signedPortion: generalFieldData.signedPortion,
             salaryBudget: generalSalaryBudget,
-            due: 0,
+            due: generalFieldData.due,
             duePortion: 0,
             total: generalFieldData.signed,
             totalPortionDue: 0,
@@ -3418,10 +4402,10 @@ const SalesContributionPage = () => {
           totals: {
             signed: generalFieldData.signed,
             signedNormalized: generalSignedNormalized,
-            dueNormalized: 0,
+            dueNormalized: generalFieldData.dueNormalized,
             signedPortion: generalFieldData.signedPortion,
             salaryBudget: generalSalaryBudget,
-            due: 0,
+            due: generalFieldData.due,
             duePortion: 0,
             total: generalFieldData.signed,
             totalPortionDue: 0,
@@ -3434,10 +4418,30 @@ const SalesContributionPage = () => {
         console.log('⚠️ Field View - No categories going to General, General field not created');
       }
 
+      // Debug: Log final due amounts before setting state
+      const finalDueAmounts = Array.from(fieldViewDataMap.entries())
+        .filter(([name, data]) => data.totals.due > 0)
+        .map(([name, data]) => ({ category: name, due: data.totals.due, dueNormalized: data.totals.dueNormalized }));
+      console.log('🔍 Field View - Final due amounts before setting state:', finalDueAmounts);
+      
+      const smallWithoutMeetingFinal = fieldViewDataMap.get('Small without meetin');
+      if (smallWithoutMeetingFinal) {
+        console.log('🔍 Field View - Small without meetin final data:', {
+          due: smallWithoutMeetingFinal.totals.due,
+          dueNormalized: smallWithoutMeetingFinal.totals.dueNormalized
+        });
+      }
+
       setFieldViewData(fieldViewDataMap);
     } catch (error) {
       console.error('Error processing field view data:', error);
+      } finally {
+        processFieldViewDataRef.current = null;
     }
+    })();
+
+    processFieldViewDataRef.current = processPromise;
+    await processPromise;
   };
 
   // Handler for starting to edit percentage
@@ -3832,12 +4836,11 @@ const SalesContributionPage = () => {
                                                         <button
                                                           onClick={(e) => {
                                                             e.stopPropagation();
-                                                            const leadNumber = lead.isLegacy ? `L${lead.lead}` : lead.lead;
-                                                            navigate(`/clients/${leadNumber}`);
+                                                            navigate(`/clients/${lead.lead}`);
                                                           }}
                                                           className="link link-primary"
                                                         >
-                                                          {lead.isLegacy ? `L${lead.lead}` : lead.lead}
+                                                          {lead.lead}
                                                         </button>
                                                       </td>
                                                       <td className="w-[30%]">{lead.clientName}</td>
@@ -4094,7 +5097,7 @@ const SalesContributionPage = () => {
 
               <div className="space-y-4 mb-6">
                 <p className="text-sm text-gray-600 mb-4">
-                  Configure the percentage allocation for each role in signed leads. These percentages are used to calculate the "Signed Portion" for each employee.
+                  Configure the percentage allocation for each role. Sales roles apply to signed amounts, Handler roles apply to due amounts. Expert appears in both sections but can only be edited in Handler section.
                 </p>
 
                 {loadingRolePercentages ? (
@@ -4102,6 +5105,10 @@ const SalesContributionPage = () => {
                     <span className="loading loading-spinner loading-lg"></span>
                   </div>
                 ) : (
+                  <div className="space-y-6">
+                    {/* Sales Section */}
+                    <div>
+                      <h4 className="text-lg font-bold mb-3 text-primary">Sales</h4>
                   <div className="space-y-3">
                     {[
                       { role: 'CLOSER', label: 'Closer', description: 'Percentage when Closer works alone (no Helper Closer)' },
@@ -4109,9 +5116,50 @@ const SalesContributionPage = () => {
                       { role: 'HELPER_CLOSER', label: 'Helper Closer', description: 'Percentage when Helper Closer is assigned' },
                       { role: 'SCHEDULER', label: 'Scheduler', description: 'Meeting Scheduler percentage' },
                       { role: 'MANAGER', label: 'Meeting Manager', description: 'Meeting Manager percentage' },
-                      { role: 'EXPERT', label: 'Expert', description: 'Expert percentage' },
-                      { role: 'HANDLER', label: 'Handler', description: 'Handler percentage (typically 0% as Handler is used for due amounts)' },
-                      { role: 'HELPER_HANDLER', label: 'Helper Handler', description: 'Helper Handler percentage' },
+                          { role: 'EXPERT', label: 'Expert', description: 'Expert percentage (read-only - edit in Handler section)', readOnly: true },
+                        ].map(({ role, label, description, readOnly }) => (
+                          <div key={role} className="flex items-center gap-4 p-4 bg-base-200 rounded-lg">
+                            <div className="flex-1">
+                              <label className="font-semibold text-sm">{label}</label>
+                              <p className="text-xs text-gray-500 mt-1">{description}</p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="number"
+                                min="0"
+                                max="100"
+                                step="0.01"
+                                className="input input-bordered w-24 text-right [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                value={tempRolePercentages.get(role) || rolePercentages.get(role)?.toString() || '0'}
+                                onChange={(e) => {
+                                  if (!readOnly) {
+                                    const value = e.target.value;
+                                    setTempRolePercentages(prev => {
+                                      const updated = new Map(prev);
+                                      updated.set(role, value);
+                                      return updated;
+                                    });
+                                  }
+                                }}
+                                placeholder="0"
+                                disabled={readOnly}
+                                readOnly={readOnly}
+                              />
+                              <span className="text-sm font-medium">%</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Handler Section */}
+                    <div>
+                      <h4 className="text-lg font-bold mb-3 text-secondary">Handler</h4>
+                      <div className="space-y-3">
+                        {[
+                          { role: 'HANDLER', label: 'Handler', description: 'Handler percentage applied to due amounts' },
+                          { role: 'HELPER_HANDLER', label: 'Helper Handler', description: 'Helper Handler percentage applied to due amounts' },
+                          { role: 'EXPERT', label: 'Expert', description: 'Expert percentage applied to due amounts (also applies to signed amounts)' },
                       { role: 'DEPARTMENT_MANAGER', label: 'Department Manager', description: 'Department Manager percentage' },
                     ].map(({ role, label, description }) => (
                       <div key={role} className="flex items-center gap-4 p-4 bg-base-200 rounded-lg">
@@ -4141,6 +5189,8 @@ const SalesContributionPage = () => {
                         </div>
                       </div>
                     ))}
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>

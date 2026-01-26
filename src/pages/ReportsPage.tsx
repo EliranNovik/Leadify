@@ -3253,8 +3253,8 @@ const ScheduledReport = () => {
         onClick={handleClick}
         disabled={disabled}
         className={`w-full text-center font-semibold focus:outline-none ${disabled
-            ? 'text-gray-400 cursor-not-allowed'
-            : 'text-gray-800 hover:text-primary underline decoration-dotted'
+          ? 'text-gray-400 cursor-not-allowed'
+          : 'text-gray-800 hover:text-primary underline decoration-dotted'
           }`}
       >
         {value}
@@ -8189,15 +8189,15 @@ type ReportSection = {
 };
 
 const reports: ReportSection[] = [
-  {
-    category: 'Search',
-    items: [
-      { label: 'Full Search', icon: MagnifyingGlassIcon, component: FullSearchReport },
-      { label: 'Stage Search', icon: Squares2X2Icon, component: StageSearchReport },
-      { label: 'Anchor Search', icon: ArrowUturnDownIcon, component: AnchorSearchReport },
-      { label: 'Duplicate Search', icon: DocumentDuplicateIcon, component: DuplicateSearchReport },
-    ],
-  },
+  // {
+  //   category: 'Search',
+  //   items: [
+  //     { label: 'Full Search', icon: MagnifyingGlassIcon, component: FullSearchReport },
+  //     { label: 'Stage Search', icon: Squares2X2Icon, component: StageSearchReport },
+  //     { label: 'Anchor Search', icon: ArrowUturnDownIcon, component: AnchorSearchReport },
+  //     { label: 'Duplicate Search', icon: DocumentDuplicateIcon, component: DuplicateSearchReport },
+  //   ],
+  // },
   {
     category: 'Marketing',
     items: [
@@ -8214,7 +8214,7 @@ const reports: ReportSection[] = [
       // { label: 'Rescheduled', icon: ArrowPathIcon, component: RescheduledReport },
       // { label: 'Results', icon: CheckCircleIcon, component: ResultsReport },
       // { label: 'Collection', icon: BanknotesIcon, component: CollectionReport },
-      { label: 'Convertion', icon: FunnelIcon, component: ConvertionReport },
+      // { label: 'Convertion', icon: FunnelIcon, component: ConvertionReport },
     ],
   },
   {
@@ -8266,15 +8266,15 @@ const reports: ReportSection[] = [
       { label: 'Sales Contribution', icon: ChartBarIcon, route: '/reports/sales-contribution' },
     ],
   },
-  {
-    category: 'Analysis',
-    items: [
-      // { label: 'Employees Performance', icon: ChartBarIcon, component: EmployeesPerformanceReport },
-      // { label: 'Statistics', icon: ChartPieIcon, component: StatisticsReport },
-      // { label: 'Pies', icon: ChartPieIcon, component: PiesReport },
-      // { label: 'Tasks', icon: ListBulletIcon, component: TasksReport },
-    ],
-  },
+  // {
+  //   category: 'Analysis',
+  //   items: [
+  //     // { label: 'Employees Performance', icon: ChartBarIcon, component: EmployeesPerformanceReport },
+  //     // { label: 'Statistics', icon: ChartPieIcon, component: StatisticsReport },
+  //     // { label: 'Pies', icon: ChartPieIcon, component: PiesReport },
+  //     // { label: 'Tasks', icon: ListBulletIcon, component: TasksReport },
+  //   ],
+  // },
   {
     category: 'Finances',
     items: [
@@ -8283,12 +8283,12 @@ const reports: ReportSection[] = [
       { label: 'Collection Due', icon: BanknotesIcon, route: '/reports/collection-due' },
     ],
   },
-  {
-    category: 'Cases',
-    items: [
-      // { label: 'Sum Active', icon: BriefcaseIcon, component: SumActiveReport },
-    ],
-  },
+  // {
+  //   category: 'Cases',
+  //   items: [
+  //     // { label: 'Sum Active', icon: BriefcaseIcon, component: SumActiveReport },
+  //   ],
+  // },
   {
     category: 'Tools',
     items: [
@@ -8399,25 +8399,139 @@ export default function ReportsPage() {
         <>
           <div className="px-4 md:px-0">
             <h1 className="text-4xl font-bold mb-6">Reports</h1>
-            {/* Search Bar */}
+            {/* Search Bar with Shortcuts */}
             <div className="mb-8">
-              <div className="relative max-w-2xl">
-                <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-                <input
-                  type="text"
-                  placeholder="Search reports by name or category..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-                />
-                {searchQuery && (
-                  <button
-                    onClick={() => setSearchQuery('')}
-                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                  >
-                    <XMarkIcon className="w-5 h-5" />
-                  </button>
-                )}
+              <div className="flex flex-col lg:flex-row gap-4 items-start lg:items-center">
+                {/* Search Input - Modern Style */}
+                <div className="relative flex-1 max-w-2xl">
+                  <div className="relative">
+                    <MagnifyingGlassIcon className="absolute left-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                    <input
+                      type="text"
+                      placeholder="Search reports by name or category..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full pl-12 pr-12 py-4 bg-white border-2 border-gray-200 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all duration-200 text-gray-700 placeholder-gray-400"
+                    />
+                    {searchQuery && (
+                      <button
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-4 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+                      >
+                        <XMarkIcon className="w-5 h-5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Shortcut Boxes - Compact Style */}
+                <div className="flex flex-wrap gap-3">
+                  {/* Finances - Collection */}
+                  {(() => {
+                    const label = 'Collection';
+                    const category = 'Finances';
+                    const gradients = [
+                      'from-blue-500 to-cyan-500',
+                      'from-purple-500 to-pink-500',
+                      'from-green-500 to-emerald-500',
+                      'from-orange-500 to-red-500',
+                      'from-indigo-500 to-blue-500',
+                      'from-teal-500 to-cyan-500',
+                    ];
+                    const cardGradient = gradients[0];
+
+                    return (
+                      <button
+                        onClick={() => navigate('/reports/collection-finances')}
+                        className="group relative overflow-hidden rounded-xl shadow-md hover:shadow-lg transition-all duration-300 transform hover:scale-105 w-[180px] h-14"
+                      >
+                        {/* Background Gradient */}
+                        <div className={`absolute inset-0 bg-gradient-to-br ${cardGradient}`} />
+
+                        {/* Content */}
+                        <div className="relative z-10 h-full px-3 flex items-center justify-between text-white">
+                          {/* Category Label */}
+                          <span className="inline-block px-2 py-0.5 bg-white/20 backdrop-blur-sm rounded-full text-[10px] font-semibold uppercase tracking-wide">
+                            {category}
+                          </span>
+
+                          {/* Label */}
+                          <h3 className="text-sm font-bold drop-shadow-md">
+                            {label}
+                          </h3>
+                        </div>
+                      </button>
+                    );
+                  })()}
+
+                  {/* Finances - Collection Due */}
+                  {(() => {
+                    const label = 'Collection Due';
+                    const category = 'Finances';
+                    const cardGradient = 'from-purple-500 to-purple-600';
+
+                    return (
+                      <button
+                        onClick={() => navigate('/reports/collection-due')}
+                        className="group relative overflow-hidden rounded-xl shadow-md hover:shadow-lg transition-all duration-300 transform hover:scale-105 w-[180px] h-14"
+                      >
+                        {/* Background Gradient */}
+                        <div className={`absolute inset-0 bg-gradient-to-br ${cardGradient}`} />
+
+                        {/* Content */}
+                        <div className="relative z-10 h-full px-3 flex items-center justify-between text-white">
+                          {/* Category Label */}
+                          <span className="inline-block px-2 py-0.5 bg-white/20 backdrop-blur-sm rounded-full text-[10px] font-semibold uppercase tracking-wide">
+                            {category}
+                          </span>
+
+                          {/* Label */}
+                          <h3 className="text-sm font-bold drop-shadow-md">
+                            {label}
+                          </h3>
+                        </div>
+                      </button>
+                    );
+                  })()}
+
+                  {/* Sales - Signed */}
+                  {(() => {
+                    const label = 'Signed';
+                    const category = 'Sales';
+                    const gradients = [
+                      'from-blue-500 to-cyan-500',
+                      'from-purple-500 to-pink-500',
+                      'from-green-500 to-emerald-500',
+                      'from-orange-500 to-red-500',
+                      'from-indigo-500 to-blue-500',
+                      'from-teal-500 to-cyan-500',
+                    ];
+                    const cardGradient = gradients[2];
+
+                    return (
+                      <button
+                        onClick={() => navigate('/sales/signed')}
+                        className="group relative overflow-hidden rounded-xl shadow-md hover:shadow-lg transition-all duration-300 transform hover:scale-105 w-[180px] h-14"
+                      >
+                        {/* Background Gradient */}
+                        <div className={`absolute inset-0 bg-gradient-to-br ${cardGradient}`} />
+
+                        {/* Content */}
+                        <div className="relative z-10 h-full px-3 flex items-center justify-between text-white">
+                          {/* Category Label */}
+                          <span className="inline-block px-2 py-0.5 bg-white/20 backdrop-blur-sm rounded-full text-[10px] font-semibold uppercase tracking-wide">
+                            {category}
+                          </span>
+
+                          {/* Label */}
+                          <h3 className="text-sm font-bold drop-shadow-md">
+                            {label}
+                          </h3>
+                        </div>
+                      </button>
+                    );
+                  })()}
+                </div>
               </div>
               {searchQuery && (
                 <p className="mt-2 text-sm text-gray-600">
@@ -8438,31 +8552,194 @@ export default function ReportsPage() {
                 </button>
               </div>
             ) : (
-              filteredReports.map((section) => (
-                <div key={section.category}>
-                  <h2 className="text-2xl font-semibold mb-4">{section.category}</h2>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3 md:gap-4 lg:gap-6">
-                    {section.items.map((item) => (
-                      <button
-                        key={item.label}
-                        className="card bg-base-100 shadow hover:shadow-lg transition-shadow border border-base-200 flex flex-col items-center justify-center p-3 sm:p-4 md:p-5 lg:p-6 cursor-pointer hover:bg-primary hover:text-white group"
-                        onClick={() => {
-                          if (item.route) {
-                            navigate(item.route);
-                            return;
-                          }
-                          if (item.component) {
-                            setSelectedReport(item);
-                          }
-                        }}
-                      >
-                        <item.icon className="w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 mb-2 sm:mb-2 md:mb-3 text-black group-hover:text-white" />
-                        <span className="font-semibold text-sm sm:text-base md:text-lg text-center group-hover:text-white">{item.label}</span>
-                      </button>
-                    ))}
+              filteredReports.map((section) => {
+                // Generate color gradients for each category
+                const categoryColors: { [key: string]: string } = {
+                  'Marketing': 'from-blue-500 to-cyan-500',
+                  'Meetings': 'from-purple-500 to-pink-500',
+                  'Sales': 'from-green-500 to-emerald-500',
+                  'Pipelines': 'from-orange-500 to-red-500',
+                  'Schedulers': 'from-indigo-500 to-blue-500',
+                  'Closers': 'from-teal-500 to-cyan-500',
+                  'Experts': 'from-yellow-500 to-orange-500',
+                  'Finances': 'from-emerald-500 to-green-500',
+                  'Tools': 'from-violet-500 to-purple-500',
+                };
+
+                const categoryGradient = categoryColors[section.category] || 'from-gray-500 to-gray-600';
+
+                // Generate contextually relevant image URLs for each report
+                const getReportImage = (label: string, category: string) => {
+                  // Map report labels to relevant image search terms
+                  // Use composite key (category + label) for reports with same label in different categories
+                  const imageMap: { [key: string]: string } = {
+                    // Marketing
+                    'Sources pie': 'pie-chart-data-visualization',
+                    'Category & source': 'analytics-data-dashboard',
+                    'Convertion': 'funnel-conversion-marketing',
+                    'Convertion Steps': 'funnel-steps-process',
+
+                    // Meetings
+                    'Scheduled': 'calendar-schedule-meeting',
+                    'Rescheduled': 'calendar-reschedule',
+                    'Results': 'meeting-results-success',
+
+                    // Sales
+                    'Signed': 'contract-signature-document',
+                    'Bonuses (v4)': 'bonus-money-reward',
+                    'Actual': 'sales-actual-performance',
+                    'Target': 'target-goal-achievement',
+
+                    // Pipelines
+                    'Expert': 'expert-professional-analysis',
+                    'General Sales': 'sales-pipeline-workflow',
+                    'Employee': 'employee-pipeline',
+                    'Unhandled': 'unhandled-pending',
+
+                    // Schedulers - use composite key to distinguish from Closers
+                    'Schedulers|Super Pipeline': 'scheduler-calendar-workflow',
+                    'Schedulers Quality': 'quality-check-review',
+                    'Performance': 'performance-metrics-chart',
+                    'Performance by Cat.': 'performance-category-analysis',
+
+                    // Closers - use composite key to distinguish from Schedulers
+                    'Closers|Super Pipeline': 'closing-deal-handshake',
+                    'Closers Quality': 'quality-assessment',
+
+                    // Experts
+                    'Experts Assignment': 'expert-assignment-task',
+                    'Experts Results': 'results-analysis-report',
+
+                    // Finances
+                    'Collection': 'money-collection-payment',
+                    'Collection Due': 'payment-due-invoice',
+                    'Profitability': 'profitability-financial-growth',
+
+                    // Tools
+                    'Edit Contracts': 'contract-document-edit',
+                    'Employee Unavailabilities': 'calendar-unavailable-time-off',
+                    'Employee Salaries': 'salary-payment-money',
+                  };
+
+                  // Check for composite key first (category|label), then just label
+                  const compositeKey = `${category}|${label}`;
+                  const searchTerm = imageMap[compositeKey] || imageMap[label] || (() => {
+                    const categoryDefaults: { [key: string]: string } = {
+                      'Marketing': 'marketing-analytics',
+                      'Meetings': 'meeting-calendar',
+                      'Sales': 'sales-performance',
+                      'Pipelines': 'pipeline-workflow',
+                      'Schedulers': 'scheduler-calendar',
+                      'Closers': 'closing-deal',
+                      'Experts': 'expert-professional',
+                      'Finances': 'finance-money',
+                      'Tools': 'tools-utilities',
+                    };
+                    return categoryDefaults[category] || 'business';
+                  })();
+
+                  // Generate a consistent seed based on category + label for reproducible images
+                  // This ensures different images for same label in different categories
+                  const seedString = `${category}-${label}`;
+                  const seed = seedString.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+
+                  // Use Picsum Photos - very reliable service that provides actual photos
+                  // The seed ensures the same image is shown for the same report
+                  // Format: https://picsum.photos/seed/{seed}/400/300
+                  return `https://picsum.photos/seed/${seed}/400/300`;
+                };
+
+                return (
+                  <div key={section.category}>
+                    <h2 className="text-2xl font-semibold mb-4">{section.category}</h2>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
+                      {section.items.map((item, index) => {
+                        // Generate unique gradient for each card
+                        const gradients = [
+                          'from-blue-500 to-cyan-500',
+                          'from-purple-500 to-pink-500',
+                          'from-green-500 to-emerald-500',
+                          'from-orange-500 to-red-500',
+                          'from-indigo-500 to-blue-500',
+                          'from-teal-500 to-cyan-500',
+                          'from-yellow-500 to-orange-500',
+                          'from-rose-500 to-pink-500',
+                          'from-violet-500 to-purple-500',
+                          'from-amber-500 to-yellow-500',
+                        ];
+                        const cardGradient = gradients[index % gradients.length];
+
+                        // Use different images for Edit Contracts and Employee Unavailabilities
+                        let imageUrl: string;
+                        if (item.label === 'Edit Contracts') {
+                          // Use a different seed for Edit Contracts
+                          imageUrl = 'https://picsum.photos/seed/edit-contracts-document/400/300';
+                        } else if (item.label === 'Employee Unavailabilities') {
+                          // Use a different seed for Employee Unavailabilities
+                          imageUrl = 'https://picsum.photos/seed/employee-unavailabilities-calendar/400/300';
+                        } else {
+                          imageUrl = getReportImage(item.label, section.category);
+                        }
+
+                        return (
+                          <button
+                            key={item.label}
+                            className="group relative overflow-hidden rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-300 transform hover:scale-105"
+                            onClick={() => {
+                              if (item.route) {
+                                navigate(item.route);
+                                return;
+                              }
+                              if (item.component) {
+                                setSelectedReport(item);
+                              }
+                            }}
+                          >
+                            {/* Background Gradient (always visible) */}
+                            <div className={`absolute inset-0 bg-gradient-to-br ${cardGradient}`} />
+
+                            {/* Background Image (optional overlay) */}
+                            <img
+                              src={imageUrl}
+                              alt={item.label}
+                              className="absolute inset-0 w-full h-full object-cover opacity-40"
+                              onError={(e) => {
+                                // Hide image on error, gradient will show through
+                                (e.target as HTMLImageElement).style.display = 'none';
+                              }}
+                            />
+
+                            {/* Content */}
+                            <div className="relative z-10 p-6 md:p-8 min-h-[200px] flex flex-col justify-between text-white">
+                              {/* Category Label */}
+                              <div className="mb-4">
+                                <span className="inline-block px-3 py-1 bg-white/20 backdrop-blur-sm rounded-full text-xs font-semibold uppercase tracking-wide">
+                                  {section.category}
+                                </span>
+                              </div>
+
+                              {/* Icon and Label */}
+                              <div className="flex-1 flex flex-col items-center justify-center">
+                                <item.icon className="w-16 h-16 md:w-20 md:h-20 mb-4 text-white drop-shadow-lg" />
+                                <h3 className="text-lg md:text-xl font-bold text-center drop-shadow-md">
+                                  {item.label}
+                                </h3>
+                              </div>
+
+                              {/* View Report Button */}
+                              <div className="mt-4 flex justify-end">
+                                <span className="inline-flex items-center px-4 py-2 bg-white/20 backdrop-blur-sm rounded-full text-sm font-semibold hover:bg-white/30 transition-colors">
+                                  View report <span className="ml-2">→</span>
+                                </span>
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </>

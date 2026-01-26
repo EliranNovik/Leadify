@@ -146,10 +146,11 @@ export const calculateSignedPortionPercentage = (
     percentage += getRolePercentage('EXPERT');
   }
   
-  // Handler role percentage (from database)
-  if (hasRole(lead, employeeId, 'handler')) {
-    percentage += getRolePercentage('HANDLER');
-  }
+  // Handler role percentage should NOT be included in signed portion calculation
+  // Handler percentages are only applied to due normalized amounts
+  // if (hasRole(lead, employeeId, 'handler')) {
+  //   percentage += getRolePercentage('HANDLER');
+  // }
   
   return percentage;
 };
@@ -218,10 +219,11 @@ export const calculateLegacySignedPortionPercentage = (
     percentage += getRolePercentage('EXPERT');
   }
   
-  // Handler role percentage (from database)
-  if (hasLegacyRole(lead, employeeId, 'case_handler_id')) {
-    percentage += getRolePercentage('HANDLER');
-  }
+  // Handler role percentage should NOT be included in signed portion calculation
+  // Handler percentages are only applied to due normalized amounts
+  // if (hasLegacyRole(lead, employeeId, 'case_handler_id')) {
+  //   percentage += getRolePercentage('HANDLER');
+  // }
   
   return percentage;
 };
