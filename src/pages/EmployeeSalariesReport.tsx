@@ -368,10 +368,11 @@ const EmployeeSalariesReport = () => {
                         }));
 
                         // Group text items by Y position (rows) and X position (columns)
-                        // Use a more flexible grouping - items within 5 pixels of Y are in the same row
+                        // Use a more flexible grouping - items within 3 pixels of Y are in the same row
+                        // This is more lenient to catch rows that might be slightly misaligned
                         const rows = new Map<number, Array<{ text: string; x: number }>>();
                         textItems.forEach(item => {
-                            const y = Math.round(item.y / 5) * 5; // Round to nearest 5 pixels for row grouping
+                            const y = Math.round(item.y / 3) * 3; // Round to nearest 3 pixels for row grouping (more lenient)
                             if (!rows.has(y)) {
                                 rows.set(y, []);
                             }
@@ -498,34 +499,62 @@ const EmployeeSalariesReport = () => {
 
                                 if (endMatch) {
                                     workerId = endMatch[1];
-                                    if (pageNum === 1) {
+                                    if (pageNum === 1 || extractedData.length < 5) {
                                         console.log(`🔍 Page ${pageNum} Row ${yPos} - Found employee number at end: "${workerId}"`);
                                     }
                                 }
                             }
 
-                            // Validate: Make sure it's not a 9-digit Israeli ID number
+                            // Strategy 4: Look for employee numbers in the last few text items (more flexible)
+                            if (!workerId && texts.length > 5) {
+                                // Check last 5 text items for 1-4 digit numbers
+                                for (let i = texts.length - 1; i >= Math.max(0, texts.length - 5); i--) {
+                                    const item = texts[i].trim();
+                                    // Look for 1-4 digit numbers that aren't part of a larger number
+                                    if (/^\d{1,4}$/.test(item) && parseInt(item) > 0 && parseInt(item) < 10000) {
+                                        workerId = item;
+                                        if (pageNum === 1 || extractedData.length < 5) {
+                                            console.log(`🔍 Page ${pageNum} Row ${yPos} - Found employee number in last items (position ${i}): "${workerId}"`);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // Validate: Make sure it's not a 9-digit Israeli ID number or "0"
                             if (workerId) {
                                 if (workerId.length >= 8) {
                                     // Too long to be an employee number, probably an ID number
-                                    if (pageNum === 1) {
+                                    if (pageNum === 1 || extractedData.length < 5) {
                                         console.log(`⚠️ Page ${pageNum} Row ${yPos} - Rejecting "${workerId}" (too long, likely ID number)`);
+                                    }
+                                    workerId = null;
+                                } else if (workerId === '0' || workerId === '00' || workerId === '000') {
+                                    // Reject "0" as it's likely not a valid employee number
+                                    if (pageNum === 1 || extractedData.length < 5) {
+                                        console.log(`⚠️ Page ${pageNum} Row ${yPos} - Rejecting "${workerId}" (likely not a valid employee number)`);
                                     }
                                     workerId = null;
                                 }
                                 // Note: We now allow single digits (1-4 digits) as employee numbers can be like "4", "134", etc.
                             }
 
-                            // Debug: Log if we found a worker ID
-                            if (workerId && pageNum === 1) {
-                                console.log(`✅ Page ${pageNum} Row ${yPos} - Extracted employee number: "${workerId}"`);
-                                console.log(`   Full row text: "${rowText.substring(0, 300)}"`);
-                            } else if (!workerId && pageNum === 1 && yPos >= sortedRows[0][0] && yPos <= sortedRows[Math.min(3, sortedRows.length - 1)][0]) {
-                                // Log when we don't find an employee number for first few rows
-                                console.log(`❌ Page ${pageNum} Row ${yPos} - No employee number found`);
-                                console.log(`   Row text: "${rowText.substring(0, 200)}"`);
-                                console.log(`   First 10 text items:`, texts.slice(0, 10));
-                                console.log(`   First 5 items with X positions:`, items.slice(0, 5).map(i => ({ text: i.text, x: Math.round(i.x) })));
+                            // Debug: Log if we found a worker ID (for all pages, but more detailed for page 1)
+                            if (workerId) {
+                                if (pageNum === 1 || extractedData.length < 5) {
+                                    console.log(`✅ Page ${pageNum} Row ${yPos} - Extracted employee number: "${workerId}"`);
+                                    console.log(`   Full row text: "${rowText.substring(0, 300)}"`);
+                                }
+                            } else {
+                                // Log when we don't find an employee number (for all pages, but more detailed for first few rows)
+                                const isFirstFewRows = yPos >= sortedRows[0][0] && yPos <= sortedRows[Math.min(5, sortedRows.length - 1)][0];
+                                if (pageNum === 1 || (isFirstFewRows && pageNum <= 2)) {
+                                    console.log(`❌ Page ${pageNum} Row ${yPos} - No employee number found`);
+                                    console.log(`   Row text: "${rowText.substring(0, 300)}"`);
+                                    console.log(`   All numbers in row:`, rowText.match(/\d+/g) || []);
+                                    console.log(`   First 10 text items:`, texts.slice(0, 10));
+                                    console.log(`   First 5 items with X positions:`, items.slice(0, 5).map(i => ({ text: i.text, x: Math.round(i.x) })));
+                                }
                             }
 
                             if (workerId && !seenWorkerIds.has(workerId)) {
@@ -619,31 +648,66 @@ const EmployeeSalariesReport = () => {
                                     }
                                 }
 
-                                // Gross salary: Use pattern matching to find the largest number in salary range
-                                // This was working before, so we'll revert to this approach
-                                const salaryPatterns = [
-                                    /(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)/g, // With commas
-                                    /(\d{4,6})/g // 4-6 digits
-                                ];
+                                // Gross salary: Try column-based extraction first (more reliable)
+                                // Based on PDF structure: gross salary is typically at index 4 or 5 from right
+                                const grossSalaryIndicesRight = [4, 5, 3, 6];
+                                for (const idx of grossSalaryIndicesRight) {
+                                    if (sortedByXRight.length > idx) {
+                                        const grossSalaryItem = sortedByXRight[idx];
+                                        const grossSalaryText = grossSalaryItem.text.trim().replace(/,/g, '');
+                                        const grossSalaryValue = parseFloat(grossSalaryText);
+                                        // Gross salary range: 1,000 to 200,000 NIS (reasonable range)
+                                        if (!isNaN(grossSalaryValue) && grossSalaryValue >= 1000 && grossSalaryValue <= 200000) {
+                                            grossSalary = grossSalaryValue;
+                                            if (pageNum === 1 || extractedData.length < 5) {
+                                                console.log(`   ✅ Found gross salary (column method) at index ${idx} (${idx + 1}th column from right): "${grossSalaryItem.text}" = ${grossSalary}`);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
 
-                                for (const pattern of salaryPatterns) {
-                                    const matches = rowText.matchAll(pattern);
-                                    for (const match of matches) {
-                                        const candidate = parseFloat(match[1].replace(/,/g, ''));
-                                        // Gross salary range: 5,000 to 200,000 NIS
-                                        if (candidate >= 5000 && candidate <= 200000) {
-                                            // Take the largest valid number in the row (gross salary is usually the largest)
-                                            if (candidate > grossSalary) {
-                                                grossSalary = candidate;
+                                // Fallback: Use pattern matching if column method didn't work
+                                if (grossSalary === 0) {
+                                    const salaryPatterns = [
+                                        /(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)/g, // With commas
+                                        /(\d{3,7})/g // 3-7 digits
+                                    ];
+
+                                    for (const pattern of salaryPatterns) {
+                                        const matches = rowText.matchAll(pattern);
+                                        for (const match of matches) {
+                                            const candidate = parseFloat(match[1].replace(/,/g, ''));
+                                            // Gross salary range: 1,000 to 200,000 NIS (reasonable range, not too high)
+                                            if (candidate >= 1000 && candidate <= 200000) {
+                                                // Take the largest valid number in the row (gross salary is usually the largest)
+                                                if (candidate > grossSalary) {
+                                                    grossSalary = candidate;
+                                                }
                                             }
                                         }
                                     }
                                 }
 
-                                if (pageNum === 1 && grossSalary > 0) {
+                                if (grossSalary > 0 && (pageNum === 1 || extractedData.length < 5)) {
                                     console.log(`   ✅ Found gross salary via pattern matching: ${grossSalary}`);
-                                } else if (pageNum === 1 && grossSalary === 0) {
-                                    console.log(`   ⚠️ No gross salary found in row (range 5000-200000)`);
+                                }
+
+                                // Method 2: Try extracting from left-to-right sorted columns (if column method failed)
+                                if (grossSalary === 0 && sortedByXLeft.length > 4) {
+                                    // Gross salary is typically 5th column from right = (total - 4) from left
+                                    const grossSalaryIndexFromLeft = sortedByXLeft.length - 5;
+                                    if (grossSalaryIndexFromLeft >= 0) {
+                                        const grossSalaryItem = sortedByXLeft[grossSalaryIndexFromLeft];
+                                        const grossSalaryText = grossSalaryItem.text.trim().replace(/,/g, '');
+                                        const grossSalaryValue = parseFloat(grossSalaryText);
+                                        if (!isNaN(grossSalaryValue) && grossSalaryValue >= 1000 && grossSalaryValue <= 200000) {
+                                            grossSalary = grossSalaryValue;
+                                            if (pageNum === 1 || extractedData.length < 5) {
+                                                console.log(`   ✅ Found gross salary (LTR column method) at index ${grossSalaryIndexFromLeft} from left (5th from right): "${grossSalaryItem.text}" = ${grossSalary}`);
+                                            }
+                                        }
+                                    }
                                 }
 
                                 if (grossSalary > 0) {
@@ -654,30 +718,46 @@ const EmployeeSalariesReport = () => {
                                         netSalary: netSalary > 0 ? netSalary : null
                                     });
                                     console.log(`✅ Page ${pageNum} Row ${yPos} - Extracted: workerId="${workerId}", grossSalary=${grossSalary}, netSalary=${netSalary || 'N/A'}`);
-                                    if (pageNum === 1) {
-                                        console.log(`   Column positions:`, sortedByXRight.slice(0, 10).map((i, idx) => ({
-                                            position: idx,
-                                            text: i.text,
-                                            x: Math.round(i.x)
-                                        })));
-                                    }
                                 } else {
-                                    if (pageNum === 1) {
-                                        console.log(`⚠️ Page ${pageNum} Row ${yPos} - Found workerId "${workerId}" but no valid salary in range 5000-200000`);
-                                        console.log(`   Row text: "${rowText.substring(0, 200)}"`);
-                                    }
+                                    // Log for ALL pages, not just page 1
+                                    console.log(`⚠️ Page ${pageNum} Row ${yPos} - Found workerId "${workerId}" but no valid salary in range 1000-200000`);
+                                    console.log(`   Row text: "${rowText.substring(0, 300)}"`);
+                                    console.log(`   All numbers found:`, rowText.match(/\d+/g) || []);
+                                    console.log(`   Column positions:`, sortedByXRight.slice(0, 15).map((i, idx) => ({
+                                        position: idx,
+                                        text: i.text,
+                                        x: Math.round(i.x),
+                                        isNumber: /^\d+([.,]\d+)?$/.test(i.text.replace(/,/g, '')),
+                                        parsedValue: (() => {
+                                            const val = parseFloat(i.text.replace(/,/g, ''));
+                                            return isNaN(val) ? null : val;
+                                        })()
+                                    })));
                                 }
                             } else if (workerId && seenWorkerIds.has(workerId)) {
-                                if (pageNum === 1) {
+                                // Log duplicate detection for debugging (but less verbose)
+                                if (extractedData.length < 10 || pageNum === 1) {
                                     console.log(`ℹ️ Page ${pageNum} Row ${yPos} - workerId "${workerId}" already seen, skipping`);
+                                }
+                            } else if (!workerId) {
+                                // Log rows that look like data rows but don't have a workerId
+                                // Check if row has salary-like numbers (to identify data rows)
+                                const hasSalaryLikeNumbers = /(\d{3,7})/.test(rowText);
+                                if (hasSalaryLikeNumbers && yPos < sortedRows[Math.min(10, sortedRows.length - 1)][0]) {
+                                    // Only log first 10 rows per page to avoid spam
+                                    console.log(`⚠️ Page ${pageNum} Row ${yPos} - Potential data row but no workerId found`);
+                                    console.log(`   Row text: "${rowText.substring(0, 200)}"`);
+                                    console.log(`   All numbers:`, rowText.match(/\d+/g) || []);
                                 }
                             }
                         }
-                    }
 
-                    // Debug: Log extracted data
-                    console.log('📄 PDF Parsing - Extracted data so far:', extractedData);
-                    console.log('📄 PDF Parsing - Total extracted records:', extractedData.length);
+                        // Debug: Log extracted data after each page
+                        console.log(`📄 PDF Parsing - Page ${pageNum} complete. Extracted so far: ${extractedData.length} records`);
+                        if (pageNum === 1 || extractedData.length < 10) {
+                            console.log('📄 PDF Parsing - Extracted data so far:', extractedData);
+                        }
+                    }
 
                     if (extractedData.length === 0) {
                         // Fallback: try simpler pattern matching
@@ -714,13 +794,30 @@ const EmployeeSalariesReport = () => {
                     // Final debug log
                     console.log('✅ PDF Parsing Complete - Final extracted data:', extractedData);
                     console.log('✅ PDF Parsing Complete - Total records:', extractedData.length);
+                    console.log(`✅ PDF Parsing Complete - Total pages processed: ${pdf.numPages}`);
 
                     // Summary: Show all unique employee numbers extracted
                     const uniqueWorkerIds = [...new Set(extractedData.map(d => d.workerId))].sort((a, b) => parseInt(a) - parseInt(b));
                     console.log('📊 PDF Parsing Summary:');
+                    console.log(`   - Total pages in PDF: ${pdf.numPages}`);
                     console.log(`   - Unique employee numbers extracted: ${uniqueWorkerIds.length}`);
                     console.log(`   - Employee numbers: [${uniqueWorkerIds.join(', ')}]`);
                     console.log(`   - Contains "134": ${uniqueWorkerIds.includes('134') ? '✅ YES' : '❌ NO'}`);
+
+                    // Count total rows processed across all pages
+                    let totalRowsProcessed = 0;
+                    for (let p = 1; p <= pdf.numPages; p++) {
+                        const page = await pdf.getPage(p);
+                        const textContent = await page.getTextContent();
+                        const textItems = textContent.items.map((item: any) => ({
+                            text: item.str,
+                            y: item.transform[5]
+                        }));
+                        const uniqueYPositions = new Set(textItems.map((item: any) => Math.round(item.y / 3) * 3));
+                        totalRowsProcessed += uniqueYPositions.size;
+                    }
+                    console.log(`   - Estimated total rows processed: ${totalRowsProcessed}`);
+                    console.log(`   - Extraction rate: ${((extractedData.length / totalRowsProcessed) * 100).toFixed(1)}%`);
 
                     if (!uniqueWorkerIds.includes('134')) {
                         console.log('⚠️ WARNING: Employee number "134" was NOT found in the extracted data!');
@@ -728,6 +825,15 @@ const EmployeeSalariesReport = () => {
                         console.log('   1. "134" is not in the PDF');
                         console.log('   2. "134" is in the PDF but not being extracted correctly');
                         console.log('   3. "134" appears in a different format in the PDF');
+                    }
+
+                    if (extractedData.length < 30) {
+                        console.log(`⚠️ WARNING: Only ${extractedData.length} employees extracted. Expected more based on document.`);
+                        console.log('   Possible issues:');
+                        console.log('   1. Some rows might not have valid workerId extracted');
+                        console.log('   2. Some rows might have salaries outside the 1000-500000 range');
+                        console.log('   3. Row grouping might be splitting rows incorrectly');
+                        console.log('   4. Some pages might not be processed correctly');
                     }
 
                     resolve(extractedData);

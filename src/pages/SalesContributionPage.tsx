@@ -25,6 +25,8 @@ interface EmployeeData {
   dueNormalized: number;
   signedPortion: number;
   salaryBudget: number;
+  salaryBrutto: number;
+  totalSalaryCost: number;
   due: number;
   duePortion: number;
   total: number;
@@ -42,6 +44,8 @@ interface DepartmentData {
     dueNormalized: number;
     signedPortion: number;
     salaryBudget: number;
+    salaryBrutto: number;
+    totalSalaryCost: number;
     due: number;
     duePortion: number;
     total: number;
@@ -80,6 +84,7 @@ const SalesContributionPage = () => {
   const [isCalculating, setIsCalculating] = useState(false);
   const [allCategories, setAllCategories] = useState<any[]>([]);
   const [categoryNameToDataMap, setCategoryNameToDataMap] = useState<Map<string, any>>(new Map());
+  const [categoriesLoaded, setCategoriesLoaded] = useState(false);
   const [searchPerformed, setSearchPerformed] = usePersistedState('salesContribution_performed', true, {
     storage: 'sessionStorage',
   });
@@ -517,6 +522,7 @@ const SalesContributionPage = () => {
         }
         
         setCategoryNameToDataMap(nameToDataMap);
+        setCategoriesLoaded(true);
         
         // Debug: Log the map size and sample keys
         console.log('🔍 Category Name to Data Map populated:', {
@@ -525,6 +531,9 @@ const SalesContributionPage = () => {
           hasSmallWithoutMeeting: nameToDataMap.has('small without meetin'),
           mainCategoriesCount: mainCategoriesData?.length || 0
         });
+      } else {
+        // Even if there's an error, mark as loaded so we don't wait forever
+        setCategoriesLoaded(true);
       }
     };
     fetchCategories();
@@ -850,14 +859,14 @@ const SalesContributionPage = () => {
     }
   }, [filters.fromDate, filters.toDate]);
 
-  // Auto-run search on mount to load data by default
+  // Auto-run search on mount to load data by default - but wait for categories to load first
   useEffect(() => {
-    if (filters.fromDate && filters.toDate) {
+    if (filters.fromDate && filters.toDate && categoriesLoaded) {
       handleSearch();
       fetchTotalSignedValue();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Only run once on mount
+  }, [categoriesLoaded]); // Run when categories are loaded
 
   // Fetch total signed value when date filters change
   useEffect(() => {
@@ -1085,7 +1094,9 @@ const SalesContributionPage = () => {
           .in('id', newLeadIdsArray);
 
         if (!newLeadsError && newLeads) {
-          newLeads.forEach(lead => {
+          // Pre-process leads to ensure categories are correctly mapped
+          const processedLeads = preprocessLeadsCategories(newLeads, false);
+          processedLeads.forEach(lead => {
             newLeadsMap.set(lead.id, lead);
           });
         }
@@ -1128,7 +1139,9 @@ const SalesContributionPage = () => {
           .in('id', legacyLeadIdsArray);
 
         if (!legacyLeadsError && legacyLeads) {
-          legacyLeads.forEach(lead => {
+          // Pre-process leads to ensure categories are correctly mapped
+          const processedLeads = preprocessLeadsCategories(legacyLeads, true);
+          processedLeads.forEach(lead => {
             legacyLeadsMap.set(Number(lead.id), lead);
           });
         }
@@ -1964,7 +1977,7 @@ const SalesContributionPage = () => {
         return newSet;
       });
     }
-  }, [filters.fromDate, filters.toDate, totalSignedValue, totalIncome, dueNormalizedPercentage, rolePercentages, getRolePercentagesHash]);
+  }, [filters.fromDate, filters.toDate, totalSignedValue, totalIncome, dueNormalizedPercentage, rolePercentages, getRolePercentagesHash, categoriesLoaded, categoryNameToDataMap, allCategories]);
 
   // Recalculate signed portions when income changes
   // This ensures signed portions are recalculated with the new income value immediately
@@ -2423,10 +2436,13 @@ const SalesContributionPage = () => {
           .in('id', newLeadIdsArray);
 
         if (!newLeadsError && newLeads) {
+          // Pre-process leads to ensure categories are correctly mapped BEFORE processing
+          const processedLeads = preprocessLeadsCategories(newLeads, false);
+          
           // Debug: Track uncategorized leads
           const uncategorizedLeads: any[] = [];
           
-          newLeads.forEach((lead: any) => {
+          processedLeads.forEach((lead: any) => {
             // Get main category name using helper function
             const mainCategoryNameFromLead = resolveMainCategory(
               lead.category, // category text field
@@ -2484,7 +2500,7 @@ const SalesContributionPage = () => {
           if (mainCategoryName === 'Uncategorized' && uncategorizedLeads.length > 0) {
             console.log('🔍 Category Breakdown (New Leads) - Uncategorized leads found:', {
               count: uncategorizedLeads.length,
-              totalNewLeads: newLeads.length,
+              totalNewLeads: processedLeads.length,
               samples: uncategorizedLeads.slice(0, 5)
             });
           }
@@ -2521,16 +2537,34 @@ const SalesContributionPage = () => {
           .in('id', legacyLeadIdsArray);
 
         if (!legacyLeadsError && legacyLeads) {
+          // Pre-process leads to ensure categories are correctly mapped BEFORE processing
+          const processedLeads = preprocessLeadsCategories(legacyLeads, true);
+          
           // Debug: Track uncategorized leads
           const uncategorizedLegacyLeads: any[] = [];
           
-          legacyLeads.forEach((lead: any) => {
+          processedLeads.forEach((lead: any) => {
             // Get main category name using helper function
+            // After preprocessing, misc_category should be set, so this should work correctly
             const mainCategoryNameFromLead = resolveMainCategory(
               lead.category, // category text field
               lead.category_id, // category ID
-              lead.misc_category // joined misc_category data
+              lead.misc_category // preprocessed misc_category data
             );
+            
+            // Debug: Log if category was resolved
+            if (mainCategoryNameFromLead === 'Uncategorized' && lead.category && lead.category.trim() !== '') {
+              console.warn('⚠️ fetchCategoryBreakdown (Legacy) - Lead still uncategorized after preprocessing:', {
+                leadId: lead.id,
+                leadNumber: lead.lead_number,
+                categoryText: lead.category,
+                categoryId: lead.category_id,
+                hasMiscCategory: !!lead.misc_category,
+                miscCategoryName: lead.misc_category?.name,
+                miscMainCategoryName: lead.misc_category?.misc_maincategory?.name || 
+                  (Array.isArray(lead.misc_category?.misc_maincategory) ? lead.misc_category.misc_maincategory[0]?.name : null)
+              });
+            }
 
             // Debug: Track leads that resolve to Uncategorized
             if (mainCategoryNameFromLead === 'Uncategorized' && mainCategoryName === 'Uncategorized') {
@@ -2636,7 +2670,7 @@ const SalesContributionPage = () => {
         return newSet;
       });
     }
-  }, [filters.fromDate, filters.toDate, categoryBreakdownCache, categoryNameToDataMap, allCategories]);
+  }, [filters.fromDate, filters.toDate, categoryBreakdownCache, categoryNameToDataMap, allCategories, categoriesLoaded]);
 
   // Toggle row expansion
   const toggleRowExpansion = useCallback((employeeId: number, employeeName: string) => {
@@ -2672,12 +2706,31 @@ const SalesContributionPage = () => {
   }, [viewMode, roleDataCache, categoryBreakdownCache, fetchRoleData, fetchCategoryBreakdown, filters.fromDate, filters.toDate, totalIncome]);
 
   const handleSearch = async () => {
+    // Wait for categories to be loaded before processing
+    if (!categoriesLoaded) {
+      console.warn('⚠️ handleSearch - Waiting for categories to load...');
+      // Wait up to 5 seconds for categories to load
+      let waitCount = 0;
+      while (!categoriesLoaded && waitCount < 50) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        waitCount++;
+      }
+      if (!categoriesLoaded) {
+        console.error('❌ handleSearch - Categories not loaded after waiting, proceeding anyway');
+      }
+    }
+
     setLoading(true);
     setSearchPerformed(true);
     // Fetch total signed value when search is triggered - MUST complete before calculating portions
     await fetchTotalSignedValue();
     try {
       console.log('🔍 Sales Contribution Report - Starting search with filters:', filters);
+      console.log('🔍 Categories loaded:', {
+        categoriesLoaded,
+        mapSize: categoryNameToDataMap.size,
+        allCategoriesCount: allCategories.length
+      });
 
       // Step 1: Fetch ALL employees (similar to EmployeePerformancePage)
       // Fetch employees from users table with tenants_employee join (only active users)
@@ -2765,16 +2818,16 @@ const SalesContributionPage = () => {
         if (['s', 'z', 'c', 'e'].includes(role)) {
           return 'Sales';
         }
-        // Handlers: handler (h, e, d)
-        if (['h', 'd'].includes(role)) {
+        // Handlers: handler (h, d, dm) - Note: 'e' (Expert) is excluded from Handlers
+        if (['h', 'd', 'dm'].includes(role)) {
           return 'Handlers';
         }
         // Marketing: marketing (ma)
         if (['ma'].includes(role)) {
           return 'Marketing';
         }
-        // Partners: partners (p, m, dm, pm, se, b, partners, dv)
-        if (['p', 'm', 'dm', 'pm', 'se', 'b', 'partners', 'dv'].includes(role)) {
+        // Partners: partners (p, m, pm, se, b, partners, dv) - Note: 'dm' moved to Handlers
+        if (['p', 'm', 'pm', 'se', 'b', 'partners', 'dv'].includes(role)) {
           return 'Partners';
         }
         // Finance/Collection: collection (col) or department name contains finance/collection
@@ -2793,7 +2846,8 @@ const SalesContributionPage = () => {
 
       const handlersEmployees = filteredEmployees.filter(emp => {
         const role = emp.bonuses_role;
-        return role && ['h', 'e', 'd'].includes(role);
+        // Include h, d, dm - but exclude 'e' (Expert) from Handlers
+        return role && ['h', 'd', 'dm'].includes(role);
       });
 
       const marketingEmployees = filteredEmployees.filter(emp => {
@@ -2811,7 +2865,8 @@ const SalesContributionPage = () => {
 
       const partnersEmployees = filteredEmployees.filter(emp => {
         const role = emp.bonuses_role;
-        return role && ['p', 'm', 'dm', 'pm', 'se', 'b', 'partners', 'dv'].includes(role);
+        // Note: 'dm' moved to Handlers
+        return role && ['p', 'm', 'pm', 'se', 'b', 'partners', 'dv'].includes(role);
       });
 
       console.log('✅ Sales Contribution Report - Grouped employees:', {
@@ -2842,6 +2897,8 @@ const SalesContributionPage = () => {
           dueNormalized: 0,
           signedPortion: 0,
           salaryBudget: 0,
+          salaryBrutto: 0,
+          totalSalaryCost: 0,
           due: 0,
           duePortion: 0,
           total: 0,
@@ -2896,6 +2953,8 @@ const SalesContributionPage = () => {
               dueNormalized: 0,
               signedPortion: 0,
               salaryBudget: 0,
+              salaryBrutto: 0,
+              totalSalaryCost: 0,
               due: 0,
               duePortion: 0,
               total: 0,
@@ -2913,6 +2972,8 @@ const SalesContributionPage = () => {
         let deptDueNormalized = 0;
         let deptSignedPortion = 0;
         let deptSalaryBudget = 0;
+        let deptSalaryBrutto = 0;
+        let deptTotalSalaryCost = 0;
         let deptDue = 0;
         let deptDuePortion = 0;
         let deptTotal = 0;
@@ -2945,6 +3006,8 @@ const SalesContributionPage = () => {
           deptDueNormalized += empData.dueNormalized || 0;
           deptSignedPortion += empData.signedPortion;
           deptSalaryBudget += empData.salaryBudget || 0;
+          deptSalaryBrutto += empData.salaryBrutto || 0;
+          deptTotalSalaryCost += empData.totalSalaryCost || 0;
           deptDue += empData.due;
           deptDuePortion += empData.duePortion;
           deptTotal += empData.total;
@@ -2963,6 +3026,8 @@ const SalesContributionPage = () => {
             dueNormalized: deptDueNormalized,
             signedPortion: deptSignedPortion,
             salaryBudget: deptSalaryBudget,
+            salaryBrutto: deptSalaryBrutto,
+            totalSalaryCost: deptTotalSalaryCost,
             due: deptDue,
             duePortion: deptDuePortion,
             total: deptTotal,
@@ -3090,7 +3155,9 @@ const SalesContributionPage = () => {
                 .in('id', newLeadIdsArray);
 
               if (!newLeadsError && newLeads) {
-                newLeads.forEach(lead => {
+                // Pre-process leads to ensure categories are correctly mapped
+                const processedLeads = preprocessLeadsCategories(newLeads, false);
+                processedLeads.forEach(lead => {
                   newLeadsMap.set(lead.id, lead);
                 });
               }
@@ -3131,7 +3198,9 @@ const SalesContributionPage = () => {
           .in('id', legacyLeadIdsArray);
 
               if (!legacyLeadsError && legacyLeads) {
-                legacyLeads.forEach(lead => {
+                // Pre-process leads to ensure categories are correctly mapped
+                const processedLeads = preprocessLeadsCategories(legacyLeads, true);
+                processedLeads.forEach(lead => {
                   legacyLeadsMap.set(Number(lead.id), lead);
                 });
               }
@@ -3227,6 +3296,51 @@ const SalesContributionPage = () => {
                 }
               })
             );
+
+            // Step 6.5: Fetch salary data for all employees based on toDate filter
+            const salaryDataMap = new Map<number, { salaryBrutto: number; totalSalaryCost: number }>();
+            if (filters.toDate && allEmployeeIds.length > 0) {
+              try {
+                // Parse toDate to get month and year
+                const toDateObj = new Date(filters.toDate + 'T00:00:00'); // Add time to ensure correct date parsing
+                const salaryMonth = toDateObj.getMonth() + 1; // getMonth() returns 0-11, we need 1-12
+                const salaryYear = toDateObj.getFullYear();
+
+                console.log('🔍 Fetching salary data:', {
+                  toDate: filters.toDate,
+                  salaryMonth,
+                  salaryYear,
+                  employeeCount: allEmployeeIds.length
+                });
+
+                // Fetch salary data for all employees
+                const { data: salaryData, error: salaryError } = await supabase
+                  .from('employee_salary')
+                  .select('employee_id, net_salary, gross_salary')
+                  .eq('salary_month', salaryMonth)
+                  .eq('salary_year', salaryYear)
+                  .in('employee_id', allEmployeeIds);
+
+                console.log('✅ Salary data fetched:', {
+                  count: salaryData?.length || 0,
+                  error: salaryError?.message
+                });
+
+                if (!salaryError && salaryData) {
+                  salaryData.forEach((salary: any) => {
+                    const employeeId = Number(salary.employee_id);
+                    salaryDataMap.set(employeeId, {
+                      salaryBrutto: Number(salary.net_salary || 0),
+                      totalSalaryCost: Number(salary.gross_salary || 0),
+                    });
+                  });
+                } else if (salaryError) {
+                  console.error('Error fetching salary data:', salaryError);
+                }
+              } catch (error) {
+                console.error('Error in salary data fetch:', error);
+              }
+            }
 
             // Step 7: Filter leads for each employee and prepare calculation inputs
             const calculationInputs: EmployeeCalculationInput[] = [];
@@ -3347,18 +3461,26 @@ const SalesContributionPage = () => {
               updated.forEach((deptData, deptName) => {
                 const updatedEmployees = deptData.employees.map(emp => {
                   const result = calculationResults.get(emp.employeeId);
+                  const salaryData = salaryDataMap.get(emp.employeeId);
+                  
+                  // Always update salary data if available
+                  const updatedEmp: EmployeeData = {
+                    ...emp,
+                    salaryBrutto: salaryData?.salaryBrutto || emp.salaryBrutto || 0,
+                    totalSalaryCost: salaryData?.totalSalaryCost || emp.totalSalaryCost || 0,
+                  };
+                  
+                  // Update calculation results if available
                   if (result) {
-                    return {
-                      ...emp,
-                      signed: result.signed,
-                      due: result.due,
-                      signedNormalized: result.signedNormalized,
-                      dueNormalized: result.dueNormalized,
-                      signedPortion: result.contribution,
-                      salaryBudget: result.salaryBudget,
-                    };
+                    updatedEmp.signed = result.signed;
+                    updatedEmp.due = result.due;
+                    updatedEmp.signedNormalized = result.signedNormalized;
+                    updatedEmp.dueNormalized = result.dueNormalized;
+                    updatedEmp.signedPortion = result.contribution;
+                    updatedEmp.salaryBudget = result.salaryBudget;
                   }
-                  return emp;
+                  
+                  return updatedEmp;
                 });
 
                 // Recalculate department totals
@@ -3368,6 +3490,8 @@ const SalesContributionPage = () => {
                 const deptDueNormalized = updatedEmployees.reduce((sum, emp) => sum + (emp.dueNormalized || 0), 0);
                 const deptSignedPortion = updatedEmployees.reduce((sum, emp) => sum + (emp.signedPortion || 0), 0);
                 const deptSalaryBudget = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBudget || 0), 0);
+                const deptSalaryBrutto = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBrutto || 0), 0);
+                const deptTotalSalaryCost = updatedEmployees.reduce((sum, emp) => sum + (emp.totalSalaryCost || 0), 0);
 
                 updated.set(deptName, {
                   ...deptData,
@@ -3380,6 +3504,8 @@ const SalesContributionPage = () => {
                     dueNormalized: deptDueNormalized,
                     signedPortion: deptSignedPortion,
                     salaryBudget: deptSalaryBudget,
+                    salaryBrutto: deptSalaryBrutto,
+                    totalSalaryCost: deptTotalSalaryCost,
                   },
                 });
               });
@@ -3401,6 +3527,128 @@ const SalesContributionPage = () => {
       setLoading(false);
     }
   };
+
+  // Helper function to normalize category text for matching
+  const normalizeCategoryText = useCallback((text: string): string => {
+    return text
+      .trim()
+      .toLowerCase()
+      .replace(/[^\w\s]/g, '') // Remove special characters
+      .replace(/\s+/g, ' ') // Normalize whitespace
+      .trim();
+  }, []);
+
+  // Helper function to find best matching category from map
+  const findBestCategoryMatch = useCallback((categoryValue: string): any => {
+    if (!categoryValue || typeof categoryValue !== 'string' || categoryValue.trim() === '') {
+      return null;
+    }
+
+    const trimmedValue = categoryValue.trim();
+    const normalizedValue = normalizeCategoryText(trimmedValue);
+    
+    // Try exact match first (normalized)
+    let mappedCategory = categoryNameToDataMap.get(normalizedValue);
+    if (mappedCategory) return mappedCategory;
+    
+    // Try exact match with original case
+    mappedCategory = categoryNameToDataMap.get(trimmedValue.toLowerCase());
+    if (mappedCategory) return mappedCategory;
+    
+    // If no exact match, try matching the category name part (before parentheses)
+    if (trimmedValue.includes('(')) {
+      const categoryNamePart = trimmedValue.split('(')[0].trim().toLowerCase();
+      mappedCategory = categoryNameToDataMap.get(categoryNamePart);
+      if (mappedCategory) return mappedCategory;
+      
+      const normalizedCategoryNamePart = normalizeCategoryText(categoryNamePart);
+      mappedCategory = categoryNameToDataMap.get(normalizedCategoryNamePart);
+      if (mappedCategory) return mappedCategory;
+    }
+    
+    // Try removing all spaces and special characters for comparison
+    const normalizedValueNoSpaces = normalizedValue.replace(/[\s_-]/g, '');
+    
+    // Try exact match after removing spaces
+    for (const [mapKey, mapValue] of categoryNameToDataMap.entries()) {
+      const normalizedMapKey = normalizeCategoryText(mapKey).replace(/[\s_-]/g, '');
+      if (normalizedMapKey === normalizedValueNoSpaces) {
+        return mapValue;
+      }
+    }
+    
+    // Try matching just the category name part (before parentheses in map key)
+    for (const [mapKey, mapValue] of categoryNameToDataMap.entries()) {
+      const mapKeyNamePart = mapKey.split('(')[0].trim().toLowerCase().replace(/[\s_-]/g, '');
+      if (mapKeyNamePart === normalizedValueNoSpaces || normalizedValueNoSpaces === mapKeyNamePart) {
+        return mapValue;
+      }
+    }
+    
+    // Try substring matching (one contains the other) - be more lenient
+    for (const [mapKey, mapValue] of categoryNameToDataMap.entries()) {
+      const normalizedMapKey = normalizeCategoryText(mapKey).replace(/[\s_-]/g, '');
+      
+      if (normalizedMapKey.includes(normalizedValueNoSpaces) || normalizedValueNoSpaces.includes(normalizedMapKey)) {
+        const lengthDiff = Math.abs(normalizedMapKey.length - normalizedValueNoSpaces.length);
+        const minLength = Math.min(normalizedMapKey.length, normalizedValueNoSpaces.length);
+        // Allow match if difference is small relative to the shorter string (up to 50% difference)
+        if (lengthDiff <= Math.max(3, minLength * 0.5)) {
+          return mapValue;
+        }
+      }
+    }
+    
+    // Try word-by-word matching (for cases like "Small without meetin" vs "Small Without Meeting")
+    const valueWords = normalizedValue.split(/[\s_-]+/).filter(w => w.length > 0);
+    if (valueWords.length > 0) {
+      for (const [mapKey, mapValue] of categoryNameToDataMap.entries()) {
+        const mapKeyWords = normalizeCategoryText(mapKey).split(/[\s_-]+/).filter(w => w.length > 0);
+        if (mapKeyWords.length > 0) {
+          const matchingWords = mapKeyWords.filter(word => 
+            valueWords.some(vw => 
+              vw === word || 
+              word.includes(vw) || 
+              vw.includes(word) ||
+              word.startsWith(vw) ||
+              vw.startsWith(word)
+            )
+          );
+          // If most words match (at least 60% of words), consider it a match
+          const matchRatio = matchingWords.length / Math.min(mapKeyWords.length, valueWords.length);
+          if (matchRatio >= 0.6 && matchingWords.length > 0) {
+            return mapValue;
+          }
+        }
+      }
+    }
+    
+    // Try character-by-character similarity (Levenshtein-like, simplified)
+    let bestMatch: { category: any; score: number } | null = null;
+    for (const [mapKey, mapValue] of categoryNameToDataMap.entries()) {
+      const normalizedMapKey = normalizeCategoryText(mapKey);
+      const shorter = normalizedValue.length < normalizedMapKey.length ? normalizedValue : normalizedMapKey;
+      const longer = normalizedValue.length >= normalizedMapKey.length ? normalizedValue : normalizedMapKey;
+      
+      // Calculate simple similarity score
+      let matches = 0;
+      for (let i = 0; i < shorter.length; i++) {
+        if (longer.includes(shorter[i])) matches++;
+      }
+      const score = matches / Math.max(shorter.length, 1);
+      
+      // If similarity is high enough (70%+), consider it a match
+      if (score >= 0.7 && (!bestMatch || score > bestMatch.score)) {
+        bestMatch = { category: mapValue, score };
+      }
+    }
+    
+    if (bestMatch) {
+      return bestMatch.category;
+    }
+    
+    return null;
+  }, [categoryNameToDataMap, normalizeCategoryText]);
 
   // Helper function to resolve main category from lead (similar to CollectionDueReportPage)
   const resolveMainCategory = (
@@ -3429,78 +3677,7 @@ const SalesContributionPage = () => {
     // If we still don't have a category, try to look it up by text category name in the map
     // This is important for new leads that have category saved as text
     if (!resolvedMiscCategory && categoryValue && typeof categoryValue === 'string' && categoryValue.trim() !== '' && categoryNameToDataMap.size > 0) {
-      const trimmedValue = categoryValue.trim();
-      const normalizedName = trimmedValue.toLowerCase();
-      
-      // Try exact match first (normalized)
-      let mappedCategory = categoryNameToDataMap.get(normalizedName);
-      
-      // If no exact match, try matching the category name part (before parentheses)
-      // Categories might be stored as "CategoryName (MainCategoryName)" format
-      if (!mappedCategory && trimmedValue.includes('(')) {
-        const categoryNamePart = trimmedValue.split('(')[0].trim().toLowerCase();
-        mappedCategory = categoryNameToDataMap.get(categoryNamePart);
-      }
-      
-      // If still no match, try partial/fuzzy matching
-      if (!mappedCategory) {
-        // First, try removing all spaces and special characters for comparison
-        const normalizedValueNoSpaces = normalizedName.replace(/[\s_-]/g, '');
-        
-        for (const [mapKey, mapValue] of categoryNameToDataMap.entries()) {
-          const normalizedMapKey = mapKey.replace(/[\s_-]/g, '');
-          
-          // Exact match after normalization
-          if (normalizedMapKey === normalizedValueNoSpaces) {
-            mappedCategory = mapValue;
-            break;
-          }
-        }
-        
-        // If still no match, try more aggressive fuzzy matching
-        if (!mappedCategory) {
-          for (const [mapKey, mapValue] of categoryNameToDataMap.entries()) {
-            const normalizedMapKey = mapKey.replace(/[\s_-]/g, '');
-            const normalizedValue = normalizedValueNoSpaces;
-            
-            // Try matching just the category name part (before parentheses in map key)
-            const mapKeyNamePart = mapKey.split('(')[0].trim().toLowerCase().replace(/[\s_-]/g, '');
-            if (mapKeyNamePart === normalizedValue || normalizedValue === mapKeyNamePart) {
-              mappedCategory = mapValue;
-              break;
-            }
-            
-            // Try substring matching (one contains the other) - be more lenient
-            if (normalizedMapKey.includes(normalizedValue) || normalizedValue.includes(normalizedMapKey)) {
-              // Use substring match if the lengths are reasonably similar
-              const lengthDiff = Math.abs(normalizedMapKey.length - normalizedValue.length);
-              const minLength = Math.min(normalizedMapKey.length, normalizedValue.length);
-              // Allow match if difference is small relative to the shorter string
-              if (lengthDiff <= Math.max(3, minLength * 0.3)) {
-                mappedCategory = mapValue;
-                break;
-              }
-            }
-            
-            // Try word-by-word matching (for cases like "Small without meetin" vs "Small Without Meeting")
-            const mapKeyWords = mapKey.split(/[\s_-]+/).filter(w => w.length > 0);
-            const valueWords = normalizedName.split(/[\s_-]+/).filter(w => w.length > 0);
-            if (mapKeyWords.length > 0 && valueWords.length > 0) {
-              const matchingWords = mapKeyWords.filter(word => 
-                valueWords.some(vw => vw.toLowerCase() === word.toLowerCase() || 
-                  word.toLowerCase().includes(vw.toLowerCase()) || 
-                  vw.toLowerCase().includes(word.toLowerCase()))
-              );
-              // If most words match, consider it a match
-              if (matchingWords.length >= Math.min(mapKeyWords.length, valueWords.length) * 0.7) {
-                mappedCategory = mapValue;
-                break;
-              }
-            }
-          }
-        }
-      }
-      
+      const mappedCategory = findBestCategoryMatch(categoryValue);
       if (mappedCategory) {
         resolvedMiscCategory = mappedCategory;
       }
@@ -3510,8 +3687,8 @@ const SalesContributionPage = () => {
     if (!resolvedMiscCategory) {
       // Log for debugging - helps identify which categories are not being mapped
       if (categoryValue && categoryValue.trim() !== '') {
-        const normalizedValue = categoryValue.trim().toLowerCase();
-        const sampleMapKeys = Array.from(categoryNameToDataMap.keys()).slice(0, 10);
+        const normalizedValue = normalizeCategoryText(categoryValue);
+        const sampleMapKeys = Array.from(categoryNameToDataMap.keys()).slice(0, 20);
         console.warn('⚠️ Sales Contribution - Could not resolve category:', {
           categoryValue,
           normalizedValue,
@@ -3519,7 +3696,12 @@ const SalesContributionPage = () => {
           hasMiscCategory: !!hasMiscCategory,
           mapSize: categoryNameToDataMap.size,
           sampleMapKeys,
-          allCategoriesCount: allCategories.length
+          allCategoriesCount: allCategories.length,
+          // Show similar keys for debugging
+          similarKeys: Array.from(categoryNameToDataMap.keys()).filter(key => {
+            const normalizedKey = normalizeCategoryText(key);
+            return normalizedKey.includes(normalizedValue) || normalizedValue.includes(normalizedKey);
+          }).slice(0, 5)
         });
       }
       return 'Uncategorized';
@@ -3542,6 +3724,87 @@ const SalesContributionPage = () => {
 
     return mainCategory.name || 'Uncategorized';
   };
+
+  // Pre-process leads to ensure all categories are correctly mapped
+  const preprocessLeadsCategories = useCallback((leads: any[], isLegacy: boolean = false): any[] => {
+    if (!leads || leads.length === 0) return leads;
+    
+    // If categories aren't loaded yet, we can't preprocess - this should not happen if called correctly
+    if (!categoriesLoaded || (categoryNameToDataMap.size === 0 && allCategories.length === 0)) {
+      console.error('❌ Preprocessing called before categories loaded! This should not happen.', {
+        categoriesLoaded,
+        mapSize: categoryNameToDataMap.size,
+        allCategoriesCount: allCategories.length,
+        leadsCount: leads.length
+      });
+      // Still try to process with what we have - might work if categories are partially loaded
+    }
+
+    let resolvedCount = 0;
+    let unresolvedCount = 0;
+    const unresolvedCategories = new Set<string>();
+
+    const processedLeads = leads.map(lead => {
+      // If category is already correctly resolved via join, keep it
+      const existingMiscCategory = Array.isArray(lead.misc_category) 
+        ? (lead.misc_category.length > 0 ? lead.misc_category[0] : null)
+        : lead.misc_category;
+      
+      if (existingMiscCategory && existingMiscCategory.misc_maincategory) {
+        return lead; // Already has valid category
+      }
+
+      // Try to resolve category using text value
+      if (lead.category && typeof lead.category === 'string' && lead.category.trim() !== '') {
+        const resolvedCategory = findBestCategoryMatch(lead.category);
+        if (resolvedCategory) {
+          resolvedCount++;
+          // Update the lead with the resolved category
+          return {
+            ...lead,
+            misc_category: resolvedCategory,
+            category_id: resolvedCategory.id || lead.category_id
+          };
+        } else {
+          unresolvedCount++;
+          unresolvedCategories.add(lead.category);
+        }
+      }
+
+      // Try to resolve using category_id if available
+      if (lead.category_id && allCategories.length > 0) {
+        const categoryById = allCategories.find((cat: any) => cat.id.toString() === lead.category_id.toString());
+        if (categoryById) {
+          resolvedCount++;
+          return {
+            ...lead,
+            misc_category: categoryById
+          };
+        }
+      }
+
+      return lead;
+    });
+
+    // Debug logging
+    if (unresolvedCount > 0) {
+      console.warn('⚠️ Preprocessing - Some categories could not be resolved:', {
+        totalLeads: leads.length,
+        resolved: resolvedCount,
+        unresolved: unresolvedCount,
+        unresolvedCategories: Array.from(unresolvedCategories).slice(0, 10),
+        mapSize: categoryNameToDataMap.size,
+        allCategoriesCount: allCategories.length
+      });
+    } else if (resolvedCount > 0) {
+      console.log('✅ Preprocessing - All categories resolved:', {
+        totalLeads: leads.length,
+        resolved: resolvedCount
+      });
+    }
+
+    return processedLeads;
+  }, [allCategories, categoryNameToDataMap, findBestCategoryMatch]);
 
   // Process data for field view (grouped by main category)
   const processFieldViewDataRef = useRef<Promise<void> | null>(null);
@@ -4329,6 +4592,8 @@ const SalesContributionPage = () => {
               dueNormalized: fieldData.dueNormalized,
               signedPortion: signedPortion,
               salaryBudget: salaryBudget,
+              salaryBrutto: 0,
+              totalSalaryCost: 0,
               due: fieldData.due || 0, // Ensure we use the calculated due amount
               duePortion: 0,
               total: fieldData.signed,
@@ -4342,6 +4607,8 @@ const SalesContributionPage = () => {
               dueNormalized: fieldData.dueNormalized,
               signedPortion: signedPortion,
               salaryBudget: salaryBudget,
+              salaryBrutto: 0,
+              totalSalaryCost: 0,
               due: fieldData.due || 0, // Ensure we use the calculated due amount
               duePortion: 0,
               total: fieldData.signed,
@@ -4392,6 +4659,8 @@ const SalesContributionPage = () => {
             dueNormalized: generalFieldData.dueNormalized,
             signedPortion: generalFieldData.signedPortion,
             salaryBudget: generalSalaryBudget,
+            salaryBrutto: 0,
+            totalSalaryCost: 0,
             due: generalFieldData.due,
             duePortion: 0,
             total: generalFieldData.signed,
@@ -4405,6 +4674,8 @@ const SalesContributionPage = () => {
             dueNormalized: generalFieldData.dueNormalized,
             signedPortion: generalFieldData.signedPortion,
             salaryBudget: generalSalaryBudget,
+            salaryBrutto: 0,
+            totalSalaryCost: 0,
             due: generalFieldData.due,
             duePortion: 0,
             total: generalFieldData.signed,
@@ -4704,7 +4975,7 @@ const SalesContributionPage = () => {
 
   const renderTable = (deptData: DepartmentData, hideTitle?: boolean) => {
     const isFieldView = hideTitle === true;
-    const colSpanValue = isFieldView ? 7 : 8; // Updated for Signed Normalized and Due Normalized columns
+    const colSpanValue = isFieldView ? 9 : 10; // Updated for new salary columns
 
     return (
       <div key={deptData.departmentName} className="mb-8">
@@ -4721,6 +4992,8 @@ const SalesContributionPage = () => {
                 <th className="text-right w-[10%]">Due Normalized</th>
                 <th className="text-right w-[10%]">Contribution</th>
                 <th className="text-right w-[10%]">Salary Budget</th>
+                <th className="text-right w-[10%]">Salary (Brutto)</th>
+                <th className="text-right w-[10%]">Total Salary Cost</th>
               </tr>
             </thead>
             <tbody>
@@ -4774,7 +5047,38 @@ const SalesContributionPage = () => {
                         <td className="text-right w-[10%]">{formatCurrency(emp.signedNormalized || 0)}</td>
                         <td className="text-right w-[10%]">{formatCurrency(emp.dueNormalized || 0)}</td>
                         <td className="text-right w-[10%]">{formatCurrency(emp.signedPortion)}</td>
-                        <td className="text-right w-[10%]">{formatCurrency(emp.salaryBudget || 0)}</td>
+                        <td className="text-right w-[10%]">
+                          <div className="flex flex-col">
+                            <span>{formatCurrency(emp.salaryBudget || 0)}</span>
+                            <span className="text-xs text-gray-500">40%</span>
+                          </div>
+                        </td>
+                        <td className="text-right w-[10%]">
+                          <div className="flex flex-col">
+                            <span>{formatCurrency(emp.salaryBrutto || 0)}</span>
+                            {emp.signedPortion > 0 ? (
+                              <span className={`text-xs ${((emp.salaryBrutto || 0) - emp.signedPortion) / emp.signedPortion * 100 >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                                {((emp.salaryBrutto || 0) - emp.signedPortion) / emp.signedPortion * 100 >= 0 ? '+' : ''}
+                                {(((emp.salaryBrutto || 0) - emp.signedPortion) / emp.signedPortion * 100).toFixed(1)}%
+                              </span>
+                            ) : (
+                              <span className="text-xs text-gray-500">-</span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="text-right w-[10%]">
+                          <div className="flex flex-col">
+                            <span>{formatCurrency(emp.totalSalaryCost || 0)}</span>
+                            {emp.signedPortion > 0 ? (
+                              <span className={`text-xs ${((emp.totalSalaryCost || 0) - emp.signedPortion) / emp.signedPortion * 100 >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                                {((emp.totalSalaryCost || 0) - emp.signedPortion) / emp.signedPortion * 100 >= 0 ? '+' : ''}
+                                {(((emp.totalSalaryCost || 0) - emp.signedPortion) / emp.signedPortion * 100).toFixed(1)}%
+                              </span>
+                            ) : (
+                              <span className="text-xs text-gray-500">-</span>
+                            )}
+                          </div>
+                        </td>
                       </tr>
                       {isExpanded && (
                         <tr>
@@ -4934,7 +5238,38 @@ const SalesContributionPage = () => {
                 <td className="text-right w-[10%]"></td>
                 <td className="text-right w-[10%]"></td>
                 <td className="text-right w-[10%]">{formatCurrency(deptData.totals.signedPortion)}</td>
-                <td className="text-right w-[10%]">{formatCurrency(deptData.totals.salaryBudget || 0)}</td>
+                <td className="text-right w-[10%]">
+                  <div className="flex flex-col">
+                    <span>{formatCurrency(deptData.totals.salaryBudget || 0)}</span>
+                    <span className="text-xs text-gray-500">40%</span>
+                  </div>
+                </td>
+                <td className="text-right w-[10%]">
+                  <div className="flex flex-col">
+                    <span>{formatCurrency(deptData.totals.salaryBrutto || 0)}</span>
+                    {deptData.totals.signedPortion > 0 ? (
+                      <span className={`text-xs ${((deptData.totals.salaryBrutto || 0) - deptData.totals.signedPortion) / deptData.totals.signedPortion * 100 >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                        {((deptData.totals.salaryBrutto || 0) - deptData.totals.signedPortion) / deptData.totals.signedPortion * 100 >= 0 ? '+' : ''}
+                        {(((deptData.totals.salaryBrutto || 0) - deptData.totals.signedPortion) / deptData.totals.signedPortion * 100).toFixed(1)}%
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-500">-</span>
+                    )}
+                  </div>
+                </td>
+                <td className="text-right w-[10%]">
+                  <div className="flex flex-col">
+                    <span>{formatCurrency(deptData.totals.totalSalaryCost || 0)}</span>
+                    {deptData.totals.signedPortion > 0 ? (
+                      <span className={`text-xs ${((deptData.totals.totalSalaryCost || 0) - deptData.totals.signedPortion) / deptData.totals.signedPortion * 100 >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                        {((deptData.totals.totalSalaryCost || 0) - deptData.totals.signedPortion) / deptData.totals.signedPortion * 100 >= 0 ? '+' : ''}
+                        {(((deptData.totals.totalSalaryCost || 0) - deptData.totals.signedPortion) / deptData.totals.signedPortion * 100).toFixed(1)}%
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-500">-</span>
+                    )}
+                  </div>
+                </td>
               </tr>
             </tbody>
           </table>

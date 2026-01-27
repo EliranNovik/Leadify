@@ -472,8 +472,13 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
     // Apply handler, helper handler, and expert percentages to dueNormalized
     const duePortionNormalized = dueNormalized * (handlerPercentage + helperHandlerPercentage + expertPercentage);
 
-    // Step 6: Calculate contribution and salary budget
-    const contribution = signedPortionNormalized + duePortionNormalized;
+    // Step 6: Calculate base contribution (signed + due portions)
+    const baseContribution = signedPortionNormalized + duePortionNormalized;
+
+    // Step 7: Apply 35% to get final contribution amount
+    const contribution = baseContribution * 0.35;
+
+    // Step 8: Calculate salary budget (40% of final contribution)
     const salaryBudget = contribution * 0.4;
 
     // Step 7: Convert role combination map to array
