@@ -1,5 +1,5 @@
 import { convertToNIS } from '../lib/currencyConversion';
-import { calculateSignedPortionAmount } from './rolePercentageCalculator';
+import { calculateSignedPortionAmount, calculateSignedPortionPercentage } from './rolePercentageCalculator';
 
 export interface EmployeeCalculationInput {
     employeeId: number;
@@ -324,6 +324,9 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
 
     // Step 2: Calculate signed portion from all leads
     let totalSignedPortion = 0;
+    let debugNewLeadsCount = 0;
+    let debugNewLeadsWithRoles = 0;
+    let debugNewLeadsPortion = 0;
 
     // Process new leads for signed portion
     leads.newLeads.forEach((lead: any) => {
@@ -336,6 +339,7 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
 
         const isHandlerOnly = employeeRoles.length === 1 && employeeRoles[0] === 'Handler';
         if (employeeRoles.length > 0 && !isHandlerOnly) {
+            debugNewLeadsWithRoles++;
             const amountAfterFee = calculateNewLeadAmount(lead);
             const leadRoles = {
                 closer: lead.closer,
@@ -351,13 +355,33 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
                 leadRoles,
                 employeeId,
                 false,
-                rolePercentages
+                rolePercentages,
+                employeeName
             );
             totalSignedPortion += signedPortion;
+            debugNewLeadsPortion += signedPortion;
+
+            // Debug: Log if signedPortion is 0 but should have value
+            if (signedPortion === 0 && amountAfterFee > 0) {
+                const calculatedPercentage = calculateSignedPortionPercentage(leadRoles, employeeId, rolePercentages, employeeName);
+                console.warn(`⚠️ Zero signedPortion for new lead ${lead.id} (employee ${employeeId} ${employeeName}):`, {
+                    amountAfterFee,
+                    employeeRoles,
+                    leadRoles,
+                    calculatedPercentage,
+                    signedPortionShouldBe: amountAfterFee * calculatedPercentage,
+                    rolePercentages: rolePercentages ? Array.from(rolePercentages.entries()) : []
+                });
+            }
         }
+        debugNewLeadsCount++;
     });
 
     // Process legacy leads for signed portion
+    let debugLegacyLeadsCount = 0;
+    let debugLegacyLeadsWithRoles = 0;
+    let debugLegacyLeadsPortion = 0;
+
     leads.legacyLeads.forEach((lead: any) => {
         const employeeRoles: string[] = [];
         roles.forEach(role => {
@@ -368,6 +392,7 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
 
         const isHandlerOnly = employeeRoles.length === 1 && employeeRoles[0] === 'Handler';
         if (employeeRoles.length > 0 && !isHandlerOnly) {
+            debugLegacyLeadsWithRoles++;
             const amountAfterFee = calculateLegacyLeadAmount(lead);
             const leadRoles = {
                 closer_id: lead.closer_id,
@@ -383,10 +408,23 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
                 leadRoles,
                 employeeId,
                 true,
-                rolePercentages
+                rolePercentages,
+                employeeName
             );
             totalSignedPortion += signedPortion;
+            debugLegacyLeadsPortion += signedPortion;
+
+            // Debug: Log if signedPortion is 0 but should have value
+            if (signedPortion === 0 && amountAfterFee > 0) {
+                console.warn(`⚠️ Zero signedPortion for legacy lead ${lead.id} (employee ${employeeId}):`, {
+                    amountAfterFee,
+                    employeeRoles,
+                    leadRoles,
+                    rolePercentages: rolePercentages ? Array.from(rolePercentages.entries()) : []
+                });
+            }
         }
+        debugLegacyLeadsCount++;
     });
 
     // Step 3: Calculate totals from role combinations
@@ -446,6 +484,7 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
         signedPortionNormalized = signedNormalized * signedPortionPercentage;
     }
 
+
     // Due portion: Calculate percentage from dueNormalized (handler/helper handler roles + Expert exception)
     const handlerPercentage = rolePercentages && rolePercentages.has('HANDLER')
         ? (rolePercentages.get('HANDLER')! / 100)
@@ -477,6 +516,35 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
 
     // Step 7: Apply 35% to get final contribution amount
     const contribution = baseContribution * 0.35;
+
+    // Debug logging for employees with 0 contribution but should have data
+    if (contribution === 0 && (totalSigned > 0 || totalDue > 0)) {
+        console.warn(`⚠️ Zero contribution but has data for employee ${employeeId} (${employeeName}):`, {
+            totalSigned,
+            totalDue,
+            totalSignedPortion,
+            signedNormalized,
+            dueNormalized,
+            signedPortionNormalized,
+            duePortionNormalized,
+            baseContribution,
+            contribution,
+            newLeadsCount: debugNewLeadsCount,
+            newLeadsWithRoles: debugNewLeadsWithRoles,
+            newLeadsPortion: debugNewLeadsPortion,
+            legacyLeadsCount: debugLegacyLeadsCount,
+            legacyLeadsWithRoles: debugLegacyLeadsWithRoles,
+            legacyLeadsPortion: debugLegacyLeadsPortion,
+            rolePercentages: rolePercentages ? Array.from(rolePercentages.entries()) : [],
+            roleCombinationMapSize: roleCombinationMap.size,
+            roleCombinations: Array.from(roleCombinationMap.entries()).map(([key, data]) => ({
+                key,
+                roles: data.roles,
+                signedTotal: data.signedTotal,
+                dueTotal: data.dueTotal
+            }))
+        });
+    }
 
     // Step 8: Calculate salary budget (40% of final contribution)
     const salaryBudget = contribution * 0.4;

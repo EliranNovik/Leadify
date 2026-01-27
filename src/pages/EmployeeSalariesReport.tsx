@@ -648,21 +648,21 @@ const EmployeeSalariesReport = () => {
                                     }
                                 }
 
-                                // Gross salary: Try column-based extraction first (more reliable)
-                                // Based on PDF structure: gross salary is typically at index 4 or 5 from right
-                                const grossSalaryIndicesRight = [4, 5, 3, 6];
-                                for (const idx of grossSalaryIndicesRight) {
-                                    if (sortedByXRight.length > idx) {
-                                        const grossSalaryItem = sortedByXRight[idx];
-                                        const grossSalaryText = grossSalaryItem.text.trim().replace(/,/g, '');
-                                        const grossSalaryValue = parseFloat(grossSalaryText);
-                                        // Gross salary range: 1,000 to 200,000 NIS (reasonable range)
-                                        if (!isNaN(grossSalaryValue) && grossSalaryValue >= 1000 && grossSalaryValue <= 200000) {
-                                            grossSalary = grossSalaryValue;
-                                            if (pageNum === 1 || extractedData.length < 5) {
-                                                console.log(`   ✅ Found gross salary (column method) at index ${idx} (${idx + 1}th column from right): "${grossSalaryItem.text}" = ${grossSalary}`);
-                                            }
-                                            break;
+                                // Gross salary: Extract from second column from left (index 1 in sortedByXLeft)
+                                // Second column from left = index 1 (0-based, where 0 is first column)
+                                if (sortedByXLeft.length > 1) {
+                                    const grossSalaryItem = sortedByXLeft[1]; // Second column from left
+                                    const grossSalaryText = grossSalaryItem.text.trim().replace(/,/g, '');
+                                    const grossSalaryValue = parseFloat(grossSalaryText);
+                                    // Gross salary range: 1,000 to 200,000 NIS (reasonable range)
+                                    if (!isNaN(grossSalaryValue) && grossSalaryValue >= 1000 && grossSalaryValue <= 200000) {
+                                        grossSalary = grossSalaryValue;
+                                        if (pageNum === 1 || extractedData.length < 5) {
+                                            console.log(`   ✅ Found gross salary (2nd column from left) at index 1: "${grossSalaryItem.text}" = ${grossSalary}`);
+                                        }
+                                    } else {
+                                        if (pageNum === 1 || extractedData.length < 5) {
+                                            console.log(`   ⚠️ Gross salary at 2nd column from left: "${grossSalaryItem.text}" (parsed: ${grossSalaryValue}, valid: ${!isNaN(grossSalaryValue) && grossSalaryValue >= 1000 && grossSalaryValue <= 200000})`);
                                         }
                                     }
                                 }
@@ -687,26 +687,8 @@ const EmployeeSalariesReport = () => {
                                             }
                                         }
                                     }
-                                }
-
-                                if (grossSalary > 0 && (pageNum === 1 || extractedData.length < 5)) {
-                                    console.log(`   ✅ Found gross salary via pattern matching: ${grossSalary}`);
-                                }
-
-                                // Method 2: Try extracting from left-to-right sorted columns (if column method failed)
-                                if (grossSalary === 0 && sortedByXLeft.length > 4) {
-                                    // Gross salary is typically 5th column from right = (total - 4) from left
-                                    const grossSalaryIndexFromLeft = sortedByXLeft.length - 5;
-                                    if (grossSalaryIndexFromLeft >= 0) {
-                                        const grossSalaryItem = sortedByXLeft[grossSalaryIndexFromLeft];
-                                        const grossSalaryText = grossSalaryItem.text.trim().replace(/,/g, '');
-                                        const grossSalaryValue = parseFloat(grossSalaryText);
-                                        if (!isNaN(grossSalaryValue) && grossSalaryValue >= 1000 && grossSalaryValue <= 200000) {
-                                            grossSalary = grossSalaryValue;
-                                            if (pageNum === 1 || extractedData.length < 5) {
-                                                console.log(`   ✅ Found gross salary (LTR column method) at index ${grossSalaryIndexFromLeft} from left (5th from right): "${grossSalaryItem.text}" = ${grossSalary}`);
-                                            }
-                                        }
+                                    if (grossSalary > 0 && (pageNum === 1 || extractedData.length < 5)) {
+                                        console.log(`   ✅ Found gross salary via pattern matching (fallback): ${grossSalary}`);
                                     }
                                 }
 

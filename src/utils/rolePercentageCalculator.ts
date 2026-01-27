@@ -46,31 +46,42 @@ export type RolePercentagesMap = Map<string, number>;
  */
 const normalizeEmployeeId = (value: any, targetId: string | number): boolean => {
   if (value === null || value === undefined) return false;
-  
+
   const targetIdStr = String(targetId);
   const valueStr = String(value);
-  
+
   // Check if they match as strings
   if (valueStr === targetIdStr) return true;
-  
+
   // Check if they match as numbers
   const targetNum = Number(targetId);
   const valueNum = Number(value);
-  
+
   if (!isNaN(targetNum) && !isNaN(valueNum) && targetNum === valueNum) {
     return true;
   }
-  
+
   return false;
 };
 
 /**
  * Check if an employee has a specific role in a new lead
  */
-const hasRole = (lead: LeadRoles, employeeId: string | number, role: keyof LeadRoles): boolean => {
+const hasRole = (lead: LeadRoles, employeeId: string | number, role: keyof LeadRoles, employeeName?: string): boolean => {
   const roleValue = lead[role];
   if (roleValue === null || roleValue === undefined) return false;
-  return normalizeEmployeeId(roleValue, employeeId);
+
+  // First try ID matching
+  if (normalizeEmployeeId(roleValue, employeeId)) {
+    return true;
+  }
+
+  // If ID doesn't match and we have employeeName, try name matching
+  if (employeeName && typeof roleValue === 'string') {
+    return roleValue.toLowerCase() === employeeName.toLowerCase();
+  }
+
+  return false;
 };
 
 /**
@@ -88,12 +99,14 @@ const hasLegacyRole = (lead: LegacyLeadRoles, employeeId: number, role: keyof Le
  * @param lead - The lead with role assignments
  * @param employeeId - The employee ID to calculate for
  * @param rolePercentages - Map of role names to percentages (from database, 0-100), defaults to DEFAULT_ROLE_PERCENTAGES
+ * @param employeeName - Optional employee name for matching (used when roles are stored as names)
  * @returns The percentage (0 to 1) of the lead amount the employee should receive
  */
 export const calculateSignedPortionPercentage = (
   lead: LeadRoles,
   employeeId: string | number,
-  rolePercentages?: RolePercentagesMap
+  rolePercentages?: RolePercentagesMap,
+  employeeName?: string
 ): number => {
   let percentage = 0;
 
@@ -109,49 +122,55 @@ export const calculateSignedPortionPercentage = (
   };
 
   // Check if employee is Helper Closer (helper/meeting_lawyer_id)
-  const isHelperCloser = hasRole(lead, employeeId, 'helperCloser');
-  
+  const isHelperCloser = hasRole(lead, employeeId, 'helperCloser', employeeName);
+
   // Check if employee is Closer
-  const isCloser = hasRole(lead, employeeId, 'closer');
-  
+  const isCloser = hasRole(lead, employeeId, 'closer', employeeName);
+
   // Special case: If both Closer and Helper Closer exist on the lead
   // Check if there's a Helper Closer assigned (regardless of who it is)
   const hasHelperCloser = lead.helperCloser !== null && lead.helperCloser !== undefined;
-  
+
   if (isCloser) {
     if (hasHelperCloser) {
       // If Helper Closer exists, Closer gets CLOSER_WITH_HELPER percentage
-      percentage += getRolePercentage('CLOSER_WITH_HELPER');
+      const closerWithHelperPct = getRolePercentage('CLOSER_WITH_HELPER');
+      percentage += closerWithHelperPct;
     } else {
       // Normal case: Closer gets CLOSER percentage
-      percentage += getRolePercentage('CLOSER');
+      const closerPct = getRolePercentage('CLOSER');
+      percentage += closerPct;
     }
   }
-  
+
   if (isHelperCloser) {
     // Helper Closer always gets HELPER_CLOSER percentage when they exist
-    percentage += getRolePercentage('HELPER_CLOSER');
+    const helperCloserPct = getRolePercentage('HELPER_CLOSER');
+    percentage += helperCloserPct;
   }
-  
+
   // Check other roles (these are independent)
-  if (hasRole(lead, employeeId, 'scheduler')) {
-    percentage += getRolePercentage('SCHEDULER');
+  if (hasRole(lead, employeeId, 'scheduler', employeeName)) {
+    const schedulerPct = getRolePercentage('SCHEDULER');
+    percentage += schedulerPct;
   }
-  
-  if (hasRole(lead, employeeId, 'manager')) {
-    percentage += getRolePercentage('MANAGER');
+
+  if (hasRole(lead, employeeId, 'manager', employeeName)) {
+    const managerPct = getRolePercentage('MANAGER');
+    percentage += managerPct;
   }
-  
-  if (hasRole(lead, employeeId, 'expert')) {
-    percentage += getRolePercentage('EXPERT');
+
+  if (hasRole(lead, employeeId, 'expert', employeeName)) {
+    const expertPct = getRolePercentage('EXPERT');
+    percentage += expertPct;
   }
-  
+
   // Handler role percentage should NOT be included in signed portion calculation
   // Handler percentages are only applied to due normalized amounts
   // if (hasRole(lead, employeeId, 'handler')) {
   //   percentage += getRolePercentage('HANDLER');
   // }
-  
+
   return percentage;
 };
 
@@ -183,14 +202,14 @@ export const calculateLegacySignedPortionPercentage = (
 
   // Check if employee is Helper Closer (meeting_lawyer_id)
   const isHelperCloser = hasLegacyRole(lead, employeeId, 'meeting_lawyer_id');
-  
+
   // Check if employee is Closer
   const isCloser = hasLegacyRole(lead, employeeId, 'closer_id');
-  
+
   // Special case: If both Closer and Helper Closer exist on the lead
   // Check if there's a Helper Closer assigned (regardless of who it is)
   const hasHelperCloser = lead.meeting_lawyer_id !== null && lead.meeting_lawyer_id !== undefined;
-  
+
   if (isCloser) {
     if (hasHelperCloser) {
       // If Helper Closer exists, Closer gets CLOSER_WITH_HELPER percentage
@@ -200,31 +219,31 @@ export const calculateLegacySignedPortionPercentage = (
       percentage += getRolePercentage('CLOSER');
     }
   }
-  
+
   if (isHelperCloser) {
     // Helper Closer always gets HELPER_CLOSER percentage when they exist
     percentage += getRolePercentage('HELPER_CLOSER');
   }
-  
+
   // Check other roles (these are independent)
   if (hasLegacyRole(lead, employeeId, 'meeting_scheduler_id')) {
     percentage += getRolePercentage('SCHEDULER');
   }
-  
+
   if (hasLegacyRole(lead, employeeId, 'meeting_manager_id')) {
     percentage += getRolePercentage('MANAGER');
   }
-  
+
   if (hasLegacyRole(lead, employeeId, 'expert_id')) {
     percentage += getRolePercentage('EXPERT');
   }
-  
+
   // Handler role percentage should NOT be included in signed portion calculation
   // Handler percentages are only applied to due normalized amounts
   // if (hasLegacyRole(lead, employeeId, 'case_handler_id')) {
   //   percentage += getRolePercentage('HANDLER');
   // }
-  
+
   return percentage;
 };
 
@@ -236,6 +255,7 @@ export const calculateLegacySignedPortionPercentage = (
  * @param employeeId - The employee ID to calculate for
  * @param isLegacy - Whether this is a legacy lead
  * @param rolePercentages - Map of role names to percentages (from database, 0-100), defaults to DEFAULT_ROLE_PERCENTAGES
+ * @param employeeName - Optional employee name for matching (used when roles are stored as names)
  * @returns The amount (in NIS) the employee should receive from this lead
  */
 export const calculateSignedPortionAmount = (
@@ -243,11 +263,12 @@ export const calculateSignedPortionAmount = (
   lead: LeadRoles | LegacyLeadRoles,
   employeeId: string | number,
   isLegacy: boolean = false,
-  rolePercentages?: RolePercentagesMap
+  rolePercentages?: RolePercentagesMap,
+  employeeName?: string
 ): number => {
   const percentage = isLegacy
     ? calculateLegacySignedPortionPercentage(lead as LegacyLeadRoles, Number(employeeId), rolePercentages)
-    : calculateSignedPortionPercentage(lead as LeadRoles, employeeId, rolePercentages);
-  
+    : calculateSignedPortionPercentage(lead as LeadRoles, employeeId, rolePercentages, employeeName);
+
   return leadAmount * percentage;
 };
