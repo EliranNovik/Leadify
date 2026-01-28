@@ -1915,8 +1915,11 @@ const SalesContributionPage = () => {
       // Normalize due portion: apply due normalized percentage to duePortion
       const duePortionNormalized = duePortion * dueNormalizedPercentageValue;
 
-      // Calculate Contribution: combine normalized signed portion + normalized due portion
-      const contribution = signedPortionNormalized + duePortionNormalized;
+      // Calculate base contribution: combine normalized signed portion + normalized due portion
+      const baseContribution = signedPortionNormalized + duePortionNormalized;
+
+      // Apply 35% to get final contribution amount (consistent with salesContributionCalculator)
+      const contribution = baseContribution * 0.35;
 
       // Calculate Salary Budget from Contribution
       const salaryBudget = contribution * 0.4;
@@ -5071,8 +5074,10 @@ const SalesContributionPage = () => {
           <table className="table w-full min-w-[800px] md:min-w-0 md:table-fixed">
             <thead>
               <tr>
-                <th className={`${isFieldView ? 'w-[20%]' : 'w-[25%]'} text-[10px] md:text-sm whitespace-nowrap`}>{isFieldView ? 'Category' : 'Employee'}</th>
-                {!isFieldView && <th className="w-[15%] text-[10px] md:text-sm whitespace-nowrap">Department</th>}
+                <th className={`${isFieldView ? 'w-[20%]' : 'w-[20%]'} text-[10px] md:text-sm whitespace-nowrap`}>{isFieldView ? 'Category' : 'Employee'}</th>
+                {!isFieldView && <th className="w-[12%] min-w-[90px] text-[10px] md:text-sm px-2">
+                  <div className="whitespace-normal leading-tight">Department</div>
+                </th>}
                 <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Signed</th>
                 <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Due</th>
                 <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Signed Norm</th>
@@ -5080,7 +5085,7 @@ const SalesContributionPage = () => {
                 <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Contribution</th>
                 <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Salary Budget</th>
                 <th className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm whitespace-nowrap">
-                  Salary (Brutto)
+                  Salary (B)
                   {salaryFilter?.month && salaryFilter?.year && (
                     <div className="text-[9px] md:text-xs font-normal text-gray-500 mt-1">
                       {new Date(2000, (salaryFilter.month || 1) - 1, 1).toLocaleString('default', { month: 'short' })} {salaryFilter.year}
@@ -5088,7 +5093,7 @@ const SalesContributionPage = () => {
                   )}
                 </th>
                 <th className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm whitespace-nowrap">
-                  Total Salary Cost
+                  Total Cost
                   {salaryFilter?.month && salaryFilter?.year && (
                     <div className="text-[9px] md:text-xs font-normal text-gray-500 mt-1">
                       {new Date(2000, (salaryFilter.month || 1) - 1, 1).toLocaleString('default', { month: 'short' })} {salaryFilter.year}
@@ -5126,7 +5131,7 @@ const SalesContributionPage = () => {
                         className="cursor-pointer hover:bg-base-200"
                         onClick={() => toggleRowExpansion(emp.employeeId, emp.employeeName)}
                       >
-                        <td className={`${isFieldView ? 'w-[20%]' : 'w-[25%]'} text-[10px] md:text-sm whitespace-nowrap`}>
+                        <td className={`${isFieldView ? 'w-[20%]' : 'w-[20%]'} text-[10px] md:text-sm whitespace-nowrap`}>
                           <div className="flex items-center gap-1 md:gap-2">
                             {isExpanded ? (
                               <ChevronDownIcon className="w-3 h-3 md:w-4 md:h-4 text-gray-500 flex-shrink-0" />
@@ -5145,7 +5150,16 @@ const SalesContributionPage = () => {
                             <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{emp.employeeName}</span>
                           </div>
                         </td>
-                        {!isFieldView && <td className="w-[15%] text-[10px] md:text-sm whitespace-nowrap">{emp.department}</td>}
+                        {!isFieldView && <td className="w-[12%] min-w-[90px] text-[10px] md:text-sm px-2 align-top py-2">
+                          <div className="break-words leading-tight whitespace-normal" style={{
+                            wordBreak: 'break-word',
+                            maxWidth: '90px',
+                            lineHeight: '1.2',
+                            display: 'block'
+                          }}>
+                            {emp.department}
+                          </div>
+                        </td>}
                         <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.signed)}</td>
                         <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.due || 0)}</td>
                         <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.signedNormalized || 0)}</td>
