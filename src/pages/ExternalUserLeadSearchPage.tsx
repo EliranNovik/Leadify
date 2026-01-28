@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
+import LeadDetailsModal from '../components/LeadDetailsModal';
 
 // Static dropdown options - moved outside component to prevent re-creation on every render
 const REASON_OPTIONS = ["Inquiry", "Follow-up", "Complaint", "Consultation", "Other"];
@@ -871,7 +872,7 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
   );
 };
 
-const LeadSearchPage: React.FC = () => {
+const ExternalUserLeadSearchPage: React.FC = () => {
   // Initialize filters with current date - ensure no persistent state interferes
   const todayStr = new Date().toISOString().split('T')[0];
   
@@ -940,55 +941,56 @@ const LeadSearchPage: React.FC = () => {
   const [selectedColumns, setSelectedColumns] = useState<string[]>(['name', 'lead_number', 'email', 'phone', 'stage', 'source', 'created_at']);
   const [showColumnSelector, setShowColumnSelector] = useState(false);
   const navigate = useNavigate();
+  const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
-  // Handle lead click navigation
+  // Handle lead click - open modal instead of navigating (for external users)
   const handleLeadClick = (lead: Lead | string, event?: React.MouseEvent) => {
     // Handle both string (legacy) and Lead object (new)
-    let leadNumber: string;
-    let manualId: string | null = null;
-    let leadType: 'new' | 'legacy' | undefined;
+    let leadObj: Lead;
     
     if (typeof lead === 'string') {
-      // Legacy: just a lead number string
-      leadNumber = lead;
+      // Legacy: create a minimal lead object from string
+      leadObj = {
+        id: lead,
+        lead_number: lead,
+        name: '',
+        created_at: new Date().toISOString(),
+      } as Lead;
     } else {
-      // New: full lead object
-      const anyLead = lead as any;
-      leadNumber = anyLead.display_lead_number || anyLead.lead_number || lead.id?.toString() || '';
-      manualId = anyLead.manual_id || null;
-      leadType = anyLead.lead_type;
+      // New: use the full lead object
+      leadObj = lead;
     }
     
-    if (!leadNumber) return;
-    
-    // Check if it's a sublead (contains '/')
-    const isSubLead = leadNumber.includes('/');
-    
-    // Build the URL using the same logic as Clients.tsx buildClientRoute
-    let path = '';
-    
-    if (isSubLead && manualId) {
-      // Sublead with manual_id: use query parameter format like /clients/2104625?lead=L210764%2F3
-      // This matches the format used by Clients.tsx buildClientRoute
-      path = `/clients/${encodeURIComponent(manualId)}?lead=${encodeURIComponent(leadNumber)}`;
-    } else if (isSubLead && !manualId && leadType === 'new') {
-      // New lead sublead without manual_id: extract base from display_lead_number
-      // For new leads, manual_id might be the same as the base lead_number
-      const baseNumber = leadNumber.split('/')[0];
-      path = `/clients/${encodeURIComponent(baseNumber)}?lead=${encodeURIComponent(leadNumber)}`;
-    } else {
-      // Regular lead: use manual_id if available, otherwise use lead_number
-      const identifier = manualId || leadNumber;
-      path = `/clients/${encodeURIComponent(identifier)}`;
-    }
-    
+    // If Cmd/Ctrl is pressed, open in new tab (original behavior)
     if (event && (event.metaKey || event.ctrlKey)) {
-      // Open in new tab if Cmd (Mac) or Ctrl (Windows/Linux) is pressed
+      const anyLead = leadObj as any;
+      const leadNumber = anyLead.display_lead_number || anyLead.lead_number || leadObj.id?.toString() || '';
+      const manualId = anyLead.manual_id || null;
+      const leadType = anyLead.lead_type;
+      
+      if (!leadNumber) return;
+      
+      const isSubLead = leadNumber.includes('/');
+      let path = '';
+      
+      if (isSubLead && manualId) {
+        path = `/clients/${encodeURIComponent(manualId)}?lead=${encodeURIComponent(leadNumber)}`;
+      } else if (isSubLead && !manualId && leadType === 'new') {
+        const baseNumber = leadNumber.split('/')[0];
+        path = `/clients/${encodeURIComponent(baseNumber)}?lead=${encodeURIComponent(leadNumber)}`;
+      } else {
+        const identifier = manualId || leadNumber;
+        path = `/clients/${encodeURIComponent(identifier)}`;
+      }
+      
       window.open(path, '_blank');
-    } else {
-      // Navigate using React Router
-      navigate(path);
+      return;
     }
+    
+    // Otherwise, open modal
+    setSelectedLead(leadObj);
+    setIsModalOpen(true);
   };
 
   // Clear any old persistent storage that might interfere with filters
@@ -4042,8 +4044,18 @@ const LeadSearchPage: React.FC = () => {
           )}
         </div>
       )}
+
+      {/* Lead Details Modal */}
+      <LeadDetailsModal
+        lead={selectedLead}
+        isOpen={isModalOpen}
+        onClose={() => {
+          setIsModalOpen(false);
+          setSelectedLead(null);
+        }}
+      />
     </div>
   );
 };
 
-export default LeadSearchPage; 
+export default ExternalUserLeadSearchPage; 

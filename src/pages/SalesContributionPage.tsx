@@ -6,6 +6,8 @@ import { convertToNIS } from '../lib/currencyConversion';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 import { ChevronDownIcon, ChevronRightIcon, EyeIcon, ChartBarIcon, UserGroupIcon, BuildingOfficeIcon, SpeakerWaveIcon, CurrencyDollarIcon, PencilIcon, CheckIcon, XMarkIcon, GlobeAltIcon, FlagIcon, BriefcaseIcon, HomeIcon, AcademicCapIcon, RocketLaunchIcon, MapPinIcon, DocumentTextIcon, ScaleIcon, ShieldCheckIcon, BanknotesIcon, CogIcon, HeartIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, UsersIcon, Squares2X2Icon } from '@heroicons/react/24/outline';
 import EmployeeRoleLeadsModal from '../components/EmployeeRoleLeadsModal';
+import DynamicIsland from '../components/DynamicIsland';
+import DynamicTab from '../components/DynamicTab';
 import { calculateSignedPortionAmount } from '../utils/rolePercentageCalculator';
 import {
   calculateEmployeeMetrics,
@@ -27,6 +29,7 @@ interface EmployeeData {
   salaryBudget: number;
   salaryBrutto: number;
   totalSalaryCost: number;
+  maxIncentives: number;
   due: number;
   duePortion: number;
   total: number;
@@ -46,6 +49,7 @@ interface DepartmentData {
     salaryBudget: number;
     salaryBrutto: number;
     totalSalaryCost: number;
+    maxIncentives: number;
     due: number;
     duePortion: number;
     total: number;
@@ -117,7 +121,7 @@ const SalesContributionPage = () => {
   // Role percentage settings
   const [rolePercentages, setRolePercentages] = useState<Map<string, number>>(new Map());
   const [tempRolePercentages, setTempRolePercentages] = useState<Map<string, string>>(new Map());
-  const [showRolePercentagesModal, setShowRolePercentagesModal] = useState(false);
+  const [isDynamicIslandOpen, setIsDynamicIslandOpen] = useState(false);
   const [savingRolePercentages, setSavingRolePercentages] = useState(false);
   const [loadingRolePercentages, setLoadingRolePercentages] = useState(false);
 
@@ -340,7 +344,6 @@ const SalesContributionPage = () => {
       }
 
       toast.success('Role percentages saved successfully');
-      setShowRolePercentagesModal(false);
     } catch (error: any) {
       console.error('Error saving role percentages:', error);
       toast.error(error.message || 'Failed to save role percentages');
@@ -559,7 +562,7 @@ const SalesContributionPage = () => {
 
   // Update tempRolePercentages when rolePercentages changes and modal is open
   useEffect(() => {
-    if (showRolePercentagesModal && rolePercentages.size > 0) {
+    if (isDynamicIslandOpen && rolePercentages.size > 0) {
       const tempMap = new Map<string, string>();
       rolePercentages.forEach((value, key) => {
         tempMap.set(key, value.toString());
@@ -573,7 +576,7 @@ const SalesContributionPage = () => {
       });
       setTempRolePercentages(tempMap);
     }
-  }, [showRolePercentagesModal, rolePercentages]);
+  }, [isDynamicIslandOpen, rolePercentages]);
 
   const [totalSignedValue, setTotalSignedValue] = useState<number>(0);
   const totalSignedValueRef = useRef<number>(0);
@@ -2907,6 +2910,7 @@ const SalesContributionPage = () => {
           salaryBudget: 0,
           salaryBrutto: 0,
           totalSalaryCost: 0,
+          maxIncentives: 0,
           due: 0,
           duePortion: 0,
           total: 0,
@@ -2963,6 +2967,7 @@ const SalesContributionPage = () => {
               salaryBudget: 0,
               salaryBrutto: 0,
               totalSalaryCost: 0,
+              maxIncentives: 0,
               due: 0,
               duePortion: 0,
               total: 0,
@@ -2982,6 +2987,7 @@ const SalesContributionPage = () => {
         let deptSalaryBudget = 0;
         let deptSalaryBrutto = 0;
         let deptTotalSalaryCost = 0;
+        let deptMaxIncentives = 0;
         let deptDue = 0;
         let deptDuePortion = 0;
         let deptTotal = 0;
@@ -3002,6 +3008,12 @@ const SalesContributionPage = () => {
             empData.signed = totalSigned;
           }
 
+          // Calculate maxIncentives: salaryBudget - totalSalaryCost
+          // If either value is null/undefined, set to 0
+          const salaryBudget = empData.salaryBudget ?? 0;
+          const totalSalaryCost = empData.totalSalaryCost ?? 0;
+          empData.maxIncentives = salaryBudget - totalSalaryCost;
+
           // Portions are already calculated during processing based on role percentages
           // Calculate percent of income and normalized
           empData.percentOfIncome = globalTotal > 0 ? (empData.total / globalTotal) * 100 : 0;
@@ -3016,6 +3028,7 @@ const SalesContributionPage = () => {
           deptSalaryBudget += empData.salaryBudget || 0;
           deptSalaryBrutto += empData.salaryBrutto || 0;
           deptTotalSalaryCost += empData.totalSalaryCost || 0;
+          deptMaxIncentives += empData.maxIncentives ?? 0;
           deptDue += empData.due;
           deptDuePortion += empData.duePortion;
           deptTotal += empData.total;
@@ -3036,6 +3049,7 @@ const SalesContributionPage = () => {
             salaryBudget: deptSalaryBudget,
             salaryBrutto: deptSalaryBrutto,
             totalSalaryCost: deptTotalSalaryCost,
+            maxIncentives: deptMaxIncentives,
             due: deptDue,
             duePortion: deptDuePortion,
             total: deptTotal,
@@ -3524,6 +3538,11 @@ const SalesContributionPage = () => {
                     updatedEmp.dueNormalized = result.dueNormalized;
                     updatedEmp.signedPortion = result.contribution || 0; // Ensure contribution is set, default to 0 if undefined
                     updatedEmp.salaryBudget = result.salaryBudget || 0;
+                    // Calculate maxIncentives: salaryBudget - totalSalaryCost
+                    // If either value is null/undefined, set to 0
+                    const salaryBudget = updatedEmp.salaryBudget ?? 0;
+                    const totalSalaryCost = updatedEmp.totalSalaryCost ?? 0;
+                    updatedEmp.maxIncentives = salaryBudget - totalSalaryCost;
 
                     // Debug log if contribution is 0 but there should be data
                     if (result.contribution === 0 && (result.signed > 0 || result.due > 0)) {
@@ -3554,6 +3573,7 @@ const SalesContributionPage = () => {
                 const deptSalaryBudget = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBudget || 0), 0);
                 const deptSalaryBrutto = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBrutto || 0), 0);
                 const deptTotalSalaryCost = updatedEmployees.reduce((sum, emp) => sum + (emp.totalSalaryCost || 0), 0);
+                const deptMaxIncentives = updatedEmployees.reduce((sum, emp) => sum + (emp.maxIncentives ?? 0), 0);
 
                 updated.set(deptName, {
                   ...deptData,
@@ -3568,6 +3588,7 @@ const SalesContributionPage = () => {
                     salaryBudget: deptSalaryBudget,
                     salaryBrutto: deptSalaryBrutto,
                     totalSalaryCost: deptTotalSalaryCost,
+                    maxIncentives: deptMaxIncentives,
                   },
                 });
               });
@@ -4656,6 +4677,7 @@ const SalesContributionPage = () => {
                 salaryBudget: salaryBudget,
                 salaryBrutto: 0,
                 totalSalaryCost: 0,
+                maxIncentives: (salaryBudget ?? 0) - 0, // salaryBudget - totalSalaryCost (0 in field view)
                 due: fieldData.due || 0, // Ensure we use the calculated due amount
                 duePortion: 0,
                 total: fieldData.signed,
@@ -4671,6 +4693,7 @@ const SalesContributionPage = () => {
                 salaryBudget: salaryBudget,
                 salaryBrutto: 0,
                 totalSalaryCost: 0,
+                maxIncentives: (salaryBudget ?? 0) - 0, // salaryBudget - totalSalaryCost (0 in field view)
                 due: fieldData.due || 0, // Ensure we use the calculated due amount
                 duePortion: 0,
                 total: fieldData.signed,
@@ -4723,6 +4746,7 @@ const SalesContributionPage = () => {
               salaryBudget: generalSalaryBudget,
               salaryBrutto: 0,
               totalSalaryCost: 0,
+              maxIncentives: (generalSalaryBudget ?? 0) - 0, // salaryBudget - totalSalaryCost (0 in field view)
               due: generalFieldData.due,
               duePortion: 0,
               total: generalFieldData.signed,
@@ -4738,6 +4762,7 @@ const SalesContributionPage = () => {
               salaryBudget: generalSalaryBudget,
               salaryBrutto: 0,
               totalSalaryCost: 0,
+              maxIncentives: (generalSalaryBudget ?? 0) - 0, // salaryBudget - totalSalaryCost (0 in field view)
               due: generalFieldData.due,
               duePortion: 0,
               total: generalFieldData.signed,
@@ -5037,7 +5062,7 @@ const SalesContributionPage = () => {
 
   const renderTable = (deptData: DepartmentData, hideTitle?: boolean) => {
     const isFieldView = hideTitle === true;
-    const colSpanValue = isFieldView ? 9 : 10; // Updated for new salary columns
+    const colSpanValue = isFieldView ? 10 : 11; // Updated for Max Incentives column
 
     return (
       <div key={deptData.departmentName} className="mb-8">
@@ -5070,6 +5095,7 @@ const SalesContributionPage = () => {
                     </div>
                   )}
                 </th>
+                <th className="text-right w-[10%]">Max Incentives</th>
               </tr>
             </thead>
             <tbody>
@@ -5133,9 +5159,8 @@ const SalesContributionPage = () => {
                           <div className="flex flex-col">
                             <span>{formatCurrency(emp.salaryBrutto || 0)}</span>
                             {emp.signedPortion > 0 ? (
-                              <span className={`text-xs ${((emp.salaryBrutto || 0) - emp.signedPortion) / emp.signedPortion * 100 >= 0 ? 'text-red-500' : 'text-green-500'}`}>
-                                {((emp.salaryBrutto || 0) - emp.signedPortion) / emp.signedPortion * 100 >= 0 ? '+' : ''}
-                                {(((emp.salaryBrutto || 0) - emp.signedPortion) / emp.signedPortion * 100).toFixed(1)}%
+                              <span className={`text-xs ${((emp.salaryBrutto || 0) / emp.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                                {((emp.salaryBrutto || 0) / emp.signedPortion * 100).toFixed(1)}%
                               </span>
                             ) : (
                               <span className="text-xs text-gray-500">-</span>
@@ -5146,14 +5171,18 @@ const SalesContributionPage = () => {
                           <div className="flex flex-col">
                             <span>{formatCurrency(emp.totalSalaryCost || 0)}</span>
                             {emp.signedPortion > 0 ? (
-                              <span className={`text-xs ${((emp.totalSalaryCost || 0) - emp.signedPortion) / emp.signedPortion * 100 >= 0 ? 'text-red-500' : 'text-green-500'}`}>
-                                {((emp.totalSalaryCost || 0) - emp.signedPortion) / emp.signedPortion * 100 >= 0 ? '+' : ''}
-                                {(((emp.totalSalaryCost || 0) - emp.signedPortion) / emp.signedPortion * 100).toFixed(1)}%
+                              <span className={`text-xs ${((emp.totalSalaryCost || 0) / emp.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                                {((emp.totalSalaryCost || 0) / emp.signedPortion * 100).toFixed(1)}%
                               </span>
                             ) : (
                               <span className="text-xs text-gray-500">-</span>
                             )}
                           </div>
+                        </td>
+                        <td className="text-right w-[10%]">
+                          <span className={(emp.maxIncentives ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}>
+                            {formatCurrency(emp.maxIncentives ?? 0)}
+                          </span>
                         </td>
                       </tr>
                       {isExpanded && (
@@ -5324,9 +5353,8 @@ const SalesContributionPage = () => {
                   <div className="flex flex-col">
                     <span>{formatCurrency(deptData.totals.salaryBrutto || 0)}</span>
                     {deptData.totals.signedPortion > 0 ? (
-                      <span className={`text-xs ${((deptData.totals.salaryBrutto || 0) - deptData.totals.signedPortion) / deptData.totals.signedPortion * 100 >= 0 ? 'text-red-500' : 'text-green-500'}`}>
-                        {((deptData.totals.salaryBrutto || 0) - deptData.totals.signedPortion) / deptData.totals.signedPortion * 100 >= 0 ? '+' : ''}
-                        {(((deptData.totals.salaryBrutto || 0) - deptData.totals.signedPortion) / deptData.totals.signedPortion * 100).toFixed(1)}%
+                      <span className={`text-xs ${((deptData.totals.salaryBrutto || 0) / deptData.totals.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                        {((deptData.totals.salaryBrutto || 0) / deptData.totals.signedPortion * 100).toFixed(1)}%
                       </span>
                     ) : (
                       <span className="text-xs text-gray-500">-</span>
@@ -5337,14 +5365,18 @@ const SalesContributionPage = () => {
                   <div className="flex flex-col">
                     <span>{formatCurrency(deptData.totals.totalSalaryCost || 0)}</span>
                     {deptData.totals.signedPortion > 0 ? (
-                      <span className={`text-xs ${((deptData.totals.totalSalaryCost || 0) - deptData.totals.signedPortion) / deptData.totals.signedPortion * 100 >= 0 ? 'text-red-500' : 'text-green-500'}`}>
-                        {((deptData.totals.totalSalaryCost || 0) - deptData.totals.signedPortion) / deptData.totals.signedPortion * 100 >= 0 ? '+' : ''}
-                        {(((deptData.totals.totalSalaryCost || 0) - deptData.totals.signedPortion) / deptData.totals.signedPortion * 100).toFixed(1)}%
+                      <span className={`text-xs ${((deptData.totals.totalSalaryCost || 0) / deptData.totals.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                        {((deptData.totals.totalSalaryCost || 0) / deptData.totals.signedPortion * 100).toFixed(1)}%
                       </span>
                     ) : (
                       <span className="text-xs text-gray-500">-</span>
                     )}
                   </div>
+                </td>
+                <td className="text-right w-[10%]">
+                  <span className={(deptData.totals.maxIncentives ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}>
+                    {formatCurrency(deptData.totals.maxIncentives ?? 0)}
+                  </span>
                 </td>
               </tr>
             </tbody>
@@ -5381,101 +5413,18 @@ const SalesContributionPage = () => {
               </span>
             </div>
           </div>
-          <div className="flex flex-col md:flex-row gap-4">
-            {/* Income Input */}
-            <div className="flex items-center gap-2">
-              <label className="text-sm font-medium whitespace-nowrap">Income:</label>
-              <input
-                type="text"
-                className="input input-bordered w-32 md:w-40"
-                value={totalIncome !== null && totalIncome !== undefined && totalIncome > 0
-                  ? totalIncome.toLocaleString('en-US')
-                  : ''}
-                onChange={(e) => {
-                  // Remove all non-digit characters (except decimal point if needed, but we'll keep it simple for integers)
-                  const rawValue = e.target.value.replace(/[^\d]/g, '');
-                  if (rawValue === '') {
-                    setTotalIncome(0);
-                  } else {
-                    const numValue = parseFloat(rawValue);
-                    if (!isNaN(numValue) && numValue >= 0) {
-                      setTotalIncome(numValue);
-                    }
-                  }
-                }}
-                onBlur={(e) => {
-                  // Ensure the value is formatted on blur
-                  if (totalIncome && totalIncome > 0) {
-                    e.target.value = totalIncome.toLocaleString('en-US');
-                  }
-                }}
-                onFocus={(e) => {
-                  // Show raw number when focused for easier editing
-                  if (totalIncome && totalIncome > 0) {
-                    e.target.value = totalIncome.toString();
-                  }
-                }}
-                placeholder="Enter income amount"
-              />
-              <span className="text-sm text-gray-600">₪</span>
-            </div>
-            {/* Due Normalized Percentage Input */}
-            <div className="flex items-center gap-2">
-              <label className="text-sm font-medium whitespace-nowrap">Due Normalized %:</label>
-              <input
-                type="number"
-                min="0"
-                max="100"
-                step="0.01"
-                className="input input-bordered w-24 md:w-28 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                value={dueNormalizedPercentage !== null && dueNormalizedPercentage !== undefined
-                  ? dueNormalizedPercentage.toString()
-                  : ''}
-                onChange={(e) => {
-                  const rawValue = e.target.value;
-                  if (rawValue === '') {
-                    setDueNormalizedPercentage(0);
-                  } else {
-                    const numValue = parseFloat(rawValue);
-                    if (!isNaN(numValue) && numValue >= 0 && numValue <= 100) {
-                      setDueNormalizedPercentage(numValue);
-                    }
-                  }
-                }}
-                placeholder="0.00"
-              />
-              <span className="text-sm text-gray-600">%</span>
-              <button
-                onClick={saveSettings}
-                disabled={savingSettings}
-                className="btn btn-primary btn-sm gap-2"
-                title="Save income and percentages"
-              >
-                {savingSettings ? (
-                  <>
-                    <span className="loading loading-spinner loading-xs"></span>
-                    Saving...
-                  </>
-                ) : (
-                  <>
-                    <CheckIcon className="w-4 h-4" />
-                    Save
-                  </>
-                )}
-              </button>
-              <button
-                onClick={async () => {
-                  // Always fetch latest values when opening modal
-                  await fetchRolePercentages();
-                  setShowRolePercentagesModal(true);
-                }}
-                className="btn btn-outline btn-sm gap-2"
-                title="Configure role percentages"
-              >
-                <ChartBarIcon className="w-4 h-4" />
-                Role %
-              </button>
-            </div>
+          <div className="flex flex-col md:flex-row gap-4 items-center">
+            <button
+              onClick={async () => {
+                await fetchRolePercentages();
+                setIsDynamicIslandOpen(true);
+              }}
+              className="btn btn-primary btn-sm gap-2"
+              title="Open Dynamic Island"
+            >
+              <Squares2X2Icon className="w-4 h-4" />
+              Dynamic Island
+            </button>
             {/* Total Signed Value */}
             <div className="flex items-center gap-2">
               <label className="text-sm font-medium whitespace-nowrap">Total Signed:</label>
@@ -5491,153 +5440,49 @@ const SalesContributionPage = () => {
         </div>
       </div>
 
-      {/* Role Percentages Modal */}
-      {showRolePercentagesModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-base-100 rounded-lg shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="p-6">
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="text-2xl font-bold">Role Percentages Configuration</h3>
-                <button
-                  onClick={() => setShowRolePercentagesModal(false)}
-                  className="btn btn-ghost btn-sm btn-circle"
-                >
-                  <XMarkIcon className="w-5 h-5" />
-                </button>
-              </div>
+      {/* Dynamic Island Modal */}
+      <DynamicIsland
+        isOpen={isDynamicIslandOpen}
+        onClose={() => setIsDynamicIslandOpen(false)}
+        totalIncome={totalIncome}
+        setTotalIncome={setTotalIncome}
+        dueNormalizedPercentage={dueNormalizedPercentage}
+        setDueNormalizedPercentage={setDueNormalizedPercentage}
+        totalSignedValue={totalSignedValue}
+        loadingSignedValue={loadingSignedValue}
+        formatCurrency={formatCurrency}
+        rolePercentages={rolePercentages}
+        setRolePercentages={setRolePercentages}
+        tempRolePercentages={tempRolePercentages}
+        setTempRolePercentages={setTempRolePercentages}
+        onSaveSettings={saveSettings}
+        onSaveRolePercentages={saveRolePercentages}
+        savingSettings={savingSettings}
+        savingRolePercentages={savingRolePercentages}
+        loadingRolePercentages={loadingRolePercentages}
+        fetchRolePercentages={fetchRolePercentages}
+      />
 
-              <div className="space-y-4 mb-6">
-                <p className="text-sm text-gray-600 mb-4">
-                  Configure the percentage allocation for each role. Sales roles apply to signed amounts, Handler roles apply to due amounts. Expert appears in both sections but can only be edited in Handler section.
-                </p>
+      {/* Dynamic Tab - Fixed when scrolled */}
+      <DynamicTab
+        totalIncome={totalIncome}
+        setTotalIncome={setTotalIncome}
+        dueNormalizedPercentage={dueNormalizedPercentage}
+        setDueNormalizedPercentage={setDueNormalizedPercentage}
+        rolePercentages={rolePercentages}
+        setRolePercentages={setRolePercentages}
+        tempRolePercentages={tempRolePercentages}
+        setTempRolePercentages={setTempRolePercentages}
+        onSaveSettings={saveSettings}
+        onSaveRolePercentages={saveRolePercentages}
+        savingSettings={savingSettings}
+        savingRolePercentages={savingRolePercentages}
+        loadingRolePercentages={loadingRolePercentages}
+        fetchRolePercentages={fetchRolePercentages}
+        isDynamicIslandOpen={isDynamicIslandOpen}
+      />
 
-                {loadingRolePercentages ? (
-                  <div className="flex justify-center py-8">
-                    <span className="loading loading-spinner loading-lg"></span>
-                  </div>
-                ) : (
-                  <div className="space-y-6">
-                    {/* Sales Section */}
-                    <div>
-                      <h4 className="text-lg font-bold mb-3 text-primary">Sales</h4>
-                      <div className="space-y-3">
-                        {[
-                          { role: 'CLOSER', label: 'Closer', description: 'Percentage when Closer works alone (no Helper Closer)' },
-                          { role: 'CLOSER_WITH_HELPER', label: 'Closer (with Helper)', description: 'Percentage when Helper Closer also exists' },
-                          { role: 'HELPER_CLOSER', label: 'Helper Closer', description: 'Percentage when Helper Closer is assigned' },
-                          { role: 'SCHEDULER', label: 'Scheduler', description: 'Meeting Scheduler percentage' },
-                          { role: 'MANAGER', label: 'Meeting Manager', description: 'Meeting Manager percentage' },
-                          { role: 'EXPERT', label: 'Expert', description: 'Expert percentage (read-only - edit in Handler section)', readOnly: true },
-                        ].map(({ role, label, description, readOnly }) => (
-                          <div key={role} className="flex items-center gap-4 p-4 bg-base-200 rounded-lg">
-                            <div className="flex-1">
-                              <label className="font-semibold text-sm">{label}</label>
-                              <p className="text-xs text-gray-500 mt-1">{description}</p>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="number"
-                                min="0"
-                                max="100"
-                                step="0.01"
-                                className="input input-bordered w-24 text-right [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                                value={tempRolePercentages.get(role) || rolePercentages.get(role)?.toString() || '0'}
-                                onChange={(e) => {
-                                  if (!readOnly) {
-                                    const value = e.target.value;
-                                    setTempRolePercentages(prev => {
-                                      const updated = new Map(prev);
-                                      updated.set(role, value);
-                                      return updated;
-                                    });
-                                  }
-                                }}
-                                placeholder="0"
-                                disabled={readOnly}
-                                readOnly={readOnly}
-                              />
-                              <span className="text-sm font-medium">%</span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Handler Section */}
-                    <div>
-                      <h4 className="text-lg font-bold mb-3 text-secondary">Handler</h4>
-                      <div className="space-y-3">
-                        {[
-                          { role: 'HANDLER', label: 'Handler', description: 'Handler percentage applied to due amounts' },
-                          { role: 'HELPER_HANDLER', label: 'Helper Handler', description: 'Helper Handler percentage applied to due amounts' },
-                          { role: 'EXPERT', label: 'Expert', description: 'Expert percentage applied to due amounts (also applies to signed amounts)' },
-                          { role: 'DEPARTMENT_MANAGER', label: 'Department Manager', description: 'Department Manager percentage' },
-                        ].map(({ role, label, description }) => (
-                          <div key={role} className="flex items-center gap-4 p-4 bg-base-200 rounded-lg">
-                            <div className="flex-1">
-                              <label className="font-semibold text-sm">{label}</label>
-                              <p className="text-xs text-gray-500 mt-1">{description}</p>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="number"
-                                min="0"
-                                max="100"
-                                step="0.01"
-                                className="input input-bordered w-24 text-right [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                                value={tempRolePercentages.get(role) || rolePercentages.get(role)?.toString() || '0'}
-                                onChange={(e) => {
-                                  const value = e.target.value;
-                                  setTempRolePercentages(prev => {
-                                    const updated = new Map(prev);
-                                    updated.set(role, value);
-                                    return updated;
-                                  });
-                                }}
-                                placeholder="0"
-                              />
-                              <span className="text-sm font-medium">%</span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="flex justify-end gap-3 pt-4 border-t border-base-300">
-                <button
-                  onClick={() => setShowRolePercentagesModal(false)}
-                  className="btn btn-ghost"
-                  disabled={savingRolePercentages}
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={saveRolePercentages}
-                  disabled={savingRolePercentages || loadingRolePercentages}
-                  className="btn btn-primary gap-2"
-                >
-                  {savingRolePercentages ? (
-                    <>
-                      <span className="loading loading-spinner loading-sm"></span>
-                      Saving...
-                    </>
-                  ) : (
-                    <>
-                      <CheckIcon className="w-4 h-4" />
-                      Save Percentages
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="card bg-base-100 shadow-xl mb-6">
+      <div className="card bg-base-100 shadow-xl mb-6" data-filters-section>
         <div className="card-body">
           <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
             <div>

@@ -9,6 +9,8 @@ import UnavailableEmployeesModal from './UnavailableEmployeesModal';
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
 import { supabase, isAuthError, sessionManager, handleSessionExpiration } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
+import { useExternalUser } from '../hooks/useExternalUser';
+import ExternalUserDashboard from './ExternalUserDashboard';
 import { convertToNIS, calculateTotalRevenueInNIS, getCurrencySymbol } from '../lib/currencyConversion';
 import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceDot, ReferenceArea, BarChart, Bar, Legend as RechartsLegend, CartesianGrid } from 'recharts';
@@ -63,6 +65,7 @@ const MyAvailabilitySection: React.FC<{ onAvailabilityChange?: () => void; onOpe
 const Dashboard: React.FC = () => {
   // Get auth state from context to skip redundant checks
   const { user: authUser, isInitialized } = useAuthContext();
+  const { isExternalUser, isLoading: isLoadingExternal, userName: externalUserName } = useExternalUser();
 
   // State to track if auth check is complete (prevents flash of dashboard before redirect)
   // If user is already authenticated via context, skip the check
@@ -599,7 +602,7 @@ const Dashboard: React.FC = () => {
         // Group unavailabilities by type
         const sickDaysUnavailabilities = emp.unavailabilities.filter(u => u.unavailabilityType === 'sick_days');
         const vacationUnavailabilities = emp.unavailabilities.filter(u => u.unavailabilityType === 'vacation');
-        const generalUnavailabilities = emp.unavailabilities.filter(u => 
+        const generalUnavailabilities = emp.unavailabilities.filter(u =>
           !u.unavailabilityType || u.unavailabilityType === 'general'
         );
 
@@ -5975,6 +5978,22 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  // External user view - check after all hooks are called
+  if (isLoadingExternal) {
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center">
+        <div className="text-center">
+          <div className="loading loading-spinner loading-lg text-primary"></div>
+          <p className="mt-4 text-gray-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (isExternalUser) {
+    return <ExternalUserDashboard userName={externalUserName} />;
+  }
+
   return (
     <div className="p-0 md:p-6 space-y-8">
       {/* 1. Summary Boxes: 4 columns */}
@@ -7498,7 +7517,7 @@ const Dashboard: React.FC = () => {
       <div className="w-full mt-12">
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-6">
           {/* Team Availability Section */}
-          <div className="bg-white rounded-2xl shadow-lg border border-gray-200">
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden min-w-0">
             <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 px-6 py-4 border-b border-gray-200">
               <div className="flex items-center justify-between w-full lg:w-auto">
                 <div className="flex items-center gap-3">
@@ -7589,571 +7608,571 @@ const Dashboard: React.FC = () => {
                 <div className="loading loading-spinner loading-lg text-gray-600"></div>
               </div>
             ) : (groupedUnavailableData.sick_days.length > 0 || groupedUnavailableData.vacation.length > 0 || groupedUnavailableData.general.length > 0) ? (
-              <div className="px-6 pb-6 pt-6">
+              <div className="px-6 pb-6 pt-6 min-w-0 overflow-hidden">
                 {(() => {
                   const hasSickDays = groupedUnavailableData.sick_days.length > 0;
                   const hasVacation = groupedUnavailableData.vacation.length > 0;
                   const hasGeneral = groupedUnavailableData.general.length > 0;
-                  
+
                   return (
                     <div className="flex flex-col gap-6">
                       {/* Sick Days Row */}
                       {hasSickDays && (
-                        <div className="flex flex-col">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-4 px-2">Sick Days</h3>
-                    <div className="flex overflow-x-auto gap-4 pb-4 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
-                      {groupedUnavailableData.sick_days
-                        .filter((item) => {
-                          if (!departmentFilter.trim()) return true;
-                          return item.department?.toLowerCase().includes(departmentFilter.toLowerCase());
-                        })
-                        .map((item) => {
-                      const employeeInitials = item.employeeName
-                        .split(' ')
-                        .map((n: string) => n[0])
-                        .join('')
-                        .toUpperCase()
-                        .slice(0, 2);
+                        <div className="flex flex-col min-w-0">
+                          <h3 className="text-lg font-semibold text-gray-900 mb-4 px-2">Sick Days</h3>
+                          <div className="flex overflow-x-auto gap-4 pb-4 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 min-w-0">
+                            {groupedUnavailableData.sick_days
+                              .filter((item) => {
+                                if (!departmentFilter.trim()) return true;
+                                return item.department?.toLowerCase().includes(departmentFilter.toLowerCase());
+                              })
+                              .map((item) => {
+                                const employeeInitials = item.employeeName
+                                  .split(' ')
+                                  .map((n: string) => n[0])
+                                  .join('')
+                                  .toUpperCase()
+                                  .slice(0, 2);
 
-                      const roleInitials = item.role
-                        ? item.role
-                          .split(' ')
-                          .map((n: string) => n[0])
-                          .join('')
-                          .toUpperCase()
-                          .slice(0, 2)
-                        : '';
+                                const roleInitials = item.role
+                                  ? item.role
+                                    .split(' ')
+                                    .map((n: string) => n[0])
+                                    .join('')
+                                    .toUpperCase()
+                                    .slice(0, 2)
+                                  : '';
 
-                      return (
-                        <div
-                          key={item.id}
-                          className="relative overflow-hidden rounded-xl border-2 border-gray-300 bg-white min-h-[200px] w-[240px] flex-shrink-0 flex flex-col"
-                          style={{
-                            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
-                          }}
-                        >
-                          {/* Background Image with Overlay - Covers entire card including department area */}
-                          {item.photo && (
-                            <div
-                              className="absolute inset-0 bg-cover bg-center bg-no-repeat"
-                              style={{
-                                backgroundImage: `url(${item.photo})`
-                              }}
-                            >
-                              <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/70"></div>
-                            </div>
-                          )}
+                                return (
+                                  <div
+                                    key={item.id}
+                                    className="relative overflow-hidden rounded-xl border-2 border-gray-300 bg-white min-h-[200px] w-[240px] flex-shrink-0 flex flex-col"
+                                    style={{
+                                      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
+                                    }}
+                                  >
+                                    {/* Background Image with Overlay - Covers entire card including department area */}
+                                    {item.photo && (
+                                      <div
+                                        className="absolute inset-0 bg-cover bg-center bg-no-repeat"
+                                        style={{
+                                          backgroundImage: `url(${item.photo})`
+                                        }}
+                                      >
+                                        <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/70"></div>
+                                      </div>
+                                    )}
 
-                          {/* Employee Name and Department Box - Top of Card with glassy blur showing background image */}
-                          <div
-                            className={`relative z-30 w-full py-2 px-3 text-sm font-medium backdrop-blur-md flex items-center justify-between ${item.photo
-                              ? 'text-white bg-white/10 border-b border-white/20'
-                              : 'text-gray-900 bg-white/80 border-b border-gray-200/50'
-                              }`}
-                          >
-                            <span>{item.employeeName}</span>
-                            {item.department && (
-                              <span className="text-xs">{item.department}</span>
-                            )}
-                          </div>
+                                    {/* Employee Name and Department Box - Top of Card with glassy blur showing background image */}
+                                    <div
+                                      className={`relative z-30 w-full py-2 px-3 text-sm font-medium backdrop-blur-md flex items-center justify-between ${item.photo
+                                        ? 'text-white bg-white/10 border-b border-white/20'
+                                        : 'text-gray-900 bg-white/80 border-b border-gray-200/50'
+                                        }`}
+                                    >
+                                      <span>{item.employeeName}</span>
+                                      {item.department && (
+                                        <span className="text-xs">{item.department}</span>
+                                      )}
+                                    </div>
 
-                          {/* Content */}
-                          <div className={`relative z-10 p-3 flex flex-col h-full ${item.photo ? 'text-white' : 'text-gray-900'}`}>
-                            {/* Profile Image - Centered */}
-                            <div className="flex justify-center mb-2">
-                              {/* Profile Image or Initials Circle */}
-                              {item.photo_url ? (
-                                <img
-                                  src={item.photo_url}
-                                  alt={item.employeeName}
-                                  className="w-20 h-20 rounded-full object-cover shadow-lg"
-                                  onError={(e) => {
-                                    const target = e.target as HTMLImageElement;
-                                    const targetParent = target.parentElement;
-                                    if (targetParent) {
-                                      target.style.display = 'none';
-                                      const fallback = document.createElement('div');
-                                      fallback.className = `w-20 h-20 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`;
-                                      fallback.textContent = employeeInitials;
-                                      targetParent.insertBefore(fallback, target);
-                                    }
-                                  }}
-                                />
-                              ) : (
-                                <div className={`w-20 h-20 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`}>
-                                  {employeeInitials}
-                                </div>
-                              )}
-                            </div>
+                                    {/* Content */}
+                                    <div className={`relative z-10 p-3 flex flex-col h-full ${item.photo ? 'text-white' : 'text-gray-900'}`}>
+                                      {/* Profile Image - Centered */}
+                                      <div className="flex justify-center mb-2">
+                                        {/* Profile Image or Initials Circle */}
+                                        {item.photo_url ? (
+                                          <img
+                                            src={item.photo_url}
+                                            alt={item.employeeName}
+                                            className="w-20 h-20 rounded-full object-cover shadow-lg"
+                                            onError={(e) => {
+                                              const target = e.target as HTMLImageElement;
+                                              const targetParent = target.parentElement;
+                                              if (targetParent) {
+                                                target.style.display = 'none';
+                                                const fallback = document.createElement('div');
+                                                fallback.className = `w-20 h-20 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`;
+                                                fallback.textContent = employeeInitials;
+                                                targetParent.insertBefore(fallback, target);
+                                              }
+                                            }}
+                                          />
+                                        ) : (
+                                          <div className={`w-20 h-20 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`}>
+                                            {employeeInitials}
+                                          </div>
+                                        )}
+                                      </div>
 
-                            {/* Center: Time Range - Moved lower */}
-                            <div className="flex-1 text-center px-2 mb-3">
-                              {item.time && item.time !== 'All Day' && (
-                                <div className={`text-lg font-bold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
-                                  {item.time.includes(' - ')
-                                    ? item.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
-                                    : formatTimeString(item.time)}
-                                </div>
-                              )}
-                              {/* Date Range - only if it's a range */}
-                              {item.date && item.date.includes('to') && (
-                                <div className={`text-base font-bold mt-1 ${item.photo ? 'text-white' : 'text-gray-800'}`}>
-                                  {item.date}
-                                </div>
-                              )}
-                            </div>
+                                      {/* Center: Time Range - Moved lower */}
+                                      <div className="flex-1 text-center px-2 mb-3">
+                                        {item.time && item.time !== 'All Day' && (
+                                          <div className={`text-lg font-bold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
+                                            {item.time.includes(' - ')
+                                              ? item.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
+                                              : formatTimeString(item.time)}
+                                          </div>
+                                        )}
+                                        {/* Date Range - only if it's a range */}
+                                        {item.date && item.date.includes('to') && (
+                                          <div className={`text-base font-bold mt-1 ${item.photo ? 'text-white' : 'text-gray-800'}`}>
+                                            {item.date}
+                                          </div>
+                                        )}
+                                      </div>
 
-                            {/* Reason */}
-                            <div className={`border-t-2 pt-3 mt-auto ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
-                              {item.reason && (
-                                <div className={`text-sm text-center px-2 py-2.5 rounded-md min-h-[3rem] flex items-center justify-center ${item.photo ? 'text-white/90 bg-white/20' : 'text-gray-600 bg-gray-100'}`} title={item.reason}>
-                                  <span className="line-clamp-2 break-words">{item.reason}</span>
-                                </div>
-                              )}
-                            </div>
+                                      {/* Reason */}
+                                      <div className={`border-t-2 pt-3 mt-auto ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
+                                        {item.reason && (
+                                          <div className={`text-sm text-center px-2 py-2.5 rounded-md min-h-[3rem] flex items-center justify-center ${item.photo ? 'text-white/90 bg-white/20' : 'text-gray-600 bg-gray-100'}`} title={item.reason}>
+                                            <span className="line-clamp-2 break-words">{item.reason}</span>
+                                          </div>
+                                        )}
+                                      </div>
 
-                            {/* Collapsible Additional Unavailabilities - Only show if there are multiple */}
-                            {item.allUnavailabilities && item.allUnavailabilities.length > 1 && (
-                              <div className={`border-t-2 pt-2 mt-2 ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setExpandedEmployeeCards(prev => {
-                                      const newSet = new Set(prev);
-                                      if (newSet.has(item.employeeId)) {
-                                        newSet.delete(item.employeeId);
-                                      } else {
-                                        newSet.add(item.employeeId);
-                                      }
-                                      return newSet;
-                                    });
-                                  }}
-                                  className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${item.photo
-                                    ? 'text-white/90 bg-white/10 hover:bg-white/20'
-                                    : 'text-gray-700 bg-gray-100 hover:bg-gray-200'
-                                    }`}
-                                >
-                                  <span>
-                                    {(() => {
-                                      const moreCount = item.allUnavailabilities.length - 1;
-                                      const isExpanded = expandedEmployeeCards.has(item.employeeId);
+                                      {/* Collapsible Additional Unavailabilities - Only show if there are multiple */}
+                                      {item.allUnavailabilities && item.allUnavailabilities.length > 1 && (
+                                        <div className={`border-t-2 pt-2 mt-2 ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setExpandedEmployeeCards(prev => {
+                                                const newSet = new Set(prev);
+                                                if (newSet.has(item.employeeId)) {
+                                                  newSet.delete(item.employeeId);
+                                                } else {
+                                                  newSet.add(item.employeeId);
+                                                }
+                                                return newSet;
+                                              });
+                                            }}
+                                            className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${item.photo
+                                              ? 'text-white/90 bg-white/10 hover:bg-white/20'
+                                              : 'text-gray-700 bg-gray-100 hover:bg-gray-200'
+                                              }`}
+                                          >
+                                            <span>
+                                              {(() => {
+                                                const moreCount = item.allUnavailabilities.length - 1;
+                                                const isExpanded = expandedEmployeeCards.has(item.employeeId);
 
-                                      // When collapsed, only show count. When expanded, show nothing (or could show count, but items are visible)
-                                      if (isExpanded) {
-                                        return `${moreCount} more`;
-                                      }
-                                      return `${moreCount} more`;
-                                    })()}
-                                  </span>
-                                  {expandedEmployeeCards.has(item.employeeId) ? (
-                                    <ChevronUpIcon className="w-4 h-4" />
-                                  ) : (
-                                    <ChevronDownIcon className="w-4 h-4" />
-                                  )}
-                                </button>
+                                                // When collapsed, only show count. When expanded, show nothing (or could show count, but items are visible)
+                                                if (isExpanded) {
+                                                  return `${moreCount} more`;
+                                                }
+                                                return `${moreCount} more`;
+                                              })()}
+                                            </span>
+                                            {expandedEmployeeCards.has(item.employeeId) ? (
+                                              <ChevronUpIcon className="w-4 h-4" />
+                                            ) : (
+                                              <ChevronDownIcon className="w-4 h-4" />
+                                            )}
+                                          </button>
 
-                                {expandedEmployeeCards.has(item.employeeId) && (
-                                  <div className="mt-2 space-y-2">
-                                    {item.allUnavailabilities.slice(1).map((unav: any, idx: number) => {
-                                      // Format time to remove seconds if present
-                                      const formattedTime = unav.time && unav.time !== 'All Day' && unav.time.includes(':')
-                                        ? unav.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
-                                        : unav.time !== 'All Day' ? unav.time : null;
-                                      return (
-                                        <div
-                                          key={unav.id || idx}
-                                          className={`px-2 py-2 rounded-md text-xs ${item.photo
-                                            ? 'bg-white/10 text-white/90'
-                                            : 'bg-gray-50 text-gray-700'
-                                            }`}
-                                        >
-                                          {formattedTime && (
-                                            <div className={`font-semibold mb-1 ${item.photo ? 'text-white' : 'text-gray-900'}`}>
-                                              {formattedTime}
+                                          {expandedEmployeeCards.has(item.employeeId) && (
+                                            <div className="mt-2 space-y-2">
+                                              {item.allUnavailabilities.slice(1).map((unav: any, idx: number) => {
+                                                // Format time to remove seconds if present
+                                                const formattedTime = unav.time && unav.time !== 'All Day' && unav.time.includes(':')
+                                                  ? unav.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
+                                                  : unav.time !== 'All Day' ? unav.time : null;
+                                                return (
+                                                  <div
+                                                    key={unav.id || idx}
+                                                    className={`px-2 py-2 rounded-md text-xs ${item.photo
+                                                      ? 'bg-white/10 text-white/90'
+                                                      : 'bg-gray-50 text-gray-700'
+                                                      }`}
+                                                  >
+                                                    {formattedTime && (
+                                                      <div className={`font-semibold mb-1 ${item.photo ? 'text-white' : 'text-gray-900'}`}>
+                                                        {formattedTime}
+                                                      </div>
+                                                    )}
+                                                    <div className={`text-xs ${item.photo ? 'text-white/80' : 'text-gray-600'}`}>
+                                                      {unav.reason}
+                                                    </div>
+                                                  </div>
+                                                );
+                                              })}
                                             </div>
                                           )}
-                                          <div className={`text-xs ${item.photo ? 'text-white/80' : 'text-gray-600'}`}>
-                                            {unav.reason}
-                                          </div>
                                         </div>
-                                      );
-                                    })}
+                                      )}
+                                    </div>
                                   </div>
-                                )}
-                                  </div>
-                            )}
+                                );
+                              })}
                           </div>
                         </div>
-                      );
-                      })}
-                    </div>
-                      </div>
                       )}
 
                       {/* Vacation Row */}
                       {hasVacation && (
-                        <div className="flex flex-col">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-4 px-2">Vacation</h3>
-                    <div className="flex overflow-x-auto gap-4 pb-4 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
-                      {groupedUnavailableData.vacation
-                        .filter((item) => {
-                          if (!departmentFilter.trim()) return true;
-                          return item.department?.toLowerCase().includes(departmentFilter.toLowerCase());
-                        })
-                        .map((item) => {
-                          const employeeInitials = item.employeeName
-                            .split(' ')
-                            .map((n: string) => n[0])
-                            .join('')
-                            .toUpperCase()
-                            .slice(0, 2);
+                        <div className="flex flex-col min-w-0">
+                          <h3 className="text-lg font-semibold text-gray-900 mb-4 px-2">Vacation</h3>
+                          <div className="flex overflow-x-auto gap-4 pb-4 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 min-w-0">
+                            {groupedUnavailableData.vacation
+                              .filter((item) => {
+                                if (!departmentFilter.trim()) return true;
+                                return item.department?.toLowerCase().includes(departmentFilter.toLowerCase());
+                              })
+                              .map((item) => {
+                                const employeeInitials = item.employeeName
+                                  .split(' ')
+                                  .map((n: string) => n[0])
+                                  .join('')
+                                  .toUpperCase()
+                                  .slice(0, 2);
 
-                          const roleInitials = item.role
-                            ? item.role
-                              .split(' ')
-                              .map((n: string) => n[0])
-                              .join('')
-                              .toUpperCase()
-                              .slice(0, 2)
-                            : '';
+                                const roleInitials = item.role
+                                  ? item.role
+                                    .split(' ')
+                                    .map((n: string) => n[0])
+                                    .join('')
+                                    .toUpperCase()
+                                    .slice(0, 2)
+                                  : '';
 
-                          return (
-                            <div
-                              key={item.id}
-                              className="relative overflow-hidden rounded-xl border-2 border-gray-300 bg-white min-h-[200px] w-[240px] flex-shrink-0 flex flex-col"
-                              style={{
-                                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
-                              }}
-                            >
-                              {/* Background Image with Overlay */}
-                              {item.photo && (
-                                <div
-                                  className="absolute inset-0 bg-cover bg-center bg-no-repeat"
-                                  style={{
-                                    backgroundImage: `url(${item.photo})`
-                                  }}
-                                >
-                                  <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/70"></div>
-                                </div>
-                              )}
-
-                              {/* Employee Name and Department Box */}
-                              <div
-                                className={`relative z-30 w-full py-2 px-3 text-sm font-medium backdrop-blur-md flex items-center justify-between ${item.photo
-                                  ? 'text-white bg-white/10 border-b border-white/20'
-                                  : 'text-gray-900 bg-white/80 border-b border-gray-200/50'
-                                  }`}
-                              >
-                                <span>{item.employeeName}</span>
-                                {item.department && (
-                                  <span className="text-xs">{item.department}</span>
-                                )}
-                              </div>
-
-                              {/* Content */}
-                              <div className={`relative z-10 p-3 flex flex-col h-full ${item.photo ? 'text-white' : 'text-gray-900'}`}>
-                                {/* Profile Image - Centered */}
-                                <div className="flex justify-center mb-2">
-                                  {/* Profile Image or Initials Circle */}
-                                  {item.photo_url ? (
-                                    <img
-                                      src={item.photo_url}
-                                      alt={item.employeeName}
-                                      className="w-14 h-14 rounded-full object-cover shadow-lg"
-                                      onError={(e) => {
-                                        const target = e.target as HTMLImageElement;
-                                        const targetParent = target.parentElement;
-                                        if (targetParent) {
-                                          target.style.display = 'none';
-                                          const fallback = document.createElement('div');
-                                          fallback.className = `w-14 h-14 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-sm font-bold`;
-                                          fallback.textContent = employeeInitials;
-                                          targetParent.insertBefore(fallback, target);
-                                        }
-                                      }}
-                                    />
-                                  ) : (
-                                    <div className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-sm font-bold`}>
-                                      {employeeInitials}
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Time Range */}
-                                <div className="flex-1 text-center px-2 mb-3">
-                                  {item.time && item.time !== 'All Day' && (
-                                    <div className={`text-sm font-semibold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
-                                      {item.time.includes(' - ')
-                                        ? item.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
-                                        : formatTimeString(item.time)}
-                                    </div>
-                                  )}
-                                  {item.date && item.date.includes('to') && (
-                                    <div className={`text-xs font-medium mt-1 ${item.photo ? 'text-white/90' : 'text-gray-700'}`}>
-                                      {item.date}
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Reason */}
-                                <div className={`border-t-2 pt-3 mt-auto ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
-                                  {item.reason && (
-                                    <div className={`text-sm text-center px-2 py-2.5 rounded-md min-h-[3rem] flex items-center justify-center ${item.photo ? 'text-white/90 bg-white/20' : 'text-gray-600 bg-gray-100'}`} title={item.reason}>
-                                      <span className="line-clamp-2 break-words">{item.reason}</span>
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Collapsible Additional Unavailabilities */}
-                                {item.allUnavailabilities && item.allUnavailabilities.length > 1 && (
-                                  <div className={`border-t-2 pt-2 mt-2 ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setExpandedEmployeeCards(prev => {
-                                          const newSet = new Set(prev);
-                                          if (newSet.has(item.employeeId)) {
-                                            newSet.delete(item.employeeId);
-                                          } else {
-                                            newSet.add(item.employeeId);
-                                          }
-                                          return newSet;
-                                        });
-                                      }}
-                                      className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${item.photo
-                                        ? 'text-white/90 bg-white/10 hover:bg-white/20'
-                                        : 'text-gray-700 bg-gray-100 hover:bg-gray-200'
-                                        }`}
-                                    >
-                                      <span>
-                                        {(() => {
-                                          const moreCount = item.allUnavailabilities.length - 1;
-                                          return `${moreCount} more`;
-                                        })()}
-                                      </span>
-                                      {expandedEmployeeCards.has(item.employeeId) ? (
-                                        <ChevronUpIcon className="w-4 h-4" />
-                                      ) : (
-                                        <ChevronDownIcon className="w-4 h-4" />
-                                      )}
-                                    </button>
-
-                                    {expandedEmployeeCards.has(item.employeeId) && (
-                                      <div className="mt-2 space-y-2">
-                                        {item.allUnavailabilities.slice(1).map((unav: any, idx: number) => {
-                                          const formattedTime = unav.time && unav.time.includes(':')
-                                            ? unav.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
-                                            : unav.time;
-                                          return (
-                                            <div
-                                              key={unav.id || idx}
-                                              className={`px-2 py-2 rounded-md text-xs ${item.photo
-                                                ? 'bg-white/10 text-white/90'
-                                                : 'bg-gray-50 text-gray-700'
-                                                }`}
-                                            >
-                                              <div className={`font-semibold mb-1 ${item.photo ? 'text-white' : 'text-gray-900'}`}>
-                                                {formattedTime}
-                                              </div>
-                                              <div className={`text-xs ${item.photo ? 'text-white/80' : 'text-gray-600'}`}>
-                                                {unav.reason}
-                                              </div>
-                                            </div>
-                                          );
-                                        })}
+                                return (
+                                  <div
+                                    key={item.id}
+                                    className="relative overflow-hidden rounded-xl border-2 border-gray-300 bg-white min-h-[200px] w-[240px] flex-shrink-0 flex flex-col"
+                                    style={{
+                                      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
+                                    }}
+                                  >
+                                    {/* Background Image with Overlay */}
+                                    {item.photo && (
+                                      <div
+                                        className="absolute inset-0 bg-cover bg-center bg-no-repeat"
+                                        style={{
+                                          backgroundImage: `url(${item.photo})`
+                                        }}
+                                      >
+                                        <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/70"></div>
                                       </div>
                                     )}
+
+                                    {/* Employee Name and Department Box */}
+                                    <div
+                                      className={`relative z-30 w-full py-2 px-3 text-sm font-medium backdrop-blur-md flex items-center justify-between ${item.photo
+                                        ? 'text-white bg-white/10 border-b border-white/20'
+                                        : 'text-gray-900 bg-white/80 border-b border-gray-200/50'
+                                        }`}
+                                    >
+                                      <span>{item.employeeName}</span>
+                                      {item.department && (
+                                        <span className="text-xs">{item.department}</span>
+                                      )}
+                                    </div>
+
+                                    {/* Content */}
+                                    <div className={`relative z-10 p-3 flex flex-col h-full ${item.photo ? 'text-white' : 'text-gray-900'}`}>
+                                      {/* Profile Image - Centered */}
+                                      <div className="flex justify-center mb-2">
+                                        {/* Profile Image or Initials Circle */}
+                                        {item.photo_url ? (
+                                          <img
+                                            src={item.photo_url}
+                                            alt={item.employeeName}
+                                            className="w-14 h-14 rounded-full object-cover shadow-lg"
+                                            onError={(e) => {
+                                              const target = e.target as HTMLImageElement;
+                                              const targetParent = target.parentElement;
+                                              if (targetParent) {
+                                                target.style.display = 'none';
+                                                const fallback = document.createElement('div');
+                                                fallback.className = `w-14 h-14 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-sm font-bold`;
+                                                fallback.textContent = employeeInitials;
+                                                targetParent.insertBefore(fallback, target);
+                                              }
+                                            }}
+                                          />
+                                        ) : (
+                                          <div className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-sm font-bold`}>
+                                            {employeeInitials}
+                                          </div>
+                                        )}
+                                      </div>
+
+                                      {/* Time Range */}
+                                      <div className="flex-1 text-center px-2 mb-3">
+                                        {item.time && item.time !== 'All Day' && (
+                                          <div className={`text-sm font-semibold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
+                                            {item.time.includes(' - ')
+                                              ? item.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
+                                              : formatTimeString(item.time)}
+                                          </div>
+                                        )}
+                                        {item.date && item.date.includes('to') && (
+                                          <div className={`text-xs font-medium mt-1 ${item.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                                            {item.date}
+                                          </div>
+                                        )}
+                                      </div>
+
+                                      {/* Reason */}
+                                      <div className={`border-t-2 pt-3 mt-auto ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
+                                        {item.reason && (
+                                          <div className={`text-sm text-center px-2 py-2.5 rounded-md min-h-[3rem] flex items-center justify-center ${item.photo ? 'text-white/90 bg-white/20' : 'text-gray-600 bg-gray-100'}`} title={item.reason}>
+                                            <span className="line-clamp-2 break-words">{item.reason}</span>
+                                          </div>
+                                        )}
+                                      </div>
+
+                                      {/* Collapsible Additional Unavailabilities */}
+                                      {item.allUnavailabilities && item.allUnavailabilities.length > 1 && (
+                                        <div className={`border-t-2 pt-2 mt-2 ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setExpandedEmployeeCards(prev => {
+                                                const newSet = new Set(prev);
+                                                if (newSet.has(item.employeeId)) {
+                                                  newSet.delete(item.employeeId);
+                                                } else {
+                                                  newSet.add(item.employeeId);
+                                                }
+                                                return newSet;
+                                              });
+                                            }}
+                                            className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${item.photo
+                                              ? 'text-white/90 bg-white/10 hover:bg-white/20'
+                                              : 'text-gray-700 bg-gray-100 hover:bg-gray-200'
+                                              }`}
+                                          >
+                                            <span>
+                                              {(() => {
+                                                const moreCount = item.allUnavailabilities.length - 1;
+                                                return `${moreCount} more`;
+                                              })()}
+                                            </span>
+                                            {expandedEmployeeCards.has(item.employeeId) ? (
+                                              <ChevronUpIcon className="w-4 h-4" />
+                                            ) : (
+                                              <ChevronDownIcon className="w-4 h-4" />
+                                            )}
+                                          </button>
+
+                                          {expandedEmployeeCards.has(item.employeeId) && (
+                                            <div className="mt-2 space-y-2">
+                                              {item.allUnavailabilities.slice(1).map((unav: any, idx: number) => {
+                                                const formattedTime = unav.time && unav.time.includes(':')
+                                                  ? unav.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
+                                                  : unav.time;
+                                                return (
+                                                  <div
+                                                    key={unav.id || idx}
+                                                    className={`px-2 py-2 rounded-md text-xs ${item.photo
+                                                      ? 'bg-white/10 text-white/90'
+                                                      : 'bg-gray-50 text-gray-700'
+                                                      }`}
+                                                  >
+                                                    <div className={`font-semibold mb-1 ${item.photo ? 'text-white' : 'text-gray-900'}`}>
+                                                      {formattedTime}
+                                                    </div>
+                                                    <div className={`text-xs ${item.photo ? 'text-white/80' : 'text-gray-600'}`}>
+                                                      {unav.reason}
+                                                    </div>
+                                                  </div>
+                                                );
+                                              })}
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                    </div>
-                      </div>
+                                );
+                              })}
+                          </div>
+                        </div>
                       )}
 
                       {/* General Row */}
                       {hasGeneral && (
-                        <div className="flex flex-col">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-4 px-2">General</h3>
-                    <div className="flex overflow-x-auto gap-4 pb-4 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
-                      {groupedUnavailableData.general
-                        .filter((item) => {
-                          if (!departmentFilter.trim()) return true;
-                          return item.department?.toLowerCase().includes(departmentFilter.toLowerCase());
-                        })
-                        .map((item) => {
-                          const employeeInitials = item.employeeName
-                            .split(' ')
-                            .map((n: string) => n[0])
-                            .join('')
-                            .toUpperCase()
-                            .slice(0, 2);
+                        <div className="flex flex-col min-w-0">
+                          <h3 className="text-lg font-semibold text-gray-900 mb-4 px-2">General</h3>
+                          <div className="flex overflow-x-auto gap-4 pb-4 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 min-w-0">
+                            {groupedUnavailableData.general
+                              .filter((item) => {
+                                if (!departmentFilter.trim()) return true;
+                                return item.department?.toLowerCase().includes(departmentFilter.toLowerCase());
+                              })
+                              .map((item) => {
+                                const employeeInitials = item.employeeName
+                                  .split(' ')
+                                  .map((n: string) => n[0])
+                                  .join('')
+                                  .toUpperCase()
+                                  .slice(0, 2);
 
-                          const roleInitials = item.role
-                            ? item.role
-                              .split(' ')
-                              .map((n: string) => n[0])
-                              .join('')
-                              .toUpperCase()
-                              .slice(0, 2)
-                            : '';
+                                const roleInitials = item.role
+                                  ? item.role
+                                    .split(' ')
+                                    .map((n: string) => n[0])
+                                    .join('')
+                                    .toUpperCase()
+                                    .slice(0, 2)
+                                  : '';
 
-                          return (
-                            <div
-                              key={item.id}
-                              className="relative overflow-hidden rounded-xl border-2 border-gray-300 bg-white min-h-[200px] w-[240px] flex-shrink-0 flex flex-col"
-                              style={{
-                                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
-                              }}
-                            >
-                              {/* Background Image with Overlay */}
-                              {item.photo && (
-                                <div
-                                  className="absolute inset-0 bg-cover bg-center bg-no-repeat"
-                                  style={{
-                                    backgroundImage: `url(${item.photo})`
-                                  }}
-                                >
-                                  <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/70"></div>
-                                </div>
-                              )}
-
-                              {/* Employee Name and Department Box */}
-                              <div
-                                className={`relative z-30 w-full py-2 px-3 text-sm font-medium backdrop-blur-md flex items-center justify-between ${item.photo
-                                  ? 'text-white bg-white/10 border-b border-white/20'
-                                  : 'text-gray-900 bg-white/80 border-b border-gray-200/50'
-                                  }`}
-                              >
-                                <span>{item.employeeName}</span>
-                                {item.department && (
-                                  <span className="text-xs">{item.department}</span>
-                                )}
-                              </div>
-
-                              {/* Content */}
-                              <div className={`relative z-10 p-3 flex flex-col h-full ${item.photo ? 'text-white' : 'text-gray-900'}`}>
-                                {/* Profile Image - Centered */}
-                                <div className="flex justify-center mb-2">
-                                  {/* Profile Image or Initials Circle */}
-                                  {item.photo_url ? (
-                                    <img
-                                      src={item.photo_url}
-                                      alt={item.employeeName}
-                                      className="w-14 h-14 rounded-full object-cover shadow-lg"
-                                      onError={(e) => {
-                                        const target = e.target as HTMLImageElement;
-                                        const targetParent = target.parentElement;
-                                        if (targetParent) {
-                                          target.style.display = 'none';
-                                          const fallback = document.createElement('div');
-                                          fallback.className = `w-14 h-14 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-sm font-bold`;
-                                          fallback.textContent = employeeInitials;
-                                          targetParent.insertBefore(fallback, target);
-                                        }
-                                      }}
-                                    />
-                                  ) : (
-                                    <div className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-sm font-bold`}>
-                                      {employeeInitials}
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Time Range */}
-                                <div className="flex-1 text-center px-2 mb-3">
-                                  {item.time && item.time !== 'All Day' && (
-                                    <div className={`text-sm font-semibold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
-                                      {item.time.includes(' - ')
-                                        ? item.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
-                                        : formatTimeString(item.time)}
-                                    </div>
-                                  )}
-                                  {item.date && item.date.includes('to') && (
-                                    <div className={`text-xs font-medium mt-1 ${item.photo ? 'text-white/90' : 'text-gray-700'}`}>
-                                      {item.date}
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Reason */}
-                                <div className={`border-t-2 pt-3 mt-auto ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
-                                  {item.reason && (
-                                    <div className={`text-sm text-center px-2 py-2.5 rounded-md min-h-[3rem] flex items-center justify-center ${item.photo ? 'text-white/90 bg-white/20' : 'text-gray-600 bg-gray-100'}`} title={item.reason}>
-                                      <span className="line-clamp-2 break-words">{item.reason}</span>
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Collapsible Additional Unavailabilities */}
-                                {item.allUnavailabilities && item.allUnavailabilities.length > 1 && (
-                                  <div className={`border-t-2 pt-2 mt-2 ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setExpandedEmployeeCards(prev => {
-                                          const newSet = new Set(prev);
-                                          if (newSet.has(item.employeeId)) {
-                                            newSet.delete(item.employeeId);
-                                          } else {
-                                            newSet.add(item.employeeId);
-                                          }
-                                          return newSet;
-                                        });
-                                      }}
-                                      className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${item.photo
-                                        ? 'text-white/90 bg-white/10 hover:bg-white/20'
-                                        : 'text-gray-700 bg-gray-100 hover:bg-gray-200'
-                                        }`}
-                                    >
-                                      <span>
-                                        {(() => {
-                                          const moreCount = item.allUnavailabilities.length - 1;
-                                          return `${moreCount} more`;
-                                        })()}
-                                      </span>
-                                      {expandedEmployeeCards.has(item.employeeId) ? (
-                                        <ChevronUpIcon className="w-4 h-4" />
-                                      ) : (
-                                        <ChevronDownIcon className="w-4 h-4" />
-                                      )}
-                                    </button>
-
-                                    {expandedEmployeeCards.has(item.employeeId) && (
-                                      <div className="mt-2 space-y-2">
-                                        {item.allUnavailabilities.slice(1).map((unav: any, idx: number) => {
-                                          const formattedTime = unav.time && unav.time.includes(':')
-                                            ? unav.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
-                                            : unav.time;
-                                          return (
-                                            <div
-                                              key={unav.id || idx}
-                                              className={`px-2 py-2 rounded-md text-xs ${item.photo
-                                                ? 'bg-white/10 text-white/90'
-                                                : 'bg-gray-50 text-gray-700'
-                                                }`}
-                                            >
-                                              <div className={`font-semibold mb-1 ${item.photo ? 'text-white' : 'text-gray-900'}`}>
-                                                {formattedTime}
-                                              </div>
-                                              <div className={`text-xs ${item.photo ? 'text-white/80' : 'text-gray-600'}`}>
-                                                {unav.reason}
-                                              </div>
-                                            </div>
-                                          );
-                                        })}
+                                return (
+                                  <div
+                                    key={item.id}
+                                    className="relative overflow-hidden rounded-xl border-2 border-gray-300 bg-white min-h-[200px] w-[240px] flex-shrink-0 flex flex-col"
+                                    style={{
+                                      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
+                                    }}
+                                  >
+                                    {/* Background Image with Overlay */}
+                                    {item.photo && (
+                                      <div
+                                        className="absolute inset-0 bg-cover bg-center bg-no-repeat"
+                                        style={{
+                                          backgroundImage: `url(${item.photo})`
+                                        }}
+                                      >
+                                        <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/70"></div>
                                       </div>
                                     )}
+
+                                    {/* Employee Name and Department Box */}
+                                    <div
+                                      className={`relative z-30 w-full py-2 px-3 text-sm font-medium backdrop-blur-md flex items-center justify-between ${item.photo
+                                        ? 'text-white bg-white/10 border-b border-white/20'
+                                        : 'text-gray-900 bg-white/80 border-b border-gray-200/50'
+                                        }`}
+                                    >
+                                      <span>{item.employeeName}</span>
+                                      {item.department && (
+                                        <span className="text-xs">{item.department}</span>
+                                      )}
+                                    </div>
+
+                                    {/* Content */}
+                                    <div className={`relative z-10 p-3 flex flex-col h-full ${item.photo ? 'text-white' : 'text-gray-900'}`}>
+                                      {/* Profile Image - Centered */}
+                                      <div className="flex justify-center mb-2">
+                                        {/* Profile Image or Initials Circle */}
+                                        {item.photo_url ? (
+                                          <img
+                                            src={item.photo_url}
+                                            alt={item.employeeName}
+                                            className="w-14 h-14 rounded-full object-cover shadow-lg"
+                                            onError={(e) => {
+                                              const target = e.target as HTMLImageElement;
+                                              const targetParent = target.parentElement;
+                                              if (targetParent) {
+                                                target.style.display = 'none';
+                                                const fallback = document.createElement('div');
+                                                fallback.className = `w-14 h-14 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-sm font-bold`;
+                                                fallback.textContent = employeeInitials;
+                                                targetParent.insertBefore(fallback, target);
+                                              }
+                                            }}
+                                          />
+                                        ) : (
+                                          <div className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-sm font-bold`}>
+                                            {employeeInitials}
+                                          </div>
+                                        )}
+                                      </div>
+
+                                      {/* Time Range */}
+                                      <div className="flex-1 text-center px-2 mb-3">
+                                        {item.time && item.time !== 'All Day' && (
+                                          <div className={`text-sm font-semibold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
+                                            {item.time.includes(' - ')
+                                              ? item.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
+                                              : formatTimeString(item.time)}
+                                          </div>
+                                        )}
+                                        {item.date && item.date.includes('to') && (
+                                          <div className={`text-xs font-medium mt-1 ${item.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                                            {item.date}
+                                          </div>
+                                        )}
+                                      </div>
+
+                                      {/* Reason */}
+                                      <div className={`border-t-2 pt-3 mt-auto ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
+                                        {item.reason && (
+                                          <div className={`text-sm text-center px-2 py-2.5 rounded-md min-h-[3rem] flex items-center justify-center ${item.photo ? 'text-white/90 bg-white/20' : 'text-gray-600 bg-gray-100'}`} title={item.reason}>
+                                            <span className="line-clamp-2 break-words">{item.reason}</span>
+                                          </div>
+                                        )}
+                                      </div>
+
+                                      {/* Collapsible Additional Unavailabilities */}
+                                      {item.allUnavailabilities && item.allUnavailabilities.length > 1 && (
+                                        <div className={`border-t-2 pt-2 mt-2 ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setExpandedEmployeeCards(prev => {
+                                                const newSet = new Set(prev);
+                                                if (newSet.has(item.employeeId)) {
+                                                  newSet.delete(item.employeeId);
+                                                } else {
+                                                  newSet.add(item.employeeId);
+                                                }
+                                                return newSet;
+                                              });
+                                            }}
+                                            className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${item.photo
+                                              ? 'text-white/90 bg-white/10 hover:bg-white/20'
+                                              : 'text-gray-700 bg-gray-100 hover:bg-gray-200'
+                                              }`}
+                                          >
+                                            <span>
+                                              {(() => {
+                                                const moreCount = item.allUnavailabilities.length - 1;
+                                                return `${moreCount} more`;
+                                              })()}
+                                            </span>
+                                            {expandedEmployeeCards.has(item.employeeId) ? (
+                                              <ChevronUpIcon className="w-4 h-4" />
+                                            ) : (
+                                              <ChevronDownIcon className="w-4 h-4" />
+                                            )}
+                                          </button>
+
+                                          {expandedEmployeeCards.has(item.employeeId) && (
+                                            <div className="mt-2 space-y-2">
+                                              {item.allUnavailabilities.slice(1).map((unav: any, idx: number) => {
+                                                const formattedTime = unav.time && unav.time.includes(':')
+                                                  ? unav.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
+                                                  : unav.time;
+                                                return (
+                                                  <div
+                                                    key={unav.id || idx}
+                                                    className={`px-2 py-2 rounded-md text-xs ${item.photo
+                                                      ? 'bg-white/10 text-white/90'
+                                                      : 'bg-gray-50 text-gray-700'
+                                                      }`}
+                                                  >
+                                                    <div className={`font-semibold mb-1 ${item.photo ? 'text-white' : 'text-gray-900'}`}>
+                                                      {formattedTime}
+                                                    </div>
+                                                    <div className={`text-xs ${item.photo ? 'text-white/80' : 'text-gray-600'}`}>
+                                                      {unav.reason}
+                                                    </div>
+                                                  </div>
+                                                );
+                                              })}
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                    </div>
-                      </div>
+                                );
+                              })}
+                          </div>
+                        </div>
                       )}
                     </div>
                   );

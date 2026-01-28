@@ -35,6 +35,7 @@ import EmployeeModal from './EmployeeModal';
 import RMQMessagesPage from '../pages/RMQMessagesPage';
 import HighlightsPanel from './HighlightsPanel';
 import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
+import { useExternalUser } from '../hooks/useExternalUser';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -136,6 +137,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const location = useLocation();
   const navigate = useNavigate();
   const { sendNotificationForNewMessage } = usePushNotifications();
+  const { isExternalUser, isLoading: isLoadingExternal } = useExternalUser();
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [searchValue, setSearchValue] = useState('');
   const [searchResults, setSearchResults] = useState<CombinedLead[]>([]);
@@ -6023,6 +6025,130 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       </span>
     );
   };
+
+  // External user header - simplified view
+  if (isLoadingExternal) {
+    return null; // Show nothing while loading
+  }
+  
+  if (isExternalUser) {
+    return (
+      <>
+        <div className="navbar bg-base-100 px-2 md:px-0 h-16 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
+          {/* Logo */}
+          <div className="flex-1 justify-start flex items-center gap-4">
+            <div className="h-16 flex items-center">
+              <Link to="/" className="flex items-center gap-2">
+                <span className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
+              </Link>
+            </div>
+          </div>
+          
+          {/* Quick Actions Dropdown - Desktop */}
+          <div className="hidden md:block relative ml-4" data-quick-actions-dropdown>
+            <button
+              ref={buttonRef}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setShowQuickActionsDropdown(!showQuickActionsDropdown);
+                setShowMobileQuickActionsDropdown(false);
+              }}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl font-medium transition-all duration-300 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
+            >
+              <BoltIcon className="w-5 h-5 text-white" />
+              <span className="text-sm font-semibold">Quick Actions</span>
+              <ChevronDownIcon className={`w-4 h-4 text-white transition-transform duration-200 ${showQuickActionsDropdown ? 'rotate-180' : ''}`} />
+            </button>
+
+            {/* Dropdown Menu */}
+            {showQuickActionsDropdown && createPortal(
+              <div
+                className="fixed w-48 bg-white rounded-xl shadow-2xl border border-gray-200 z-[9999] overflow-hidden"
+                data-dropdown-menu
+                style={{
+                  top: buttonRef.current ? `${buttonRef.current.getBoundingClientRect().bottom + 8}px` : '0px',
+                  left: buttonRef.current ? `${buttonRef.current.getBoundingClientRect().left}px` : '0px'
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* RMQ Messages Option */}
+                <button
+                  onClick={() => {
+                    setShowQuickActionsDropdown(false);
+                    if (onOpenMessaging) {
+                      onOpenMessaging();
+                    }
+                  }}
+                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50 relative"
+                >
+                  <ChatBubbleLeftRightIcon className="w-5 h-5 text-gray-500" />
+                  <span className="text-sm font-medium">RMQ Messages</span>
+                  {rmqUnreadCount > 0 && (
+                    <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                      {rmqUnreadCount > 9 ? '9+' : rmqUnreadCount}
+                    </span>
+                  )}
+                </button>
+              </div>,
+              document.body
+            )}
+          </div>
+          
+          {/* Quick Actions Dropdown - Mobile */}
+          <div className="md:hidden relative ml-2" data-quick-actions-dropdown>
+            <button
+              ref={mobileButtonRef}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setShowMobileQuickActionsDropdown(!showMobileQuickActionsDropdown);
+                setShowQuickActionsDropdown(false);
+              }}
+              className="flex items-center gap-1 px-3 py-2.5 rounded-lg font-medium transition-all duration-300 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
+            >
+              <BoltIcon className="w-4 h-4 text-white" />
+              <ChevronDownIcon className={`w-3 h-3 text-white transition-transform duration-200 ${showMobileQuickActionsDropdown ? 'rotate-180' : ''}`} />
+            </button>
+
+            {/* Dropdown Menu */}
+            {showMobileQuickActionsDropdown && createPortal(
+              <div
+                className="fixed w-48 bg-white rounded-xl shadow-2xl border border-gray-200 z-[9999] overflow-hidden"
+                data-dropdown-menu
+                style={{
+                  top: '64px',
+                  left: '8px',
+                  right: '8px'
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* RMQ Messages Option */}
+                <button
+                  onClick={() => {
+                    setShowMobileQuickActionsDropdown(false);
+                    if (onOpenMessaging) {
+                      onOpenMessaging();
+                    }
+                  }}
+                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50 relative"
+                >
+                  <ChatBubbleLeftRightIcon className="w-5 h-5 text-gray-500" />
+                  <span className="text-sm font-medium">RMQ Messages</span>
+                  {rmqUnreadCount > 0 && (
+                    <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                      {rmqUnreadCount > 9 ? '9+' : rmqUnreadCount}
+                    </span>
+                  )}
+                </button>
+              </div>,
+              document.body
+            )}
+          </div>
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
