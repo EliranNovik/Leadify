@@ -92,45 +92,50 @@ const DynamicTab: React.FC<DynamicTabProps> = ({
   return (
     <>
       {/* Spacer to ensure page is scrollable past the tab */}
-      <div style={{ height: isExpanded ? '200px' : '80px', width: '100%' }} />
-      
+      <div style={{ height: isExpanded ? '120px' : '60px', width: '100%' }} />
+
       {/* Fixed bottom tab */}
       <div
         style={{
           position: 'fixed',
-          bottom: '20px',
+          bottom: '10px',
           left: '50%',
           transform: isVisible ? 'translateX(-50%) translateY(0)' : 'translateX(-50%) translateY(150%)',
           zIndex: 9999,
           borderRadius: '50px',
-          background: 'rgba(255, 255, 255, 0.85)',
+          background: 'rgba(255, 255, 255, 0.6)',
           backdropFilter: 'blur(20px)',
           WebkitBackdropFilter: 'blur(20px)',
           boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
           border: '1px solid rgba(255, 255, 255, 0.3)',
-          padding: isExpanded ? '16px 24px' : '12px 20px',
-          minWidth: isExpanded ? 'auto' : '300px',
-          maxWidth: '95%',
+          padding: isExpanded ? '12px 24px' : '8px 24px',
+          minWidth: isExpanded ? 'auto' : '280px',
           transition: 'all 0.3s ease',
           opacity: isVisible ? 1 : 0,
           pointerEvents: isVisible ? 'auto' : 'none',
         }}
+        className={`dynamic-tab-container md:max-w-[900px] md:px-10 ${isExpanded ? 'md:py-8' : 'md:py-6'} w-[calc(100%-20px)] md:w-auto`}
       >
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: '12px', flexWrap: 'wrap', justifyContent: 'center' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}
+          className="md:gap-6">
           {/* Income Field */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flexShrink: 0 }}>
-            <label style={{ fontSize: '11px', fontWeight: '500', color: '#374151' }}>Income</label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flexShrink: 0 }}
+            className="md:gap-3">
+            <label style={{ fontSize: '10px', fontWeight: '500', color: '#374151' }}
+              className="md:text-base md:font-semibold">Income</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
+              className="md:gap-2">
               <input
                 type="text"
                 style={{
-                  width: '100px',
-                  padding: '6px 8px',
+                  width: '90px',
+                  padding: '4px 6px',
                   border: '1px solid rgba(209, 213, 219, 0.5)',
-                  borderRadius: '8px',
-                  fontSize: '13px',
+                  borderRadius: '6px',
+                  fontSize: '12px',
                   background: 'rgba(255, 255, 255, 0.9)',
                 }}
+                className="md:w-[180px] md:px-4 md:py-3 md:text-lg"
                 value={totalIncome !== null && totalIncome !== undefined && totalIncome > 0
                   ? totalIncome.toLocaleString('en-US')
                   : ''}
@@ -157,29 +162,34 @@ const DynamicTab: React.FC<DynamicTabProps> = ({
                 }}
                 placeholder="Income"
               />
-              <span style={{ fontSize: '13px', color: '#6b7280' }}>₪</span>
+              <span style={{ fontSize: '13px', color: '#6b7280' }}
+                className="md:text-lg dynamic-tab-currency">₪</span>
             </div>
           </div>
 
           {/* Due Normalized Field */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flexShrink: 0 }}>
-            <label style={{ fontSize: '11px', fontWeight: '500', color: '#374151' }}>Due Norm %</label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flexShrink: 0 }}
+            className="md:gap-3">
+            <label style={{ fontSize: '10px', fontWeight: '500', color: '#374151' }}
+              className="md:text-base md:font-semibold">Due Norm %</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
+              className="md:gap-2">
               <input
                 type="number"
                 min="0"
                 max="100"
                 step="0.01"
                 style={{
-                  width: '80px',
-                  padding: '6px 8px',
+                  width: '70px',
+                  padding: '4px 6px',
                   border: '1px solid rgba(209, 213, 219, 0.5)',
-                  borderRadius: '8px',
-                  fontSize: '13px',
+                  borderRadius: '6px',
+                  fontSize: '12px',
                   background: 'rgba(255, 255, 255, 0.9)',
                   MozAppearance: 'textfield',
                   appearance: 'textfield',
                 }}
+                className="md:w-[140px] md:px-4 md:py-3 md:text-lg"
                 onWheel={(e) => e.currentTarget.blur()}
                 value={dueNormalizedPercentage !== null && dueNormalizedPercentage !== undefined
                   ? dueNormalizedPercentage.toString()
@@ -197,134 +207,184 @@ const DynamicTab: React.FC<DynamicTabProps> = ({
                 }}
                 placeholder="0.00"
               />
-              <span style={{ fontSize: '13px', color: '#6b7280' }}>%</span>
+              <span style={{ fontSize: '13px', color: '#6b7280' }}
+                className="md:text-lg dynamic-tab-percent">%</span>
             </div>
           </div>
 
           {/* Role Percentages - Collapsible */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flexShrink: 0 }}>
-            <label style={{ fontSize: '11px', fontWeight: '500', color: '#374151' }}>Roles</label>
-            <button
-              onClick={() => setIsExpanded(!isExpanded)}
-              style={{
-                width: '32px',
-                height: '32px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                border: 'none',
-                background: 'transparent',
-                cursor: 'pointer',
-                borderRadius: '50%',
-                transition: 'background 0.2s',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'rgba(0, 0, 0, 0.05)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'transparent';
-              }}
-              title={isExpanded ? "Hide role percentages" : "Show role percentages"}
-            >
-              {isExpanded ? (
-                <EyeSlashIcon style={{ width: '18px', height: '18px', color: '#374151' }} />
-              ) : (
-                <EyeIcon style={{ width: '18px', height: '18px', color: '#374151' }} />
-              )}
-            </button>
-          </div>
+          {!isExpanded && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flexShrink: 0 }}
+              className="md:gap-3">
+              <label style={{ fontSize: '10px', fontWeight: '500', color: '#374151' }}
+                className="md:text-base md:font-semibold">Roles</label>
+              <button
+                onClick={() => setIsExpanded(!isExpanded)}
+                style={{
+                  width: '28px',
+                  height: '28px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  border: 'none',
+                  background: 'transparent',
+                  cursor: 'pointer',
+                  borderRadius: '50%',
+                  transition: 'background 0.2s',
+                }}
+                className="md:w-14 md:h-14"
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'rgba(0, 0, 0, 0.05)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent';
+                }}
+                title="Show role percentages"
+              >
+                <EyeIcon style={{ width: '16px', height: '16px', color: '#374151' }}
+                  className="md:w-8 md:h-8" />
+              </button>
+            </div>
+          )}
 
           {/* Role Percentage Inputs - Shown when expanded */}
           {isExpanded && (
             <>
               {roleNames.map(({ role, label }) => (
-                <div key={role} style={{ display: 'flex', flexDirection: 'column', gap: '4px', flexShrink: 0 }}>
-                  <label style={{ fontSize: '11px', fontWeight: '500', color: '#374151' }}>{label}</label>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <div key={role} style={{ display: 'flex', flexDirection: 'column', gap: '2px', flexShrink: 0 }}
+                  className="md:gap-3">
+                  <label style={{ fontSize: '10px', fontWeight: '500', color: '#374151' }}
+                    className="md:text-base md:font-semibold">{label}</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
+                    className="md:gap-2">
                     <input
                       type="number"
                       min="0"
                       max="100"
                       step="0.01"
                       style={{
-                        width: '70px',
-                        padding: '6px 8px',
+                        width: '60px',
+                        padding: '4px 6px',
                         border: '1px solid rgba(209, 213, 219, 0.5)',
-                        borderRadius: '8px',
-                        fontSize: '13px',
+                        borderRadius: '6px',
+                        fontSize: '12px',
                         textAlign: 'right',
                         background: 'rgba(255, 255, 255, 0.9)',
                         MozAppearance: 'textfield',
                         appearance: 'textfield',
                       }}
+                      className="md:w-[120px] md:px-4 md:py-3 md:text-lg"
                       onWheel={(e) => e.currentTarget.blur()}
                       value={tempRolePercentages.get(role) || rolePercentages.get(role)?.toString() || '0'}
                       onChange={(e) => {
                         const value = e.target.value;
-                        setTempRolePercentages(prev => {
-                          const updated = new Map(prev);
-                          updated.set(role, value);
-                          return updated;
-                        });
+                        const updated = new Map(tempRolePercentages);
+                        updated.set(role, value);
+                        setTempRolePercentages(updated);
                       }}
                       placeholder="0"
                     />
-                    <span style={{ fontSize: '12px', color: '#6b7280' }}>%</span>
+                    <span style={{ fontSize: '12px', color: '#6b7280' }}
+                      className="md:text-lg dynamic-tab-percent">%</span>
                   </div>
                 </div>
               ))}
             </>
           )}
 
-          {/* Save Button */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flexShrink: 0 }}>
-            <label style={{ fontSize: '11px', fontWeight: '500', opacity: 0 }}>Save</label>
-            <button
-              onClick={handleSave}
-              disabled={savingSettings || savingRolePercentages || loadingRolePercentages}
-              style={{
-                width: '36px',
-                height: '36px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                border: 'none',
-                background: savingSettings || savingRolePercentages || loadingRolePercentages ? '#a78bfa' : '#9333ea',
-                color: 'white',
-                cursor: savingSettings || savingRolePercentages || loadingRolePercentages ? 'not-allowed' : 'pointer',
-                borderRadius: '50%',
-                transition: 'all 0.2s',
-                boxShadow: '0 2px 8px rgba(147, 51, 234, 0.3)',
-              }}
-              onMouseEnter={(e) => {
-                if (!savingSettings && !savingRolePercentages && !loadingRolePercentages) {
-                  e.currentTarget.style.background = '#7e22ce';
-                  e.currentTarget.style.transform = 'scale(1.05)';
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (!savingSettings && !savingRolePercentages && !loadingRolePercentages) {
-                  e.currentTarget.style.background = '#9333ea';
-                  e.currentTarget.style.transform = 'scale(1)';
-                }
-              }}
-              title="Save all settings"
-            >
-              {(savingSettings || savingRolePercentages) ? (
-                <div
+          {/* Hide Roles Button (shown when expanded) and Save Button */}
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', flexShrink: 0 }}
+            className="md:gap-4">
+            {/* Hide Roles Button - only shown when expanded */}
+            {isExpanded && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flexShrink: 0 }}
+                className="md:gap-3">
+                <label style={{ fontSize: '10px', fontWeight: '500', opacity: 0 }}
+                  className="md:text-base">Hide</label>
+                <button
+                  onClick={() => setIsExpanded(!isExpanded)}
                   style={{
-                    width: '16px',
-                    height: '16px',
-                    border: '2px solid white',
-                    borderTop: '2px solid transparent',
+                    width: '28px',
+                    height: '28px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    border: 'none',
+                    background: 'transparent',
+                    cursor: 'pointer',
                     borderRadius: '50%',
-                    animation: 'spin 1s linear infinite',
+                    transition: 'background 0.2s',
                   }}
-                />
-              ) : (
-                <CheckIcon style={{ width: '18px', height: '18px' }} />
-              )}
-            </button>
+                  className="md:w-14 md:h-14"
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = 'rgba(0, 0, 0, 0.05)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = 'transparent';
+                  }}
+                  title="Hide role percentages"
+                >
+                  <EyeSlashIcon style={{ width: '16px', height: '16px', color: '#374151' }}
+                    className="md:w-8 md:h-8" />
+                </button>
+              </div>
+            )}
+
+            {/* Save Button */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flexShrink: 0 }}
+              className="md:gap-3">
+              <label style={{ fontSize: '10px', fontWeight: '500', opacity: 0 }}
+                className="md:text-base">Save</label>
+              <button
+                onClick={handleSave}
+                disabled={savingSettings || savingRolePercentages || loadingRolePercentages}
+                style={{
+                  width: '28px',
+                  height: '28px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  border: 'none',
+                  background: savingSettings || savingRolePercentages || loadingRolePercentages ? '#a78bfa' : '#9333ea',
+                  color: 'white',
+                  cursor: savingSettings || savingRolePercentages || loadingRolePercentages ? 'not-allowed' : 'pointer',
+                  borderRadius: '50%',
+                  transition: 'all 0.2s',
+                  boxShadow: '0 2px 8px rgba(147, 51, 234, 0.3)',
+                }}
+                className="md:w-16 md:h-16"
+                onMouseEnter={(e) => {
+                  if (!savingSettings && !savingRolePercentages && !loadingRolePercentages) {
+                    e.currentTarget.style.background = '#7e22ce';
+                    e.currentTarget.style.transform = 'scale(1.05)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!savingSettings && !savingRolePercentages && !loadingRolePercentages) {
+                    e.currentTarget.style.background = '#9333ea';
+                    e.currentTarget.style.transform = 'scale(1)';
+                  }
+                }}
+                title="Save all settings"
+              >
+                {(savingSettings || savingRolePercentages) ? (
+                  <div
+                    style={{
+                      width: '14px',
+                      height: '14px',
+                      border: '2px solid white',
+                      borderTop: '2px solid transparent',
+                      borderRadius: '50%',
+                      animation: 'spin 1s linear infinite',
+                    }}
+                    className="md:w-[24px] md:h-[24px] md:border-[3px]"
+                  />
+                ) : (
+                  <CheckIcon style={{ width: '16px', height: '16px' }}
+                    className="md:w-8 md:h-8" />
+                )}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -343,6 +403,67 @@ const DynamicTab: React.FC<DynamicTabProps> = ({
         }
         input[type="number"] {
           -moz-appearance: textfield;
+        }
+        
+        /* Desktop overrides for DynamicTab - make everything bigger */
+        @media (min-width: 768px) {
+          /* Income input - target by placeholder */
+          .dynamic-tab-container input[placeholder="Income"] {
+            width: 180px !important;
+            padding: 10px 14px !important;
+            font-size: 16px !important;
+          }
+          
+          /* Due Norm % input - target by placeholder */
+          .dynamic-tab-container input[placeholder="0.00"] {
+            width: 140px !important;
+            padding: 10px 14px !important;
+            font-size: 16px !important;
+          }
+          
+          /* Role percentage inputs - target by placeholder="0" */
+          .dynamic-tab-container input[placeholder="0"] {
+            width: 120px !important;
+            padding: 10px 14px !important;
+            font-size: 16px !important;
+          }
+          
+          /* All labels in dynamic tab */
+          .dynamic-tab-container > div > div > label {
+            font-size: 14px !important;
+            font-weight: 600 !important;
+          }
+          
+          /* Eye icon button - target by title containing "role" */
+          .dynamic-tab-container button[title*="role"] {
+            width: 48px !important;
+            height: 48px !important;
+          }
+          
+          /* Eye icons inside button */
+          .dynamic-tab-container button[title*="role"] svg {
+            width: 28px !important;
+            height: 28px !important;
+          }
+          
+          /* Save button - target by title */
+          .dynamic-tab-container button[title="Save all settings"] {
+            width: 56px !important;
+            height: 56px !important;
+          }
+          
+          /* Save button icon and spinner */
+          .dynamic-tab-container button[title="Save all settings"] svg,
+          .dynamic-tab-container button[title="Save all settings"] > div {
+            width: 28px !important;
+            height: 28px !important;
+          }
+          
+          /* Currency and percentage symbols */
+          .dynamic-tab-container .dynamic-tab-currency,
+          .dynamic-tab-container .dynamic-tab-percent {
+            font-size: 16px !important;
+          }
         }
       `}</style>
     </>

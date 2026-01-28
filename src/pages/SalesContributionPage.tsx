@@ -4,7 +4,7 @@ import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { convertToNIS } from '../lib/currencyConversion';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
-import { ChevronDownIcon, ChevronRightIcon, EyeIcon, ChartBarIcon, UserGroupIcon, BuildingOfficeIcon, SpeakerWaveIcon, CurrencyDollarIcon, PencilIcon, CheckIcon, XMarkIcon, GlobeAltIcon, FlagIcon, BriefcaseIcon, HomeIcon, AcademicCapIcon, RocketLaunchIcon, MapPinIcon, DocumentTextIcon, ScaleIcon, ShieldCheckIcon, BanknotesIcon, CogIcon, HeartIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, UsersIcon, Squares2X2Icon } from '@heroicons/react/24/outline';
+import { ChevronDownIcon, ChevronRightIcon, EyeIcon, ChartBarIcon, UserGroupIcon, BuildingOfficeIcon, SpeakerWaveIcon, CurrencyDollarIcon, PencilIcon, CheckIcon, XMarkIcon, GlobeAltIcon, FlagIcon, BriefcaseIcon, HomeIcon, AcademicCapIcon, RocketLaunchIcon, MapPinIcon, DocumentTextIcon, ScaleIcon, ShieldCheckIcon, BanknotesIcon, CogIcon, HeartIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, UsersIcon, Squares2X2Icon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import EmployeeRoleLeadsModal from '../components/EmployeeRoleLeadsModal';
 import DynamicIsland from '../components/DynamicIsland';
 import DynamicTab from '../components/DynamicTab';
@@ -5068,34 +5068,34 @@ const SalesContributionPage = () => {
       <div key={deptData.departmentName} className="mb-8">
         {!hideTitle && <h2 className="text-2xl font-bold mb-4">{deptData.departmentName}</h2>}
         <div className="overflow-x-auto">
-          <table className="table w-full table-fixed">
+          <table className="table w-full min-w-[800px] md:min-w-0 md:table-fixed">
             <thead>
               <tr>
-                <th className={isFieldView ? 'w-[20%]' : 'w-[25%]'}>{isFieldView ? 'Category' : 'Employee'}</th>
-                {!isFieldView && <th className="w-[15%]">Department</th>}
-                <th className="text-right w-[10%]">Signed</th>
-                <th className="text-right w-[10%]">Due</th>
-                <th className="text-right w-[10%]">Signed Normalized</th>
-                <th className="text-right w-[10%]">Due Normalized</th>
-                <th className="text-right w-[10%]">Contribution</th>
-                <th className="text-right w-[10%]">Salary Budget</th>
-                <th className="text-right w-[10%] bg-gray-100">
+                <th className={`${isFieldView ? 'w-[20%]' : 'w-[25%]'} text-[10px] md:text-sm whitespace-nowrap`}>{isFieldView ? 'Category' : 'Employee'}</th>
+                {!isFieldView && <th className="w-[15%] text-[10px] md:text-sm whitespace-nowrap">Department</th>}
+                <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Signed</th>
+                <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Due</th>
+                <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Signed Norm</th>
+                <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Due Norm</th>
+                <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Contribution</th>
+                <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Salary Budget</th>
+                <th className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm whitespace-nowrap">
                   Salary (Brutto)
                   {salaryFilter?.month && salaryFilter?.year && (
-                    <div className="text-xs font-normal text-gray-500 mt-1">
+                    <div className="text-[9px] md:text-xs font-normal text-gray-500 mt-1">
                       {new Date(2000, (salaryFilter.month || 1) - 1, 1).toLocaleString('default', { month: 'short' })} {salaryFilter.year}
                     </div>
                   )}
                 </th>
-                <th className="text-right w-[10%] bg-gray-100">
+                <th className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm whitespace-nowrap">
                   Total Salary Cost
                   {salaryFilter?.month && salaryFilter?.year && (
-                    <div className="text-xs font-normal text-gray-500 mt-1">
+                    <div className="text-[9px] md:text-xs font-normal text-gray-500 mt-1">
                       {new Date(2000, (salaryFilter.month || 1) - 1, 1).toLocaleString('default', { month: 'short' })} {salaryFilter.year}
                     </div>
                   )}
                 </th>
-                <th className="text-right w-[10%]">Max Incentives</th>
+                <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Max Incentives</th>
               </tr>
             </thead>
             <tbody>
@@ -5126,60 +5126,62 @@ const SalesContributionPage = () => {
                         className="cursor-pointer hover:bg-base-200"
                         onClick={() => toggleRowExpansion(emp.employeeId, emp.employeeName)}
                       >
-                        <td className={isFieldView ? 'w-[20%]' : 'w-[25%]'}>
-                          <div className="flex items-center gap-2">
+                        <td className={`${isFieldView ? 'w-[20%]' : 'w-[25%]'} text-[10px] md:text-sm whitespace-nowrap`}>
+                          <div className="flex items-center gap-1 md:gap-2">
                             {isExpanded ? (
-                              <ChevronDownIcon className="w-4 h-4 text-gray-500" />
+                              <ChevronDownIcon className="w-3 h-3 md:w-4 md:h-4 text-gray-500 flex-shrink-0" />
                             ) : (
-                              <ChevronRightIcon className="w-4 h-4 text-gray-500" />
+                              <ChevronRightIcon className="w-3 h-3 md:w-4 md:h-4 text-gray-500 flex-shrink-0" />
                             )}
                             {isFieldView ? (
-                              <div className="flex items-center justify-center w-10 h-10 rounded-full bg-base-200">
+                              <div className="flex items-center justify-center w-6 h-6 md:w-10 md:h-10 rounded-full bg-base-200 flex-shrink-0">
                                 {getCategoryIcon(emp.employeeName)}
                               </div>
                             ) : (
-                              <EmployeeAvatar employeeId={emp.employeeId} size="lg" />
+                              <div className="flex-shrink-0">
+                                <EmployeeAvatar employeeId={emp.employeeId} size="lg" />
+                              </div>
                             )}
-                            <span>{emp.employeeName}</span>
+                            <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{emp.employeeName}</span>
                           </div>
                         </td>
-                        {!isFieldView && <td className="w-[15%]">{emp.department}</td>}
-                        <td className="text-right w-[10%]">{formatCurrency(emp.signed)}</td>
-                        <td className="text-right w-[10%]">{formatCurrency(emp.due || 0)}</td>
-                        <td className="text-right w-[10%]">{formatCurrency(emp.signedNormalized || 0)}</td>
-                        <td className="text-right w-[10%]">{formatCurrency(emp.dueNormalized || 0)}</td>
-                        <td className="text-right w-[10%]">{formatCurrency(emp.signedPortion)}</td>
-                        <td className="text-right w-[10%]">
-                          <div className="flex flex-col">
+                        {!isFieldView && <td className="w-[15%] text-[10px] md:text-sm whitespace-nowrap">{emp.department}</td>}
+                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.signed)}</td>
+                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.due || 0)}</td>
+                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.signedNormalized || 0)}</td>
+                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.dueNormalized || 0)}</td>
+                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.signedPortion)}</td>
+                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">
+                          <div className="flex flex-col items-end">
                             <span>{formatCurrency(emp.salaryBudget || 0)}</span>
-                            <span className="text-xs text-gray-500">40%</span>
+                            <span className="text-[9px] md:text-xs text-gray-500">40%</span>
                           </div>
                         </td>
-                        <td className="text-right w-[10%] bg-gray-100">
-                          <div className="flex flex-col">
+                        <td className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm whitespace-nowrap">
+                          <div className="flex flex-col items-end">
                             <span>{formatCurrency(emp.salaryBrutto || 0)}</span>
                             {emp.signedPortion > 0 ? (
-                              <span className={`text-xs ${((emp.salaryBrutto || 0) / emp.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                              <span className={`text-[9px] md:text-xs ${((emp.salaryBrutto || 0) / emp.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
                                 {((emp.salaryBrutto || 0) / emp.signedPortion * 100).toFixed(1)}%
                               </span>
                             ) : (
-                              <span className="text-xs text-gray-500">-</span>
+                              <span className="text-[9px] md:text-xs text-gray-500">-</span>
                             )}
                           </div>
                         </td>
-                        <td className="text-right w-[10%] bg-gray-100">
-                          <div className="flex flex-col">
+                        <td className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm whitespace-nowrap">
+                          <div className="flex flex-col items-end">
                             <span>{formatCurrency(emp.totalSalaryCost || 0)}</span>
                             {emp.signedPortion > 0 ? (
-                              <span className={`text-xs ${((emp.totalSalaryCost || 0) / emp.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                              <span className={`text-[9px] md:text-xs ${((emp.totalSalaryCost || 0) / emp.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
                                 {((emp.totalSalaryCost || 0) / emp.signedPortion * 100).toFixed(1)}%
                               </span>
                             ) : (
-                              <span className="text-xs text-gray-500">-</span>
+                              <span className="text-[9px] md:text-xs text-gray-500">-</span>
                             )}
                           </div>
                         </td>
-                        <td className="text-right w-[10%]">
+                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">
                           <span className={(emp.maxIncentives ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}>
                             {formatCurrency(emp.maxIncentives ?? 0)}
                           </span>
@@ -5336,44 +5338,44 @@ const SalesContributionPage = () => {
                 )}
               {/* Totals row */}
               <tr className="font-bold bg-base-200">
-                <td className={isFieldView ? 'w-[20%]' : 'w-[25%]'}>Total</td>
-                {!isFieldView && <td className="w-[15%]"></td>}
-                <td className="text-right w-[10%]"></td>
-                <td className="text-right w-[10%]"></td>
-                <td className="text-right w-[10%]"></td>
-                <td className="text-right w-[10%]"></td>
-                <td className="text-right w-[10%]">{formatCurrency(deptData.totals.signedPortion)}</td>
-                <td className="text-right w-[10%]">
-                  <div className="flex flex-col">
+                <td className={`${isFieldView ? 'w-[20%]' : 'w-[25%]'} text-[10px] md:text-sm`}>Total</td>
+                {!isFieldView && <td className="w-[15%] text-[10px] md:text-sm"></td>}
+                <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
+                <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
+                <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
+                <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
+                <td className="text-right w-[10%] text-[10px] md:text-sm">{formatCurrency(deptData.totals.signedPortion)}</td>
+                <td className="text-right w-[10%] text-[10px] md:text-sm">
+                  <div className="flex flex-col items-end">
                     <span>{formatCurrency(deptData.totals.salaryBudget || 0)}</span>
-                    <span className="text-xs text-gray-500">40%</span>
+                    <span className="text-[9px] md:text-xs text-gray-500">40%</span>
                   </div>
                 </td>
-                <td className="text-right w-[10%] bg-gray-100">
-                  <div className="flex flex-col">
+                <td className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm">
+                  <div className="flex flex-col items-end">
                     <span>{formatCurrency(deptData.totals.salaryBrutto || 0)}</span>
                     {deptData.totals.signedPortion > 0 ? (
-                      <span className={`text-xs ${((deptData.totals.salaryBrutto || 0) / deptData.totals.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                      <span className={`text-[9px] md:text-xs ${((deptData.totals.salaryBrutto || 0) / deptData.totals.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
                         {((deptData.totals.salaryBrutto || 0) / deptData.totals.signedPortion * 100).toFixed(1)}%
                       </span>
                     ) : (
-                      <span className="text-xs text-gray-500">-</span>
+                      <span className="text-[9px] md:text-xs text-gray-500">-</span>
                     )}
                   </div>
                 </td>
-                <td className="text-right w-[10%] bg-gray-100">
-                  <div className="flex flex-col">
+                <td className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm">
+                  <div className="flex flex-col items-end">
                     <span>{formatCurrency(deptData.totals.totalSalaryCost || 0)}</span>
                     {deptData.totals.signedPortion > 0 ? (
-                      <span className={`text-xs ${((deptData.totals.totalSalaryCost || 0) / deptData.totals.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                      <span className={`text-[9px] md:text-xs ${((deptData.totals.totalSalaryCost || 0) / deptData.totals.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
                         {((deptData.totals.totalSalaryCost || 0) / deptData.totals.signedPortion * 100).toFixed(1)}%
                       </span>
                     ) : (
-                      <span className="text-xs text-gray-500">-</span>
+                      <span className="text-[9px] md:text-xs text-gray-500">-</span>
                     )}
                   </div>
                 </td>
-                <td className="text-right w-[10%]">
+                <td className="text-right w-[10%] text-[10px] md:text-sm">
                   <span className={(deptData.totals.maxIncentives ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}>
                     {formatCurrency(deptData.totals.maxIncentives ?? 0)}
                   </span>
@@ -5388,14 +5390,14 @@ const SalesContributionPage = () => {
 
   return (
     <div className="w-full px-4 py-6">
-      <div className="mb-6">
+      <div className="mb-2">
         <button
           onClick={() => navigate('/reports')}
           className="btn btn-ghost btn-sm mb-4"
         >
           ← Back to Reports
         </button>
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div className="flex items-center gap-4">
             <h1 className="text-3xl font-bold">Sales Contribution Report</h1>
             <div className="flex items-center gap-3">
@@ -5482,37 +5484,40 @@ const SalesContributionPage = () => {
         isDynamicIslandOpen={isDynamicIslandOpen}
       />
 
-      <div className="card bg-base-100 shadow-xl mb-6" data-filters-section>
-        <div className="card-body">
-          <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
-            <div>
-              <label className="label py-1">
-                <span className="label-text text-xs">From Date</span>
+      <div className="card bg-base-100 shadow-xl mb-6 md:-mt-4" data-filters-section>
+        <div className="card-body md:py-4">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-3 md:gap-4">
+            {/* From Date - Mobile: 2 cols, Desktop: 1 col */}
+            <div className="col-span-1">
+              <label className="label py-1 md:py-2">
+                <span className="label-text text-xs md:text-base md:font-semibold">From Date</span>
               </label>
               <input
                 type="date"
-                className="input input-bordered input-sm w-full"
+                className="input input-bordered input-sm md:input-md w-full md:text-base"
                 value={filters.fromDate}
                 onChange={(e) => handleFilterChange('fromDate', e.target.value)}
               />
             </div>
-            <div>
-              <label className="label py-1">
-                <span className="label-text text-xs">To Date</span>
+            {/* To Date - Mobile: 2 cols, Desktop: 1 col */}
+            <div className="col-span-1">
+              <label className="label py-1 md:py-2">
+                <span className="label-text text-xs md:text-base md:font-semibold">To Date</span>
               </label>
               <input
                 type="date"
-                className="input input-bordered input-sm w-full"
+                className="input input-bordered input-sm md:input-md w-full md:text-base"
                 value={filters.toDate}
                 onChange={(e) => handleFilterChange('toDate', e.target.value)}
               />
             </div>
-            <div>
-              <label className="label py-1">
-                <span className="label-text text-xs">Salary Month</span>
+            {/* Salary Month - Mobile: 2 cols, Desktop: 1 col */}
+            <div className="col-span-1">
+              <label className="label py-1 md:py-2">
+                <span className="label-text text-xs md:text-base md:font-semibold">Salary Month</span>
               </label>
               <select
-                className="select select-bordered select-sm w-full"
+                className="select select-bordered select-sm md:select-md w-full md:text-base"
                 value={salaryFilter?.month || today.getMonth() + 1}
                 onChange={(e) => setSalaryFilter({
                   ...salaryFilter,
@@ -5526,12 +5531,13 @@ const SalesContributionPage = () => {
                 ))}
               </select>
             </div>
-            <div>
-              <label className="label py-1">
-                <span className="label-text text-xs">Salary Year</span>
+            {/* Salary Year - Mobile: 2 cols, Desktop: 1 col */}
+            <div className="col-span-1">
+              <label className="label py-1 md:py-2">
+                <span className="label-text text-xs md:text-base md:font-semibold">Salary Year</span>
               </label>
               <select
-                className="select select-bordered select-sm w-full"
+                className="select select-bordered select-sm md:select-md w-full md:text-base"
                 value={salaryFilter?.year || today.getFullYear()}
                 onChange={(e) => setSalaryFilter({
                   ...salaryFilter,
@@ -5545,34 +5551,41 @@ const SalesContributionPage = () => {
                 ))}
               </select>
             </div>
-            <div>
-              <label className="label py-1">
-                <span className="label-text text-xs">Search Employee</span>
+            {/* Search Employee and Button - Mobile: 2 cols together, Desktop: separate */}
+            <div className="col-span-2 md:col-span-1">
+              <label className="label py-1 md:py-2">
+                <span className="label-text text-xs md:text-base md:font-semibold">Search Employee</span>
               </label>
-              <input
-                type="text"
-                className="input input-bordered input-sm w-full"
-                placeholder="Search..."
-                value={employeeSearchTerm}
-                onChange={(e) => setEmployeeSearchTerm(e.target.value)}
-              />
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  className="input input-bordered input-sm md:input-md flex-1 md:text-base"
+                  placeholder="Search..."
+                  value={employeeSearchTerm}
+                  onChange={(e) => setEmployeeSearchTerm(e.target.value)}
+                />
+                <button
+                  className="btn btn-primary btn-sm md:btn-md md:text-base flex-shrink-0"
+                  onClick={handleSearch}
+                  disabled={loading}
+                  title="Search"
+                >
+                  {loading ? (
+                    <>
+                      <span className="loading loading-spinner loading-xs"></span>
+                      <span className="hidden md:inline">Searching...</span>
+                    </>
+                  ) : (
+                    <>
+                      <MagnifyingGlassIcon className="w-4 h-4 md:hidden" />
+                      <span className="hidden md:inline">Search</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
-            <div className="flex items-end">
-              <button
-                className="btn btn-primary btn-sm w-full"
-                onClick={handleSearch}
-                disabled={loading}
-              >
-                {loading ? (
-                  <>
-                    <span className="loading loading-spinner loading-xs"></span>
-                    <span className="hidden sm:inline">Searching...</span>
-                  </>
-                ) : (
-                  'Search'
-                )}
-              </button>
-            </div>
+            {/* Empty div for desktop grid alignment */}
+            <div className="hidden md:block md:col-span-1"></div>
           </div>
         </div>
       </div>

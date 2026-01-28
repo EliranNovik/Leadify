@@ -54,7 +54,8 @@ const SourcesManager: React.FC = () => {
       label: 'Source Name',
       type: 'text' as const,
       required: true,
-      placeholder: 'e.g., Website Referral'
+      placeholder: 'e.g., Website Referral',
+      maxLength: 20
     },
     {
       name: 'default_topic',

@@ -22,6 +22,7 @@ interface Field {
   hideInEdit?: boolean;
   readOnly?: boolean;
   defaultValue?: any;
+  maxLength?: number; // Maximum length for text fields
   formatValue?: (value: any, record: Record) => React.ReactNode;
   prepareValueForForm?: (value: any, record?: Record | null) => any;
   prepareValueForSave?: (value: any, record?: Partial<Record> | null) => any;
@@ -927,6 +928,19 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             delete updateData.updated_by;
           }
           
+          // Validate and truncate field lengths before update
+          for (const field of fields) {
+            if (field.maxLength && (field.type === 'text' || field.type === 'textarea') && updateData[field.name]) {
+              const value = String(updateData[field.name]);
+              if (value.length > field.maxLength) {
+                toast.error(`${field.label} must be ${field.maxLength} characters or less. Current length: ${value.length}. Value will be truncated.`);
+                // Truncate the value to maxLength
+                updateData[field.name] = value.substring(0, field.maxLength);
+                console.warn(`⚠️ Truncated ${field.name} from ${value.length} to ${field.maxLength} characters`);
+              }
+            }
+          }
+          
           console.log(`Attempting update with query:`, {
             table: tableName,
             id: String(editingRecord.id),
@@ -1035,10 +1049,25 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           });
           
           // Final check: ensure id is completely removed and create a fresh object
+          // Also validate and truncate field lengths during construction
           const finalInsertRecord: any = {};
           Object.keys(cleanInsertRecord).forEach(key => {
             if (key !== 'id') {
-              finalInsertRecord[key] = cleanInsertRecord[key];
+              let value = cleanInsertRecord[key];
+              
+              // Validate and truncate text fields during construction
+              const field = fields.find(f => f.name === key);
+              if (field && field.maxLength && (field.type === 'text' || field.type === 'textarea')) {
+                if (value !== null && value !== undefined && value !== '') {
+                  const strValue = String(value);
+                  if (strValue.length > field.maxLength) {
+                    console.warn(`⚠️ Early truncation: ${key} from ${strValue.length} to ${field.maxLength} characters`);
+                    value = strValue.substring(0, field.maxLength);
+                  }
+                }
+              }
+              
+              finalInsertRecord[key] = value;
             }
           });
           
@@ -1079,6 +1108,24 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             console.log(`✅ Skipping ID assignment for ${tableName} (UUID table)`);
           }
           
+          // Validate and truncate field lengths before insert
+          console.log(`🔍 Validating field lengths before insert...`);
+          for (const field of fields) {
+            if (field.maxLength && (field.type === 'text' || field.type === 'textarea')) {
+              const currentValue = finalInsertRecord[field.name];
+              if (currentValue !== null && currentValue !== undefined && currentValue !== '') {
+                const value = String(currentValue);
+                console.log(`  Checking ${field.name}: length=${value.length}, maxLength=${field.maxLength}, value="${value}"`);
+                if (value.length > field.maxLength) {
+                  const truncated = value.substring(0, field.maxLength);
+                  console.warn(`⚠️ Truncating ${field.name} from ${value.length} to ${field.maxLength} characters: "${value}" -> "${truncated}"`);
+                  finalInsertRecord[field.name] = truncated;
+                  toast.error(`${field.label} must be ${field.maxLength} characters or less. Current length: ${value.length}. Value has been truncated.`);
+                }
+              }
+            }
+          }
+          
           // Debug: Log what we're about to insert
           console.log(`🔍 Creating new ${tableName} record:`, {
             originalRecord: record,
@@ -1089,7 +1136,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             jsonPayload: JSON.stringify(finalInsertRecord)
           });
           
-          console.log(`✅ Final insert payload (no id):`, {
+          console.log(`✅ Final insert payload (after validation):`, {
             finalInsertRecord,
             hasId: 'id' in finalInsertRecord,
             keys: Object.keys(finalInsertRecord),
@@ -1358,6 +1405,17 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
     const renderField = (field: Field, value: any, onChange: (value: any) => void) => {
     const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
       let newValue: any = e.target.value;
+      
+      // Enforce maxLength for text fields
+      if (field.maxLength && (field.type === 'text' || field.type === 'textarea')) {
+        if (newValue.length > field.maxLength) {
+          newValue = newValue.substring(0, field.maxLength);
+          // Update the input value immediately
+          e.target.value = newValue;
+          toast.error(`${field.label} is limited to ${field.maxLength} characters. Value has been truncated.`, { duration: 2000 });
+        }
+      }
+      
       if (field.type === 'number') {
         newValue = parseFloat(newValue) || 0;
       } else if (field.type === 'boolean') {
@@ -1447,6 +1505,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
               <div className="relative">
                 <input
                   type="text"
+                  maxLength={field.maxLength}
                   className={`input input-bordered w-full pr-10 ${field.readOnly ? 'input-disabled bg-gray-100' : ''}`}
                   placeholder={`Search ${field.label}`}
                   value={searchTerm}
@@ -1635,6 +1694,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           <input 
             {...commonProps} 
             type={field.type} 
+            maxLength={field.maxLength}
             className={`input input-bordered w-full ${field.readOnly ? 'input-disabled bg-gray-100' : ''}`}
             dir={isRTLText ? 'rtl' : 'ltr'}
             style={{ 

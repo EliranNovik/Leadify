@@ -4,19 +4,29 @@ import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { convertToNIS } from '../lib/currencyConversion';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
-import { EnvelopeIcon, PhoneIcon, ChatBubbleLeftRightIcon, ChevronDownIcon, ChevronUpIcon } from '@heroicons/react/24/outline';
+import { EnvelopeIcon, PhoneIcon, ChatBubbleLeftRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, PencilIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 
 const CloserSuperPipelinePage = () => {
   const navigate = useNavigate();
-  const [filters, setFilters] = usePersistedFilters('closerSuperPipeline_filters', {
+  const [filters, setFilters] = usePersistedFilters<{
+    fromDate: string;
+    toDate: string;
+    categories: string[];
+    employee: string;
+    languages: string[];
+    stages: string[];
+    tags: string[];
+    minProbability: number;
+    maxProbability: number;
+  }>('closerSuperPipeline_filters', {
     fromDate: '',
     toDate: '',
-    category: '',
+    categories: [], // Changed to array for multi-select
     employee: '',
-    language: '',
-    stage: '',
-    tags: '',
+    languages: [], // Changed to array for multi-select
+    stages: ['40', '50'], // Changed to array, default to stages 40 and 50
+    tags: [], // Changed to array for multi-select
     minProbability: 80,
     maxProbability: 100,
   }, {
@@ -52,10 +62,79 @@ const CloserSuperPipelinePage = () => {
   const [showLanguageDropdown, setShowLanguageDropdown] = useState<boolean>(false);
   const [showStageDropdown, setShowStageDropdown] = useState<boolean>(false);
   const [showTagsDropdown, setShowTagsDropdown] = useState<boolean>(false);
+
+  // Helper function to toggle stage selection
+  const toggleStageSelection = (stageId: string) => {
+    const currentStages = filters.stages || [];
+    if (currentStages.includes(stageId)) {
+      // Remove stage if already selected
+      setFilters(prev => ({
+        ...prev,
+        stages: currentStages.filter(id => id !== stageId)
+      }));
+    } else {
+      // Add stage if not selected
+      setFilters(prev => ({
+        ...prev,
+        stages: [...currentStages, stageId]
+      }));
+    }
+  };
+
+  // Helper function to toggle category selection
+  const toggleCategorySelection = (categoryId: string) => {
+    const currentCategories = filters.categories || [];
+    if (currentCategories.includes(categoryId)) {
+      setFilters(prev => ({
+        ...prev,
+        categories: currentCategories.filter(id => id !== categoryId)
+      }));
+    } else {
+      setFilters(prev => ({
+        ...prev,
+        categories: [...currentCategories, categoryId]
+      }));
+    }
+  };
+
+  // Helper function to toggle language selection
+  const toggleLanguageSelection = (languageId: string) => {
+    const currentLanguages = filters.languages || [];
+    if (currentLanguages.includes(languageId)) {
+      setFilters(prev => ({
+        ...prev,
+        languages: currentLanguages.filter(id => id !== languageId)
+      }));
+    } else {
+      setFilters(prev => ({
+        ...prev,
+        languages: [...currentLanguages, languageId]
+      }));
+    }
+  };
+
+  // Helper function to toggle tag selection
+  const toggleTagSelection = (tag: string) => {
+    const currentTags = filters.tags || [];
+    if (currentTags.includes(tag)) {
+      setFilters(prev => ({
+        ...prev,
+        tags: currentTags.filter(t => t !== tag)
+      }));
+    } else {
+      setFilters(prev => ({
+        ...prev,
+        tags: [...currentTags, tag]
+      }));
+    }
+  };
   const [currentUserId, setCurrentUserId] = useState<number | null>(null);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [interactionsCache, setInteractionsCache] = useState<Map<string, any[]>>(new Map());
   const [loadingInteractions, setLoadingInteractions] = useState<Set<string>>(new Set());
+  const [editingFollowUp, setEditingFollowUp] = useState<{ leadId: string; leadType: 'new' | 'legacy' } | null>(null);
+  const [followUpDate, setFollowUpDate] = useState<string>('');
+  const [savingFollowUp, setSavingFollowUp] = useState(false);
 
   // Fetch current user ID
   useEffect(() => {
@@ -110,11 +189,10 @@ const CloserSuperPipelinePage = () => {
         setLanguages(langData.map(lang => ({ id: lang.id.toString(), name: lang.name })));
       }
 
-      // Fetch stages (only stages 40 and 50 for closer pipeline)
+      // Fetch all stages from lead_stages table
       const { data: stagesData } = await supabase
         .from('lead_stages')
         .select('id, name')
-        .in('id', [40, 50])
         .order('name');
       if (stagesData) {
         setStages(stagesData.map(stage => ({ id: stage.id.toString(), name: stage.name })));
@@ -672,11 +750,11 @@ const CloserSuperPipelinePage = () => {
     setFilters({
       fromDate: '',
       toDate: '',
-      category: '',
+      categories: [], // Reset to empty array
       employee: '',
-      language: '',
-      stage: '',
-      tags: '',
+      languages: [], // Reset to empty array
+      stages: ['40', '50'], // Reset to default stages
+      tags: [], // Reset to empty array
       minProbability: 80,
       maxProbability: 100,
     });
@@ -835,6 +913,126 @@ const CloserSuperPipelinePage = () => {
     }
   };
 
+  const handleEditFollowUp = (lead: any) => {
+    const leadId = lead.id;
+    const leadType = lead.lead_type || (leadId.toString().startsWith('legacy_') ? 'legacy' : 'new');
+    setEditingFollowUp({ leadId, leadType });
+    setFollowUpDate(lead.follow_up_date || '');
+  };
+
+  const handleSaveFollowUp = async () => {
+    if (!editingFollowUp || !currentUserId) return;
+
+    setSavingFollowUp(true);
+    try {
+      const { leadId, leadType } = editingFollowUp;
+      const isLegacyLead = leadType === 'legacy';
+      const actualLeadId = isLegacyLead ? leadId.toString().replace('legacy_', '') : leadId;
+
+      // Check if follow-up already exists for this user and lead
+      let existingFollowUp = null;
+      if (isLegacyLead) {
+        const { data } = await supabase
+          .from('follow_ups')
+          .select('id')
+          .eq('user_id', currentUserId)
+          .eq('lead_id', Number(actualLeadId))
+          .is('new_lead_id', null)
+          .maybeSingle();
+        existingFollowUp = data;
+      } else {
+        const { data } = await supabase
+          .from('follow_ups')
+          .select('id')
+          .eq('user_id', currentUserId)
+          .eq('new_lead_id', actualLeadId)
+          .is('lead_id', null)
+          .maybeSingle();
+        existingFollowUp = data;
+      }
+
+      if (followUpDate && followUpDate.trim() !== '') {
+        const dateValue = followUpDate + 'T00:00:00Z';
+
+        if (existingFollowUp) {
+          // Update existing follow-up
+          const { error } = await supabase
+            .from('follow_ups')
+            .update({ date: dateValue })
+            .eq('id', existingFollowUp.id);
+
+          if (error) {
+            console.error('Error updating follow-up:', error);
+            toast.error('Failed to update follow-up date');
+          } else {
+            toast.success('Follow-up date updated');
+            setEditingFollowUp(null);
+            setFollowUpDate('');
+            // Refresh the search to show updated follow-up date
+            handleSearch(false);
+          }
+        } else {
+          // Create new follow-up
+          const insertData: any = {
+            user_id: currentUserId,
+            date: dateValue,
+            created_at: new Date().toISOString()
+          };
+
+          if (isLegacyLead) {
+            insertData.lead_id = Number(actualLeadId);
+            insertData.new_lead_id = null;
+          } else {
+            insertData.new_lead_id = actualLeadId;
+            insertData.lead_id = null;
+          }
+
+          const { error } = await supabase
+            .from('follow_ups')
+            .insert(insertData);
+
+          if (error) {
+            console.error('Error creating follow-up:', error);
+            toast.error('Failed to save follow-up date');
+          } else {
+            toast.success('Follow-up date saved');
+            setEditingFollowUp(null);
+            setFollowUpDate('');
+            // Refresh the search to show updated follow-up date
+            handleSearch(false);
+          }
+        }
+      } else {
+        // Delete follow-up if date is empty
+        if (existingFollowUp) {
+          const { error } = await supabase
+            .from('follow_ups')
+            .delete()
+            .eq('id', existingFollowUp.id);
+
+          if (error) {
+            console.error('Error deleting follow-up:', error);
+            toast.error('Failed to delete follow-up');
+          } else {
+            toast.success('Follow-up removed');
+            setEditingFollowUp(null);
+            setFollowUpDate('');
+            // Refresh the search to show updated follow-up date
+            handleSearch(false);
+          }
+        } else {
+          setEditingFollowUp(null);
+          setFollowUpDate('');
+        }
+      }
+    } catch (error) {
+      console.error('Error saving follow-up:', error);
+      toast.error('Failed to save follow-up');
+    } finally {
+      setSavingFollowUp(false);
+    }
+  };
+
   const handleSaveManagerNotes = async (lead: any) => {
     const leadId = lead.id || lead.lead_number;
     if (!leadId) return;
@@ -901,12 +1099,15 @@ const CloserSuperPipelinePage = () => {
     try {
       const allLeads: any[] = [];
 
-      // Closer pipeline allowed stages: only stage 40 (Waiting for Mtng sum) and 50 (Mtng sum+Agreement sent)
-      const allowedStageIds = ['40', '50'];
+      // Get selected stages from filters (default to [40, 50] if empty)
+      const selectedStageIds = (filters.stages && filters.stages.length > 0)
+        ? filters.stages.map(id => id.toString())
+        : ['40', '50'];
 
       console.log('🔍 DEBUG: Starting handleSearch', {
         applyDateFilters,
         filters,
+        selectedStageIds,
         minProbability: filters.minProbability,
         maxProbability: filters.maxProbability
       });
@@ -951,50 +1152,36 @@ const CloserSuperPipelinePage = () => {
         .not('closer', 'is', null) // Only leads with closer assigned
         .is('unactivated_at', null); // Only active leads (closer pipeline doesn't check eligible)
 
-      // Apply stage filter for closers
-      if (filters.stage) {
-        if (filters.stage === '--') {
-          // Show NULL stage entries
-          newLeadsQuery = newLeadsQuery.is('stage', null);
-        } else {
-          // If specific stage is selected, filter by that stage only
-          newLeadsQuery = newLeadsQuery.eq('stage', filters.stage);
-        }
-      } else {
-        // Otherwise, use default allowed stages
-        newLeadsQuery = newLeadsQuery.in('stage', allowedStageIds);
+      // Apply stage filter - use selected stages from filters
+      if (selectedStageIds.length > 0) {
+        newLeadsQuery = newLeadsQuery.in('stage', selectedStageIds);
       }
 
       // Apply category filter (main category - need to filter by all subcategories)
-      if (filters.category) {
-        if (filters.category === '--') {
-          // Show NULL category entries
-          newLeadsQuery = newLeadsQuery.is('category_id', null);
-        } else {
-          // Fetch all subcategories for this main category
+      if (filters.categories && filters.categories.length > 0) {
+        // Collect all subcategory IDs for all selected main categories
+        const allSubCategoryIds: string[] = [];
+        for (const categoryId of filters.categories) {
           const { data: subCategories } = await supabase
             .from('misc_category')
             .select('id')
-            .eq('parent_id', filters.category);
+            .eq('parent_id', categoryId);
 
           if (subCategories && subCategories.length > 0) {
-            const subCategoryIds = subCategories.map(sc => sc.id.toString());
-            newLeadsQuery = newLeadsQuery.in('category_id', subCategoryIds);
-          } else {
-            // If no subcategories found, return no results
-            newLeadsQuery = newLeadsQuery.eq('category_id', -1); // Non-existent ID
+            allSubCategoryIds.push(...subCategories.map(sc => sc.id.toString()));
           }
+        }
+        if (allSubCategoryIds.length > 0) {
+          newLeadsQuery = newLeadsQuery.in('category_id', allSubCategoryIds);
+        } else {
+          // If no subcategories found, return no results
+          newLeadsQuery = newLeadsQuery.eq('category_id', -1); // Non-existent ID
         }
       }
 
       // Apply language filter
-      if (filters.language) {
-        if (filters.language === '--') {
-          // Show NULL language entries
-          newLeadsQuery = newLeadsQuery.is('language', null);
-        } else {
-          newLeadsQuery = newLeadsQuery.eq('language', filters.language);
-        }
+      if (filters.languages && filters.languages.length > 0) {
+        newLeadsQuery = newLeadsQuery.in('language', filters.languages);
       }
 
       // Apply employee filter (closer)
@@ -1041,8 +1228,8 @@ const CloserSuperPipelinePage = () => {
           actual: directNewLeadData.closer
         },
         correctStage: {
-          passes: allowedStageIds.includes(directNewLeadData.stage?.toString()),
-          required: allowedStageIds.join(' or '),
+          passes: selectedStageIds.includes(directNewLeadData.stage?.toString()),
+          required: selectedStageIds.join(' or '),
           actual: directNewLeadData.stage
         },
         isActive: {
@@ -1051,13 +1238,17 @@ const CloserSuperPipelinePage = () => {
           actual: directNewLeadData.unactivated_at
         },
         categoryMatch: {
-          passes: !filters.category || directNewLeadData.category_id?.toString() === filters.category,
-          required: filters.category || 'Any',
+          passes: !filters.categories || filters.categories.length === 0 || (() => {
+            // Check if category_id matches any selected main category's subcategories
+            // This is a simplified check - actual filtering happens in query
+            return true; // Will be filtered by query
+          })(),
+          required: filters.categories?.length > 0 ? filters.categories.join(', ') : 'Any',
           actual: directNewLeadData.category_id
         },
         languageMatch: {
-          passes: !filters.language || directNewLeadData.language === filters.language,
-          required: filters.language || 'Any',
+          passes: !filters.languages || filters.languages.length === 0 || filters.languages.includes(directNewLeadData.language),
+          required: filters.languages?.length > 0 ? filters.languages.join(', ') : 'Any',
           actual: directNewLeadData.language
         },
         employeeMatch: {
@@ -1106,7 +1297,7 @@ const CloserSuperPipelinePage = () => {
             passes: newLeadFilterChecks.correctStage?.passes,
             required: newLeadFilterChecks.correctStage?.required,
             actual: newLeadFilterChecks.correctStage?.actual,
-            allowedStages: allowedStageIds
+            allowedStages: selectedStageIds
           },
           isActive: {
             passes: newLeadFilterChecks.isActive?.passes,
@@ -1117,13 +1308,13 @@ const CloserSuperPipelinePage = () => {
             passes: newLeadFilterChecks.categoryMatch?.passes,
             required: newLeadFilterChecks.categoryMatch?.required,
             actual: newLeadFilterChecks.categoryMatch?.actual,
-            filterCategory: filters.category
+            filterCategories: filters.categories?.length > 0 ? filters.categories.join(', ') : 'Any'
           },
           languageMatch: {
             passes: newLeadFilterChecks.languageMatch?.passes,
             required: newLeadFilterChecks.languageMatch?.required,
             actual: newLeadFilterChecks.languageMatch?.actual,
-            filterLanguage: filters.language
+            filterLanguages: filters.languages?.length > 0 ? filters.languages.join(', ') : 'Any'
           },
           employeeMatch: {
             passes: newLeadFilterChecks.employeeMatch?.passes,
@@ -1152,12 +1343,12 @@ const CloserSuperPipelinePage = () => {
 
       console.log('🔍 DEBUG: Executing new leads query...', {
         activeFilters: {
-          stage: allowedStageIds,
+          stages: selectedStageIds,
           probability: `${filters.minProbability}-${filters.maxProbability}`,
           closer: 'not null',
           unactivated_at: 'null',
-          category: filters.category || 'any',
-          language: filters.language || 'any',
+          categories: filters.categories?.length > 0 ? filters.categories.join(', ') : 'any',
+          languages: filters.languages?.length > 0 ? filters.languages.join(', ') : 'any',
           employee: filters.employee ? (employees.find(emp => emp.id.toString() === filters.employee)?.name || 'NOT FOUND') : 'any'
         }
       });
@@ -1210,109 +1401,26 @@ const CloserSuperPipelinePage = () => {
         }
       }
 
-      // Fetch follow-up dates for new leads (current user first, then closer as fallback)
+      // Fetch follow-up dates for new leads (only current user's follow-ups)
       const followUpDatesMap: Record<string, string> = {};
-      const closerFollowUpDatesMap: Record<string, string> = {};
 
-      if (newLeadIds.length > 0) {
-        // First, fetch current user's follow-ups
-        if (currentUserId) {
-          const { data: followUpsData } = await supabase
-            .from('follow_ups')
-            .select('new_lead_id, date')
-            .eq('user_id', currentUserId)
-            .in('new_lead_id', newLeadIds)
-            .is('lead_id', null);
+      if (newLeadIds.length > 0 && currentUserId) {
+        const { data: followUpsData } = await supabase
+          .from('follow_ups')
+          .select('new_lead_id, date')
+          .eq('user_id', currentUserId)
+          .in('new_lead_id', newLeadIds)
+          .is('lead_id', null);
 
-          if (followUpsData) {
-            followUpsData.forEach((fu: any) => {
-              if (fu.date && fu.new_lead_id) {
-                const dateStr = typeof fu.date === 'string'
-                  ? fu.date.split('T')[0]
-                  : new Date(fu.date).toISOString().split('T')[0];
-                followUpDatesMap[fu.new_lead_id] = dateStr;
-              }
-            });
-          }
-        }
-
-        // Then, fetch closer's follow-ups for leads where current user has no follow-up
-        const leadsNeedingCloserFollowUp = newLeads?.filter((lead: any) =>
-          lead.closer && !followUpDatesMap[lead.id]
-        ) || [];
-
-        if (leadsNeedingCloserFollowUp.length > 0) {
-          // Get unique closer names
-          const closerNames = [...new Set(leadsNeedingCloserFollowUp.map((lead: any) => lead.closer).filter(Boolean))];
-
-          // Fetch employee IDs for these closers
-          if (closerNames.length > 0) {
-            const { data: closerEmployees } = await supabase
-              .from('tenants_employee')
-              .select('id, display_name')
-              .in('display_name', closerNames);
-
-            if (closerEmployees && closerEmployees.length > 0) {
-              // Create a map of closer name to employee ID
-              const closerNameToEmployeeId: Record<string, number> = {};
-              closerEmployees.forEach((emp: any) => {
-                closerNameToEmployeeId[emp.display_name] = emp.id;
-              });
-
-              // Get user IDs for these employee IDs
-              const employeeIds = closerEmployees.map((emp: any) => emp.id);
-              const { data: closerUsers } = await supabase
-                .from('users')
-                .select('id, employee_id')
-                .in('employee_id', employeeIds);
-
-              if (closerUsers && closerUsers.length > 0) {
-                // Create a map of employee ID to user ID
-                const employeeIdToUserId: Record<number, string> = {};
-                closerUsers.forEach((user: any) => {
-                  if (user.employee_id) {
-                    employeeIdToUserId[user.employee_id] = user.id;
-                  }
-                });
-
-                // For each lead, get the closer's user ID and fetch their follow-up
-                const closerUserIds = [...new Set(Object.values(employeeIdToUserId))];
-                if (closerUserIds.length > 0) {
-                  const { data: closerFollowUpsData } = await supabase
-                    .from('follow_ups')
-                    .select('new_lead_id, date, user_id')
-                    .in('user_id', closerUserIds)
-                    .in('new_lead_id', leadsNeedingCloserFollowUp.map((l: any) => l.id))
-                    .is('lead_id', null);
-
-                  if (closerFollowUpsData) {
-                    // Group by new_lead_id and find the matching closer's follow-up
-                    closerFollowUpsData.forEach((fu: any) => {
-                      if (fu.date && fu.new_lead_id) {
-                        const lead = leadsNeedingCloserFollowUp.find((l: any) => l.id === fu.new_lead_id);
-                        if (lead) {
-                          // Find which employee this user_id belongs to
-                          const employeeId = Object.keys(employeeIdToUserId).find(
-                            (empId) => employeeIdToUserId[Number(empId)] === fu.user_id
-                          );
-                          if (employeeId) {
-                            const employee = closerEmployees.find((emp: any) => emp.id === Number(employeeId));
-                            if (employee && employee.display_name === lead.closer) {
-                              // This is the closer's follow-up for this lead
-                              const dateStr = typeof fu.date === 'string'
-                                ? fu.date.split('T')[0]
-                                : new Date(fu.date).toISOString().split('T')[0];
-                              closerFollowUpDatesMap[fu.new_lead_id] = dateStr;
-                            }
-                          }
-                        }
-                      }
-                    });
-                  }
-                }
-              }
+        if (followUpsData) {
+          followUpsData.forEach((fu: any) => {
+            if (fu.date && fu.new_lead_id) {
+              const dateStr = typeof fu.date === 'string'
+                ? fu.date.split('T')[0]
+                : new Date(fu.date).toISOString().split('T')[0];
+              followUpDatesMap[fu.new_lead_id] = dateStr;
             }
-          }
+          });
         }
       }
 
@@ -1474,7 +1582,7 @@ const CloserSuperPipelinePage = () => {
             closer: lead.closer || '---', // Show --- if NULL
             scheduler: lead.scheduler || '---', // Show --- if NULL
             meeting_date: meetingDatesMap[lead.id] || null,
-            follow_up_date: followUpDatesMap[lead.id] || closerFollowUpDatesMap[lead.id] || null,
+            follow_up_date: followUpDatesMap[lead.id] || null,
             follow_up_notes: null, // New leads don't have follow-up notes in leads table
             latest_interaction: lead.latest_interaction || null, // Add latest_interaction
             balance_currency: balanceCurrency,
@@ -1489,8 +1597,8 @@ const CloserSuperPipelinePage = () => {
       }
 
       // Fetch legacy leads
-      // Closer pipeline allowed legacy stages: only stage 40 (Waiting for Mtng sum) and 50 (Mtng sum+Agreement sent)
-      const allowedLegacyStageIds = [40, 50];
+      // Get selected stages for legacy (convert to numbers)
+      const selectedLegacyStageIds = selectedStageIds.map(id => Number(id));
 
       console.log('🔍 DEBUG: Starting legacy leads query', {
         minProbability: filters.minProbability,
@@ -1499,7 +1607,7 @@ const CloserSuperPipelinePage = () => {
         maxProbabilityType: typeof filters.maxProbability,
         minProbabilityNumber: Number(filters.minProbability),
         maxProbabilityNumber: Number(filters.maxProbability),
-        allowedLegacyStageIds,
+        selectedLegacyStageIds,
         applyDateFilters,
         filters
       });
@@ -1539,17 +1647,9 @@ const CloserSuperPipelinePage = () => {
         .neq('probability', '') // Exclude empty strings
         .eq('status', 0); // Only active leads
 
-      // Apply stage filter for legacy leads
-      if (filters.stage) {
-        if (filters.stage === '--') {
-          // Show NULL stage entries
-          legacyLeadsQuery = legacyLeadsQuery.is('stage', null);
-        } else {
-          legacyLeadsQuery = legacyLeadsQuery.eq('stage', Number(filters.stage));
-        }
-      } else {
-        // Otherwise, use default allowed stages
-        legacyLeadsQuery = legacyLeadsQuery.in('stage', allowedLegacyStageIds);
+      // Apply stage filter for legacy leads - use selected stages
+      if (selectedLegacyStageIds.length > 0) {
+        legacyLeadsQuery = legacyLeadsQuery.in('stage', selectedLegacyStageIds);
       }
 
       // Apply closer_id filter (only if not filtering for NULL)
@@ -1568,35 +1668,31 @@ const CloserSuperPipelinePage = () => {
       }
 
       // Apply category filter (main category - need to filter by all subcategories)
-      if (filters.category) {
-        if (filters.category === '--') {
-          // Show NULL category entries
-          legacyLeadsQuery = legacyLeadsQuery.is('category_id', null);
-        } else {
-          // Fetch all subcategories for this main category
+      if (filters.categories && filters.categories.length > 0) {
+        // Collect all subcategory IDs for all selected main categories
+        const allSubCategoryIds: number[] = [];
+        for (const categoryId of filters.categories) {
           const { data: subCategories } = await supabase
             .from('misc_category')
             .select('id')
-            .eq('parent_id', filters.category);
+            .eq('parent_id', categoryId);
 
           if (subCategories && subCategories.length > 0) {
-            const subCategoryIds = subCategories.map(sc => sc.id);
-            legacyLeadsQuery = legacyLeadsQuery.in('category_id', subCategoryIds);
-          } else {
-            // If no subcategories found, return no results
-            legacyLeadsQuery = legacyLeadsQuery.eq('category_id', -1); // Non-existent ID
+            allSubCategoryIds.push(...subCategories.map(sc => sc.id));
           }
+        }
+        if (allSubCategoryIds.length > 0) {
+          legacyLeadsQuery = legacyLeadsQuery.in('category_id', allSubCategoryIds);
+        } else {
+          // If no subcategories found, return no results
+          legacyLeadsQuery = legacyLeadsQuery.eq('category_id', -1); // Non-existent ID
         }
       }
 
       // Apply language filter
-      if (filters.language) {
-        if (filters.language === '--') {
-          // Show NULL language entries
-          legacyLeadsQuery = legacyLeadsQuery.is('language_id', null);
-        } else {
-          legacyLeadsQuery = legacyLeadsQuery.eq('language_id', Number(filters.language));
-        }
+      if (filters.languages && filters.languages.length > 0) {
+        const languageIds = filters.languages.map(lang => Number(lang));
+        legacyLeadsQuery = legacyLeadsQuery.in('language_id', languageIds);
       }
 
       // Apply employee filter (closer)
@@ -1615,14 +1711,14 @@ const CloserSuperPipelinePage = () => {
       console.log('🔍 DEBUG: Active filters for legacy leads query', {
         minProbability: filters.minProbability,
         maxProbability: filters.maxProbability,
-        category: filters.category,
+        categories: filters.categories?.length > 0 ? filters.categories.join(', ') : 'any',
         employee: filters.employee,
-        language: filters.language,
+        languages: filters.languages?.length > 0 ? filters.languages.join(', ') : 'any',
         fromDate: filters.fromDate,
         toDate: filters.toDate,
         applyDateFilters,
-        allowedLegacyStageIds: [40, 50],
-        stageFilter: 'stages 40 or 50',
+        selectedLegacyStageIds,
+        stageFilter: `stages ${selectedLegacyStageIds.join(' or ')}`,
         statusFilter: 'status = 0',
         closerFilter: 'closer_id IS NOT NULL',
         probabilityFilter: 'probability IS NOT NULL AND probability != ""'
@@ -1641,7 +1737,7 @@ const CloserSuperPipelinePage = () => {
         const hasProbability = directLeadData.probability !== null && directLeadData.probability !== '';
         const hasCloser = directLeadData.closer_id !== null;
         const correctStatus = directLeadData.status === 0;
-        const correctStage = [40, 50].includes(Number(directLeadData.stage));
+        const correctStage = selectedLegacyStageIds.includes(Number(directLeadData.stage));
         const passesAll = hasProbability && hasCloser && correctStatus && correctStage;
 
         console.log('🔍 DEBUG: Direct query for lead 76792 - FULL DETAILS', {
@@ -1664,7 +1760,7 @@ const CloserSuperPipelinePage = () => {
             hasProbability: { result: hasProbability, required: 'probability IS NOT NULL AND != ""', actual: directLeadData.probability },
             hasCloser: { result: hasCloser, required: 'closer_id IS NOT NULL', actual: directLeadData.closer_id },
             correctStatus: { result: correctStatus, required: 'status = 0', actual: directLeadData.status },
-            correctStage: { result: correctStage, required: 'stage IN (40, 50)', actual: directLeadData.stage, stageNumber: Number(directLeadData.stage) }
+            correctStage: { result: correctStage, required: `stage IN (${selectedLegacyStageIds.join(', ')})`, actual: directLeadData.stage, stageNumber: Number(directLeadData.stage) }
           },
           passesAllFilters: passesAll,
           failingFilters: [
@@ -1846,32 +1942,27 @@ const CloserSuperPipelinePage = () => {
         }
       }
 
-      // Fetch follow-up dates for legacy leads (current user first, then closer as fallback)
+      // Fetch follow-up dates for legacy leads (only current user's follow-ups)
       const legacyFollowUpDatesMap: Record<number, string> = {};
-      const legacyCloserFollowUpDatesMap: Record<number, string> = {};
 
-      if (legacyLeadIds.length > 0) {
-        // First, fetch current user's follow-ups
-        if (currentUserId) {
-          const { data: legacyFollowUpsData } = await supabase
-            .from('follow_ups')
-            .select('lead_id, date')
-            .eq('user_id', currentUserId)
-            .in('lead_id', legacyLeadIds)
-            .is('new_lead_id', null);
+      if (legacyLeadIds.length > 0 && currentUserId) {
+        const { data: legacyFollowUpsData } = await supabase
+          .from('follow_ups')
+          .select('lead_id, date')
+          .eq('user_id', currentUserId)
+          .in('lead_id', legacyLeadIds)
+          .is('new_lead_id', null);
 
-          if (legacyFollowUpsData) {
-            legacyFollowUpsData.forEach((fu: any) => {
-              if (fu.date && fu.lead_id) {
-                const dateStr = typeof fu.date === 'string'
-                  ? fu.date.split('T')[0]
-                  : new Date(fu.date).toISOString().split('T')[0];
-                legacyFollowUpDatesMap[fu.lead_id] = dateStr;
-              }
-            });
-          }
+        if (legacyFollowUpsData) {
+          legacyFollowUpsData.forEach((fu: any) => {
+            if (fu.date && fu.lead_id) {
+              const dateStr = typeof fu.date === 'string'
+                ? fu.date.split('T')[0]
+                : new Date(fu.date).toISOString().split('T')[0];
+              legacyFollowUpDatesMap[fu.lead_id] = dateStr;
+            }
+          });
         }
-
       }
 
       // Fetch tags for legacy leads
@@ -1933,64 +2024,6 @@ const CloserSuperPipelinePage = () => {
             schedulerData.forEach((emp: any) => {
               schedulerMap[emp.id] = emp.display_name || `Employee #${emp.id}`;
             });
-          }
-        }
-
-        // Fetch closer's follow-ups for leads where current user has no follow-up
-        if (closerIds.length > 0) {
-          // Get user IDs for closer employee IDs
-          const { data: closerUsers } = await supabase
-            .from('users')
-            .select('id, employee_id')
-            .in('employee_id', closerIds);
-
-          if (closerUsers && closerUsers.length > 0) {
-            // Create a map of employee_id to user_id
-            const closerEmployeeIdToUserId: Record<number, string> = {};
-            closerUsers.forEach((user: any) => {
-              if (user.employee_id) {
-                closerEmployeeIdToUserId[user.employee_id] = user.id;
-              }
-            });
-
-            // Get leads that need closer follow-up (where current user has no follow-up)
-            const leadsNeedingCloserFollowUp = legacyLeadsToProcess.filter((lead: any) =>
-              lead.closer_id && !legacyFollowUpDatesMap[lead.id]
-            );
-
-            if (leadsNeedingCloserFollowUp.length > 0) {
-              const closerUserIds = [...new Set(Object.values(closerEmployeeIdToUserId))];
-              const leadIdsNeedingCloserFollowUp = leadsNeedingCloserFollowUp.map((l: any) => l.id);
-
-              if (closerUserIds.length > 0 && leadIdsNeedingCloserFollowUp.length > 0) {
-                const { data: closerFollowUpsData } = await supabase
-                  .from('follow_ups')
-                  .select('lead_id, date, user_id')
-                  .in('user_id', closerUserIds)
-                  .in('lead_id', leadIdsNeedingCloserFollowUp)
-                  .is('new_lead_id', null);
-
-                if (closerFollowUpsData) {
-                  // Match follow-ups to leads by checking if the user_id belongs to the lead's closer
-                  closerFollowUpsData.forEach((fu: any) => {
-                    if (fu.date && fu.lead_id) {
-                      const lead = leadsNeedingCloserFollowUp.find((l: any) => l.id === fu.lead_id);
-                      if (lead && lead.closer_id) {
-                        // Check if this user_id belongs to this lead's closer
-                        const userIdForThisCloser = closerEmployeeIdToUserId[lead.closer_id];
-                        if (userIdForThisCloser === fu.user_id) {
-                          // This is the closer's follow-up for this lead
-                          const dateStr = typeof fu.date === 'string'
-                            ? fu.date.split('T')[0]
-                            : new Date(fu.date).toISOString().split('T')[0];
-                          legacyCloserFollowUpDatesMap[fu.lead_id] = dateStr;
-                        }
-                      }
-                    }
-                  });
-                }
-              }
-            }
           }
         }
 
@@ -2127,7 +2160,7 @@ const CloserSuperPipelinePage = () => {
             manager_notes: managerNotesText,
             lead_type: 'legacy',
             meeting_date: meetingDate,
-            follow_up_date: legacyFollowUpDatesMap[lead.id] || legacyCloserFollowUpDatesMap[lead.id] || null,
+            follow_up_date: legacyFollowUpDatesMap[lead.id] || null,
             follow_up_notes: lead.followup_log || null,
             latest_interaction: lead.latest_interaction || null, // Add latest_interaction
             tags: legacyTagsMap.get(lead.id)?.join(', ') || '', // Add tags
@@ -2177,19 +2210,15 @@ const CloserSuperPipelinePage = () => {
 
       // Apply tags filter client-side (if filter is set)
       let filteredAllLeads = allLeads;
-      if (filters.tags) {
-        if (filters.tags === '--') {
-          // Show NULL/empty tags entries
-          filteredAllLeads = allLeads.filter((lead: any) => {
-            const leadTags = lead.tags || '';
-            return !leadTags || leadTags.trim() === '';
-          });
-        } else {
-          filteredAllLeads = allLeads.filter((lead: any) => {
-            const leadTags = lead.tags || '';
-            return leadTags.toLowerCase().includes(filters.tags.toLowerCase());
-          });
-        }
+      if (filters.tags && filters.tags.length > 0) {
+        filteredAllLeads = allLeads.filter((lead: any) => {
+          const leadTags = lead.tags || '';
+          if (!leadTags || leadTags.trim() === '') return false;
+          // Check if any of the selected tags are in the lead's tags
+          return filters.tags.some(tag =>
+            leadTags.toLowerCase().includes(tag.toLowerCase())
+          );
+        });
       }
 
       // Sort by probability (highest first), then by created_at (newest first)
@@ -2255,19 +2284,8 @@ const CloserSuperPipelinePage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty dependency array means this runs once on mount
 
-  // Sync search inputs with selected filters
-  useEffect(() => {
-    if (filters.category) {
-      if (filters.category === '--') {
-        setCategorySearch('--');
-      } else {
-        const selectedCategory = categories.find(cat => cat.id.toString() === filters.category);
-        setCategorySearch(selectedCategory ? selectedCategory.name : '');
-      }
-    } else {
-      setCategorySearch('');
-    }
-  }, [filters.category, categories]);
+  // Sync search inputs with selected filters - categories now handled by chips display
+  // Search input is only for filtering dropdown options
 
   useEffect(() => {
     if (filters.employee) {
@@ -2282,18 +2300,7 @@ const CloserSuperPipelinePage = () => {
     }
   }, [filters.employee, employees]);
 
-  useEffect(() => {
-    if (filters.language) {
-      if (filters.language === '--') {
-        setLanguageSearch('--');
-      } else {
-        const selectedLanguage = languages.find(lang => lang.id === filters.language);
-        setLanguageSearch(selectedLanguage ? selectedLanguage.name : '');
-      }
-    } else {
-      setLanguageSearch('');
-    }
-  }, [filters.language, languages]);
+  // Languages now handled by chips display - search input is only for filtering dropdown options
 
   // Apply sorting when sortColumn or sortDirection changes
   useEffect(() => {
@@ -2456,31 +2463,15 @@ const CloserSuperPipelinePage = () => {
     }
   };
 
-  // Add useEffect hooks for stage and tags
-  useEffect(() => {
-    if (filters.stage) {
-      if (filters.stage === '--') {
-        setStageSearch('--');
-      } else {
-        const selectedStage = stages.find(stage => stage.id.toString() === filters.stage);
-        setStageSearch(selectedStage ? selectedStage.name : '');
-      }
-    } else {
-      setStageSearch('');
-    }
-  }, [filters.stage, stages]);
+  // Update stage search for filtering dropdown options
+  // Note: Selected stages are now displayed as chips in the input field
+  // This search is only for filtering the dropdown options
 
-  useEffect(() => {
-    if (filters.tags === '--') {
-      setTagsSearch('--');
-    } else {
-      setTagsSearch(filters.tags || '');
-    }
-  }, [filters.tags]);
+  // Tags now handled by chips display - search input is only for filtering dropdown options
 
   return (
     <div className="px-2 py-6">
-      <h2 className="text-2xl font-bold mb-6 px-4">Closer Super Pipeline / General Sales</h2>
+      <h2 className="text-2xl font-bold mb-6 px-4">Sales Pipeline</h2>
 
       {/* Filters */}
       <div className="mb-6 px-4">
@@ -2504,60 +2495,90 @@ const CloserSuperPipelinePage = () => {
             />
           </div>
           <div className="relative">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
-            <input
-              type="text"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Search category..."
-              value={categorySearch}
-              onChange={(e) => {
-                setCategorySearch(e.target.value);
-                setShowCategoryDropdown(true);
-                if (!e.target.value) {
-                  handleFilterChange('category', '');
-                }
-              }}
-              onFocus={() => setShowCategoryDropdown(true)}
-              onBlur={() => setTimeout(() => setShowCategoryDropdown(false), 200)}
-            />
-            {showCategoryDropdown && (
-              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                <div
-                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                  onClick={() => {
-                    handleFilterChange('category', '');
-                    setCategorySearch('');
-                    setShowCategoryDropdown(false);
-                  }}
-                >
-                  All Categories
-                </div>
-                <div
-                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm font-semibold text-gray-600"
-                  onClick={() => {
-                    handleFilterChange('category', '--');
-                    setCategorySearch('--');
-                    setShowCategoryDropdown(false);
-                  }}
-                >
-                  -- (NULL)
-                </div>
-                {filteredCategories.map((cat) => {
+            <label className="block text-sm font-medium text-gray-700 mb-1">Category (Multi-select)</label>
+            <div
+              className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
+              onClick={() => setShowCategoryDropdown(true)}
+            >
+              {filters.categories && filters.categories.length > 0 ? (
+                filters.categories.map((categoryId) => {
+                  const category = categories.find(c => c.id.toString() === categoryId.toString());
+                  if (!category) return null;
                   return (
                     <div
-                      key={cat.id}
-                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                      onClick={() => {
-                        handleFilterChange('category', cat.id.toString());
-                        setCategorySearch(cat.name);
-                        setShowCategoryDropdown(false);
-                      }}
+                      key={categoryId}
+                      className="badge badge-primary badge-sm flex items-center gap-1"
                     >
-                      {cat.name}
+                      <span>{category.name}</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleCategorySelection(categoryId.toString());
+                        }}
+                        className="ml-1 hover:bg-primary-focus rounded-full p-0.5"
+                      >
+                        <XMarkIcon className="w-3 h-3" />
+                      </button>
                     </div>
                   );
-                })}
-              </div>
+                })
+              ) : (
+                <span className="text-gray-400 text-sm">Click to select categories...</span>
+              )}
+            </div>
+            {showCategoryDropdown && (
+              <>
+                <div
+                  className="fixed inset-0 z-[5]"
+                  onClick={() => setShowCategoryDropdown(false)}
+                />
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div className="sticky top-0 bg-white border-b border-gray-200 px-4 py-2">
+                    <input
+                      type="text"
+                      className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      placeholder="Search categories..."
+                      value={categorySearch}
+                      onChange={(e) => setCategorySearch(e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                      onFocus={(e) => e.stopPropagation()}
+                    />
+                  </div>
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setFilters(prev => ({ ...prev, categories: [] }));
+                      setCategorySearch('');
+                    }}
+                  >
+                    Clear All
+                  </div>
+                  <div className="border-t border-gray-200 my-1"></div>
+                  {filteredCategories.map((cat) => {
+                    const isSelected = filters.categories?.includes(cat.id.toString()) || false;
+                    return (
+                      <div
+                        key={cat.id}
+                        className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleCategorySelection(cat.id.toString());
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleCategorySelection(cat.id.toString())}
+                          onClick={(e) => e.stopPropagation()}
+                          className="checkbox checkbox-sm checkbox-primary"
+                        />
+                        <span className={isSelected ? 'font-semibold' : ''}>{cat.name}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
             )}
           </div>
           <div className="relative">
@@ -2616,166 +2637,270 @@ const CloserSuperPipelinePage = () => {
             )}
           </div>
           <div className="relative">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Language</label>
-            <input
-              type="text"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Search language..."
-              value={languageSearch}
-              onChange={(e) => {
-                setLanguageSearch(e.target.value);
-                setShowLanguageDropdown(true);
-                if (!e.target.value) {
-                  handleFilterChange('language', '');
-                }
-              }}
-              onFocus={() => setShowLanguageDropdown(true)}
-              onBlur={() => setTimeout(() => setShowLanguageDropdown(false), 200)}
-            />
+            <label className="block text-sm font-medium text-gray-700 mb-1">Language (Multi-select)</label>
+            <div
+              className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
+              onClick={() => setShowLanguageDropdown(true)}
+            >
+              {filters.languages && filters.languages.length > 0 ? (
+                filters.languages.map((languageId) => {
+                  const language = languages.find(l => l.id.toString() === languageId.toString());
+                  if (!language) return null;
+                  return (
+                    <div
+                      key={languageId}
+                      className="badge badge-primary badge-sm flex items-center gap-1"
+                    >
+                      <span>{language.name}</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleLanguageSelection(languageId.toString());
+                        }}
+                        className="ml-1 hover:bg-primary-focus rounded-full p-0.5"
+                      >
+                        <XMarkIcon className="w-3 h-3" />
+                      </button>
+                    </div>
+                  );
+                })
+              ) : (
+                <span className="text-gray-400 text-sm">Click to select languages...</span>
+              )}
+            </div>
             {showLanguageDropdown && (
-              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+              <>
                 <div
-                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                  onClick={() => {
-                    handleFilterChange('language', '');
-                    setLanguageSearch('');
-                    setShowLanguageDropdown(false);
-                  }}
-                >
-                  All Languages
-                </div>
-                <div
-                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm font-semibold text-gray-600"
-                  onClick={() => {
-                    handleFilterChange('language', '--');
-                    setLanguageSearch('--');
-                    setShowLanguageDropdown(false);
-                  }}
-                >
-                  -- (NULL)
-                </div>
-                {filteredLanguages.map((lang) => (
+                  className="fixed inset-0 z-[5]"
+                  onClick={() => setShowLanguageDropdown(false)}
+                />
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div className="sticky top-0 bg-white border-b border-gray-200 px-4 py-2">
+                    <input
+                      type="text"
+                      className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      placeholder="Search languages..."
+                      value={languageSearch}
+                      onChange={(e) => setLanguageSearch(e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                      onFocus={(e) => e.stopPropagation()}
+                    />
+                  </div>
                   <div
-                    key={lang.id}
                     className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                    onClick={() => {
-                      handleFilterChange('language', lang.id);
-                      setLanguageSearch(lang.name);
-                      setShowLanguageDropdown(false);
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setFilters(prev => ({ ...prev, languages: [] }));
+                      setLanguageSearch('');
                     }}
                   >
-                    {lang.name}
+                    Clear All
                   </div>
-                ))}
-              </div>
+                  <div className="border-t border-gray-200 my-1"></div>
+                  {filteredLanguages.map((lang) => {
+                    const isSelected = filters.languages?.includes(lang.id.toString()) || false;
+                    return (
+                      <div
+                        key={lang.id}
+                        className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleLanguageSelection(lang.id.toString());
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleLanguageSelection(lang.id.toString())}
+                          onClick={(e) => e.stopPropagation()}
+                          className="checkbox checkbox-sm checkbox-primary"
+                        />
+                        <span className={isSelected ? 'font-semibold' : ''}>{lang.name}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
             )}
           </div>
           <div className="relative">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Stage</label>
-            <input
-              type="text"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Search stage..."
-              value={stageSearch}
-              onChange={(e) => {
-                setStageSearch(e.target.value);
-                setShowStageDropdown(true);
-                if (!e.target.value) {
-                  handleFilterChange('stage', '');
-                }
-              }}
-              onFocus={() => setShowStageDropdown(true)}
-              onBlur={() => setTimeout(() => setShowStageDropdown(false), 200)}
-            />
+            <label className="block text-sm font-medium text-gray-700 mb-1">Stage (Multi-select)</label>
+            <div
+              className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
+              onClick={() => setShowStageDropdown(true)}
+            >
+              {filters.stages && filters.stages.length > 0 ? (
+                filters.stages.map((stageId) => {
+                  const stage = stages.find(s => s.id.toString() === stageId.toString());
+                  if (!stage) return null;
+                  return (
+                    <div
+                      key={stageId}
+                      className="badge badge-primary badge-sm flex items-center gap-1"
+                    >
+                      <span>{stage.name}</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleStageSelection(stageId.toString());
+                        }}
+                        className="ml-1 hover:bg-primary-focus rounded-full p-0.5"
+                      >
+                        <XMarkIcon className="w-3 h-3" />
+                      </button>
+                    </div>
+                  );
+                })
+              ) : (
+                <span className="text-gray-400 text-sm">Click to select stages...</span>
+              )}
+            </div>
             {showStageDropdown && (
-              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+              <>
                 <div
-                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                  onClick={() => {
-                    handleFilterChange('stage', '');
-                    setStageSearch('');
-                    setShowStageDropdown(false);
-                  }}
-                >
-                  All Stages
-                </div>
-                <div
-                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm font-semibold text-gray-600"
-                  onClick={() => {
-                    handleFilterChange('stage', '--');
-                    setStageSearch('--');
-                    setShowStageDropdown(false);
-                  }}
-                >
-                  -- (NULL)
-                </div>
-                {filteredStages.map((stage) => (
+                  className="fixed inset-0 z-[5]"
+                  onClick={() => setShowStageDropdown(false)}
+                />
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div className="sticky top-0 bg-white border-b border-gray-200 px-4 py-2">
+                    <input
+                      type="text"
+                      className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      placeholder="Search stages..."
+                      value={stageSearch}
+                      onChange={(e) => setStageSearch(e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                      onFocus={(e) => e.stopPropagation()}
+                    />
+                  </div>
                   <div
-                    key={stage.id}
-                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                    onClick={() => {
-                      handleFilterChange('stage', stage.id.toString());
-                      setStageSearch(stage.name);
-                      setShowStageDropdown(false);
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm font-semibold"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setFilters(prev => ({ ...prev, stages: ['40', '50'] }));
+                      setStageSearch('');
                     }}
                   >
-                    {stage.name}
+                    Reset to Default (40, 50)
                   </div>
-                ))}
-              </div>
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setFilters(prev => ({ ...prev, stages: [] }));
+                      setStageSearch('');
+                    }}
+                  >
+                    Clear All
+                  </div>
+                  <div className="border-t border-gray-200 my-1"></div>
+                  {filteredStages.map((stage) => {
+                    const isSelected = filters.stages?.includes(stage.id.toString()) || false;
+                    return (
+                      <div
+                        key={stage.id}
+                        className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleStageSelection(stage.id.toString());
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleStageSelection(stage.id.toString())}
+                          onClick={(e) => e.stopPropagation()}
+                          className="checkbox checkbox-sm checkbox-primary"
+                        />
+                        <span className={isSelected ? 'font-semibold' : ''}>{stage.name}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
             )}
           </div>
           <div className="relative">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Tags</label>
-            <input
-              type="text"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="Search tags..."
-              value={tagsSearch}
-              onChange={(e) => {
-                setTagsSearch(e.target.value);
-                setShowTagsDropdown(true);
-                handleFilterChange('tags', e.target.value);
-              }}
-              onFocus={() => setShowTagsDropdown(true)}
-              onBlur={() => setTimeout(() => setShowTagsDropdown(false), 200)}
-            />
-            {showTagsDropdown && (
-              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                <div
-                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                  onClick={() => {
-                    handleFilterChange('tags', '');
-                    setTagsSearch('');
-                    setShowTagsDropdown(false);
-                  }}
-                >
-                  All Tags
-                </div>
-                <div
-                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm font-semibold text-gray-600"
-                  onClick={() => {
-                    handleFilterChange('tags', '--');
-                    setTagsSearch('--');
-                    setShowTagsDropdown(false);
-                  }}
-                >
-                  -- (NULL/No Tags)
-                </div>
-                {filteredTags.map((tag, index) => (
+            <label className="block text-sm font-medium text-gray-700 mb-1">Tags (Multi-select)</label>
+            <div
+              className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
+              onClick={() => setShowTagsDropdown(true)}
+            >
+              {filters.tags && filters.tags.length > 0 ? (
+                filters.tags.map((tag) => (
                   <div
-                    key={`${tag}-${index}`}
+                    key={tag}
+                    className="badge badge-primary badge-sm flex items-center gap-1"
+                  >
+                    <span>{tag}</span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleTagSelection(tag);
+                      }}
+                      className="ml-1 hover:bg-primary-focus rounded-full p-0.5"
+                    >
+                      <XMarkIcon className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <span className="text-gray-400 text-sm">Click to select tags...</span>
+              )}
+            </div>
+            {showTagsDropdown && (
+              <>
+                <div
+                  className="fixed inset-0 z-[5]"
+                  onClick={() => setShowTagsDropdown(false)}
+                />
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div className="sticky top-0 bg-white border-b border-gray-200 px-4 py-2">
+                    <input
+                      type="text"
+                      className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      placeholder="Search tags..."
+                      value={tagsSearch}
+                      onChange={(e) => setTagsSearch(e.target.value)}
+                      onClick={(e) => e.stopPropagation()}
+                      onFocus={(e) => e.stopPropagation()}
+                    />
+                  </div>
+                  <div
                     className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                    onClick={() => {
-                      handleFilterChange('tags', tag);
-                      setTagsSearch(tag);
-                      setShowTagsDropdown(false);
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setFilters(prev => ({ ...prev, tags: [] }));
+                      setTagsSearch('');
                     }}
                   >
-                    {tag}
+                    Clear All
                   </div>
-                ))}
-              </div>
+                  <div className="border-t border-gray-200 my-1"></div>
+                  {filteredTags.map((tag, index) => {
+                    const isSelected = filters.tags?.includes(tag) || false;
+                    return (
+                      <div
+                        key={`${tag}-${index}`}
+                        className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleTagSelection(tag);
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleTagSelection(tag)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="checkbox checkbox-sm checkbox-primary"
+                        />
+                        <span className={isSelected ? 'font-semibold' : ''}>{tag}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
             )}
           </div>
         </div>
@@ -3063,7 +3188,16 @@ const CloserSuperPipelinePage = () => {
                             {lead.meeting_date ? new Date(lead.meeting_date).toLocaleDateString() : '---'}
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                            {lead.follow_up_date ? new Date(lead.follow_up_date).toLocaleDateString() : '---'}
+                            <div className="flex items-center gap-2 group">
+                              <span>{lead.follow_up_date ? new Date(lead.follow_up_date).toLocaleDateString() : '---'}</span>
+                              <button
+                                onClick={() => handleEditFollowUp(lead)}
+                                className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                                title="Edit follow-up date"
+                              >
+                                <PencilIcon className="w-4 h-4" />
+                              </button>
+                            </div>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                             {lead.latest_interaction ? new Date(lead.latest_interaction).toLocaleDateString() : '---'}
@@ -3261,6 +3395,54 @@ const CloserSuperPipelinePage = () => {
               </table>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Follow-up Edit Modal */}
+      {editingFollowUp && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
+            <h3 className="text-lg font-semibold mb-4">Edit Follow-Up Date</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Follow-Up Date
+                </label>
+                <input
+                  type="date"
+                  className="input input-bordered w-full"
+                  value={followUpDate}
+                  onChange={(e) => setFollowUpDate(e.target.value)}
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setEditingFollowUp(null);
+                    setFollowUpDate('');
+                  }}
+                  disabled={savingFollowUp}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleSaveFollowUp}
+                  disabled={savingFollowUp}
+                >
+                  {savingFollowUp ? (
+                    <>
+                      <span className="loading loading-spinner loading-sm"></span>
+                      Saving...
+                    </>
+                  ) : (
+                    'Save'
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
