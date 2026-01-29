@@ -4632,6 +4632,53 @@ const Clients: React.FC<ClientsProps> = ({
         loc => loc.name === meetingFormData.location
       );
 
+      // Check for location conflict for restricted zoom room locations
+      const restrictedLocationIds = [3, 4, 15, 16, 17, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29];
+      if (selectedLocation && selectedLocation.id && restrictedLocationIds.includes(selectedLocation.id)) {
+        // Extract hour from the selected time (e.g., "10:30" -> "10")
+        const selectedTimeHour = meetingFormData.time.split(':')[0];
+        
+        // Check if there's already a meeting at the same date, same hour, and location
+        // We need to fetch all meetings for that date and location, then filter by hour
+        const { data: allMeetingsForDate, error: conflictError } = await supabase
+          .from('meetings')
+          .select('id, meeting_date, meeting_time, meeting_location')
+          .eq('meeting_date', meetingFormData.date)
+          .eq('meeting_location', meetingFormData.location)
+          .or('status.is.null,status.neq.canceled');
+
+        if (conflictError) {
+          console.error('Error checking for location conflicts:', conflictError);
+        } else if (allMeetingsForDate && allMeetingsForDate.length > 0) {
+          // Filter meetings to check if any are in the same hour
+          const conflictingMeetings = allMeetingsForDate.filter((meeting: any) => {
+            if (!meeting.meeting_time) return false;
+            const meetingHour = meeting.meeting_time.split(':')[0];
+            return meetingHour === selectedTimeHour;
+          });
+
+          if (conflictingMeetings.length > 0) {
+            // There's already a meeting at this date, same hour, and location
+            const conflictingTime = conflictingMeetings[0].meeting_time;
+            toast.error(
+              `This Zoom room is already booked at ${meetingFormData.date} in the ${selectedTimeHour}:00 hour (existing meeting at ${conflictingTime}). Please choose a different time or location.`,
+              {
+                duration: 6000,
+                position: 'top-right',
+                style: {
+                  background: '#ef4444',
+                  color: '#fff',
+                  fontWeight: '500',
+                  maxWidth: '500px',
+                },
+              }
+            );
+            setIsCreatingMeeting(false);
+            return;
+          }
+        }
+      }
+
       // If this is a Teams meeting, create an online event via Graph as before.
       // Otherwise, if the chosen location has a default_link, use that as the join URL.
       if (meetingFormData.location === 'Teams') {
@@ -7977,6 +8024,56 @@ const Clients: React.FC<ClientsProps> = ({
       const selectedLocation = meetingLocations.find(
         loc => loc.name === rescheduleFormData.location
       );
+
+      // Check for location conflict for restricted zoom room locations
+      const restrictedLocationIds = [3, 4, 15, 16, 17, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29];
+      if (selectedLocation && selectedLocation.id && restrictedLocationIds.includes(selectedLocation.id)) {
+        // Extract hour from the selected time (e.g., "10:30" -> "10")
+        const selectedTimeHour = rescheduleFormData.time.split(':')[0];
+        
+        // Check if there's already a meeting at the same date, same hour, and location
+        // We need to fetch all meetings for that date and location, then filter by hour
+        // Exclude the meeting we're rescheduling (if it exists and hasn't been canceled yet)
+        const { data: allMeetingsForDate, error: conflictError } = await supabase
+          .from('meetings')
+          .select('id, meeting_date, meeting_time, meeting_location')
+          .eq('meeting_date', rescheduleFormData.date)
+          .eq('meeting_location', rescheduleFormData.location)
+          .or('status.is.null,status.neq.canceled');
+
+        if (conflictError) {
+          console.error('Error checking for location conflicts:', conflictError);
+        } else if (allMeetingsForDate && allMeetingsForDate.length > 0) {
+          // Filter meetings to check if any are in the same hour (excluding the meeting being rescheduled)
+          const conflictingMeetings = allMeetingsForDate.filter((meeting: any) => {
+            // Exclude the meeting we're rescheduling (if it exists)
+            if (meetingIdToCancel && meeting.id === meetingIdToCancel) return false;
+            if (!meeting.meeting_time) return false;
+            const meetingHour = meeting.meeting_time.split(':')[0];
+            return meetingHour === selectedTimeHour;
+          });
+
+          if (conflictingMeetings.length > 0) {
+            // There's already a meeting at this date, same hour, and location
+            const conflictingTime = conflictingMeetings[0].meeting_time;
+            toast.error(
+              `This Zoom room is already booked at ${rescheduleFormData.date} in the ${selectedTimeHour}:00 hour (existing meeting at ${conflictingTime}). Please choose a different time or location.`,
+              {
+                duration: 6000,
+                position: 'top-right',
+                style: {
+                  background: '#ef4444',
+                  color: '#fff',
+                  fontWeight: '500',
+                  maxWidth: '500px',
+                },
+              }
+            );
+            setIsReschedulingMeeting(false);
+            return;
+          }
+        }
+      }
 
       // For non-Teams online locations, use the default_link from tenants_meetinglocation
       if (selectedLocation?.default_link && rescheduleFormData.location !== 'Teams') {
@@ -14077,6 +14174,7 @@ const Clients: React.FC<ClientsProps> = ({
                 interactionsCache={interactionsCacheForLead}
                 onInteractionsCacheUpdate={handleInteractionsCacheUpdate}
                 onInteractionCountUpdate={handleInteractionCountUpdate}
+                allEmployees={allEmployees}
                 {...financeProps}
               />
             </div>

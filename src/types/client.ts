@@ -60,4 +60,5 @@ export interface ClientTabProps {
   interactionsCache?: ClientInteractionsCache | null;
   onInteractionsCacheUpdate?: (cache: ClientInteractionsCache) => void;
   onInteractionCountUpdate?: (count: number) => void;
+  allEmployees?: any[]; // Employees loaded in parent component
 }

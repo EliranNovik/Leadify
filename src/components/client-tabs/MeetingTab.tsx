@@ -221,6 +221,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [rescheduleOption, setRescheduleOption] = useState<'cancel' | 'reschedule'>('cancel');
   const [rescheduleMeetings, setRescheduleMeetings] = useState<any[]>([]);
   const [isReschedulingMeeting, setIsReschedulingMeeting] = useState(false);
+  // Toggle for notifying client via email when rescheduling a meeting
+  const [notifyClientOnReschedule, setNotifyClientOnReschedule] = useState(false);
 
   // Helper function to get tomorrow's date
   const getTomorrowDate = () => {
@@ -2296,6 +2298,53 @@ const formatEmailBody = async (
         loc => loc.name === scheduleMeetingFormData.location
       );
 
+      // Check for location conflict for restricted zoom room locations
+      const restrictedLocationIds = [3, 4, 15, 16, 17, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29];
+      if (selectedLocation && selectedLocation.id && restrictedLocationIds.includes(selectedLocation.id)) {
+        // Extract hour from the selected time (e.g., "10:30" -> "10")
+        const selectedTimeHour = scheduleMeetingFormData.time.split(':')[0];
+        
+        // Check if there's already a meeting at the same date, same hour, and location
+        // We need to fetch all meetings for that date and location, then filter by hour
+        const { data: allMeetingsForDate, error: conflictError } = await supabase
+          .from('meetings')
+          .select('id, meeting_date, meeting_time, meeting_location')
+          .eq('meeting_date', scheduleMeetingFormData.date)
+          .eq('meeting_location', scheduleMeetingFormData.location)
+          .or('status.is.null,status.neq.canceled');
+
+        if (conflictError) {
+          console.error('Error checking for location conflicts:', conflictError);
+        } else if (allMeetingsForDate && allMeetingsForDate.length > 0) {
+          // Filter meetings to check if any are in the same hour
+          const conflictingMeetings = allMeetingsForDate.filter((meeting: any) => {
+            if (!meeting.meeting_time) return false;
+            const meetingHour = meeting.meeting_time.split(':')[0];
+            return meetingHour === selectedTimeHour;
+          });
+
+          if (conflictingMeetings.length > 0) {
+            // There's already a meeting at this date, same hour, and location
+            const conflictingTime = conflictingMeetings[0].meeting_time;
+            toast.error(
+              `This Zoom room is already booked at ${scheduleMeetingFormData.date} in the ${selectedTimeHour}:00 hour (existing meeting at ${conflictingTime}). Please choose a different time or location.`,
+              {
+                duration: 6000,
+                position: 'top-right',
+                style: {
+                  background: '#ef4444',
+                  color: '#fff',
+                  fontWeight: '500',
+                  maxWidth: '500px',
+                },
+              }
+            );
+            setIsSchedulingMeeting(false);
+            return;
+          }
+        }
+      }
+
       // If this is a Teams meeting, create an online event via Graph
       if (scheduleMeetingFormData.location === 'Teams') {
         let accessToken;
@@ -2647,8 +2696,8 @@ const formatEmailBody = async (
       
       if (fetchError) throw fetchError;
 
-      // Send cancellation email to client
-      if (client.email && canceledMeeting) {
+      // Send cancellation email to client (only if notify toggle is on)
+      if (notifyClientOnReschedule && client.email && canceledMeeting) {
         let accessToken;
         try {
           const response = await instance.acquireTokenSilent({ ...loginRequest, account });
@@ -2783,9 +2832,10 @@ const formatEmailBody = async (
         });
       }
 
-      toast.success('Meeting canceled and client notified.');
+      toast.success(notifyClientOnReschedule ? 'Meeting canceled and client notified.' : 'Meeting canceled.');
       setShowRescheduleDrawer(false);
       setMeetingToDelete(null);
+      setNotifyClientOnReschedule(false); // Reset to default
       setRescheduleFormData({
         date: '',
         time: '09:00',
@@ -2908,6 +2958,56 @@ const formatEmailBody = async (
         loc => loc.name === rescheduleFormData.location
       );
 
+      // Check for location conflict for restricted zoom room locations
+      const restrictedLocationIds = [3, 4, 15, 16, 17, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29];
+      if (selectedLocation && selectedLocation.id && restrictedLocationIds.includes(selectedLocation.id)) {
+        // Extract hour from the selected time (e.g., "10:30" -> "10")
+        const selectedTimeHour = rescheduleFormData.time.split(':')[0];
+        
+        // Check if there's already a meeting at the same date, same hour, and location
+        // We need to fetch all meetings for that date and location, then filter by hour
+        // Exclude the meeting we're rescheduling (if it exists and hasn't been canceled yet)
+        const { data: allMeetingsForDate, error: conflictError } = await supabase
+          .from('meetings')
+          .select('id, meeting_date, meeting_time, meeting_location')
+          .eq('meeting_date', rescheduleFormData.date)
+          .eq('meeting_location', rescheduleFormData.location)
+          .or('status.is.null,status.neq.canceled');
+
+        if (conflictError) {
+          console.error('Error checking for location conflicts:', conflictError);
+        } else if (allMeetingsForDate && allMeetingsForDate.length > 0) {
+          // Filter meetings to check if any are in the same hour (excluding the meeting being rescheduled)
+          const conflictingMeetings = allMeetingsForDate.filter((meeting: any) => {
+            // Exclude the meeting we're rescheduling (if it exists)
+            if (meetingIdToCancel && meeting.id === meetingIdToCancel) return false;
+            if (!meeting.meeting_time) return false;
+            const meetingHour = meeting.meeting_time.split(':')[0];
+            return meetingHour === selectedTimeHour;
+          });
+
+          if (conflictingMeetings.length > 0) {
+            // There's already a meeting at this date, same hour, and location
+            const conflictingTime = conflictingMeetings[0].meeting_time;
+            toast.error(
+              `This Zoom room is already booked at ${rescheduleFormData.date} in the ${selectedTimeHour}:00 hour (existing meeting at ${conflictingTime}). Please choose a different time or location.`,
+              {
+                duration: 6000,
+                position: 'top-right',
+                style: {
+                  background: '#ef4444',
+                  color: '#fff',
+                  fontWeight: '500',
+                  maxWidth: '500px',
+                },
+              }
+            );
+            setIsReschedulingMeeting(false);
+            return;
+          }
+        }
+      }
+
       // If this is a Teams meeting, create an online event via Graph
       if (rescheduleFormData.location === 'Teams') {
         let accessToken;
@@ -3004,8 +3104,8 @@ const formatEmailBody = async (
         throw meetingError;
       }
 
-      // Send notification email to client
-      if (client.email) {
+      // Send notification email to client (only if notify toggle is on)
+      if (notifyClientOnReschedule && client.email) {
         let accessToken;
         try {
           const response = await instance.acquireTokenSilent({ ...loginRequest, account });
@@ -3224,9 +3324,10 @@ const formatEmailBody = async (
         }
       }
 
-      toast.success('Meeting rescheduled and client notified.');
+      toast.success(notifyClientOnReschedule ? 'Meeting rescheduled and client notified.' : 'Meeting rescheduled.');
       setShowRescheduleDrawer(false);
       setMeetingToDelete(null);
+      setNotifyClientOnReschedule(false); // Reset to default
       setRescheduleFormData({
         date: '',
         time: '09:00',
@@ -5069,13 +5170,15 @@ const formatEmailBody = async (
 
       {/* Reschedule Meeting Drawer */}
       {showRescheduleDrawer && (
-        <div className="fixed inset-0 z-50 flex">
+        <div className="fixed top-0 left-0 right-0 bottom-0 z-50 flex flex-row" style={{ margin: 0, padding: 0 }}>
           {/* Overlay */}
           <div
-            className="fixed inset-0 bg-black/30"
+            className="fixed top-0 left-0 right-0 bottom-0 bg-black/30"
+            style={{ margin: 0, padding: 0 }}
             onClick={() => {
               setShowRescheduleDrawer(false);
               setMeetingToDelete(null);
+              setNotifyClientOnReschedule(false); // Reset to default
               setRescheduleFormData({
                 date: '',
                 time: '09:00',
@@ -5092,13 +5195,14 @@ const formatEmailBody = async (
             }}
           />
           {/* Panel */}
-          <div className="ml-auto w-full max-w-md bg-base-100 h-screen shadow-2xl flex flex-col animate-slideInRight z-50">
+          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50" style={{ marginLeft: 'auto', marginRight: 0, padding: 0, top: 0, right: 0 }}>
             {/* Fixed Header */}
             <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
               <h3 className="text-2xl font-bold">Reschedule Meeting</h3>
               <button className="btn btn-ghost btn-sm" onClick={() => {
                 setShowRescheduleDrawer(false);
                 setMeetingToDelete(null);
+                setNotifyClientOnReschedule(false); // Reset to default
                 setRescheduleFormData({
                   date: '',
                   time: '09:00',
@@ -5119,6 +5223,17 @@ const formatEmailBody = async (
 
             {/* Scrollable Content */}
             <div className="flex-1 overflow-y-auto p-8 pt-4">
+              {/* Notify Client Toggle */}
+              <div className="mb-6 flex items-center justify-between">
+                <label className="block font-semibold text-base">Notify Client</label>
+                <input
+                  type="checkbox"
+                  className="toggle toggle-primary"
+                  checked={notifyClientOnReschedule}
+                  onChange={(e) => setNotifyClientOnReschedule(e.target.checked)}
+                />
+              </div>
+
               <div className="flex flex-col gap-4">
                 {/* Select Meeting */}
                 {rescheduleMeetings.length > 0 && (

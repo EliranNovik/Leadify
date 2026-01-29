@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { ClientTabProps } from '../../types/client';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
 import { UserGroupIcon, PencilSquareIcon, UserIcon, CheckIcon, XMarkIcon, CalendarIcon, UserCircleIcon, AcademicCapIcon, HandRaisedIcon, WrenchScrewdriverIcon, CogIcon, LockClosedIcon, LockOpenIcon } from '@heroicons/react/24/outline';
@@ -17,161 +17,154 @@ interface Role {
 // Will be replaced by real users from DB
 const defaultAssignees = ['---'];
 
-const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
+const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmployees: allEmployeesProp = [] }) => {
   const [allUsers, setAllUsers] = useState<{ full_name: string; role: string }[]>([]);
-  const [allEmployees, setAllEmployees] = useState<any[]>([]);
+  // Use employees from prop (loaded in parent) or fallback to local state
+  const [allEmployees, setAllEmployees] = useState<any[]>(allEmployeesProp);
   const [allEmployeeOptions, setAllEmployeeOptions] = useState<string[]>([]);
-  
+
   // Search terms and dropdown visibility for each role
   const [searchTerms, setSearchTerms] = useState<{ [key: string]: string }>({});
   const [showDropdowns, setShowDropdowns] = useState<{ [key: string]: boolean }>({});
-  
+
   // Check if this is a legacy lead
   const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-  
-  const [roles, setRoles] = useState<Role[]>([
-    { id: 'scheduler', title: 'Scheduler', assignee: '---', fieldName: 'scheduler', legacyFieldName: 'meeting_scheduler_id' },
-    { id: 'manager', title: 'Manager', assignee: '---', fieldName: 'manager', legacyFieldName: 'meeting_manager_id' },
-    { id: 'helper', title: 'Helper', assignee: '---', fieldName: 'helper', legacyFieldName: 'meeting_lawyer_id' },
-    { id: 'expert', title: 'Expert', assignee: '---', fieldName: 'expert', legacyFieldName: 'expert_id' },
-    { id: 'closer', title: 'Closer', assignee: '---', fieldName: 'closer', legacyFieldName: 'closer_id' },
-    { id: 'handler', title: 'Handler', assignee: '---', fieldName: 'handler', legacyFieldName: 'case_handler_id' },
-  ]);
 
-  const [isEditing, setIsEditing] = useState(false);
-  const [originalRoles, setOriginalRoles] = useState<Role[]>([]);
-  const [isRolesLocked, setIsRolesLocked] = useState<boolean>(false);
-  const [isSuperuser, setIsSuperuser] = useState<boolean>(false);
-
-  // Update roles when client data changes
+  // Update local employees state when prop changes (employees are loaded in parent)
   useEffect(() => {
-    // Don't update roles if employees aren't loaded yet
-    if (allEmployees.length === 0) {
-      console.log('RolesTab: Waiting for employees to load...');
-      return;
+    if (allEmployeesProp && allEmployeesProp.length > 0) {
+      setAllEmployees(allEmployeesProp);
     }
+  }, [allEmployeesProp]);
 
-    const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
+  // Helper function to get employee display name from ID
+  const getEmployeeDisplayName = useMemo(() => {
+    return (employeeId: string | number | null | undefined, employees: any[]) => {
       if (!employeeId || employeeId === '---' || employeeId === null || employeeId === undefined) return '---';
-      
+
       // Convert employeeId to number for comparison
       const idAsNumber = typeof employeeId === 'string' ? parseInt(employeeId, 10) : Number(employeeId);
-      
+
       if (isNaN(idAsNumber)) {
         console.warn('Invalid employee ID:', employeeId);
         return '---';
       }
-      
+
       // Find employee by ID - try both string and number comparison
-      const employee = allEmployees.find((emp: any) => {
+      const employee = employees.find((emp: any) => {
         const empId = typeof emp.id === 'string' ? parseInt(emp.id, 10) : Number(emp.id);
         return !isNaN(empId) && empId === idAsNumber;
       });
-      
+
       if (employee && employee.display_name) {
         return employee.display_name;
       }
-      
+
       // If not found, log for debugging
-      if (allEmployees.length > 0) {
+      if (employees.length > 0) {
         console.warn(`Employee not found for ID: ${employeeId} (as number: ${idAsNumber})`);
-        console.log('Available employee IDs:', allEmployees.map((e: any) => ({ id: e.id, display_name: e.display_name })));
+        console.log('Available employee IDs:', employees.map((e: any) => ({ id: e.id, display_name: e.display_name })));
       }
-      
+
       return '---';
     };
+  }, []);
 
-    // Debug: Log client data for role fields
-    if (isLegacyLead) {
-      console.log('RolesTab: Reading legacy lead roles from client:', {
-        meeting_scheduler_id: (client as any).meeting_scheduler_id,
-        meeting_manager_id: (client as any).meeting_manager_id,
-        meeting_lawyer_id: (client as any).meeting_lawyer_id,
-        expert_id: (client as any).expert_id,
-        closer_id: (client as any).closer_id,
-        case_handler_id: (client as any).case_handler_id,
-        allEmployeesLoaded: allEmployees.length > 0
-      });
-    } else {
-      console.log('RolesTab: Reading new lead roles from client:', {
-        scheduler: client.scheduler,
-        manager: client.manager,
-        helper: client.helper,
-        expert: client.expert,
-        closer: client.closer,
-        handler: client.handler,
-        allEmployeesLoaded: allEmployees.length > 0
-      });
+  // Compute roles immediately when both client and employees are available (synchronously)
+  const computedRoles = useMemo(() => {
+    // Use prop employees if available, otherwise use local state
+    const employeesToUse = (allEmployeesProp && allEmployeesProp.length > 0) ? allEmployeesProp : allEmployees;
+
+    // If employees aren't loaded yet, return default roles
+    if (!employeesToUse || employeesToUse.length === 0) {
+      return [
+        { id: 'scheduler', title: 'Scheduler', assignee: '---', fieldName: 'scheduler', legacyFieldName: 'meeting_scheduler_id' },
+        { id: 'manager', title: 'Manager', assignee: '---', fieldName: 'manager', legacyFieldName: 'meeting_manager_id' },
+        { id: 'helper', title: 'Helper', assignee: '---', fieldName: 'helper', legacyFieldName: 'meeting_lawyer_id' },
+        { id: 'expert', title: 'Expert', assignee: '---', fieldName: 'expert', legacyFieldName: 'expert_id' },
+        { id: 'closer', title: 'Closer', assignee: '---', fieldName: 'closer', legacyFieldName: 'closer_id' },
+        { id: 'handler', title: 'Handler', assignee: '---', fieldName: 'handler', legacyFieldName: 'case_handler_id' },
+      ];
     }
 
-    const updatedRoles = [
-      { 
-        id: 'scheduler', 
-        title: 'Scheduler', 
-        assignee: isLegacyLead ? getEmployeeDisplayName((client as any).meeting_scheduler_id) : client.scheduler || '---', 
-        fieldName: 'scheduler', 
-        legacyFieldName: 'meeting_scheduler_id' 
+    return [
+      {
+        id: 'scheduler',
+        title: 'Scheduler',
+        assignee: isLegacyLead ? getEmployeeDisplayName((client as any).meeting_scheduler_id, employeesToUse) : client.scheduler || '---',
+        fieldName: 'scheduler',
+        legacyFieldName: 'meeting_scheduler_id'
       },
-      { 
-        id: 'manager', 
-        title: 'Manager', 
-        assignee: isLegacyLead 
-          ? getEmployeeDisplayName((client as any).meeting_manager_id) 
-          : getEmployeeDisplayName((client as any).manager) || '---', 
-        fieldName: 'manager', 
-        legacyFieldName: 'meeting_manager_id' 
+      {
+        id: 'manager',
+        title: 'Manager',
+        assignee: isLegacyLead
+          ? getEmployeeDisplayName((client as any).meeting_manager_id, employeesToUse)
+          : getEmployeeDisplayName((client as any).manager, employeesToUse) || '---',
+        fieldName: 'manager',
+        legacyFieldName: 'meeting_manager_id'
       },
-      { 
-        id: 'helper', 
-        title: 'Helper', 
-        assignee: isLegacyLead 
-          ? getEmployeeDisplayName((client as any).meeting_lawyer_id) 
-          : getEmployeeDisplayName((client as any).helper) || '---', 
-        fieldName: 'helper', 
-        legacyFieldName: 'meeting_lawyer_id' 
+      {
+        id: 'helper',
+        title: 'Helper',
+        assignee: isLegacyLead
+          ? getEmployeeDisplayName((client as any).meeting_lawyer_id, employeesToUse)
+          : getEmployeeDisplayName((client as any).helper, employeesToUse) || '---',
+        fieldName: 'helper',
+        legacyFieldName: 'meeting_lawyer_id'
       },
-      { 
-        id: 'expert', 
-        title: 'Expert', 
-        assignee: isLegacyLead 
-          ? getEmployeeDisplayName((client as any).expert_id) 
-          : getEmployeeDisplayName((client as any).expert) || '---', 
-        fieldName: 'expert', 
-        legacyFieldName: 'expert_id' 
+      {
+        id: 'expert',
+        title: 'Expert',
+        assignee: isLegacyLead
+          ? getEmployeeDisplayName((client as any).expert_id, employeesToUse)
+          : getEmployeeDisplayName((client as any).expert, employeesToUse) || '---',
+        fieldName: 'expert',
+        legacyFieldName: 'expert_id'
       },
-      { 
-        id: 'closer', 
-        title: 'Closer', 
-        assignee: isLegacyLead 
-          ? getEmployeeDisplayName((client as any).closer_id) 
-          : (client.closer || '---'), 
-        fieldName: 'closer', 
-        legacyFieldName: 'closer_id' 
+      {
+        id: 'closer',
+        title: 'Closer',
+        assignee: isLegacyLead
+          ? getEmployeeDisplayName((client as any).closer_id, employeesToUse)
+          : (client.closer || '---'),
+        fieldName: 'closer',
+        legacyFieldName: 'closer_id'
       },
-      { 
-        id: 'handler', 
-        title: 'Handler', 
-        assignee: isLegacyLead 
-          ? getEmployeeDisplayName((client as any).case_handler_id) 
+      {
+        id: 'handler',
+        title: 'Handler',
+        assignee: isLegacyLead
+          ? getEmployeeDisplayName((client as any).case_handler_id, employeesToUse)
           : (() => {
-              const handlerValue = client.handler;
-              // Convert "Not assigned" or empty/null values to '---'
-              if (!handlerValue || handlerValue.trim() === '' || handlerValue.toLowerCase() === 'not assigned') {
-                return '---';
-              }
-              return handlerValue;
-            })(), 
-        fieldName: 'handler', 
-        legacyFieldName: 'case_handler_id' 
+            const handlerValue = client.handler;
+            // Convert "Not assigned" or empty/null values to '---'
+            if (!handlerValue || handlerValue.trim() === '' || handlerValue.toLowerCase() === 'not assigned') {
+              return '---';
+            }
+            return handlerValue;
+          })(),
+        fieldName: 'handler',
+        legacyFieldName: 'case_handler_id'
       },
     ];
-    
-    console.log('RolesTab: Updated roles:', updatedRoles.map(r => ({ id: r.id, assignee: r.assignee })));
-    
-    setRoles(updatedRoles);
-    setOriginalRoles(updatedRoles);
-    
-    // Update locked status from client data
+  }, [client, isLegacyLead, allEmployeesProp, allEmployees, getEmployeeDisplayName]);
+
+  // Use computed roles as the source of truth - initialize state with computed roles
+  const [roles, setRoles] = useState<Role[]>(computedRoles);
+  const [isEditing, setIsEditing] = useState(false);
+  const [originalRoles, setOriginalRoles] = useState<Role[]>(computedRoles);
+  const [isRolesLocked, setIsRolesLocked] = useState<boolean>(false);
+  const [isSuperuser, setIsSuperuser] = useState<boolean>(false);
+
+  // Update roles state when computed roles change
+  useEffect(() => {
+    setRoles(computedRoles);
+    setOriginalRoles(computedRoles);
+  }, [computedRoles]);
+
+  // Update locked status from client data
+  useEffect(() => {
     if (isLegacyLead) {
       // For legacy leads, sales_roles_locked is text ('true' or 'false')
       const lockedValue = (client as any).sales_roles_locked;
@@ -180,35 +173,52 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       // For new leads, sales_roles_locked is boolean
       setIsRolesLocked((client as any).sales_roles_locked === true);
     }
-  }, [client, isLegacyLead, allEmployees]);
+  }, [client, isLegacyLead]);
 
-  // Fetch all employees from tenants_employee table for dropdowns
+  // Update employee options when employees are available (from prop or local state)
   useEffect(() => {
-    const fetchEmployees = async () => {
-      const { data, error } = await supabase
-        .from('tenants_employee')
-        .select('id, display_name')
-        .order('display_name', { ascending: true });
-      
-      if (!error && data) {
-        setAllEmployees(data);
-        // Include all employees in all dropdowns, filter out "Not assigned"
-        const allEmployeeNames = data
-          .map((emp: any) => emp.display_name)
-          .filter(Boolean)
-          .filter((name: string) => name.toLowerCase() !== 'not assigned');
-        setAllEmployeeOptions(['---', ...allEmployeeNames]);
-      }
-    };
-    fetchEmployees();
-  }, []);
+    if (allEmployees && allEmployees.length > 0) {
+      // Include all employees in all dropdowns, filter out "Not assigned"
+      const allEmployeeNames = allEmployees
+        .map((emp: any) => emp.display_name)
+        .filter(Boolean)
+        .filter((name: string) => name.toLowerCase() !== 'not assigned');
+      setAllEmployeeOptions(['---', ...allEmployeeNames]);
+    } else if (allEmployeesProp && allEmployeesProp.length > 0) {
+      // Fallback: use prop if local state is empty
+      const allEmployeeNames = allEmployeesProp
+        .map((emp: any) => emp.display_name)
+        .filter(Boolean)
+        .filter((name: string) => name.toLowerCase() !== 'not assigned');
+      setAllEmployeeOptions(['---', ...allEmployeeNames]);
+    } else {
+      // Only fetch if not provided via prop
+      const fetchEmployees = async () => {
+        const { data, error } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name')
+          .order('display_name', { ascending: true });
+
+        if (!error && data) {
+          setAllEmployees(data);
+          // Include all employees in all dropdowns, filter out "Not assigned"
+          const allEmployeeNames = data
+            .map((emp: any) => emp.display_name)
+            .filter(Boolean)
+            .filter((name: string) => name.toLowerCase() !== 'not assigned');
+          setAllEmployeeOptions(['---', ...allEmployeeNames]);
+        }
+      };
+      fetchEmployees();
+    }
+  }, [allEmployees, allEmployeesProp]);
 
   // Fetch current user's superuser status
   useEffect(() => {
     const fetchSuperuserStatus = async () => {
       try {
         const { data: { user }, error: authError } = await supabase.auth.getUser();
-        
+
         if (authError || !user) {
           setIsSuperuser(false);
           return;
@@ -220,7 +230,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .select('is_superuser')
           .eq('auth_id', user.id)
           .maybeSingle();
-        
+
         // If not found by auth_id, try by email
         if (!userData && user.email) {
           const { data: userByEmail, error: emailError } = await supabase
@@ -228,16 +238,16 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             .select('is_superuser')
             .eq('email', user.email)
             .maybeSingle();
-          
+
           userData = userByEmail;
           error = emailError;
         }
 
         if (!error && userData) {
           // Check if user is superuser (handle boolean, string, or number)
-          const superuserStatus = userData.is_superuser === true || 
-                                  userData.is_superuser === 'true' || 
-                                  userData.is_superuser === 1;
+          const superuserStatus = userData.is_superuser === true ||
+            userData.is_superuser === 'true' ||
+            userData.is_superuser === 1;
           setIsSuperuser(superuserStatus);
         } else {
           setIsSuperuser(false);
@@ -252,7 +262,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   }, []);
 
   const handleRoleChange = (roleId: string, newAssignee: string) => {
-    setRoles(roles.map(role => 
+    setRoles(roles.map(role =>
       role.id === roleId ? { ...role, assignee: newAssignee } : role
     ));
     // Clear search term when an option is selected
@@ -279,29 +289,29 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const getFilteredOptions = (roleId: string) => {
     const searchTerm = searchTerms[roleId] || '';
     const currentAssignee = roles.find(r => r.id === roleId)?.assignee || '';
-    
+
     // Filter options based on search term, and exclude "Not assigned"
-    let filtered = allEmployeeOptions.filter(opt => 
+    let filtered = allEmployeeOptions.filter(opt =>
       opt.toLowerCase() !== 'not assigned'
     );
     if (searchTerm) {
-      filtered = filtered.filter(opt => 
+      filtered = filtered.filter(opt =>
         opt.toLowerCase().includes(searchTerm.toLowerCase()) || opt === '---'
       );
     }
-    
+
     // Always include "---" at the top for unassigning
     const unassignOption = ['---'];
     const otherOptions = filtered.filter(opt => opt !== '---');
-    
+
     // If there's a current assignee and it's not in the filtered list, add it (but not if it's "Not assigned")
-    if (currentAssignee && 
-        currentAssignee !== '---' && 
-        currentAssignee.toLowerCase() !== 'not assigned' &&
-        !otherOptions.includes(currentAssignee)) {
+    if (currentAssignee &&
+      currentAssignee !== '---' &&
+      currentAssignee.toLowerCase() !== 'not assigned' &&
+      !otherOptions.includes(currentAssignee)) {
       return [...unassignOption, currentAssignee, ...otherOptions];
     }
-    
+
     return [...unassignOption, ...otherOptions];
   };
 
@@ -310,33 +320,33 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       // Helper function to convert display name back to employee ID
       const getEmployeeIdFromDisplayName = (displayName: string) => {
         if (displayName === '---' || !displayName || displayName.trim() === '') return null;
-        
+
         // Try exact match first
-        let employee = allEmployees.find((emp: any) => 
+        let employee = allEmployees.find((emp: any) =>
           emp.display_name && emp.display_name.trim() === displayName.trim()
         );
-        
+
         // If not found, try case-insensitive match
         if (!employee) {
-          employee = allEmployees.find((emp: any) => 
+          employee = allEmployees.find((emp: any) =>
             emp.display_name && emp.display_name.trim().toLowerCase() === displayName.trim().toLowerCase()
           );
         }
-        
+
         if (!employee) {
           console.warn(`Employee not found for display name: "${displayName}"`);
           console.log('Available employees:', allEmployees.map((e: any) => e.display_name).filter(Boolean));
           console.log('All employees data:', allEmployees);
           return null;
         }
-        
+
         // Ensure ID is a number (bigint)
         const employeeId = typeof employee.id === 'string' ? parseInt(employee.id, 10) : Number(employee.id);
         if (isNaN(employeeId)) {
           console.error(`Invalid employee ID for "${displayName}":`, employee.id);
           return null;
         }
-        
+
         return employeeId;
       };
 
@@ -361,18 +371,18 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             // For other roles (scheduler, closer, handler), use display name as string
             // Save null when "---" or "Not assigned" is selected, otherwise save the display name
             const assigneeValue = role.assignee;
-            const shouldSaveNull = assigneeValue === '---' || 
-                                  !assigneeValue || 
-                                  assigneeValue.trim() === '' || 
-                                  assigneeValue.toLowerCase() === 'not assigned';
-            
+            const shouldSaveNull = assigneeValue === '---' ||
+              !assigneeValue ||
+              assigneeValue.trim() === '' ||
+              assigneeValue.toLowerCase() === 'not assigned';
+
             updateData[role.fieldName] = shouldSaveNull ? null : assigneeValue;
-            
+
             // For handler role, also clear case_handler_id when unassigning
             if (role.id === 'handler' && shouldSaveNull) {
               updateData['case_handler_id'] = null;
             }
-            
+
             console.log(`New lead role (string): ${role.fieldName} = ${updateData[role.fieldName]}`);
           }
         }
@@ -389,12 +399,12 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         // Ensure legacyId is a number if it's numeric
         const numericLegacyId = /^\d+$/.test(legacyId) ? parseInt(legacyId, 10) : legacyId;
         console.log('Updating legacy lead with ID:', numericLegacyId);
-        
+
         const { data, error: legacyError } = await supabase
           .from('leads_lead')
           .update(updateData)
           .eq('id', numericLegacyId);
-        
+
         console.log('Legacy update result:', { data, error: legacyError });
         error = legacyError;
       } else {
@@ -404,7 +414,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .from('leads')
           .update(updateData)
           .eq('id', client.id);
-        
+
         console.log('New lead update result:', { data, error: newError });
         error = newError;
       }
@@ -419,9 +429,9 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       // Clear search terms after saving
       setSearchTerms({});
       setShowDropdowns({});
-      
+
       toast.success('Roles saved successfully');
-      
+
       // Refresh client data in parent component
       if (onClientUpdate) {
         await onClientUpdate();
@@ -461,12 +471,12 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       const newLockStatus = !isRolesLocked;
       const tableName = isLegacyLead ? 'leads_lead' : 'leads';
       const idField = isLegacyLead ? 'id' : 'id';
-      const clientId = isLegacyLead 
-        ? client.id.toString().replace('legacy_', '') 
+      const clientId = isLegacyLead
+        ? client.id.toString().replace('legacy_', '')
         : client.id;
-      
+
       const updateData: any = {};
-      
+
       if (isLegacyLead) {
         // For legacy leads, sales_roles_locked is text
         updateData.sales_roles_locked = newLockStatus ? 'true' : 'false';
@@ -474,25 +484,25 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         // For new leads, sales_roles_locked is boolean
         updateData.sales_roles_locked = newLockStatus;
       }
-      
+
       const { error } = await supabase
         .from(tableName)
         .update(updateData)
         .eq(idField, isLegacyLead ? parseInt(clientId as string, 10) : clientId);
-      
+
       if (error) {
         console.error('Error toggling lock:', error);
         throw error;
       }
-      
+
       setIsRolesLocked(newLockStatus);
       toast.success(newLockStatus ? 'Roles locked' : 'Roles unlocked');
-      
+
       // If locking, cancel any active editing
       if (newLockStatus && isEditing) {
         handleCancelEdit();
       }
-      
+
       // Refresh client data in parent component
       if (onClientUpdate) {
         await onClientUpdate();
@@ -537,7 +547,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         // Update legacy lead in leads_lead table with employee ID
         const legacyId = client.id.toString().replace('legacy_', '');
         const numericLegacyId = /^\d+$/.test(legacyId) ? parseInt(legacyId, 10) : legacyId;
-        
+
         const { error: legacyError } = await supabase
           .from('leads_lead')
           .update({ closer_id: currentEmployeeId })
@@ -558,14 +568,14 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       }
 
       // Update local state
-      const updatedRoles = roles.map(role => 
+      const updatedRoles = roles.map(role =>
         role.id === 'closer' ? { ...role, assignee: employeeDisplayName } : role
       );
       setRoles(updatedRoles);
       setOriginalRoles(updatedRoles);
-      
+
       toast.success('You have been set as the closer');
-      
+
       // Refresh client data in parent component
       if (onClientUpdate) {
         await onClientUpdate();
@@ -616,17 +626,16 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </p>
           </div>
         </div>
-        
+
         {/* Action Buttons */}
         <div className="flex flex-row gap-2 sm:gap-4 flex-wrap">
           {/* Lock Button - Only visible for superusers */}
           {isSuperuser && (
-            <button 
-              className={`btn gap-2 px-6 shadow-md hover:scale-105 transition-transform ${
-                isRolesLocked 
-                  ? 'btn-error text-white' 
+            <button
+              className={`btn gap-2 px-6 shadow-md hover:scale-105 transition-transform ${isRolesLocked
+                  ? 'btn-error text-white'
                   : 'btn-ghost border border-gray-300'
-              }`}
+                }`}
               onClick={handleToggleLock}
               title={isRolesLocked ? 'Unlock roles' : 'Lock roles'}
             >
@@ -643,20 +652,20 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               )}
             </button>
           )}
-          
+
           {/* Set Roles and Set me as closer buttons - Hidden when locked */}
           {!isRolesLocked && (
             <>
               {isEditing ? (
                 <>
-                  <button 
+                  <button
                     className="btn btn-primary gap-2 px-6 shadow-md hover:scale-105 transition-transform"
                     onClick={handleSaveRoles}
                   >
                     <CheckIcon className="w-5 h-5" />
                     Save Roles
                   </button>
-                  <button 
+                  <button
                     className="btn btn-ghost gap-2 px-6 border border-base-200 shadow-sm hover:bg-base-200/60 hover:scale-105 transition-transform"
                     onClick={handleCancelEdit}
                   >
@@ -665,7 +674,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   </button>
                 </>
               ) : (
-                <button 
+                <button
                   className="btn btn-ghost border border-gray-300 gap-2 px-6 shadow-md hover:scale-105 transition-transform"
                   onClick={handleStartEditing}
                 >
@@ -673,7 +682,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   Set Roles
                 </button>
               )}
-              <button 
+              <button
                 className="btn btn-ghost text-primary hover:bg-primary/10 gap-2 px-6 border border-primary/30 shadow-sm hover:scale-105 transition-transform"
                 onClick={handleSetMeAsCloser}
               >
@@ -691,7 +700,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           const initials = hasAssignee
             ? String(role.assignee).split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
             : '';
-          
+
           return (
             <div
               key={role.id}
@@ -704,7 +713,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 </div>
                 <div className="border-b border-gray-200 mt-2"></div>
               </div>
-              
+
               {/* Content Section */}
               <div className="p-6">
                 <div className="flex items-center gap-4">
@@ -712,7 +721,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600">
                     {React.createElement(getRoleIcon(role.id), { className: "w-6 h-6 text-white" })}
                   </div>
-                  
+
                   {/* Assignee Name */}
                   <div className="flex-1 relative">
                     {isEditing && !isRolesLocked ? (
@@ -721,8 +730,8 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           type="text"
                           className="input input-bordered w-full max-w-xs font-semibold text-base"
                           placeholder={role.assignee === '---' ? '---' : 'Type to search...'}
-                          value={searchTerms[role.id] !== undefined && searchTerms[role.id] !== '' 
-                            ? searchTerms[role.id] 
+                          value={searchTerms[role.id] !== undefined && searchTerms[role.id] !== ''
+                            ? searchTerms[role.id]
                             : (role.assignee === '---' ? '' : role.assignee)}
                           onChange={(e) => handleSearchChange(role.id, e.target.value)}
                           onFocus={() => handleShowDropdown(role.id)}
@@ -743,7 +752,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         )}
                       </div>
                     ) : (
-                      <span className={`text-base font-semibold ${hasAssignee ? 'text-gray-900' : 'text-gray-500 italic'}`}> 
+                      <span className={`text-base font-semibold ${hasAssignee ? 'text-gray-900' : 'text-gray-500 italic'}`}>
                         {hasAssignee ? role.assignee : 'Unassigned'}
                       </span>
                     )}
@@ -754,7 +763,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           );
         })}
       </div>
-      
+
       <TimelineHistoryButtons client={client} />
     </div>
   );

@@ -3835,14 +3835,38 @@ const CalendarPage: React.FC = () => {
     else if (probabilityNumber >= 60) probabilityColor = 'text-yellow-600';
     else if (probabilityNumber >= 40) probabilityColor = 'text-orange-600';
 
-    // Check if lead has passed stage 40 or 35
-    const leadIdentifier = lead.lead_type === 'legacy' 
-      ? (lead.id ? `legacy_${lead.id}` : meeting.legacy_lead_id ? `legacy_${meeting.legacy_lead_id}` : null)
-      : (lead.id || meeting.client_id);
-    const hasPassedStage = leadIdentifier && leadsWithPastStages ? leadsWithPastStages.has(String(leadIdentifier)) : false;
+    // Check if meeting should show green indicator:
+    // 1. For potential_client: if lead has passed stage 20 (21 and higher) BUT NOT stage 55
+    // 2. For active_client: if 2 hours have passed after meeting time
+    const hasPassedStage = (() => {
+      // For potential_client meetings: check if stage > 20 and stage is not 55
+      if (meeting.calendar_type === 'potential_client') {
+        const leadStage = lead.stage ? Number(lead.stage) : null;
+        const meetingStage = meeting.stage ? Number(meeting.stage) : null;
+        const currentStage = leadStage || meetingStage;
+        
+        // Stage must be > 20 AND not equal to 55
+        return currentStage !== null && currentStage > 20 && currentStage !== 55;
+      }
+      
+      // For active_client meetings: check if 2 hours have passed after meeting time
+      if (meeting.calendar_type === 'active_client' && meeting.meeting_date && meeting.meeting_time) {
+        try {
+          const meetingDateTime = new Date(`${meeting.meeting_date}T${meeting.meeting_time}`);
+          const now = new Date();
+          const hoursPassed = (now.getTime() - meetingDateTime.getTime()) / (1000 * 60 * 60);
+          return hoursPassed >= 2;
+        } catch (error) {
+          console.error('Error calculating meeting time:', error);
+          return false;
+        }
+      }
+      
+      return false;
+    })();
 
     return (
-      <div key={meeting.id} className={`rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 md:text-lg md:leading-relaxed ${hasPassedStage ? 'bg-green-50' : 'bg-white'} ${selectedRowId === meeting.id ? 'ring-2 ring-primary ring-offset-2' : ''}`}>
+      <div key={meeting.id} className={`rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 md:text-lg md:leading-relaxed bg-white ${selectedRowId === meeting.id ? 'ring-2 ring-primary ring-offset-2' : ''} ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}>
         <div 
           onClick={(e) => {
             if (meeting.calendar_type !== 'staff' && meeting.lead) {
@@ -3856,6 +3880,9 @@ const CalendarPage: React.FC = () => {
         >
           {/* Header with Name, Badge, and Action Buttons */}
           <div className="mb-3 flex items-start justify-between gap-2 relative">
+            {hasPassedStage && (
+              <CheckCircleIcon className="absolute left-0 top-0 w-5 h-5 text-green-500 -ml-2 -mt-2" />
+            )}
             <div className="flex items-center gap-2 flex-1 min-w-0">
               <span className="text-xs md:text-base font-semibold text-gray-400 tracking-widest">
                 {meeting.calendar_type === 'staff' ? 'STAFF' : (lead.lead_number || meeting.lead_number)}
@@ -4321,16 +4348,40 @@ const CalendarPage: React.FC = () => {
     else if (probabilityNumber >= 60) probabilityColor = 'text-yellow-600';
     else if (probabilityNumber >= 40) probabilityColor = 'text-orange-600';
     
-    // Check if lead has passed stage 40 or 35
-    const leadIdentifier = lead.lead_type === 'legacy' 
-      ? (lead.id ? `legacy_${lead.id}` : meeting.legacy_lead_id ? `legacy_${meeting.legacy_lead_id}` : null)
-      : (lead.id || meeting.client_id);
-    const hasPassedStage = leadIdentifier && leadsWithPastStages ? leadsWithPastStages.has(String(leadIdentifier)) : false;
+    // Check if meeting should show green indicator:
+    // 1. For potential_client: if lead has passed stage 20 (21 and higher) BUT NOT stage 55
+    // 2. For active_client: if 2 hours have passed after meeting time
+    const hasPassedStage = (() => {
+      // For potential_client meetings: check if stage > 20 and stage is not 55
+      if (meeting.calendar_type === 'potential_client') {
+        const leadStage = lead.stage ? Number(lead.stage) : null;
+        const meetingStage = meeting.stage ? Number(meeting.stage) : null;
+        const currentStage = leadStage || meetingStage;
+        
+        // Stage must be > 20 AND not equal to 55
+        return currentStage !== null && currentStage > 20 && currentStage !== 55;
+      }
+      
+      // For active_client meetings: check if 2 hours have passed after meeting time
+      if (meeting.calendar_type === 'active_client' && meeting.meeting_date && meeting.meeting_time) {
+        try {
+          const meetingDateTime = new Date(`${meeting.meeting_date}T${meeting.meeting_time}`);
+          const now = new Date();
+          const hoursPassed = (now.getTime() - meetingDateTime.getTime()) / (1000 * 60 * 60);
+          return hoursPassed >= 2;
+        } catch (error) {
+          console.error('Error calculating meeting time:', error);
+          return false;
+        }
+      }
+      
+      return false;
+    })();
     
     return (
       <React.Fragment key={meeting.id}>
         <tr 
-          className={`hover:bg-base-200/50 ${hasPassedStage ? 'bg-green-50' : ''} ${selectedRowId === meeting.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''}`}
+          className={`hover:bg-base-200/50 ${selectedRowId === meeting.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''} ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}
           onClick={() => {
             if (meeting.calendar_type !== 'staff' && meeting.lead) {
               handleRowSelect(meeting.id);
@@ -4340,6 +4391,9 @@ const CalendarPage: React.FC = () => {
         >
           <td className="font-bold">
             <div className="flex items-center gap-1 sm:gap-2">
+              {hasPassedStage && (
+                <CheckCircleIcon className="w-4 h-4 sm:w-5 sm:h-5 text-green-500 flex-shrink-0" />
+              )}
               {meeting.calendar_type === 'staff' ? (
                 <>
                   <span className="text-black text-xs sm:text-sm">
