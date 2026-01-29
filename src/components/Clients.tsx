@@ -3493,7 +3493,10 @@ const Clients: React.FC<ClientsProps> = ({
               )
             `)
             .order('name', { ascending: true }),
-          supabase.from('sources').select('name'),
+          supabase.from('misc_leadsource')
+            .select('name')
+            .eq('active', true)
+            .order('name', { ascending: true }),
           supabase.from('misc_language').select('name'),
           // Fetch currencies (try both tables)
           Promise.all([

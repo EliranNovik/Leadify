@@ -12,10 +12,21 @@ import { calculateSignedPortionAmount } from '../utils/rolePercentageCalculator'
 import {
   calculateEmployeeMetrics,
   batchCalculateEmployeeMetrics,
+  parseNumericAmount,
+  buildCurrencyMeta,
+  calculateNewLeadAmount,
+  calculateLegacyLeadAmount,
   type EmployeeCalculationInput,
   type EmployeeCalculationResult
 } from '../utils/salesContributionCalculator';
 import { calculateFieldViewDueByCategory } from '../utils/fieldViewDueCalculator';
+import { processNewPayments, processLegacyPayments } from '../utils/paymentPlanProcessor';
+import {
+  resolveMainCategory as resolveMainCategoryUtil,
+  preprocessLeadsCategories as preprocessLeadsCategoriesUtil,
+  findBestCategoryMatch as findBestCategoryMatchUtil,
+  normalizeCategoryText as normalizeCategoryTextUtil
+} from '../utils/categoryResolver';
 
 interface EmployeeData {
   employeeId: number;
@@ -308,39 +319,11 @@ const SalesContributionPage = () => {
       // Clear cache to force recalculation with new role percentages
       setRoleDataCache(new Map());
 
-      // Trigger recalculation for all employees if we have data loaded
+      // Trigger full batch recalculation instead of individual fetches
+      // This prevents the popcorn effect by calculating everything at once
       if (departmentData.size > 0 && filters.fromDate && filters.toDate) {
-        const allEmployeeIds: number[] = [];
-        const employeeNamesMap = new Map<number, string>();
-        departmentData.forEach(deptData => {
-          deptData.employees.forEach(emp => {
-            if (!allEmployeeIds.includes(emp.employeeId)) {
-              allEmployeeIds.push(emp.employeeId);
-              employeeNamesMap.set(emp.employeeId, emp.employeeName);
-            }
-          });
-        });
-
-        // Refetch role data for all employees in parallel batches
-        // Note: fetchRoleData is accessed via closure (defined later in the file)
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        const refetchAll = async () => {
-          const batchSize = 10;
-          for (let i = 0; i < allEmployeeIds.length; i += batchSize) {
-            const batch = allEmployeeIds.slice(i, i + batchSize);
-            await Promise.all(
-              batch.map(employeeId => {
-                const employeeName = employeeNamesMap.get(employeeId) || '';
-                return fetchRoleData(employeeId, employeeName).catch(err => {
-                  console.error(`Error refetching role data for employee ${employeeId} after role percentages change:`, err);
-                });
-              })
-            );
-          }
-        };
-
-        // Trigger refetch in background (don't await)
-        refetchAll();
+        console.log('🔄 Role percentages changed, triggering batch recalculation...');
+        handleSearch();
       }
 
       toast.success('Role percentages saved successfully');
@@ -766,94 +749,20 @@ const SalesContributionPage = () => {
         }
       }
 
-      // Helper functions from Dashboard logic
-      const parseNumericAmount = (val: any): number => {
-        if (typeof val === 'number') return val;
-        if (typeof val === 'string') {
-          const cleaned = val.replace(/[^0-9.-]/g, '');
-          const parsed = parseFloat(cleaned);
-          return Number.isNaN(parsed) ? 0 : parsed;
-        }
-        return 0;
-      };
-
-      const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string; conversionValue: string | number } => {
-        for (const candidate of candidates) {
-          if (candidate === null || candidate === undefined) continue;
-          const rawValue = Array.isArray(candidate) ? candidate[0] : candidate;
-          if (rawValue === null || rawValue === undefined) continue;
-
-          if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
-            // For currency IDs: 1=NIS, 2=USD, 3=EUR, 4=GBP
-            const currencyMap: { [key: number]: string } = { 1: 'NIS', 2: 'USD', 3: 'EUR', 4: 'GBP' };
-            return { displaySymbol: '₪', conversionValue: currencyMap[rawValue] || 'NIS' };
-          }
-
-          const valueStr = rawValue.toString().trim();
-          if (!valueStr) continue;
-
-          const numeric = Number(valueStr);
-          if (!Number.isNaN(numeric) && numeric.toString() === valueStr) {
-            const currencyMap: { [key: number]: string } = { 1: 'NIS', 2: 'USD', 3: 'EUR', 4: 'GBP' };
-            return { displaySymbol: '₪', conversionValue: currencyMap[numeric] || 'NIS' };
-          }
-
-          const upper = valueStr.toUpperCase();
-          if (upper === '₪' || upper === 'NIS' || upper === 'ILS') {
-            return { displaySymbol: '₪', conversionValue: 'NIS' };
-          }
-          if (upper === 'USD' || valueStr === '$') {
-            return { displaySymbol: '$', conversionValue: 'USD' };
-          }
-          if (upper === 'EUR' || valueStr === '€') {
-            return { displaySymbol: '€', conversionValue: 'EUR' };
-          }
-          if (upper === 'GBP' || valueStr === '£') {
-            return { displaySymbol: '£', conversionValue: 'GBP' };
-          }
-        }
-        return { displaySymbol: '₪', conversionValue: 'NIS' };
-      };
+      // Helper functions are now imported from salesContributionCalculator
 
       // Calculate total signed value in NIS - using same logic as Dashboard
       let totalNIS = 0;
 
-      // Process legacy leads - same logic as Dashboard
+      // Process legacy leads - using utility functions
       legacyLeadsData.forEach(lead => {
-        // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
-        const currencyId = lead.currency_id;
-        const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-        let amount = 0;
-        if (numericCurrencyId === 1) {
-          // Use total_base for NIS/ILS currency
-          amount = parseFloat(lead.total_base) || 0;
-        } else {
-          // Use total for other currencies
-          amount = parseFloat(lead.total) || 0;
-        }
-        const amountInNIS = convertToNIS(amount, lead.currency_id);
-
-        // Calculate and subtract subcontractor_fee (same as Dashboard)
-        const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-        const currencyMeta = buildCurrencyMeta(lead.currency_id, lead.meeting_total_currency_id, lead.accounting_currencies);
-        const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
-        const amountAfterFee = amountInNIS - subcontractorFeeNIS;
-
+        const amountAfterFee = calculateLegacyLeadAmount(lead);
         totalNIS += amountAfterFee;
       });
 
-      // Process new leads - same logic as Dashboard
+      // Process new leads - using utility functions
       newLeadsData.forEach(lead => {
-        // For new leads, use balance or proposal_total
-        const amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
-        const amountInNIS = convertToNIS(amount, lead.currency_id);
-
-        // Calculate and subtract subcontractor_fee (same as Dashboard)
-        const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-        const currencyMeta = buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency);
-        const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
-        const amountAfterFee = amountInNIS - subcontractorFeeNIS;
-
+        const amountAfterFee = calculateNewLeadAmount(lead);
         totalNIS += amountAfterFee;
       });
 
@@ -1106,7 +1015,7 @@ const SalesContributionPage = () => {
 
         if (!newLeadsError && newLeads) {
           // Pre-process leads to ensure categories are correctly mapped
-          const processedLeads = preprocessLeadsCategories(newLeads, false);
+          const processedLeads = preprocessLeadsCategoriesUtil(newLeads, false, allCategories, categoryNameToDataMap, categoriesLoaded);
           processedLeads.forEach(lead => {
             newLeadsMap.set(lead.id, lead);
           });
@@ -1151,7 +1060,7 @@ const SalesContributionPage = () => {
 
         if (!legacyLeadsError && legacyLeads) {
           // Pre-process leads to ensure categories are correctly mapped
-          const processedLeads = preprocessLeadsCategories(legacyLeads, true);
+          const processedLeads = preprocessLeadsCategoriesUtil(legacyLeads, true, allCategories, categoryNameToDataMap, categoriesLoaded);
           processedLeads.forEach(lead => {
             legacyLeadsMap.set(Number(lead.id), lead);
           });
@@ -1187,23 +1096,12 @@ const SalesContributionPage = () => {
             if (newPaymentsError) {
               console.error('Error fetching new payment plans:', newPaymentsError);
               // Continue without payment data rather than failing completely
-            } else {
-              newPayments?.forEach((payment: any) => {
-                const leadId = payment.lead_id;
-                // Use value only (no VAT) - same as modal logic
-                const value = Number(payment.value || 0);
-                const currency = payment.currency || '₪';
-
-                // Normalize currency for conversion (same as modal)
-                const normalizedCurrency = currency === '₪' ? 'NIS' :
-                  currency === '€' ? 'EUR' :
-                    currency === '$' ? 'USD' :
-                      currency === '£' ? 'GBP' : currency;
-
-                // Convert value to NIS (same as modal footer calculation)
-                const amountNIS = convertToNIS(value, normalizedCurrency);
+            } else if (newPayments) {
+              // Use utility function to process payments
+              const processedPayments = processNewPayments(newPayments);
+              processedPayments.forEach((amount, leadId) => {
                 const current = newPaymentsMap.get(leadId) || 0;
-                newPaymentsMap.set(leadId, current + amountNIS);
+                newPaymentsMap.set(leadId, current + amount);
               });
             }
           }
@@ -1239,37 +1137,12 @@ const SalesContributionPage = () => {
             if (legacyPaymentsError) {
               console.error('Error fetching legacy payment plans:', legacyPaymentsError);
               // Continue without payment data rather than failing completely
-            } else {
-              legacyPayments?.forEach((payment: any) => {
-                const leadId = Number(payment.lead_id);
-                // Use value only (no VAT) - same as modal logic
-                const value = Number(payment.value || payment.value_base || 0);
-
-                // Get currency (same as modal logic)
-                const accountingCurrency: any = payment.accounting_currencies
-                  ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies)
-                  : null;
-                let currency = '₪';
-                if (accountingCurrency?.name) {
-                  currency = accountingCurrency.name;
-                } else if (accountingCurrency?.iso_code) {
-                  currency = accountingCurrency.iso_code;
-                } else {
-                  // Fallback to lead's currency if payment currency not available
-                  const lead = legacyLeadsMap.get(leadId);
-                  currency = lead?.accounting_currencies?.iso_code || '₪';
-                }
-
-                // Normalize currency for conversion (same as modal)
-                const normalizedCurrency = currency === '₪' ? 'NIS' :
-                  currency === '€' ? 'EUR' :
-                    currency === '$' ? 'USD' :
-                      currency === '£' ? 'GBP' : currency;
-
-                // Convert value to NIS (same as modal footer calculation)
-                const amountNIS = convertToNIS(value, normalizedCurrency);
+            } else if (legacyPayments) {
+              // Use utility function to process payments
+              const processedPayments = processLegacyPayments(legacyPayments, legacyLeadsMap);
+              processedPayments.forEach((amount, leadId) => {
                 const current = legacyPaymentsMap.get(leadId) || 0;
-                legacyPaymentsMap.set(leadId, current + amountNIS);
+                legacyPaymentsMap.set(leadId, current + amount);
               });
             }
           }
@@ -1322,23 +1195,12 @@ const SalesContributionPage = () => {
 
           const { data: allHandlerPayments } = await allHandlerPaymentsQuery;
           if (allHandlerPayments) {
-            allHandlerPayments.forEach((payment: any) => {
-              const leadId = payment.lead_id;
-              // Use value only (no VAT) - same as modal logic
-              const value = Number(payment.value || 0);
-              const currency = payment.currency || '₪';
-
-              // Normalize currency for conversion (same as modal)
-              const normalizedCurrency = currency === '₪' ? 'NIS' :
-                currency === '€' ? 'EUR' :
-                  currency === '$' ? 'USD' :
-                    currency === '£' ? 'GBP' : currency;
-
-              // Convert value to NIS (same as modal footer calculation)
-              const amountNIS = convertToNIS(value, normalizedCurrency);
+            // Use utility function to process payments
+            const processedPayments = processNewPayments(allHandlerPayments);
+            processedPayments.forEach((amount, leadId) => {
               // Add to map (sum if already exists from signed leads)
               const current = newPaymentsMap.get(leadId) || 0;
-              newPaymentsMap.set(leadId, current + amountNIS);
+              newPaymentsMap.set(leadId, current + amount);
             });
           }
         }
@@ -1369,41 +1231,12 @@ const SalesContributionPage = () => {
 
           const { data: allHandlerLegacyPayments } = await allHandlerLegacyPaymentsQuery;
           if (allHandlerLegacyPayments) {
-            allHandlerLegacyPayments.forEach((payment: any) => {
-              const leadIdNum = Number(payment.lead_id);
-              // Use value only (no VAT) - same as modal logic
-              const value = Number(payment.value || payment.value_base || 0);
-
-              // Get currency (same as modal logic)
-              const accountingCurrency: any = payment.accounting_currencies
-                ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies)
-                : null;
-              let currency = '₪';
-              if (accountingCurrency?.name) {
-                currency = accountingCurrency.name;
-              } else if (accountingCurrency?.iso_code) {
-                currency = accountingCurrency.iso_code;
-              } else if (payment.currency_id) {
-                switch (payment.currency_id) {
-                  case 1: currency = '₪'; break;
-                  case 2: currency = '€'; break;
-                  case 3: currency = '$'; break;
-                  case 4: currency = '£'; break;
-                  default: currency = '₪'; break;
-                }
-              }
-
-              // Normalize currency for conversion (same as modal)
-              const normalizedCurrency = currency === '₪' ? 'NIS' :
-                currency === '€' ? 'EUR' :
-                  currency === '$' ? 'USD' :
-                    currency === '£' ? 'GBP' : currency;
-
-              // Convert value to NIS (same as modal footer calculation)
-              const amountNIS = convertToNIS(value, normalizedCurrency);
+            // Use utility function to process payments
+            const processedPayments = processLegacyPayments(allHandlerLegacyPayments, legacyLeadsMap);
+            processedPayments.forEach((amount, leadId) => {
               // Add to map (sum if already exists from signed leads)
-              const current = legacyPaymentsMap.get(leadIdNum) || 0;
-              legacyPaymentsMap.set(leadIdNum, current + amountNIS);
+              const current = legacyPaymentsMap.get(leadId) || 0;
+              legacyPaymentsMap.set(leadId, current + amount);
             });
           }
         }
@@ -1479,53 +1312,7 @@ const SalesContributionPage = () => {
         return false;
       };
 
-      // Helper functions for calculating amounts (same as fetchTotalSignedValue)
-      const parseNumericAmount = (val: any): number => {
-        if (typeof val === 'number') return val;
-        if (typeof val === 'string') {
-          const cleaned = val.replace(/[^0-9.-]/g, '');
-          const parsed = parseFloat(cleaned);
-          return Number.isNaN(parsed) ? 0 : parsed;
-        }
-        return 0;
-      };
-
-      const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string; conversionValue: string | number } => {
-        for (const candidate of candidates) {
-          if (candidate === null || candidate === undefined) continue;
-          const rawValue = Array.isArray(candidate) ? candidate[0] : candidate;
-          if (rawValue === null || rawValue === undefined) continue;
-
-          if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
-            const currencyMap: { [key: number]: string } = { 1: 'NIS', 2: 'USD', 3: 'EUR', 4: 'GBP' };
-            return { displaySymbol: '₪', conversionValue: currencyMap[rawValue] || 'NIS' };
-          }
-
-          const valueStr = rawValue.toString().trim();
-          if (!valueStr) continue;
-
-          const numeric = Number(valueStr);
-          if (!Number.isNaN(numeric) && numeric.toString() === valueStr) {
-            const currencyMap: { [key: number]: string } = { 1: 'NIS', 2: 'USD', 3: 'EUR', 4: 'GBP' };
-            return { displaySymbol: '₪', conversionValue: currencyMap[numeric] || 'NIS' };
-          }
-
-          const upper = valueStr.toUpperCase();
-          if (upper === '₪' || upper === 'NIS' || upper === 'ILS') {
-            return { displaySymbol: '₪', conversionValue: 'NIS' };
-          }
-          if (upper === 'USD' || valueStr === '$') {
-            return { displaySymbol: '$', conversionValue: 'USD' };
-          }
-          if (upper === 'EUR' || valueStr === '€') {
-            return { displaySymbol: '€', conversionValue: 'EUR' };
-          }
-          if (upper === 'GBP' || valueStr === '£') {
-            return { displaySymbol: '£', conversionValue: 'GBP' };
-          }
-        }
-        return { displaySymbol: '₪', conversionValue: 'NIS' };
-      };
+      // Helper functions are now imported from salesContributionCalculator
 
       // Process new leads - determine role combinations
       newLeadsMap.forEach((lead: any, leadId: string) => {
@@ -1554,18 +1341,8 @@ const SalesContributionPage = () => {
           // Check if this is "Handler only" - exclude from signed totals but still show if has due amounts
           const isHandlerOnly = employeeRoles.length === 1 && employeeRoles[0] === 'Handler';
 
-          // Calculate amount same way as fetchTotalSignedValue
-          const balanceAmount = parseFloat(lead.balance || 0);
-          const proposalAmount = parseFloat(lead.proposal_total || 0);
-          const rawAmount = balanceAmount || proposalAmount || 0;
-          const currencyCode = lead.accounting_currencies?.iso_code || lead.balance_currency || lead.proposal_currency || 'NIS';
-          const amountInNIS = convertToNIS(rawAmount, currencyCode);
-
-          // Calculate and subtract subcontractor_fee (same as fetchTotalSignedValue)
-          const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-          const currencyMeta = buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency);
-          const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
-          const amountNIS = amountInNIS - subcontractorFeeNIS;
+          // Calculate amount using utility function
+          const amountNIS = calculateNewLeadAmount(lead);
 
           // Due amount: only count if employee is handler for this lead
           const dueAmount = isHandler ? (newPaymentsMap.get(leadId) || 0) : 0;
@@ -1615,36 +1392,8 @@ const SalesContributionPage = () => {
           // Check if this is "Handler only" - exclude from signed totals but still show if has due amounts
           const isHandlerOnly = employeeRoles.length === 1 && employeeRoles[0] === 'Handler';
 
-          // Calculate amount same way as SignedSalesReportPage (lines 1544-1565)
-          // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
-          const currencyId = lead.currency_id;
-          const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-          let resolvedAmount = 0;
-          if (numericCurrencyId === 1) {
-            // Use total_base for NIS/ILS currency
-            resolvedAmount = parseNumericAmount(lead.total_base) || 0;
-          } else {
-            // Use total for other currencies
-            resolvedAmount = parseNumericAmount(lead.total) || 0;
-          }
-
-          // Build currency meta same way as SignedSalesReportPage
-          const currencyMeta = buildCurrencyMeta(
-            lead.currency_id,
-            lead.meeting_total_currency_id,
-            lead.accounting_currencies
-          );
-
-          // Convert to NIS using currencyMeta.conversionValue (same as SignedSalesReportPage line 1562)
-          const amountNIS = convertToNIS(resolvedAmount, currencyMeta.conversionValue);
-
-          // Get subcontractor_fee and convert to NIS (same as SignedSalesReportPage lines 1564-1565)
-          const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-          const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
-
-          // Store amount before fee (same as SignedSalesReportPage - fee is subtracted in display)
-          // For this report, we want to show amount after fee, so subtract it here
-          const amountAfterFee = amountNIS - subcontractorFeeNIS;
+          // Calculate amount using utility function
+          const amountAfterFee = calculateLegacyLeadAmount(lead);
 
           // Due amount: only count if employee is handler for this lead (isHandler already checked above)
           const dueAmount = isHandler ? (legacyPaymentsMap.get(leadId) || 0) : 0;
@@ -1708,18 +1457,8 @@ const SalesContributionPage = () => {
         const isHandlerOnly = employeeRoles.length === 1 && employeeRoles[0] === 'Handler';
 
         if (employeeRoles.length > 0 && !isHandlerOnly) {
-          // Calculate amount same way as above
-          const balanceAmount = parseFloat(lead.balance || 0);
-          const proposalAmount = parseFloat(lead.proposal_total || 0);
-          const rawAmount = balanceAmount || proposalAmount || 0;
-          const currencyCode = lead.accounting_currencies?.iso_code || lead.balance_currency || lead.proposal_currency || 'NIS';
-          const amountInNIS = convertToNIS(rawAmount, currencyCode);
-
-          // Calculate and subtract subcontractor_fee
-          const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-          const currencyMeta = buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency);
-          const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
-          const amountAfterFee = amountInNIS - subcontractorFeeNIS;
+          // Calculate amount using utility function
+          const amountAfterFee = calculateNewLeadAmount(lead);
 
           // Calculate signed portion based on employee's roles using amountAfterFee directly
           // (No difference ratio adjustment - that's now only for signed normalized)
@@ -1759,27 +1498,8 @@ const SalesContributionPage = () => {
         const isHandlerOnly = employeeRoles.length === 1 && employeeRoles[0] === 'Handler';
 
         if (employeeRoles.length > 0 && !isHandlerOnly) {
-          // Calculate amount same way as above
-          const currencyId = lead.currency_id;
-          const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-          let resolvedAmount = 0;
-          if (numericCurrencyId === 1) {
-            resolvedAmount = parseNumericAmount(lead.total_base) || 0;
-          } else {
-            resolvedAmount = parseNumericAmount(lead.total) || 0;
-          }
-
-          const currencyMeta = buildCurrencyMeta(
-            lead.currency_id,
-            lead.meeting_total_currency_id,
-            lead.accounting_currencies
-          );
-
-          const amountNIS = convertToNIS(resolvedAmount, currencyMeta.conversionValue);
-
-          const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-          const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
-          const amountAfterFee = amountNIS - subcontractorFeeNIS;
+          // Calculate amount using utility function
+          const amountAfterFee = calculateLegacyLeadAmount(lead);
 
           // Calculate signed portion based on employee's roles using amountAfterFee directly
           // (No difference ratio adjustment - that's now only for signed normalized)
@@ -1995,6 +1715,8 @@ const SalesContributionPage = () => {
 
   // Recalculate signed portions when income changes
   // This ensures signed portions are recalculated with the new income value immediately
+  // Instead of calling fetchRoleData individually (which causes popcorn effect),
+  // we trigger a full batch recalculation via handleSearch
   const prevIncomeRef = useRef<number>(totalIncome);
   useEffect(() => {
     // Only trigger if income actually changed and we have employees loaded
@@ -2003,41 +1725,17 @@ const SalesContributionPage = () => {
       // Clear cache to force recalculation (cache key includes income, so old cache won't match)
       setRoleDataCache(new Map());
 
-      // Trigger refetch for all employees
-      const allEmployeeIds: number[] = [];
-      const employeeNamesMap = new Map<number, string>();
-      departmentData.forEach(deptData => {
-        deptData.employees.forEach(emp => {
-          if (!allEmployeeIds.includes(emp.employeeId)) {
-            allEmployeeIds.push(emp.employeeId);
-            employeeNamesMap.set(emp.employeeId, emp.employeeName);
-          }
-        });
-      });
-
-      // Refetch role data for all employees in parallel batches
-      const refetchAll = async () => {
-        const batchSize = 10;
-        for (let i = 0; i < allEmployeeIds.length; i += batchSize) {
-          const batch = allEmployeeIds.slice(i, i + batchSize);
-          // Fetch all in batch in parallel
-          await Promise.all(
-            batch.map(employeeId => {
-              const employeeName = employeeNamesMap.get(employeeId) || '';
-              return fetchRoleData(employeeId, employeeName).catch(err => {
-                console.error(`Error refetching role data for employee ${employeeId} after income change:`, err);
-              });
-            })
-          );
-        }
-      };
-
-      refetchAll();
+      // Trigger full batch recalculation instead of individual fetches
+      // This prevents the popcorn effect by calculating everything at once
+      console.log('🔄 Total income changed, triggering batch recalculation...');
+      handleSearch();
     }
-  }, [totalIncome, departmentData, filters.fromDate, filters.toDate, fetchRoleData]);
+  }, [totalIncome, departmentData.size, filters.fromDate, filters.toDate]);
 
   // Recalculate due normalized when due normalized percentage changes
   // This ensures due normalized is recalculated with the new percentage value immediately
+  // Instead of calling fetchRoleData individually (which causes popcorn effect),
+  // we trigger a full batch recalculation via handleSearch
   const prevDueNormalizedPercentageRef = useRef<number>(dueNormalizedPercentage);
   useEffect(() => {
     // Only trigger if due normalized percentage actually changed and we have employees loaded
@@ -2046,38 +1744,15 @@ const SalesContributionPage = () => {
       // Clear cache to force recalculation (cache key includes due normalized percentage, so old cache won't match)
       setRoleDataCache(new Map());
 
-      // Trigger refetch for all employees
-      const allEmployeeIds: number[] = [];
-      const employeeNamesMap = new Map<number, string>();
-      departmentData.forEach(deptData => {
-        deptData.employees.forEach(emp => {
-          if (!allEmployeeIds.includes(emp.employeeId)) {
-            allEmployeeIds.push(emp.employeeId);
-            employeeNamesMap.set(emp.employeeId, emp.employeeName);
-          }
-        });
-      });
-
-      // Refetch role data for all employees in parallel batches
-      const refetchAll = async () => {
-        const batchSize = 10;
-        for (let i = 0; i < allEmployeeIds.length; i += batchSize) {
-          const batch = allEmployeeIds.slice(i, i + batchSize);
-          // Fetch all in batch in parallel
-          await Promise.all(
-            batch.map(employeeId => {
-              const employeeName = employeeNamesMap.get(employeeId) || '';
-              return fetchRoleData(employeeId, employeeName).catch(err => {
-                console.error(`Error refetching role data for employee ${employeeId} after due normalized percentage change:`, err);
-              });
-            })
-          );
-        }
-      };
-
-      refetchAll();
+      // Trigger full batch recalculation instead of individual fetches
+      // This prevents the popcorn effect by calculating everything at once
+      console.log('🔄 Due normalized percentage changed, triggering batch recalculation...');
+      handleSearch();
     }
-  }, [dueNormalizedPercentage, departmentData, filters.fromDate, filters.toDate, fetchRoleData]);
+  }, [dueNormalizedPercentage, departmentData.size, filters.fromDate, filters.toDate]);
+
+  // Note: Salary filter changes no longer trigger automatic recalculation
+  // Recalculation only happens when user clicks the "Search" button
 
   // Update employee signed total in department data
   const updateEmployeeSignedTotal = useCallback((employeeId: number, signedTotal: number) => {
@@ -2164,20 +1839,10 @@ const SalesContributionPage = () => {
 
           const { data: newPayments, error: newPaymentsError } = await newPaymentsQuery;
           if (!newPaymentsError && newPayments) {
-            newPayments.forEach((payment: any) => {
-              // Use value only (no VAT) - same as modal logic
-              const value = Number(payment.value || 0);
-              const currency = payment.currency || '₪';
-
-              // Normalize currency for conversion (same as modal)
-              const normalizedCurrency = currency === '₪' ? 'NIS' :
-                currency === '€' ? 'EUR' :
-                  currency === '$' ? 'USD' :
-                    currency === '£' ? 'GBP' : currency;
-
-              // Convert value to NIS (same as modal footer calculation)
-              const amountInNIS = convertToNIS(value, normalizedCurrency);
-              totalDue += amountInNIS;
+            // Use utility function to process payments
+            const processedPayments = processNewPayments(newPayments);
+            processedPayments.forEach((amount) => {
+              totalDue += amount;
             });
           }
         }
@@ -2220,38 +1885,13 @@ const SalesContributionPage = () => {
 
           const { data: legacyPayments, error: legacyPaymentsError } = await legacyPaymentsQuery;
           if (!legacyPaymentsError && legacyPayments) {
-            legacyPayments.forEach((payment: any) => {
-              // Use value only (no VAT) - same as modal logic
-              const value = Number(payment.value || payment.value_base || 0);
-
-              // Get currency (same as modal logic)
-              const accountingCurrency: any = payment.accounting_currencies
-                ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies)
-                : null;
-              let currency = '₪';
-              if (accountingCurrency?.name) {
-                currency = accountingCurrency.name;
-              } else if (accountingCurrency?.iso_code) {
-                currency = accountingCurrency.iso_code;
-              } else if (payment.currency_id) {
-                switch (payment.currency_id) {
-                  case 1: currency = '₪'; break;
-                  case 2: currency = '€'; break;
-                  case 3: currency = '$'; break;
-                  case 4: currency = '£'; break;
-                  default: currency = '₪'; break;
-                }
-              }
-
-              // Normalize currency for conversion (same as modal)
-              const normalizedCurrency = currency === '₪' ? 'NIS' :
-                currency === '€' ? 'EUR' :
-                  currency === '$' ? 'USD' :
-                    currency === '£' ? 'GBP' : currency;
-
-              // Convert value to NIS (same as modal footer calculation)
-              const amountInNIS = convertToNIS(value, normalizedCurrency);
-              totalDue += amountInNIS;
+            // Use utility function to process payments
+            // Note: fetchDueAmounts doesn't have legacyLeadsMap, so we'll pass an empty map
+            // The utility will handle currency resolution from payment data
+            const emptyLegacyLeadsMap = new Map<number, any>();
+            const processedPayments = processLegacyPayments(legacyPayments, emptyLegacyLeadsMap);
+            processedPayments.forEach((amount) => {
+              totalDue += amount;
             });
           }
         }
@@ -2371,53 +2011,7 @@ const SalesContributionPage = () => {
 
       const categoryBreakdown: any[] = [];
 
-      // Helper functions for calculating amounts
-      const parseNumericAmount = (val: any): number => {
-        if (typeof val === 'number') return val;
-        if (typeof val === 'string') {
-          const cleaned = val.replace(/[^0-9.-]/g, '');
-          const parsed = parseFloat(cleaned);
-          return Number.isNaN(parsed) ? 0 : parsed;
-        }
-        return 0;
-      };
-
-      const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string; conversionValue: string | number } => {
-        for (const candidate of candidates) {
-          if (candidate === null || candidate === undefined) continue;
-          const rawValue = Array.isArray(candidate) ? candidate[0] : candidate;
-          if (rawValue === null || rawValue === undefined) continue;
-
-          if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
-            const currencyMap: { [key: number]: string } = { 1: 'NIS', 2: 'USD', 3: 'EUR', 4: 'GBP' };
-            return { displaySymbol: '₪', conversionValue: currencyMap[rawValue] || 'NIS' };
-          }
-
-          const valueStr = rawValue.toString().trim();
-          if (!valueStr) continue;
-
-          const numeric = Number(valueStr);
-          if (!Number.isNaN(numeric) && numeric.toString() === valueStr) {
-            const currencyMap: { [key: number]: string } = { 1: 'NIS', 2: 'USD', 3: 'EUR', 4: 'GBP' };
-            return { displaySymbol: '₪', conversionValue: currencyMap[numeric] || 'NIS' };
-          }
-
-          const upper = valueStr.toUpperCase();
-          if (upper === '₪' || upper === 'NIS' || upper === 'ILS') {
-            return { displaySymbol: '₪', conversionValue: 'NIS' };
-          }
-          if (upper === '$' || upper === 'USD') {
-            return { displaySymbol: '$', conversionValue: 'USD' };
-          }
-          if (upper === '€' || upper === 'EUR') {
-            return { displaySymbol: '€', conversionValue: 'EUR' };
-          }
-          if (upper === '£' || upper === 'GBP') {
-            return { displaySymbol: '£', conversionValue: 'GBP' };
-          }
-        }
-        return { displaySymbol: '₪', conversionValue: 'NIS' };
-      };
+      // Helper functions are now imported from salesContributionCalculator
 
       // Fetch new leads with category and client info
       if (newLeadIds.size > 0) {
@@ -2486,18 +2080,8 @@ const SalesContributionPage = () => {
 
             // Only process leads that match the requested main category (or should go to General)
             if (shouldIncludeLead(mainCategoryNameFromLead)) {
-              // Calculate amount
-              const balanceAmount = parseFloat(lead.balance || 0);
-              const proposalAmount = parseFloat(lead.proposal_total || 0);
-              const rawAmount = balanceAmount || proposalAmount || 0;
-              const currencyCode = lead.accounting_currencies?.iso_code || lead.balance_currency || lead.proposal_currency || 'NIS';
-              const amountInNIS = convertToNIS(rawAmount, currencyCode);
-
-              // Subtract subcontractor fee
-              const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-              const currencyMeta = buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency);
-              const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
-              const amountAfterFee = amountInNIS - subcontractorFeeNIS;
+              // Calculate amount using utility function
+              const amountAfterFee = calculateNewLeadAmount(lead);
 
               categoryBreakdown.push({
                 category: subCategoryName,
@@ -2612,26 +2196,8 @@ const SalesContributionPage = () => {
                   clientName: lead.name
                 });
               }
-              // Calculate amount (same logic as fetchRoleData)
-              const currencyId = lead.currency_id;
-              const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-              let resolvedAmount = 0;
-              if (numericCurrencyId === 1) {
-                resolvedAmount = parseNumericAmount(lead.total_base) || 0;
-              } else {
-                resolvedAmount = parseNumericAmount(lead.total) || 0;
-              }
-
-              const currencyMeta = buildCurrencyMeta(
-                lead.currency_id,
-                lead.meeting_total_currency_id,
-                lead.accounting_currencies
-              );
-
-              const amountNIS = convertToNIS(resolvedAmount, currencyMeta.conversionValue);
-              const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-              const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
-              const amountAfterFee = amountNIS - subcontractorFeeNIS;
+              // Calculate amount using utility function
+              const amountAfterFee = calculateLegacyLeadAmount(lead);
 
               categoryBreakdown.push({
                 category: subCategoryName,
@@ -2704,20 +2270,14 @@ const SalesContributionPage = () => {
             fetchCategoryBreakdown(employeeName);
           }
         } else {
-          // For employee view, fetch role data
-          const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
-          const incomeKey = totalIncome || 0;
-          const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
-          const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
-          const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
-          if (!roleDataCache.has(cacheKey)) {
-            fetchRoleData(employeeId, employeeName);
-          }
+          // For employee view, data should already be loaded from handleSearch batch calculation
+          // No need to fetch individually - this would cause popcorn effect
+          // The batch calculation in handleSearch already handles all employees and populates the cache
         }
       }
       return newSet;
     });
-  }, [viewMode, roleDataCache, categoryBreakdownCache, fetchRoleData, fetchCategoryBreakdown, filters.fromDate, filters.toDate, totalIncome]);
+  }, [viewMode, roleDataCache, categoryBreakdownCache, fetchCategoryBreakdown, filters.fromDate, filters.toDate, totalIncome]);
 
   const handleSearch = async () => {
     // Wait for categories to be loaded before processing
@@ -3063,13 +2623,11 @@ const SalesContributionPage = () => {
         });
       });
 
-      setDepartmentData(finalDepartmentData);
-      console.log('✅ Sales Contribution Report - Processed data for', finalDepartmentData.size, 'departments');
+      // Don't set department data yet - wait until all calculations are complete
+      // This prevents the "popcorn effect" where numbers appear incrementally
+      console.log('✅ Sales Contribution Report - Processed initial data for', finalDepartmentData.size, 'departments');
 
-      // Set loading to false immediately so table shows right away
-      setLoading(false);
-
-      // Fetch role data for all employees to populate signed totals in the background
+      // Fetch role data for all employees to populate signed totals
       const allEmployeeIds: number[] = [];
       const employeeNamesMap = new Map<number, string>();
 
@@ -3082,16 +2640,10 @@ const SalesContributionPage = () => {
         });
       });
 
-      // Wait a bit to ensure totalSignedValue state is updated after fetchTotalSignedValue
-      // This is a workaround for React state batching - we need the latest totalSignedValue
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-      // Fetch role data in the background (non-blocking)
+      // Collect all employees that need fetching
       const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
       const incomeKey = totalIncome || 0;
       const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
-
-      // Collect all employees that need fetching
       const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
       const employeesToFetch: Array<{ id: number; name: string }> = [];
       allEmployeeIds.forEach(employeeId => {
@@ -3109,10 +2661,9 @@ const SalesContributionPage = () => {
         setIsCalculating(true);
 
         // Fetch all data first, then calculate everything, then update state once
-        (async () => {
-          try {
-            const fromDateTime = filters.fromDate ? `${filters.fromDate}T00:00:00.000Z` : null;
-            const toDateTime = filters.toDate ? `${filters.toDate}T23:59:59.999Z` : null;
+        try {
+          const fromDateTime = filters.fromDate ? `${filters.fromDate}T00:00:00.000Z` : null;
+          const toDateTime = filters.toDate ? `${filters.toDate}T23:59:59.999Z` : null;
 
             // Step 1: Fetch all signed leads (stage 60) - ONCE for all employees
             let stageHistoryQuery = supabase
@@ -3254,18 +2805,14 @@ const SalesContributionPage = () => {
               }
 
               const { data: newPayments } = await newPaymentsQuery;
-              newPayments?.forEach((payment: any) => {
-                const leadId = payment.lead_id;
-                const value = Number(payment.value || 0);
-                const currency = payment.currency || '₪';
-                const normalizedCurrency = currency === '₪' ? 'NIS' :
-                  currency === '€' ? 'EUR' :
-                    currency === '$' ? 'USD' :
-                      currency === '£' ? 'GBP' : currency;
-                const amountNIS = convertToNIS(value, normalizedCurrency);
-                const current = newPaymentsMap.get(leadId) || 0;
-                newPaymentsMap.set(leadId, current + amountNIS);
-              });
+              if (newPayments) {
+                // Use utility function to process payments
+                const processedPayments = processNewPayments(newPayments);
+                processedPayments.forEach((amount, leadId) => {
+                  const current = newPaymentsMap.get(leadId) || 0;
+                  newPaymentsMap.set(leadId, current + amount);
+                });
+              }
             }
 
             if (allLegacyLeadIds.size > 0) {
@@ -3286,26 +2833,14 @@ const SalesContributionPage = () => {
               }
 
               const { data: legacyPayments } = await legacyPaymentsQuery;
-              legacyPayments?.forEach((payment: any) => {
-                const leadId = Number(payment.lead_id);
-                const value = Number(payment.value || payment.value_base || 0);
-                const accountingCurrency: any = payment.accounting_currencies
-                  ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies)
-                  : null;
-                let currency = '₪';
-                if (accountingCurrency?.name) {
-                  currency = accountingCurrency.name;
-                } else if (accountingCurrency?.iso_code) {
-                  currency = accountingCurrency.iso_code;
-                }
-                const normalizedCurrency = currency === '₪' ? 'NIS' :
-                  currency === '€' ? 'EUR' :
-                    currency === '$' ? 'USD' :
-                      currency === '£' ? 'GBP' : currency;
-                const amountNIS = convertToNIS(value, normalizedCurrency);
-                const current = legacyPaymentsMap.get(leadId) || 0;
-                legacyPaymentsMap.set(leadId, current + amountNIS);
-              });
+              if (legacyPayments) {
+                // Use utility function to process payments
+                const processedPayments = processLegacyPayments(legacyPayments, legacyLeadsMap);
+                processedPayments.forEach((amount, leadId) => {
+                  const current = legacyPaymentsMap.get(leadId) || 0;
+                  legacyPaymentsMap.set(leadId, current + amount);
+                });
+              }
             }
 
             // Step 5: Process field view data (grouped by main category) - do this once for all employees
@@ -3322,15 +2857,16 @@ const SalesContributionPage = () => {
               })
             );
 
-            // Step 6.5: Fetch salary data for all employees based on salary filter
+            // Step 6.5: Fetch salary data for ALL employees (not just those being fetched)
+            // This ensures salary data is always available even when employees are cached
             const salaryDataMap = new Map<number, { salaryBrutto: number; totalSalaryCost: number }>();
             // Only fetch salary if filter is set and we have employees
             // This is optional - calculation should work even without salary data
-            if (salaryFilter?.month && salaryFilter?.year && employeesToFetch.length > 0) {
+            if (salaryFilter?.month && salaryFilter?.year && allEmployeeIds.length > 0) {
               try {
                 const salaryMonth = salaryFilter.month; // 1-12
                 const salaryYear = salaryFilter.year;
-                const employeeIdsForSalary = employeesToFetch.map(emp => emp.id);
+                const employeeIdsForSalary = allEmployeeIds; // Fetch for ALL employees, not just those being recalculated
 
                 console.log('🔍 Fetching salary data:', {
                   salaryMonth,
@@ -3517,9 +3053,9 @@ const SalesContributionPage = () => {
               return newCache;
             });
 
-            // Update department data ONCE
-            setDepartmentData(prev => {
-              const updated = new Map(prev);
+            // Update department data ONCE - start with finalDepartmentData since we didn't set it initially
+            setDepartmentData(() => {
+              const updated = new Map(finalDepartmentData);
 
               updated.forEach((deptData, deptName) => {
                 const updatedEmployees = deptData.employees.map(emp => {
@@ -3599,298 +3135,136 @@ const SalesContributionPage = () => {
               return updated;
             });
 
+            // Set loading to false ONLY after all calculations are complete
+            setLoading(false);
             setIsCalculating(false);
           } catch (error) {
             console.error('Error in batch calculation:', error);
             toast.error('Failed to calculate employee metrics');
+            setLoading(false);
             setIsCalculating(false);
           }
-        })();
+        } else {
+          // No employees to fetch (all cached), but we still need to fetch and apply salary data
+          // Fetch salary data for all employees based on salary filter
+          const salaryDataMap = new Map<number, { salaryBrutto: number; totalSalaryCost: number }>();
+          if (salaryFilter?.month && salaryFilter?.year && allEmployeeIds.length > 0) {
+            try {
+              const salaryMonth = salaryFilter.month;
+              const salaryYear = salaryFilter.year;
+
+              console.log('🔍 Fetching salary data for cached employees:', {
+                salaryMonth,
+                salaryYear,
+                employeeCount: allEmployeeIds.length
+              });
+
+              const { data: salaryData, error: salaryError } = await supabase
+                .from('employee_salary')
+                .select('employee_id, net_salary, gross_salary')
+                .eq('salary_month', salaryMonth)
+                .eq('salary_year', salaryYear)
+                .in('employee_id', allEmployeeIds);
+
+              if (!salaryError && salaryData) {
+                salaryData.forEach((salary: any) => {
+                  const employeeId = Number(salary.employee_id);
+                  salaryDataMap.set(employeeId, {
+                    salaryBrutto: Number(salary.net_salary || 0),
+                    totalSalaryCost: Number(salary.gross_salary || 0),
+                  });
+                });
+              }
+            } catch (error) {
+              console.error('Error fetching salary data for cached employees:', error);
+            }
+          }
+
+          // Apply salary data to cached employees
+          // IMPORTANT: Use prev (existing data) to preserve all calculated values (signed, due, contribution, etc.)
+          // Only update salary-related fields
+          if (salaryDataMap.size > 0) {
+            setDepartmentData(prev => {
+              const updated = new Map(prev); // Use prev to preserve existing calculations
+              updated.forEach((deptData, deptName) => {
+                const updatedEmployees = deptData.employees.map(emp => {
+                  const salaryData = salaryDataMap.get(emp.employeeId);
+                  if (salaryData) {
+                    return {
+                      ...emp, // Preserve all existing fields (signed, due, contribution, etc.)
+                      salaryBrutto: salaryData.salaryBrutto,
+                      totalSalaryCost: salaryData.totalSalaryCost,
+                      // Recalculate maxIncentives with new salary data
+                      maxIncentives: (emp.salaryBudget ?? 0) - salaryData.totalSalaryCost,
+                    };
+                  }
+                  return emp;
+                });
+
+                // Recalculate department totals (preserve existing totals, only update salary-related)
+                const deptSalaryBrutto = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBrutto || 0), 0);
+                const deptTotalSalaryCost = updatedEmployees.reduce((sum, emp) => sum + (emp.totalSalaryCost || 0), 0);
+                const deptMaxIncentives = updatedEmployees.reduce((sum, emp) => sum + (emp.maxIncentives ?? 0), 0);
+
+                updated.set(deptName, {
+                  ...deptData,
+                  employees: updatedEmployees,
+                  totals: {
+                    ...deptData.totals, // Preserve all existing totals (signed, due, contribution, etc.)
+                    salaryBrutto: deptSalaryBrutto,
+                    totalSalaryCost: deptTotalSalaryCost,
+                    maxIncentives: deptMaxIncentives,
+                  },
+                });
+              });
+              return updated;
+            });
+          }
+          // If no salary data, don't update - keep existing data with all calculations intact
+          setLoading(false);
+        }
+      } catch (error) {
+        console.error('❌ Sales Contribution Report - Error:', error);
+        toast.error('Failed to fetch sales contribution data');
+        setLoading(false);
       }
-    } catch (error) {
-      console.error('❌ Sales Contribution Report - Error:', error);
-      toast.error('Failed to fetch sales contribution data');
-      setLoading(false);
-    }
   };
 
-  // Helper function to normalize category text for matching
+  // Helper function to normalize category text for matching - now uses utility
   const normalizeCategoryText = useCallback((text: string): string => {
-    return text
-      .trim()
-      .toLowerCase()
-      .replace(/[^\w\s]/g, '') // Remove special characters
-      .replace(/\s+/g, ' ') // Normalize whitespace
-      .trim();
+    return normalizeCategoryTextUtil(text);
   }, []);
 
-  // Helper function to find best matching category from map
+  // Helper function to find best matching category from map - now uses utility
   const findBestCategoryMatch = useCallback((categoryValue: string): any => {
-    if (!categoryValue || typeof categoryValue !== 'string' || categoryValue.trim() === '') {
-      return null;
-    }
+    return findBestCategoryMatchUtil(categoryValue, categoryNameToDataMap);
+  }, [categoryNameToDataMap]);
 
-    const trimmedValue = categoryValue.trim();
-    const normalizedValue = normalizeCategoryText(trimmedValue);
-
-    // Try exact match first (normalized)
-    let mappedCategory = categoryNameToDataMap.get(normalizedValue);
-    if (mappedCategory) return mappedCategory;
-
-    // Try exact match with original case
-    mappedCategory = categoryNameToDataMap.get(trimmedValue.toLowerCase());
-    if (mappedCategory) return mappedCategory;
-
-    // If no exact match, try matching the category name part (before parentheses)
-    if (trimmedValue.includes('(')) {
-      const categoryNamePart = trimmedValue.split('(')[0].trim().toLowerCase();
-      mappedCategory = categoryNameToDataMap.get(categoryNamePart);
-      if (mappedCategory) return mappedCategory;
-
-      const normalizedCategoryNamePart = normalizeCategoryText(categoryNamePart);
-      mappedCategory = categoryNameToDataMap.get(normalizedCategoryNamePart);
-      if (mappedCategory) return mappedCategory;
-    }
-
-    // Try removing all spaces and special characters for comparison
-    const normalizedValueNoSpaces = normalizedValue.replace(/[\s_-]/g, '');
-
-    // Try exact match after removing spaces
-    for (const [mapKey, mapValue] of categoryNameToDataMap.entries()) {
-      const normalizedMapKey = normalizeCategoryText(mapKey).replace(/[\s_-]/g, '');
-      if (normalizedMapKey === normalizedValueNoSpaces) {
-        return mapValue;
-      }
-    }
-
-    // Try matching just the category name part (before parentheses in map key)
-    for (const [mapKey, mapValue] of categoryNameToDataMap.entries()) {
-      const mapKeyNamePart = mapKey.split('(')[0].trim().toLowerCase().replace(/[\s_-]/g, '');
-      if (mapKeyNamePart === normalizedValueNoSpaces || normalizedValueNoSpaces === mapKeyNamePart) {
-        return mapValue;
-      }
-    }
-
-    // Try substring matching (one contains the other) - be more lenient
-    for (const [mapKey, mapValue] of categoryNameToDataMap.entries()) {
-      const normalizedMapKey = normalizeCategoryText(mapKey).replace(/[\s_-]/g, '');
-
-      if (normalizedMapKey.includes(normalizedValueNoSpaces) || normalizedValueNoSpaces.includes(normalizedMapKey)) {
-        const lengthDiff = Math.abs(normalizedMapKey.length - normalizedValueNoSpaces.length);
-        const minLength = Math.min(normalizedMapKey.length, normalizedValueNoSpaces.length);
-        // Allow match if difference is small relative to the shorter string (up to 50% difference)
-        if (lengthDiff <= Math.max(3, minLength * 0.5)) {
-          return mapValue;
-        }
-      }
-    }
-
-    // Try word-by-word matching (for cases like "Small without meetin" vs "Small Without Meeting")
-    const valueWords = normalizedValue.split(/[\s_-]+/).filter(w => w.length > 0);
-    if (valueWords.length > 0) {
-      for (const [mapKey, mapValue] of categoryNameToDataMap.entries()) {
-        const mapKeyWords = normalizeCategoryText(mapKey).split(/[\s_-]+/).filter(w => w.length > 0);
-        if (mapKeyWords.length > 0) {
-          const matchingWords = mapKeyWords.filter(word =>
-            valueWords.some(vw =>
-              vw === word ||
-              word.includes(vw) ||
-              vw.includes(word) ||
-              word.startsWith(vw) ||
-              vw.startsWith(word)
-            )
-          );
-          // If most words match (at least 60% of words), consider it a match
-          const matchRatio = matchingWords.length / Math.min(mapKeyWords.length, valueWords.length);
-          if (matchRatio >= 0.6 && matchingWords.length > 0) {
-            return mapValue;
-          }
-        }
-      }
-    }
-
-    // Try character-by-character similarity (Levenshtein-like, simplified)
-    let bestMatch: { category: any; score: number } | null = null;
-    for (const [mapKey, mapValue] of categoryNameToDataMap.entries()) {
-      const normalizedMapKey = normalizeCategoryText(mapKey);
-      const shorter = normalizedValue.length < normalizedMapKey.length ? normalizedValue : normalizedMapKey;
-      const longer = normalizedValue.length >= normalizedMapKey.length ? normalizedValue : normalizedMapKey;
-
-      // Calculate simple similarity score
-      let matches = 0;
-      for (let i = 0; i < shorter.length; i++) {
-        if (longer.includes(shorter[i])) matches++;
-      }
-      const score = matches / Math.max(shorter.length, 1);
-
-      // If similarity is high enough (70%+), consider it a match
-      if (score >= 0.7 && (!bestMatch || score > bestMatch.score)) {
-        bestMatch = { category: mapValue, score };
-      }
-    }
-
-    if (bestMatch) {
-      return bestMatch.category;
-    }
-
-    return null;
-  }, [categoryNameToDataMap, normalizeCategoryText]);
-
-  // Helper function to resolve main category from lead (similar to CollectionDueReportPage)
+  // Helper function to resolve main category from lead - now uses utility
   const resolveMainCategory = (
     categoryValue?: string | null,
     categoryId?: string | number | null,
-    miscCategory?: any
+    miscCategory?: any,
+    allCategoriesParam?: any[],
+    categoryNameToDataMapParam?: Map<string, any>
   ): string => {
-    // Check if miscCategory is actually valid (not null, undefined, or empty array)
-    // Supabase joins return null or empty array when there's no match
-    const hasMiscCategory = miscCategory !== null &&
-      miscCategory !== undefined &&
-      !(Array.isArray(miscCategory) && miscCategory.length === 0) &&
-      (Array.isArray(miscCategory) ? miscCategory.length > 0 && miscCategory[0] : miscCategory);
+    // Use provided params or fall back to component state
+    const categoriesToUse = allCategoriesParam || allCategories;
+    const mapToUse = categoryNameToDataMapParam || categoryNameToDataMap;
 
-    // First, try to use the joined miscCategory if it's valid
-    let resolvedMiscCategory = hasMiscCategory ? (Array.isArray(miscCategory) ? miscCategory[0] : miscCategory) : null;
-
-    // If we don't have a valid miscCategory, try to look up by category_id first
-    if (!resolvedMiscCategory && categoryId && allCategories.length > 0) {
-      const categoryById = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
-      if (categoryById) {
-        resolvedMiscCategory = categoryById;
-      }
-    }
-
-    // If we still don't have a category, try to look it up by text category name in the map
-    // This is important for new leads that have category saved as text
-    if (!resolvedMiscCategory && categoryValue && typeof categoryValue === 'string' && categoryValue.trim() !== '' && categoryNameToDataMap.size > 0) {
-      const mappedCategory = findBestCategoryMatch(categoryValue);
-      if (mappedCategory) {
-        resolvedMiscCategory = mappedCategory;
-      }
-    }
-
-    // If we still don't have a category, return 'Uncategorized'
-    if (!resolvedMiscCategory) {
-      // Log for debugging - helps identify which categories are not being mapped
-      if (categoryValue && categoryValue.trim() !== '') {
-        const normalizedValue = normalizeCategoryText(categoryValue);
-        const sampleMapKeys = Array.from(categoryNameToDataMap.keys()).slice(0, 20);
-        console.warn('⚠️ Sales Contribution - Could not resolve category:', {
-          categoryValue,
-          normalizedValue,
-          categoryId,
-          hasMiscCategory: !!hasMiscCategory,
-          mapSize: categoryNameToDataMap.size,
-          sampleMapKeys,
-          allCategoriesCount: allCategories.length,
-          // Show similar keys for debugging
-          similarKeys: Array.from(categoryNameToDataMap.keys()).filter(key => {
-            const normalizedKey = normalizeCategoryText(key);
-            return normalizedKey.includes(normalizedValue) || normalizedValue.includes(normalizedKey);
-          }).slice(0, 5)
-        });
-      }
-      return 'Uncategorized';
-    }
-
-    // Handle array case (shouldn't happen at this point, but be safe)
-    const categoryRecord = Array.isArray(resolvedMiscCategory) ? resolvedMiscCategory[0] : resolvedMiscCategory;
-    if (!categoryRecord) {
-      return 'Uncategorized';
-    }
-
-    // Extract main category (handle both array and object cases)
-    let mainCategory = Array.isArray(categoryRecord.misc_maincategory)
-      ? categoryRecord.misc_maincategory[0]
-      : categoryRecord.misc_maincategory;
-
-    if (!mainCategory) {
-      return 'Uncategorized';
-    }
-
-    return mainCategory.name || 'Uncategorized';
+    return resolveMainCategoryUtil(
+      categoryValue,
+      categoryId,
+      miscCategory,
+      categoriesToUse,
+      mapToUse
+    );
   };
 
-  // Pre-process leads to ensure all categories are correctly mapped
+  // Pre-process leads to ensure all categories are correctly mapped - now uses utility
   const preprocessLeadsCategories = useCallback((leads: any[], isLegacy: boolean = false): any[] => {
-    if (!leads || leads.length === 0) return leads;
-
-    // If categories aren't loaded yet, we can't preprocess - this should not happen if called correctly
-    if (!categoriesLoaded || (categoryNameToDataMap.size === 0 && allCategories.length === 0)) {
-      console.error('❌ Preprocessing called before categories loaded! This should not happen.', {
-        categoriesLoaded,
-        mapSize: categoryNameToDataMap.size,
-        allCategoriesCount: allCategories.length,
-        leadsCount: leads.length
-      });
-      // Still try to process with what we have - might work if categories are partially loaded
-    }
-
-    let resolvedCount = 0;
-    let unresolvedCount = 0;
-    const unresolvedCategories = new Set<string>();
-
-    const processedLeads = leads.map(lead => {
-      // If category is already correctly resolved via join, keep it
-      const existingMiscCategory = Array.isArray(lead.misc_category)
-        ? (lead.misc_category.length > 0 ? lead.misc_category[0] : null)
-        : lead.misc_category;
-
-      if (existingMiscCategory && existingMiscCategory.misc_maincategory) {
-        return lead; // Already has valid category
-      }
-
-      // Try to resolve category using text value
-      if (lead.category && typeof lead.category === 'string' && lead.category.trim() !== '') {
-        const resolvedCategory = findBestCategoryMatch(lead.category);
-        if (resolvedCategory) {
-          resolvedCount++;
-          // Update the lead with the resolved category
-          return {
-            ...lead,
-            misc_category: resolvedCategory,
-            category_id: resolvedCategory.id || lead.category_id
-          };
-        } else {
-          unresolvedCount++;
-          unresolvedCategories.add(lead.category);
-        }
-      }
-
-      // Try to resolve using category_id if available
-      if (lead.category_id && allCategories.length > 0) {
-        const categoryById = allCategories.find((cat: any) => cat.id.toString() === lead.category_id.toString());
-        if (categoryById) {
-          resolvedCount++;
-          return {
-            ...lead,
-            misc_category: categoryById
-          };
-        }
-      }
-
-      return lead;
-    });
-
-    // Debug logging
-    if (unresolvedCount > 0) {
-      console.warn('⚠️ Preprocessing - Some categories could not be resolved:', {
-        totalLeads: leads.length,
-        resolved: resolvedCount,
-        unresolved: unresolvedCount,
-        unresolvedCategories: Array.from(unresolvedCategories).slice(0, 10),
-        mapSize: categoryNameToDataMap.size,
-        allCategoriesCount: allCategories.length
-      });
-    } else if (resolvedCount > 0) {
-      console.log('✅ Preprocessing - All categories resolved:', {
-        totalLeads: leads.length,
-        resolved: resolvedCount
-      });
-    }
-
-    return processedLeads;
-  }, [allCategories, categoryNameToDataMap, findBestCategoryMatch]);
+    return preprocessLeadsCategoriesUtil(leads, isLegacy, allCategories, categoryNameToDataMap, categoriesLoaded);
+  }, [allCategories, categoryNameToDataMap, categoriesLoaded]);
 
   // Process data for field view (grouped by main category)
   const processFieldViewDataRef = useRef<Promise<void> | null>(null);
@@ -3964,61 +3338,17 @@ const SalesContributionPage = () => {
           });
         });
 
-        // Helper functions for calculating amounts
-        const parseNumericAmount = (val: any): number => {
-          if (typeof val === 'number') return val;
-          if (typeof val === 'string') {
-            const cleaned = val.replace(/[^0-9.-]/g, '');
-            const parsed = parseFloat(cleaned);
-            return Number.isNaN(parsed) ? 0 : parsed;
-          }
-          return 0;
-        };
-
-        const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string; conversionValue: string | number } => {
-          for (const candidate of candidates) {
-            if (candidate === null || candidate === undefined) continue;
-            const rawValue = Array.isArray(candidate) ? candidate[0] : candidate;
-            if (rawValue === null || rawValue === undefined) continue;
-
-            if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
-              const currencyMap: { [key: number]: string } = { 1: 'NIS', 2: 'USD', 3: 'EUR', 4: 'GBP' };
-              return { displaySymbol: '₪', conversionValue: currencyMap[rawValue] || 'NIS' };
-            }
-
-            const valueStr = rawValue.toString().trim();
-            if (!valueStr) continue;
-
-            const numeric = Number(valueStr);
-            if (!Number.isNaN(numeric) && numeric.toString() === valueStr) {
-              const currencyMap: { [key: number]: string } = { 1: 'NIS', 2: 'USD', 3: 'EUR', 4: 'GBP' };
-              return { displaySymbol: '₪', conversionValue: currencyMap[numeric] || 'NIS' };
-            }
-
-            const upper = valueStr.toUpperCase();
-            if (upper === '₪' || upper === 'NIS' || upper === 'ILS') {
-              return { displaySymbol: '₪', conversionValue: 'NIS' };
-            }
-            if (upper === '$' || upper === 'USD') {
-              return { displaySymbol: '$', conversionValue: 'USD' };
-            }
-            if (upper === '€' || upper === 'EUR') {
-              return { displaySymbol: '€', conversionValue: 'EUR' };
-            }
-            if (upper === '£' || upper === 'GBP') {
-              return { displaySymbol: '£', conversionValue: 'GBP' };
-            }
-          }
-          return { displaySymbol: '₪', conversionValue: 'NIS' };
-        };
+        // Helper functions are now imported from salesContributionCalculator
 
         // Process new leads
         newLeadsMap.forEach((lead: any) => {
-          // Get main category name using helper function
+          // Get main category name using utility function
           const mainCategoryName = resolveMainCategory(
             lead.category, // category text field
             lead.category_id, // category ID
-            lead.misc_category // joined misc_category data
+            lead.misc_category, // joined misc_category data
+            allCategories,
+            categoryNameToDataMap
           );
 
           // Debug logging for uncategorized leads
@@ -4031,18 +3361,8 @@ const SalesContributionPage = () => {
             });
           }
 
-          // Calculate amount
-          const balanceAmount = parseFloat(lead.balance || 0);
-          const proposalAmount = parseFloat(lead.proposal_total || 0);
-          const rawAmount = balanceAmount || proposalAmount || 0;
-          const currencyCode = lead.accounting_currencies?.iso_code || lead.balance_currency || lead.proposal_currency || 'NIS';
-          const amountInNIS = convertToNIS(rawAmount, currencyCode);
-
-          // Subtract subcontractor fee
-          const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-          const currencyMeta = buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency);
-          const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
-          const amountAfterFee = amountInNIS - subcontractorFeeNIS;
+          // Calculate amount using utility function
+          const amountAfterFee = calculateNewLeadAmount(lead);
 
           // Get or create field data
           if (!fieldDataMap.has(mainCategoryName)) {
@@ -4063,11 +3383,13 @@ const SalesContributionPage = () => {
 
         // Process legacy leads
         legacyLeadsMap.forEach((lead: any) => {
-          // Get main category name using helper function
+          // Get main category name using utility function
           const mainCategoryName = resolveMainCategory(
             lead.category, // category text field
             lead.category_id, // category ID
-            lead.misc_category // joined misc_category data
+            lead.misc_category, // joined misc_category data
+            allCategories,
+            categoryNameToDataMap
           );
 
           // Debug logging for uncategorized leads
@@ -4080,26 +3402,8 @@ const SalesContributionPage = () => {
             });
           }
 
-          // Calculate amount (same logic as fetchRoleData)
-          const currencyId = lead.currency_id;
-          const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-          let resolvedAmount = 0;
-          if (numericCurrencyId === 1) {
-            resolvedAmount = parseNumericAmount(lead.total_base) || 0;
-          } else {
-            resolvedAmount = parseNumericAmount(lead.total) || 0;
-          }
-
-          const currencyMeta = buildCurrencyMeta(
-            lead.currency_id,
-            lead.meeting_total_currency_id,
-            lead.accounting_currencies
-          );
-
-          const amountNIS = convertToNIS(resolvedAmount, currencyMeta.conversionValue);
-          const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-          const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
-          const amountAfterFee = amountNIS - subcontractorFeeNIS;
+          // Calculate amount using utility function
+          const amountAfterFee = calculateLegacyLeadAmount(lead);
 
           // Get or create field data
           if (!fieldDataMap.has(mainCategoryName)) {
@@ -4180,7 +3484,9 @@ const SalesContributionPage = () => {
                 const mainCategoryName = resolveMainCategory(
                   lead.category,
                   lead.category_id,
-                  lead.misc_category
+                  lead.misc_category,
+                  allCategories,
+                  categoryNameToDataMap
                 );
                 leadToCategoryMap.set(lead.id, mainCategoryName);
 
@@ -4352,7 +3658,9 @@ const SalesContributionPage = () => {
                 const mainCategoryName = resolveMainCategory(
                   lead.category,
                   lead.category_id,
-                  lead.misc_category
+                  lead.misc_category,
+                  allCategories,
+                  categoryNameToDataMap
                 );
                 leadToCategoryMap.set(Number(lead.id), mainCategoryName);
 
@@ -4476,25 +3784,17 @@ const SalesContributionPage = () => {
 
         // Process new leads to calculate signed portions per category
         newLeadsMap.forEach((lead: any) => {
-          // Get main category name using helper function
+          // Get main category name using utility function
           const mainCategoryName = resolveMainCategory(
             lead.category, // category text field
             lead.category_id, // category ID
-            lead.misc_category // joined misc_category data
+            lead.misc_category, // joined misc_category data
+            allCategories,
+            categoryNameToDataMap
           );
 
-          // Calculate amount
-          const balanceAmount = parseFloat(lead.balance || 0);
-          const proposalAmount = parseFloat(lead.proposal_total || 0);
-          const rawAmount = balanceAmount || proposalAmount || 0;
-          const currencyCode = lead.accounting_currencies?.iso_code || lead.balance_currency || lead.proposal_currency || 'NIS';
-          const amountInNIS = convertToNIS(rawAmount, currencyCode);
-
-          // Subtract subcontractor fee
-          const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-          const currencyMeta = buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency);
-          const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
-          const amountAfterFee = amountInNIS - subcontractorFeeNIS;
+          // Calculate amount using utility function
+          const amountAfterFee = calculateNewLeadAmount(lead);
 
           // Calculate total signed portion for this lead (sum of all employees' portions)
           const leadRoles = {
@@ -4537,33 +3837,17 @@ const SalesContributionPage = () => {
 
         // Process legacy leads to calculate signed portions per category
         legacyLeadsMap.forEach((lead: any) => {
-          // Get main category name using helper function
+          // Get main category name using utility function
           const mainCategoryName = resolveMainCategory(
             lead.category, // category text field
             lead.category_id, // category ID
-            lead.misc_category // joined misc_category data
+            lead.misc_category, // joined misc_category data
+            allCategories,
+            categoryNameToDataMap
           );
 
-          // Calculate amount
-          const currencyId = lead.currency_id;
-          const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-          let resolvedAmount = 0;
-          if (numericCurrencyId === 1) {
-            resolvedAmount = parseNumericAmount(lead.total_base) || 0;
-          } else {
-            resolvedAmount = parseNumericAmount(lead.total) || 0;
-          }
-
-          const currencyMeta = buildCurrencyMeta(
-            lead.currency_id,
-            lead.meeting_total_currency_id,
-            lead.accounting_currencies
-          );
-
-          const amountNIS = convertToNIS(resolvedAmount, currencyMeta.conversionValue);
-          const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-          const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
-          const amountAfterFee = amountNIS - subcontractorFeeNIS;
+          // Calculate amount using utility function
+          const amountAfterFee = calculateLegacyLeadAmount(lead);
 
           // Calculate total signed portion for this lead
           const leadRoles = {
@@ -5196,9 +4480,16 @@ const SalesContributionPage = () => {
                           </div>
                         </td>
                         <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">
-                          <span className={(emp.maxIncentives ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}>
-                            {formatCurrency(emp.maxIncentives ?? 0)}
-                          </span>
+                          {(() => {
+                            const salaryBudget = emp.salaryBudget ?? 0;
+                            const totalSalaryCost = emp.totalSalaryCost ?? 0;
+                            const maxIncentives = salaryBudget - totalSalaryCost;
+                            return (
+                              <span className={maxIncentives >= 0 ? 'text-green-500' : 'text-red-500'}>
+                                {formatCurrency(maxIncentives)}
+                              </span>
+                            );
+                          })()}
                         </td>
                       </tr>
                       {isExpanded && (
@@ -5390,9 +4681,16 @@ const SalesContributionPage = () => {
                   </div>
                 </td>
                 <td className="text-right w-[10%] text-[10px] md:text-sm">
-                  <span className={(deptData.totals.maxIncentives ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}>
-                    {formatCurrency(deptData.totals.maxIncentives ?? 0)}
-                  </span>
+                  {(() => {
+                    const salaryBudget = deptData.totals.salaryBudget ?? 0;
+                    const totalSalaryCost = deptData.totals.totalSalaryCost ?? 0;
+                    const maxIncentives = salaryBudget - totalSalaryCost;
+                    return (
+                      <span className={maxIncentives >= 0 ? 'text-green-500' : 'text-red-500'}>
+                        {formatCurrency(maxIncentives)}
+                      </span>
+                    );
+                  })()}
                 </td>
               </tr>
             </tbody>

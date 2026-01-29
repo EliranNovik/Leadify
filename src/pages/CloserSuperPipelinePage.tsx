@@ -6,12 +6,15 @@ import { convertToNIS } from '../lib/currencyConversion';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 import { EnvelopeIcon, PhoneIcon, ChatBubbleLeftRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, PencilIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
+import * as Slider from '@radix-ui/react-slider';
 
 const CloserSuperPipelinePage = () => {
   const navigate = useNavigate();
   const [filters, setFilters] = usePersistedFilters<{
     fromDate: string;
     toDate: string;
+    createdFromDate: string;
+    createdToDate: string;
     categories: string[];
     employee: string;
     languages: string[];
@@ -22,6 +25,8 @@ const CloserSuperPipelinePage = () => {
   }>('closerSuperPipeline_filters', {
     fromDate: '',
     toDate: '',
+    createdFromDate: '',
+    createdToDate: '',
     categories: [], // Changed to array for multi-select
     employee: '',
     languages: [], // Changed to array for multi-select
@@ -49,9 +54,9 @@ const CloserSuperPipelinePage = () => {
   const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
   const [languages, setLanguages] = useState<{ id: string; name: string }[]>([]);
   const [stages, setStages] = useState<{ id: string; name: string }[]>([]);
-  const [editingManagerNotes, setEditingManagerNotes] = useState<Record<string, boolean>>({});
-  const [managerNotesValues, setManagerNotesValues] = useState<Record<string, string>>({});
-  const [savingManagerNotes, setSavingManagerNotes] = useState<Record<string, boolean>>({});
+  const [editingManagerNotes, setEditingManagerNotes] = useState<{ leadId: string; lead: any } | null>(null);
+  const [managerNotesValue, setManagerNotesValue] = useState<string>('');
+  const [savingManagerNotes, setSavingManagerNotes] = useState(false);
   const [categorySearch, setCategorySearch] = useState<string>('');
   const [employeeSearch, setEmployeeSearch] = useState<string>('');
   const [languageSearch, setLanguageSearch] = useState<string>('');
@@ -193,7 +198,7 @@ const CloserSuperPipelinePage = () => {
       const { data: stagesData } = await supabase
         .from('lead_stages')
         .select('id, name')
-        .order('name');
+        .order('id', { ascending: true });
       if (stagesData) {
         setStages(stagesData.map(stage => ({ id: stage.id.toString(), name: stage.name })));
       }
@@ -750,6 +755,8 @@ const CloserSuperPipelinePage = () => {
     setFilters({
       fromDate: '',
       toDate: '',
+      createdFromDate: '',
+      createdToDate: '',
       categories: [], // Reset to empty array
       employee: '',
       languages: [], // Reset to empty array
@@ -885,6 +892,13 @@ const CloserSuperPipelinePage = () => {
   const formatNoteText = (text: string): string => {
     if (!text) return '';
     return text.replace(/\n/g, '<br>');
+  };
+
+  // Convert HTML <br> tags back to newlines for textarea editing
+  const unformatNoteText = (text: string): string => {
+    if (!text) return '';
+    // Convert <br> and <br /> back to newlines
+    return text.replace(/<br\s*\/?>/gi, '\n');
   };
 
   const fetchCurrentUserName = async (): Promise<string> => {
@@ -1033,11 +1047,23 @@ const CloserSuperPipelinePage = () => {
     }
   };
 
-  const handleSaveManagerNotes = async (lead: any) => {
+  const handleEditManagerNotes = (lead: any) => {
+    setEditingManagerNotes({ leadId: lead.id || lead.lead_number || '', lead });
+    // Remove "---" if it's the only content, otherwise use the actual value
+    // Convert HTML <br> tags back to newlines for textarea editing
+    let notesValue = lead.manager_notes && lead.manager_notes !== '---' ? lead.manager_notes : '';
+    notesValue = unformatNoteText(notesValue);
+    setManagerNotesValue(notesValue);
+  };
+
+  const handleSaveManagerNotes = async () => {
+    if (!editingManagerNotes) return;
+
+    const lead = editingManagerNotes.lead;
     const leadId = lead.id || lead.lead_number;
     if (!leadId) return;
 
-    setSavingManagerNotes(prev => ({ ...prev, [lead.id || lead.lead_number]: true }));
+    setSavingManagerNotes(true);
     try {
       const userName = await fetchCurrentUserName();
       const tableName = lead.lead_type === 'legacy' ? 'leads_lead' : 'leads';
@@ -1045,9 +1071,10 @@ const CloserSuperPipelinePage = () => {
         ? (typeof leadId === 'string' ? parseInt(leadId.replace('legacy_', '')) : leadId)
         : leadId;
 
-      const notesText = managerNotesValues[lead.id || lead.lead_number] || '';
+      const notesText = managerNotesValue || '';
+      // Save raw text with newlines - formatNoteText is only for display in table
       const updateData: any = {
-        management_notes: formatNoteText(notesText),
+        management_notes: notesText, // Save raw text with \n characters
         management_notes_last_edited_by: userName,
         management_notes_last_edited_at: new Date().toISOString(),
       };
@@ -1059,36 +1086,29 @@ const CloserSuperPipelinePage = () => {
 
       if (error) throw error;
 
-      // Update local state
+      // Update local state - use raw text, formatNoteText is only for display
       setResults(prev => prev.map(l =>
         l.id === lead.id
-          ? { ...l, manager_notes: formatNoteText(notesText) }
+          ? { ...l, manager_notes: notesText }
           : l
       ));
 
-      // Clear editing state
-      setEditingManagerNotes(prev => {
-        const newState = { ...prev };
-        delete newState[lead.id || lead.lead_number];
-        return newState;
-      });
-      setManagerNotesValues(prev => {
-        const newState = { ...prev };
-        delete newState[lead.id || lead.lead_number];
-        return newState;
-      });
+      // Close modal
+      setEditingManagerNotes(null);
+      setManagerNotesValue('');
 
       toast.success('Manager notes saved successfully');
     } catch (error: any) {
       console.error('Error saving manager notes:', error);
       toast.error(`Failed to save manager notes: ${error?.message || 'Unknown error'}`);
     } finally {
-      setSavingManagerNotes(prev => {
-        const newState = { ...prev };
-        delete newState[lead.id || lead.lead_number];
-        return newState;
-      });
+      setSavingManagerNotes(false);
     }
+  };
+
+  const handleCancelManagerNotes = () => {
+    setEditingManagerNotes(null);
+    setManagerNotesValue('');
   };
 
   const handleSearch = async (applyDateFilters: boolean = true) => {
@@ -1182,6 +1202,14 @@ const CloserSuperPipelinePage = () => {
       // Apply language filter
       if (filters.languages && filters.languages.length > 0) {
         newLeadsQuery = newLeadsQuery.in('language', filters.languages);
+      }
+
+      // Apply created date filter for new leads (created_at)
+      if (filters.createdFromDate) {
+        newLeadsQuery = newLeadsQuery.gte('created_at', filters.createdFromDate);
+      }
+      if (filters.createdToDate) {
+        newLeadsQuery = newLeadsQuery.lte('created_at', filters.createdToDate + 'T23:59:59');
       }
 
       // Apply employee filter (closer)
@@ -1693,6 +1721,14 @@ const CloserSuperPipelinePage = () => {
       if (filters.languages && filters.languages.length > 0) {
         const languageIds = filters.languages.map(lang => Number(lang));
         legacyLeadsQuery = legacyLeadsQuery.in('language_id', languageIds);
+      }
+
+      // Apply created date filter for legacy leads (cdate)
+      if (filters.createdFromDate) {
+        legacyLeadsQuery = legacyLeadsQuery.gte('cdate', filters.createdFromDate);
+      }
+      if (filters.createdToDate) {
+        legacyLeadsQuery = legacyLeadsQuery.lte('cdate', filters.createdToDate + 'T23:59:59');
       }
 
       // Apply employee filter (closer)
@@ -2475,7 +2511,7 @@ const CloserSuperPipelinePage = () => {
 
       {/* Filters */}
       <div className="mb-6 px-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-9 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">From Date (Meeting Date)</label>
             <input
@@ -2491,6 +2527,24 @@ const CloserSuperPipelinePage = () => {
               type="date"
               value={filters.toDate}
               onChange={(e) => handleFilterChange('toDate', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">From Date (Created Date)</label>
+            <input
+              type="date"
+              value={filters.createdFromDate}
+              onChange={(e) => handleFilterChange('createdFromDate', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">To Date (Created Date)</label>
+            <input
+              type="date"
+              value={filters.createdToDate}
+              onChange={(e) => handleFilterChange('createdToDate', e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
@@ -2736,15 +2790,15 @@ const CloserSuperPipelinePage = () => {
                   return (
                     <div
                       key={stageId}
-                      className="badge badge-primary badge-sm flex items-center gap-1"
+                      className="badge badge-primary badge-sm flex items-center gap-1 max-w-full"
                     >
-                      <span>{stage.name}</span>
+                      <span className="truncate text-xs">{stage.name}</span>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           toggleStageSelection(stageId.toString());
                         }}
-                        className="ml-1 hover:bg-primary-focus rounded-full p-0.5"
+                        className="ml-1 hover:bg-primary-focus rounded-full p-0.5 flex-shrink-0"
                       >
                         <XMarkIcon className="w-3 h-3" />
                       </button>
@@ -2904,60 +2958,90 @@ const CloserSuperPipelinePage = () => {
             )}
           </div>
         </div>
-        <div className="mt-4 flex gap-4 items-center flex-wrap">
-          <button
-            onClick={() => handleSearch(true)} // Pass true to apply date filters when Show is clicked
-            disabled={isSearching}
-            className="px-6 py-2 text-white rounded-md hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            style={{ backgroundColor: '#411CCF' }}
-          >
-            {isSearching ? 'Searching...' : 'Show'}
-          </button>
+        <div className="mt-4 flex flex-col md:flex-row gap-4 items-start md:items-center flex-wrap">
           {/* Probability Filter Sliders */}
-          <div className="flex gap-3 items-center">
-            <div className="w-48">
-              <label className="block text-xs font-medium text-gray-700 mb-0.5">
-                Min: {filters.minProbability}%
+          <div className="flex flex-col md:flex-row gap-4 md:gap-6 items-end bg-white p-4 md:p-5 rounded-xl border border-gray-200 shadow-sm w-full md:w-auto max-w-full overflow-hidden">
+            <div className="flex flex-col gap-3 w-full md:min-w-[220px] md:w-auto">
+              <label className="block text-sm font-semibold text-gray-800">
+                Min Probability
               </label>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={filters.minProbability}
-                onChange={(e) => {
-                  const newMin = parseInt(e.target.value);
-                  // Ensure min doesn't exceed max
-                  if (newMin <= filters.maxProbability) {
-                    handleFilterChange('minProbability', newMin);
-                  } else {
-                    // If min exceeds max, set both to the same value
-                    handleFilterChange('minProbability', filters.maxProbability);
-                  }
+              <div className="flex items-center gap-3">
+                <div className="relative flex-shrink-0">
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={filters.minProbability}
+                    onFocus={(e) => e.target.select()}
+                    onChange={(e) => {
+                      const newMin = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
+                      // Only update min, don't change max
+                      handleFilterChange('minProbability', newMin);
+                    }}
+                    className="w-24 md:w-28 px-3 md:px-4 py-2 md:py-2.5 text-sm md:text-base font-semibold border-2 border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#411CCF] focus:border-[#411CCF] bg-white shadow-sm transition-all text-center"
+                    style={{ appearance: 'textfield' }}
+                  />
+                  <span className="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-xs md:text-sm font-semibold text-gray-500 pointer-events-none">%</span>
+                </div>
+              </div>
+              <Slider.Root
+                className="relative flex items-center select-none touch-none w-full h-7"
+                value={[filters.minProbability]}
+                min={0}
+                max={100}
+                step={1}
+                onValueChange={(value) => {
+                  const newMin = value[0];
+                  // Direct state update for immediate response
+                  setFilters(prev => ({ ...prev, minProbability: newMin }));
                 }}
-                className="w-full range range-primary range-sm"
-              />
+              >
+                <Slider.Track className="bg-gray-300 relative flex-1 rounded-full h-3.5 shadow-inner">
+                  <Slider.Range className="absolute bg-gradient-to-r from-[#411CCF] via-[#5B21B6] to-[#6B46C1] rounded-full h-full shadow-sm" />
+                </Slider.Track>
+                <Slider.Thumb className="block w-7 h-7 bg-white border-3 border-[#411CCF] rounded-full shadow-lg hover:shadow-xl focus:outline-none focus:ring-4 focus:ring-[#411CCF]/30 focus:ring-offset-2 cursor-grab active:cursor-grabbing" style={{ transition: 'box-shadow 0.15s ease-out' }} />
+              </Slider.Root>
             </div>
-            <div className="w-48">
-              <label className="block text-xs font-medium text-gray-700 mb-0.5">
-                Max: {filters.maxProbability}%
+            <div className="flex flex-col gap-3 w-full md:min-w-[220px] md:w-auto">
+              <label className="block text-sm font-semibold text-gray-800">
+                Max Probability
               </label>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={filters.maxProbability}
-                onChange={(e) => {
-                  const newMax = parseInt(e.target.value);
-                  // Ensure max doesn't go below min
-                  if (newMax >= filters.minProbability) {
-                    handleFilterChange('maxProbability', newMax);
-                  } else {
-                    // If max goes below min, set both to the same value
-                    handleFilterChange('maxProbability', filters.minProbability);
-                  }
+              <div className="flex items-center gap-3">
+                <div className="relative flex-shrink-0">
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={filters.maxProbability}
+                    onFocus={(e) => e.target.select()}
+                    onChange={(e) => {
+                      const newMax = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
+                      // Only update max, don't change min
+                      handleFilterChange('maxProbability', newMax);
+                    }}
+                    className="w-24 md:w-28 px-3 md:px-4 py-2 md:py-2.5 text-sm md:text-base font-semibold border-2 border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#411CCF] focus:border-[#411CCF] bg-white shadow-sm transition-all text-center"
+                    style={{ appearance: 'textfield' }}
+                  />
+                  <span className="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-xs md:text-sm font-semibold text-gray-500 pointer-events-none">%</span>
+                </div>
+              </div>
+              <Slider.Root
+                className="relative flex items-center select-none touch-none w-full h-7"
+                value={[filters.maxProbability]}
+                min={0}
+                max={100}
+                step={1}
+                onValueChange={(value) => {
+                  const newMax = value[0];
+                  // Direct state update for immediate response
+                  setFilters(prev => ({ ...prev, maxProbability: newMax }));
                 }}
-                className="w-full range range-primary range-sm"
-              />
+              >
+                <Slider.Track className="bg-gray-300 relative flex-1 rounded-full h-3.5 shadow-inner">
+                  <Slider.Range className="absolute bg-gradient-to-r from-[#411CCF] via-[#5B21B6] to-[#6B46C1] rounded-full h-full shadow-sm" />
+                </Slider.Track>
+                <Slider.Thumb className="block w-7 h-7 bg-white border-3 border-[#411CCF] rounded-full shadow-lg hover:shadow-xl focus:outline-none focus:ring-4 focus:ring-[#411CCF]/30 focus:ring-offset-2 cursor-grab active:cursor-grabbing" style={{ transition: 'box-shadow 0.15s ease-out' }} />
+              </Slider.Root>
             </div>
           </div>
           <button
@@ -2966,6 +3050,33 @@ const CloserSuperPipelinePage = () => {
           >
             Cancel
           </button>
+          <button
+            onClick={() => handleSearch(true)} // Pass true to apply date filters when Show is clicked
+            disabled={isSearching}
+            className="px-6 py-2 text-white rounded-md hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            style={{ backgroundColor: '#411CCF' }}
+          >
+            {isSearching ? 'Searching...' : 'Show'}
+          </button>
+          <style>{`
+            input[type="number"]::-webkit-inner-spin-button,
+            input[type="number"]::-webkit-outer-spin-button {
+              -webkit-appearance: none;
+              margin: 0;
+            }
+            input[type="number"] {
+              -moz-appearance: textfield;
+            }
+            [data-radix-slider-thumb] {
+              border-width: 3px !important;
+            }
+            [data-radix-slider-thumb]:hover {
+              transform: scale(1.1);
+            }
+            [data-radix-slider-thumb]:active {
+              transform: scale(0.95);
+            }
+          `}</style>
         </div>
       </div>
 
@@ -3005,7 +3116,7 @@ const CloserSuperPipelinePage = () => {
               // Since we're converting everything to NIS, display in NIS
               const symbol = '₪';
               return (
-                <div className="badge badge-primary badge-lg">
+                <div className="badge badge-lg text-white border-none bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600">
                   Total: {symbol} {totalAmount.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                 </div>
               );
@@ -3018,106 +3129,107 @@ const CloserSuperPipelinePage = () => {
               <table className="min-w-full divide-y divide-gray-200">
                 <thead>
                   <tr>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-black uppercase tracking-wider" style={{ maxWidth: '200px' }}>Lead</th>
-                    <th className="px-2 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">Stage</th>
+                    <th className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                      <div className="line-clamp-2 break-words">Lead</div>
+                    </th>
+                    <th className="px-1 py-2 text-left text-xs font-medium text-black uppercase tracking-wider">
+                      <div className="line-clamp-2 break-words">Stage</div>
+                    </th>
                     <th
-                      className="px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('probability')}
                     >
-                      <div className="flex items-center gap-1">
-                        Probability
-                        {sortColumn === 'probability' && (
+                      <div className="line-clamp-2 break-words">
+                        Probability {sortColumn === 'probability' && (
                           <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
                         )}
                       </div>
                     </th>
                     <th
-                      className="px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('closer')}
                     >
-                      <div className="flex items-center gap-1">
-                        Closer
-                        {sortColumn === 'closer' && (
+                      <div className="line-clamp-2 break-words">
+                        Closer {sortColumn === 'closer' && (
                           <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
                         )}
                       </div>
                     </th>
                     <th
-                      className="px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('scheduler')}
                     >
-                      <div className="flex items-center gap-1">
-                        Scheduler
-                        {sortColumn === 'scheduler' && (
+                      <div className="line-clamp-2 break-words">
+                        Scheduler {sortColumn === 'scheduler' && (
                           <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
                         )}
                       </div>
                     </th>
                     <th
-                      className="px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('meeting_date')}
                     >
-                      <div className="flex items-center gap-1">
-                        Meeting Date
-                        {sortColumn === 'meeting_date' && (
+                      <div className="line-clamp-2 break-words">
+                        Meeting<br />Date {sortColumn === 'meeting_date' && (
                           <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
                         )}
                       </div>
                     </th>
                     <th
-                      className="px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('follow_up_date')}
                     >
-                      <div className="flex items-center gap-1">
-                        Follow Up Date
-                        {sortColumn === 'follow_up_date' && (
+                      <div className="line-clamp-2 break-words">
+                        Follow Up<br />Date {sortColumn === 'follow_up_date' && (
                           <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
                         )}
                       </div>
                     </th>
                     <th
-                      className="px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('latest_interaction')}
                     >
-                      <div className="flex items-center gap-1">
-                        Latest Interaction
-                        {sortColumn === 'latest_interaction' && (
+                      <div className="line-clamp-2 break-words">
+                        Latest<br />Interaction {sortColumn === 'latest_interaction' && (
                           <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
                         )}
                       </div>
                     </th>
-                    <th className="px-3 py-3 text-left text-xs font-medium text-black uppercase tracking-wider" style={{ maxWidth: '200px' }}>Follow Up Notes</th>
-                    <th className="px-3 py-3 text-left text-xs font-medium text-black uppercase tracking-wider" style={{ maxWidth: '200px' }}>Expert Opinion</th>
+                    <th className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                      <div className="line-clamp-2 break-words">Follow Up Notes</div>
+                    </th>
+                    <th className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                      <div className="line-clamp-2 break-words">Expert Opinion</div>
+                    </th>
                     <th
-                      className="px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('total_applicants')}
                     >
-                      <div className="flex items-center gap-1">
-                        Total Applicants
-                        {sortColumn === 'total_applicants' && (
+                      <div className="line-clamp-2 break-words">
+                        Total<br />Applicants {sortColumn === 'total_applicants' && (
                           <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
                         )}
                       </div>
                     </th>
                     <th
-                      className="px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('potential_applicants')}
                     >
-                      <div className="flex items-center gap-1">
-                        Potential Applicants
-                        {sortColumn === 'potential_applicants' && (
+                      <div className="line-clamp-2 break-words">
+                        Potential<br />Applicants {sortColumn === 'potential_applicants' && (
                           <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
                         )}
                       </div>
                     </th>
-                    <th className="px-3 py-3 text-left text-xs font-medium text-black uppercase tracking-wider" style={{ maxWidth: '200px' }}>Manager Notes</th>
+                    <th className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                      <div className="line-clamp-2 break-words">Manager Notes</div>
+                    </th>
                     <th
-                      className="px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('total')}
                     >
-                      <div className="flex items-center gap-1">
-                        Total
-                        {sortColumn === 'total' && (
+                      <div className="line-clamp-2 break-words">
+                        Total {sortColumn === 'total' && (
                           <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
                         )}
                       </div>
@@ -3137,7 +3249,7 @@ const CloserSuperPipelinePage = () => {
                           className="hover:bg-gray-50 cursor-pointer"
                           onClick={() => toggleRowExpansion(lead)}
                         >
-                          <td className="px-4 py-4" style={{ maxWidth: '200px' }}>
+                          <td className="px-2 py-2" style={{ maxWidth: '200px' }}>
                             <div className="flex items-center gap-2">
                               {isExpanded ? (
                                 <ChevronUpIcon className="w-4 h-4 text-gray-500 flex-shrink-0" />
@@ -3170,24 +3282,24 @@ const CloserSuperPipelinePage = () => {
                               wordBreak: 'break-word'
                             }}>{lead.name || '---'}</div>
                           </td>
-                          <td className="px-2 py-4 text-sm text-gray-900">
-                            <div className="break-words max-w-[120px] sm:max-w-none sm:whitespace-nowrap line-clamp-2 sm:line-clamp-none">
+                          <td className="px-1 py-2 text-sm text-gray-900">
+                            <div className="break-words whitespace-normal line-clamp-2" style={{ maxWidth: '150px' }}>
                               {lead.stage || '---'}
                             </div>
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
                             {lead.probability ? `${lead.probability}%` : '---'}
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
                             {lead.closer || '---'}
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
                             {lead.scheduler || '---'}
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
                             {lead.meeting_date ? new Date(lead.meeting_date).toLocaleDateString() : '---'}
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
                             <div className="flex items-center gap-2 group">
                               <span>{lead.follow_up_date ? new Date(lead.follow_up_date).toLocaleDateString() : '---'}</span>
                               <button
@@ -3199,10 +3311,10 @@ const CloserSuperPipelinePage = () => {
                               </button>
                             </div>
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
                             {lead.latest_interaction ? new Date(lead.latest_interaction).toLocaleDateString() : '---'}
                           </td>
-                          <td className="px-3 py-4 text-sm text-gray-900 max-w-[200px]">
+                          <td className="px-2 py-2 text-sm text-gray-900 max-w-[200px]">
                             <div
                               className="line-clamp-3 break-words cursor-help"
                               title={lead.follow_up_notes || undefined}
@@ -3210,7 +3322,7 @@ const CloserSuperPipelinePage = () => {
                               {lead.follow_up_notes || '---'}
                             </div>
                           </td>
-                          <td className="px-3 py-4 text-sm text-gray-900 max-w-[200px]">
+                          <td className="px-2 py-2 text-sm text-gray-900 max-w-[200px]">
                             <div
                               className="line-clamp-3 break-words cursor-help"
                               title={lead.expert_opinion && lead.expert_opinion !== '---' ? lead.expert_opinion : undefined}
@@ -3218,78 +3330,38 @@ const CloserSuperPipelinePage = () => {
                               {lead.expert_opinion || '---'}
                             </div>
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
                             {lead.number_of_applicants_meeting ?? '---'}
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
                             {lead.potential_applicants_meeting ?? '---'}
                           </td>
-                          <td className="px-3 py-4 text-sm text-gray-900 max-w-[200px]">
-                            {editingManagerNotes[lead.id || index] ? (
-                              <div className="flex flex-col gap-2">
-                                <textarea
-                                  value={managerNotesValues[lead.id || index] || lead.manager_notes || ''}
-                                  onChange={(e) => setManagerNotesValues(prev => ({ ...prev, [lead.id || index]: e.target.value }))}
-                                  className="textarea textarea-bordered textarea-sm w-full min-h-[60px]"
-                                  placeholder="Enter manager notes..."
-                                />
-                                <div className="flex gap-2">
-                                  <button
-                                    onClick={() => handleSaveManagerNotes(lead)}
-                                    disabled={savingManagerNotes[lead.id || index]}
-                                    className="btn btn-xs btn-primary"
-                                  >
-                                    {savingManagerNotes[lead.id || index] ? 'Saving...' : 'Save'}
-                                  </button>
-                                  <button
-                                    onClick={() => {
-                                      setEditingManagerNotes(prev => {
-                                        const newState = { ...prev };
-                                        delete newState[lead.id || index];
-                                        return newState;
-                                      });
-                                      setManagerNotesValues(prev => {
-                                        const newState = { ...prev };
-                                        delete newState[lead.id || index];
-                                        return newState;
-                                      });
-                                    }}
-                                    className="btn btn-xs btn-ghost"
-                                  >
-                                    Cancel
-                                  </button>
-                                </div>
+                          <td className="px-2 py-2 text-sm text-gray-900 max-w-[200px]">
+                            <div className="flex items-start gap-2 group">
+                              <div
+                                className="line-clamp-3 break-words flex-1 cursor-help"
+                                title={lead.manager_notes && lead.manager_notes !== '---' ? lead.manager_notes : undefined}
+                              >
+                                {lead.manager_notes || '---'}
                               </div>
-                            ) : (
-                              <div className="flex items-start gap-2 group">
-                                <div
-                                  className="line-clamp-3 break-words flex-1 cursor-help"
-                                  title={lead.manager_notes && lead.manager_notes !== '---' ? lead.manager_notes : undefined}
-                                >
-                                  {lead.manager_notes || '---'}
-                                </div>
-                                <button
-                                  onClick={() => {
-                                    setEditingManagerNotes(prev => ({ ...prev, [lead.id || index]: true }));
-                                    setManagerNotesValues(prev => ({ ...prev, [lead.id || index]: lead.manager_notes || '' }));
-                                  }}
-                                  className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
-                                  title="Edit manager notes"
-                                >
-                                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                  </svg>
-                                </button>
-                              </div>
-                            )}
+                              <button
+                                onClick={() => handleEditManagerNotes(lead)}
+                                className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                                title="Edit manager notes"
+                              >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                </svg>
+                              </button>
+                            </div>
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
                             {formatCurrency(lead.total || '', lead.balance_currency || '', lead)}
                           </td>
                         </tr>
                         {isExpanded && (
                           <tr>
-                            <td colSpan={14} className="px-4 py-4 bg-gray-50 border-t border-gray-200">
+                            <td colSpan={14} className="px-2 py-2 bg-gray-50 border-t border-gray-200">
                               <div className="space-y-3">
                                 <div className="text-sm font-semibold text-gray-700 mb-2">Latest Interactions</div>
                                 {isLoading ? (
@@ -3432,6 +3504,61 @@ const CloserSuperPipelinePage = () => {
                   disabled={savingFollowUp}
                 >
                   {savingFollowUp ? (
+                    <>
+                      <span className="loading loading-spinner loading-sm"></span>
+                      Saving...
+                    </>
+                  ) : (
+                    'Save'
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manager Notes Edit Modal */}
+      {editingManagerNotes && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={handleCancelManagerNotes}>
+          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-2xl mx-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold mb-4">
+              Edit Manager Notes
+              {editingManagerNotes.lead && (
+                <span className="text-sm font-normal text-gray-500 ml-2">
+                  - {editingManagerNotes.lead.name || editingManagerNotes.lead.lead_number || 'Lead'}
+                </span>
+              )}
+            </h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Manager Notes
+                </label>
+                <textarea
+                  className={`textarea textarea-bordered w-full min-h-[200px] text-base ${isHebrewText(managerNotesValue) ? 'text-right' : 'text-left'}`}
+                  placeholder="Enter manager notes..."
+                  value={managerNotesValue}
+                  onChange={(e) => setManagerNotesValue(e.target.value)}
+                  dir={isHebrewText(managerNotesValue) ? 'rtl' : 'ltr'}
+                  style={{ whiteSpace: 'pre-wrap' }}
+                  autoFocus
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  className="btn btn-ghost"
+                  onClick={handleCancelManagerNotes}
+                  disabled={savingManagerNotes}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleSaveManagerNotes}
+                  disabled={savingManagerNotes}
+                >
+                  {savingManagerNotes ? (
                     <>
                       <span className="loading loading-spinner loading-sm"></span>
                       Saving...

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
+import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 
 // Static dropdown options - moved outside component to prevent re-creation on every render
 const REASON_OPTIONS = ["Inquiry", "Follow-up", "Complaint", "Consultation", "Other"];
@@ -21,13 +22,13 @@ const AVAILABLE_COLUMNS = [
   { key: 'name', label: 'Name', category: 'Basic Info' },
   { key: 'lead_number', label: 'Lead Number', category: 'Basic Info' },
   { key: 'topic', label: 'Topic', category: 'Basic Info' },
-  
+
   // Contact Info
   { key: 'email', label: 'Email', category: 'Contact' },
   { key: 'phone', label: 'Phone', category: 'Contact' },
   { key: 'mobile', label: 'Mobile', category: 'Contact' },
   { key: 'additional_contacts', label: 'Additional Contacts', category: 'Contact' },
-  
+
   // Status & Classification
   { key: 'stage', label: 'Stage', category: 'Status' },
   { key: 'source', label: 'Source', category: 'Status' },
@@ -36,7 +37,7 @@ const AVAILABLE_COLUMNS = [
   { key: 'language', label: 'Language', category: 'Status' },
   { key: 'eligibility_status', label: 'Eligibility Status', category: 'Status' },
   { key: 'priority', label: 'Priority', category: 'Status' },
-  
+
   // Financial Information
   { key: 'meeting_amount', label: 'Meeting Amount', category: 'Financial' },
   { key: 'meeting_currency', label: 'Meeting Currency', category: 'Financial' },
@@ -53,7 +54,7 @@ const AVAILABLE_COLUMNS = [
   { key: 'vat_value', label: 'VAT Value', category: 'Financial' },
   { key: 'bonus_paid', label: 'Bonus Paid', category: 'Financial' },
   { key: 'subcontractor_fee', label: 'Subcontractor Fee', category: 'Financial' },
-  
+
   // Meeting Information
   { key: 'meeting_date', label: 'Meeting Date', category: 'Meeting' },
   { key: 'meeting_time', label: 'Meeting Time', category: 'Meeting' },
@@ -69,13 +70,13 @@ const AVAILABLE_COLUMNS = [
   { key: 'meeting_complexity', label: 'Meeting Complexity', category: 'Meeting' },
   { key: 'meeting_probability', label: 'Meeting Probability', category: 'Meeting' },
   { key: 'meeting_car_no', label: 'Meeting Car No', category: 'Meeting' },
-  
+
   // Applicants Information
   { key: 'potential_applicants', label: 'Potential Applicants', category: 'Applicants' },
   { key: 'potential_applicants_meeting', label: 'Potential Applicants Meeting', category: 'Applicants' },
   { key: 'number_of_applicants_meeting', label: 'Number of Applicants Meeting', category: 'Applicants' },
   { key: 'no_of_applicants', label: 'No of Applicants', category: 'Applicants' },
-  
+
   // Timeline & Dates
   { key: 'created_at', label: 'Created Date', category: 'Timeline' },
   { key: 'updated_at', label: 'Updated Date', category: 'Timeline' },
@@ -90,7 +91,7 @@ const AVAILABLE_COLUMNS = [
   { key: 'latest_interaction', label: 'Latest Interaction', category: 'Timeline' },
   { key: 'stage_changed_at', label: 'Stage Changed At', category: 'Timeline' },
   { key: 'unactivated_at', label: 'Unactivated At', category: 'Timeline' },
-  
+
   // Details & Notes
   { key: 'facts', label: 'Facts', category: 'Details' },
   { key: 'special_notes', label: 'Special Notes', category: 'Details' },
@@ -104,7 +105,7 @@ const AVAILABLE_COLUMNS = [
   { key: 'external_notes', label: 'External Notes', category: 'Details' },
   { key: 'deactivate_notes', label: 'Deactivate Notes', category: 'Details' },
   { key: 'unactivation_reason', label: 'Unactivation Reason', category: 'Details' },
-  
+
   // Roles
   { key: 'scheduler', label: 'Scheduler', category: 'Roles' },
   { key: 'manager', label: 'Manager', category: 'Roles' },
@@ -114,7 +115,7 @@ const AVAILABLE_COLUMNS = [
   { key: 'case_handler', label: 'Case Handler', category: 'Roles' },
   { key: 'handler', label: 'Handler', category: 'Roles' },
   { key: 'helper', label: 'Helper', category: 'Roles' },
-  
+
   // Additional Info
   { key: 'desired_location', label: 'Desired Location', category: 'Additional' },
   { key: 'client_country', label: 'Client Country', category: 'Additional' },
@@ -133,13 +134,13 @@ const AVAILABLE_COLUMNS = [
 ];
 
 // Reusable searchable input component - moved outside to prevent re-creation
-const SearchableInput = ({ 
-  label, 
-  field, 
-  value, 
-  placeholder, 
-  options, 
-  showDropdown, 
+const SearchableInput = ({
+  label,
+  field,
+  value,
+  placeholder,
+  options,
+  showDropdown,
   onSelect,
   onFilterChange,
   onShowDropdown,
@@ -195,13 +196,13 @@ const SearchableInput = ({
 );
 
 // Multi-select input component for multiple selections
-const MultiSelectInput = ({ 
-  label, 
-  field, 
+const MultiSelectInput = ({
+  label,
+  field,
   values,
-  placeholder, 
-  options, 
-  showDropdown, 
+  placeholder,
+  options,
+  showDropdown,
   onSelect,
   onRemove,
   onFilterChange,
@@ -265,9 +266,9 @@ const MultiSelectInput = ({
 
   // Ensure values is always an array
   const safeValues = Array.isArray(values) ? values : [];
-  
-  const filteredOptions = options.filter(option => 
-    option.toLowerCase().includes(inputValue.toLowerCase()) && 
+
+  const filteredOptions = options.filter(option =>
+    option.toLowerCase().includes(inputValue.toLowerCase()) &&
     !safeValues.includes(option)
   );
 
@@ -281,7 +282,7 @@ const MultiSelectInput = ({
           </span>
         )}
       </label>
-      
+
       {/* Selected items */}
       {safeValues.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2">
@@ -346,12 +347,12 @@ const MultiSelectInput = ({
 
 // Special component for main category selection with auto-subcategory selection
 // Column Selector Component for Table View
-const ColumnSelector = ({ 
-  selectedColumns, 
-  onColumnsChange, 
-  showDropdown, 
-  onShowDropdown, 
-  onHideDropdown 
+const ColumnSelector = ({
+  selectedColumns,
+  onColumnsChange,
+  showDropdown,
+  onShowDropdown,
+  onHideDropdown
 }: {
   selectedColumns: string[];
   onColumnsChange: (columns: string[]) => void;
@@ -407,7 +408,7 @@ const ColumnSelector = ({
           {selectedColumns.length} selected
         </span>
       </label>
-      
+
       <div className="relative">
         <button
           type="button"
@@ -419,7 +420,7 @@ const ColumnSelector = ({
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
           </svg>
         </button>
-        
+
         {showDropdown && (
           <div className="absolute z-20 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto">
             <div className="p-2">
@@ -451,13 +452,13 @@ const ColumnSelector = ({
   );
 };
 
-const MainCategoryInput = ({ 
-  label, 
-  field, 
+const MainCategoryInput = ({
+  label,
+  field,
   values,
-  placeholder, 
-  options, 
-  showDropdown, 
+  placeholder,
+  options,
+  showDropdown,
   onSelect,
   onRemove,
   onFilterChange,
@@ -524,9 +525,9 @@ const MainCategoryInput = ({
 
   // Ensure values is always an array
   const safeValues = Array.isArray(values) ? values : [];
-  
-  const filteredOptions = options.filter(option => 
-    option.toLowerCase().includes(inputValue.toLowerCase()) && 
+
+  const filteredOptions = options.filter(option =>
+    option.toLowerCase().includes(inputValue.toLowerCase()) &&
     !safeValues.includes(option)
   );
 
@@ -540,7 +541,7 @@ const MainCategoryInput = ({
           </span>
         )}
       </label>
-      
+
       {/* Selected items */}
       {safeValues.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2">
@@ -628,7 +629,7 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
   // Helper function to get currency symbol
   const getCurrencySymbol = (currencyId: any) => {
     if (!currencyId) return '₪'; // Default to NIS
-    
+
     // Handle string currency codes
     if (typeof currencyId === 'string') {
       switch (currencyId.toLowerCase()) {
@@ -641,7 +642,7 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
         default: return '₪';
       }
     }
-    
+
     // Handle numeric currency IDs (common in database)
     if (typeof currencyId === 'number') {
       switch (currencyId) {
@@ -652,13 +653,13 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
         default: return '₪';
       }
     }
-    
+
     return '₪'; // Default fallback
   };
 
   const getColumnValue = (lead: Lead, columnKey: string): string | React.ReactElement => {
     const leadWithData = lead as any;
-    
+
     // Handle roles - both individual role fields and the roles object
     const roleFields = ['scheduler', 'manager', 'lawyer', 'expert', 'closer', 'case_handler', 'handler', 'helper'];
     if (roleFields.includes(columnKey)) {
@@ -669,35 +670,35 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
       // Fallback to direct field access
       return leadWithData[columnKey] || '';
     }
-    
+
     if (columnKey === 'roles') {
       return leadWithData.roles ? Object.entries(leadWithData.roles)
         .filter(([_, value]) => value)
         .map(([role, name]) => `${role}: ${name}`)
         .join(', ') : '';
     }
-    
+
     // Special handling for category to show main and sub category together
     if (columnKey === 'category') {
       return leadWithData.category || 'No Category';
     }
-    
+
     // Special handling for stage to show colored badge
     if (columnKey === 'stage') {
       const stage = leadWithData.stage;
       if (!stage && stage !== 0) return 'No Stage';
-      
+
       // Convert stage to string for getStageName/getStageColour (handles both numeric IDs and stage names)
       const stageStr = String(stage);
-      
+
       const stageName = getStageName(stageStr);
       const stageColour = getStageColour(stageStr);
       const badgeTextColour = getContrastingTextColor(stageColour);
       const backgroundColor = stageColour || '#3f28cd';
       const textColor = stageColour ? badgeTextColour : '#ffffff';
-      
+
       return (
-        <span 
+        <span
           className="badge text-xs px-2 py-1"
           style={{
             backgroundColor: backgroundColor,
@@ -714,13 +715,13 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
         </span>
       );
     }
-    
+
     // Special handling for currency columns to show symbols instead of IDs
     const currencyColumns = ['meeting_currency', 'proposal_currency', 'balance_currency', 'meeting_total_currency'];
     if (currencyColumns.includes(columnKey)) {
       const currencyId = leadWithData[columnKey];
       const currencySymbol = getCurrencySymbol(currencyId);
-      
+
       // Debug logging for currency columns
       if (columnKey === 'balance_currency' && Math.random() < 0.1) { // Log 10% of balance_currency fields for debugging
         console.log('🔍 Currency column debug:', {
@@ -730,13 +731,13 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
           leadData: leadWithData
         });
       }
-      
+
       return currencySymbol;
     }
-    
+
     const value = leadWithData[columnKey];
     if (value === null || value === undefined) return '';
-    
+
     // Format dates
     if (columnKey.includes('_at') || columnKey.includes('date') || columnKey.includes('Date')) {
       try {
@@ -745,12 +746,12 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
         return value.toString();
       }
     }
-    
+
     // Format time fields
     if (columnKey.includes('time') || columnKey.includes('Time')) {
       return value.toString();
     }
-    
+
     // Format financial values with currency
     const financialFields = ['meeting_amount', 'proposal_total', 'balance', 'potential_value', 'total', 'first_payment', 'meeting_total', 'vat', 'vat_value', 'bonus_paid', 'subcontractor_fee'];
     if (financialFields.includes(columnKey)) {
@@ -760,7 +761,7 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
         // Get corresponding currency field - try different naming conventions
         let currencyField = columnKey + '_currency';
         let currency = leadWithData[currencyField];
-        
+
         // If currency field not found, try alternative naming
         if (!currency) {
           if (columnKey === 'meeting_amount' || columnKey === 'meeting_total') {
@@ -774,9 +775,9 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
             currency = leadWithData['currency_id'] || leadWithData['currency'];
           }
         }
-        
+
         const currencySymbol = getCurrencySymbol(currency);
-        
+
         // Debug logging for currency display
         if (columnKey === 'total' && Math.random() < 0.1) { // Log 10% of total fields for debugging
           console.log('🔍 Currency debug for total field:', {
@@ -790,12 +791,12 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
             leadData: leadWithData
           });
         }
-        
+
         return `${numericValue.toLocaleString()} ${currencySymbol}`;
       }
       return value.toString();
     }
-    
+
     // Format boolean fields
     const booleanFields = ['meeting_paid', 'auto_email_meeting_summary', 'expert_eligibility_assessed', 'sales_roles_locked', 'dependent', 'auto', 'autocall', 'eligibile'];
     if (booleanFields.includes(columnKey)) {
@@ -804,17 +805,17 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
       }
       return value.toString();
     }
-    
+
     // Handle arrays
     if (Array.isArray(value)) {
       return value.join(', ');
     }
-    
+
     // Handle JSON objects
     if (typeof value === 'object' && value !== null) {
       return JSON.stringify(value);
     }
-    
+
     return value.toString();
   };
 
@@ -843,8 +844,8 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
         </thead>
         <tbody>
           {leads.map((lead, index) => (
-            <tr 
-              key={lead.id || index} 
+            <tr
+              key={lead.id || index}
               className="hover cursor-pointer transition-colors duration-200 hover:bg-blue-50 active:bg-blue-100"
               onClick={(e) => {
                 // Pass the full lead object so we can access manual_id and other properties
@@ -874,8 +875,8 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
 const LeadSearchPage: React.FC = () => {
   // Initialize filters with current date - ensure no persistent state interferes
   const todayStr = new Date().toISOString().split('T')[0];
-  
-  const [filters, setFilters] = useState({
+
+  const [filters, setFilters] = usePersistedFilters('leadSearchPage_filters', {
     fromDate: todayStr, // Default to today
     toDate: todayStr, // Default to today
     category: [] as string[],
@@ -896,10 +897,16 @@ const LeadSearchPage: React.FC = () => {
     closer: [] as string[],
     case_handler: [] as string[],
     expert_examination: [] as string[],
+  }, {
+    storage: 'sessionStorage',
   });
-  const [results, setResults] = useState<Lead[]>([]);
+  const [results, setResults] = usePersistedState<Lead[]>('leadSearchPage_results', [], {
+    storage: 'sessionStorage',
+  });
   const [isSearching, setIsSearching] = useState(false);
-  const [searchPerformed, setSearchPerformed] = useState(false);
+  const [searchPerformed, setSearchPerformed] = usePersistedState('leadSearchPage_performed', false, {
+    storage: 'sessionStorage',
+  });
   const [stageOptions, setStageOptions] = useState<string[]>([]);
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
   const [mainCategoryOptions, setMainCategoryOptions] = useState<string[]>([]);
@@ -936,8 +943,12 @@ const LeadSearchPage: React.FC = () => {
   const [showCloserDropdown, setShowCloserDropdown] = useState(false);
   const [showCaseHandlerDropdown, setShowCaseHandlerDropdown] = useState(false);
   const [filteredRoleOptions, setFilteredRoleOptions] = useState<string[]>([]);
-  const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
-  const [selectedColumns, setSelectedColumns] = useState<string[]>(['name', 'lead_number', 'email', 'phone', 'stage', 'source', 'created_at']);
+  const [viewMode, setViewMode] = usePersistedState<'cards' | 'table'>('leadSearchPage_viewMode', 'cards', {
+    storage: 'sessionStorage',
+  });
+  const [selectedColumns, setSelectedColumns] = usePersistedState<string[]>('leadSearchPage_selectedColumns', ['name', 'lead_number', 'email', 'phone', 'stage', 'source', 'created_at'], {
+    storage: 'sessionStorage',
+  });
   const [showColumnSelector, setShowColumnSelector] = useState(false);
   const navigate = useNavigate();
 
@@ -947,7 +958,7 @@ const LeadSearchPage: React.FC = () => {
     let leadNumber: string;
     let manualId: string | null = null;
     let leadType: 'new' | 'legacy' | undefined;
-    
+
     if (typeof lead === 'string') {
       // Legacy: just a lead number string
       leadNumber = lead;
@@ -958,15 +969,15 @@ const LeadSearchPage: React.FC = () => {
       manualId = anyLead.manual_id || null;
       leadType = anyLead.lead_type;
     }
-    
+
     if (!leadNumber) return;
-    
+
     // Check if it's a sublead (contains '/')
     const isSubLead = leadNumber.includes('/');
-    
+
     // Build the URL using the same logic as Clients.tsx buildClientRoute
     let path = '';
-    
+
     if (isSubLead && manualId) {
       // Sublead with manual_id: use query parameter format like /clients/2104625?lead=L210764%2F3
       // This matches the format used by Clients.tsx buildClientRoute
@@ -981,7 +992,7 @@ const LeadSearchPage: React.FC = () => {
       const identifier = manualId || leadNumber;
       path = `/clients/${encodeURIComponent(identifier)}`;
     }
-    
+
     if (event && (event.metaKey || event.ctrlKey)) {
       // Open in new tab if Cmd (Mac) or Ctrl (Windows/Linux) is pressed
       window.open(path, '_blank');
@@ -991,32 +1002,8 @@ const LeadSearchPage: React.FC = () => {
     }
   };
 
-  // Clear any old persistent storage that might interfere with filters
-  // This ensures that old persistent state code doesn't break the filters
-  useEffect(() => {
-    // Clear any old localStorage/sessionStorage keys that might have been used for persistent state
-    try {
-      const keysToCheck = [
-        'leadSearchPage_filters',
-        'leadSearch_filters',
-        'leadSearchPage_results',
-        'leadSearch_results',
-        'leadSearchPage_searchPerformed',
-        'leadSearch_searchPerformed',
-        'LeadSearchPage_filters',
-        'LeadSearch_filters',
-        'LeadSearchPage_results',
-        'LeadSearch_results',
-      ];
-      keysToCheck.forEach(key => {
-        localStorage.removeItem(key);
-        sessionStorage.removeItem(key);
-      });
-      console.log('✅ Cleared any old persistent storage for LeadSearchPage');
-    } catch (error) {
-      console.warn('⚠️ Error clearing old persistent storage:', error);
-    }
-  }, []);
+  // Note: State persistence is now handled by usePersistedFilters and usePersistedState hooks
+  // They automatically handle saving/restoring state across navigation (but not on page refresh)
 
   // Initialize stage names cache on mount
   useEffect(() => {
@@ -1033,9 +1020,9 @@ const LeadSearchPage: React.FC = () => {
           .from('lead_stages')
           .select('id, name')
           .order('id', { ascending: true }); // Order by ID, lowest to highest
-        
+
         if (error) throw error;
-        
+
         // Extract names in the order they were fetched (sorted by ID)
         const stages = data?.map(stage => stage.name) || [];
         setStageOptions(stages);
@@ -1043,9 +1030,9 @@ const LeadSearchPage: React.FC = () => {
         console.error('Error fetching stage options:', error);
         // Fallback to hardcoded options if database fetch fails
         setStageOptions([
-          "created", "scheduler_assigned", "meeting_scheduled", "meeting_paid", 
-          "unactivated", "communication_started", "another_meeting", "revised_offer", 
-          "offer_sent", "waiting_for_mtng_sum", "client_signed", "client_declined", 
+          "created", "scheduler_assigned", "meeting_scheduled", "meeting_paid",
+          "unactivated", "communication_started", "another_meeting", "revised_offer",
+          "offer_sent", "waiting_for_mtng_sum", "client_signed", "client_declined",
           "lead_summary", "meeting_rescheduled", "meeting_ended"
         ]);
       }
@@ -1070,9 +1057,9 @@ const LeadSearchPage: React.FC = () => {
             )
           `)
           .order('name', { ascending: true });
-        
+
         if (error) throw error;
-        
+
         // Format category names with main category in parentheses (same as CalendarPage)
         const formattedCategories = data?.map((category: any) => {
           if (category.misc_maincategory?.name) {
@@ -1081,7 +1068,7 @@ const LeadSearchPage: React.FC = () => {
             return category.name; // Fallback if no main category
           }
         }).filter(Boolean) || [];
-        
+
         setCategoryOptions(formattedCategories);
       } catch (error) {
         console.error('Error fetching category options:', error);
@@ -1129,9 +1116,9 @@ const LeadSearchPage: React.FC = () => {
           .select('id, name')
           .eq('active', true)
           .order('name');
-        
+
         if (error) throw error;
-        
+
         const sources = data?.map(source => source.name) || [];
         setSourceOptions(sources);
         console.log('✅ Fetched source options from misc_leadsource:', sources);
@@ -1155,9 +1142,9 @@ const LeadSearchPage: React.FC = () => {
           .from('misc_language')
           .select('name')
           .order('name');
-        
+
         if (error) throw error;
-        
+
         const languages = data?.map(language => language.name) || [];
         // Add "N/A" option to filter for leads with null language_id and language
         setLanguageOptions([...languages, 'N/A']);
@@ -1401,7 +1388,7 @@ const LeadSearchPage: React.FC = () => {
       // Do nothing - MultiSelectInput handles its own input state
       return;
     }
-    
+
     setFilters(prev => ({ ...prev, [field]: value }));
   };
 
@@ -1462,7 +1449,7 @@ const LeadSearchPage: React.FC = () => {
 
       if (subcategories) {
         // Format subcategories as "Subcategory (Main Category)" to match existing format
-        const formattedSubcategories = subcategories.map(sub => 
+        const formattedSubcategories = subcategories.map(sub =>
           `${sub.name} (${mainCategoryName})`
         );
 
@@ -1474,13 +1461,13 @@ const LeadSearchPage: React.FC = () => {
           const newCategories = [...currentCategories, ...formattedSubcategories];
           // Remove duplicates
           const uniqueCategories = [...new Set(newCategories)];
-          
+
           console.log('🔍 [Main Category] Updating category filter:', {
             previousCategories: currentCategories,
             newCategories: formattedSubcategories,
             finalCategories: uniqueCategories
           });
-          
+
           return {
             ...prev,
             category: uniqueCategories
@@ -1550,7 +1537,7 @@ const LeadSearchPage: React.FC = () => {
   const handleSearch = async () => {
     setIsSearching(true);
     setSearchPerformed(true);
-    
+
     console.log('🔍 Starting lead search with filters:', filters);
     console.log('📅 Current date info:', {
       currentDate: new Date().toISOString().split('T')[0],
@@ -1560,11 +1547,11 @@ const LeadSearchPage: React.FC = () => {
       fromDateMatch: filters.fromDate === new Date().toISOString().split('T')[0],
       toDateMatch: filters.toDate === new Date().toISOString().split('T')[0]
     });
-    
+
     // Create employee mappings for role filters
     const nameToIdMapping = new Map<string, number>();
     const idToNameMapping = new Map<number, string>();
-    
+
     // Fetch categories and create reverse mapping (formatted name -> category_id) for filtering
     // This avoids using ilike/eq queries during filtering - we use the mapping directly
     const categoryNameToIdMapping = new Map<string, number>();
@@ -1574,13 +1561,13 @@ const LeadSearchPage: React.FC = () => {
         .from('misc_category')
         .select('id, name, parent_id, misc_maincategory!parent_id(id, name)')
         .order('name');
-      
+
       console.log('🔍 [Category Mapping] Categories fetch result:', {
         categoriesCount: categoriesData?.length || 0,
         categoriesError,
         sampleCategories: categoriesData?.slice(0, 5)
       });
-      
+
       if (categoriesData) {
         categoriesData.forEach((category: any) => {
           const mainRel = category.misc_maincategory;
@@ -1591,7 +1578,7 @@ const LeadSearchPage: React.FC = () => {
             ? `${category.name} (${mainCategory})`
             : category.name;
           categoryNameToIdMapping.set(formattedName, category.id);
-          
+
           // Debug log for first few categories
           if (categoryNameToIdMapping.size <= 5) {
             console.log('🔍 [Category Mapping] Added mapping:', {
@@ -1610,7 +1597,7 @@ const LeadSearchPage: React.FC = () => {
     } catch (error) {
       console.error('❌ [Category Mapping] Error fetching categories for mapping:', error);
     }
-    
+
     try {
       // Helper to build UTC range for a given local date string (YYYY-MM-DD)
       const buildUtcStartOfDay = (dateStr: string) => {
@@ -1639,7 +1626,7 @@ const LeadSearchPage: React.FC = () => {
 
       // First, let's test basic table access without joins
       console.log('🧪 Testing basic table access...');
-      
+
       try {
         const basicNewLeadsTest = await supabase.from('leads').select('id, name, category, created_at').limit(10);
         console.log('✅ Basic new leads test:', {
@@ -1656,7 +1643,7 @@ const LeadSearchPage: React.FC = () => {
       } catch (testError) {
         console.error('❌ Basic new leads test failed:', testError);
       }
-      
+
       try {
         const basicLegacyLeadsTest = await supabase.from('leads_lead').select('id, name, category, cdate').limit(10);
         console.log('✅ Basic legacy leads test:', {
@@ -1677,7 +1664,7 @@ const LeadSearchPage: React.FC = () => {
 
       // Now try with category join
       console.log('🧪 Testing category join access...');
-      
+
       try {
         const categoryJoinTest = await supabase
           .from('leads')
@@ -1704,7 +1691,7 @@ const LeadSearchPage: React.FC = () => {
       } catch (testError) {
         console.error('❌ Category join test for new leads failed:', testError);
       }
-      
+
       try {
         const legacyCategoryJoinTest = await supabase
           .from('leads_lead')
@@ -1731,7 +1718,7 @@ const LeadSearchPage: React.FC = () => {
       } catch (testError) {
         console.error('❌ Category join test for legacy leads failed:', testError);
       }
-      
+
       // Search new leads table with category join for main category information
       let newLeadsQuery = supabase
         .from('leads')
@@ -1744,12 +1731,12 @@ const LeadSearchPage: React.FC = () => {
             misc_maincategory!parent_id(id, name)
           )
         `);
-      
+
       console.log('📋 New leads query base:', newLeadsQuery);
-      
+
       // Test filters one by one to identify the problem
       console.log('🧪 Testing filters individually...');
-      
+
       // Test 1: No filters at all
       try {
         const noFiltersTest = await newLeadsQuery.limit(5);
@@ -1766,7 +1753,7 @@ const LeadSearchPage: React.FC = () => {
       } catch (testError) {
         console.error('❌ New leads no filters test failed:', testError);
       }
-      
+
       // Test 2: Only date filters
       if (filters.fromDate || filters.toDate) {
         try {
@@ -1796,12 +1783,12 @@ const LeadSearchPage: React.FC = () => {
           console.error('❌ New leads date filters test failed:', testError);
         }
       }
-      
+
       // Test 3: Only category filter
       if (filters.category && filters.category.length > 0) {
         try {
           console.log('🏷️ Testing category filter only:', filters.category);
-          
+
           const categoryNames = filters.category.map(cat => cat.split(' (')[0].trim());
           const categoryOnlyTest = await newLeadsQuery
             .in('category', categoryNames)
@@ -1814,7 +1801,7 @@ const LeadSearchPage: React.FC = () => {
           console.error('❌ New leads category filter test failed:', testError);
         }
       }
-      
+
       // Apply filters for new leads
       if (filters.fromDate) {
         console.log('📅 Adding fromDate filter for new leads (UTC range):', filters.fromDate);
@@ -1832,11 +1819,11 @@ const LeadSearchPage: React.FC = () => {
           categoryCount: filters.category.length,
           mappingSize: categoryNameToIdMapping.size
         });
-        
+
         // Try using category_id first (more reliable), fallback to category text field
         const categoryIds: number[] = [];
         const categoryNames: string[] = [];
-        
+
         for (const formattedCategoryName of filters.category) {
           // Try to get category_id from mapping
           const categoryId = categoryNameToIdMapping.get(formattedCategoryName);
@@ -1850,7 +1837,7 @@ const LeadSearchPage: React.FC = () => {
             console.log('⚠️ [New Leads Category Filter] No category_id found, will use category name:', categoryName, 'for:', formattedCategoryName);
           }
         }
-        
+
         console.log('🏷️ [New Leads Category Filter] Category filter summary:', {
           totalSelected: filters.category.length,
           categoryIdsFound: categoryIds,
@@ -1858,17 +1845,17 @@ const LeadSearchPage: React.FC = () => {
           categoryNamesFallback: categoryNames,
           categoryNamesCount: categoryNames.length
         });
-        
+
         // Prefer category_id filter if we have IDs, otherwise use category text field
         // If we have both IDs and names, use OR to include both
         if (categoryIds.length > 0 && categoryNames.length > 0) {
           // Mixed: some categories have IDs, some don't - use OR condition
           console.log('🏷️ [New Leads Category Filter] Applying mixed filter (OR): category_id IN', categoryIds, 'OR category IN', categoryNames);
           const orConditions = [
-            categoryIds.length === 1 
+            categoryIds.length === 1
               ? `category_id.eq.${categoryIds[0]}`
               : `category_id.in.(${categoryIds.join(',')})`,
-            categoryNames.length === 1 
+            categoryNames.length === 1
               ? `category.eq.${categoryNames[0]}`
               : `category.in.(${categoryNames.join(',')})`
           ];
@@ -1894,22 +1881,22 @@ const LeadSearchPage: React.FC = () => {
         } else {
           console.log('❌ [New Leads Category Filter] No category IDs or names found - filter will not be applied');
         }
-        
+
         console.log('🏷️ [New Leads Category Filter] Category filter applied to query');
       } else {
         console.log('🏷️ [New Leads Category Filter] No category filter - filters.category is empty or null');
       }
       if (filters.language && filters.language.length > 0) {
         console.log('🌐 Adding language filter for new leads:', filters.language);
-        
+
         // Check if filtering for N/A
-        const hasNAFilter = filters.language.some(lang => 
+        const hasNAFilter = filters.language.some(lang =>
           lang.toUpperCase() === 'N/A' || lang === 'N/A'
         );
-        const nonNALanguages = filters.language.filter(lang => 
+        const nonNALanguages = filters.language.filter(lang =>
           lang.toUpperCase() !== 'N/A' && lang !== 'N/A'
         );
-        
+
         if (hasNAFilter && nonNALanguages.length === 0) {
           // Only filtering for N/A - find leads where language_id is null AND language is null/empty/N/A
           console.log('🌐 Filtering for N/A language (null language_id AND null/empty/N/A language)');
@@ -1927,7 +1914,7 @@ const LeadSearchPage: React.FC = () => {
         } else if (hasNAFilter && nonNALanguages.length > 0) {
           // Filtering for both N/A and specific languages
           console.log('🌐 Filtering for both N/A and specific languages:', nonNALanguages);
-          
+
           // Map language codes to full names for matching
           const languageCodeToFullName: Record<string, string> = {
             'EN': 'English',
@@ -1948,19 +1935,19 @@ const LeadSearchPage: React.FC = () => {
             'POR': 'Portuguese',
             'PORTUGUESE': 'Portuguese',
           };
-          
+
           // Expand filter array to include both codes and full names for non-N/A languages
           const expandedLanguageFilter = new Set<string>();
           nonNALanguages.forEach(lang => {
             const upperLang = lang.toUpperCase();
             expandedLanguageFilter.add(lang); // Add original value (case-sensitive match)
             expandedLanguageFilter.add(upperLang); // Add uppercase version
-            
+
             // If it's a code, also add the full name
             if (languageCodeToFullName[upperLang]) {
               expandedLanguageFilter.add(languageCodeToFullName[upperLang]);
             }
-            
+
             // If it's already a full name, also try to find if it maps to a code
             Object.entries(languageCodeToFullName).forEach(([code, fullName]) => {
               if (fullName.toLowerCase() === lang.toLowerCase()) {
@@ -1969,9 +1956,9 @@ const LeadSearchPage: React.FC = () => {
               }
             });
           });
-          
+
           const expandedFilterArray = Array.from(expandedLanguageFilter);
-          
+
           // OR condition: (language_id is null OR language is null/N/A) OR language in expanded array
           // Build OR condition string
           const orConditions = [
@@ -1979,14 +1966,14 @@ const LeadSearchPage: React.FC = () => {
             'language.is.null',
             'language.eq.N/A'
           ];
-          
+
           // Add language matches
           expandedFilterArray.forEach(lang => {
             orConditions.push(`language.eq.${lang}`);
           });
-          
+
           newLeadsQuery = newLeadsQuery.or(orConditions.join(','));
-          
+
           console.log('🌐 Mixed language filter (N/A + specific languages):', {
             original: filters.language,
             expanded: expandedFilterArray,
@@ -2014,19 +2001,19 @@ const LeadSearchPage: React.FC = () => {
             'POR': 'Portuguese',
             'PORTUGUESE': 'Portuguese',
           };
-          
+
           // Expand filter array to include both codes and full names
           const expandedLanguageFilter = new Set<string>();
           nonNALanguages.forEach(lang => {
             const upperLang = lang.toUpperCase();
             expandedLanguageFilter.add(lang); // Add original value (case-sensitive match)
             expandedLanguageFilter.add(upperLang); // Add uppercase version
-            
+
             // If it's a code, also add the full name
             if (languageCodeToFullName[upperLang]) {
               expandedLanguageFilter.add(languageCodeToFullName[upperLang]);
             }
-            
+
             // If it's already a full name, also try to find if it maps to a code
             Object.entries(languageCodeToFullName).forEach(([code, fullName]) => {
               if (fullName.toLowerCase() === lang.toLowerCase()) {
@@ -2035,13 +2022,13 @@ const LeadSearchPage: React.FC = () => {
               }
             });
           });
-          
+
           const expandedFilterArray = Array.from(expandedLanguageFilter);
           console.log('🌐 Expanded language filter (excluding N/A):', {
             original: filters.language,
             expanded: expandedFilterArray
           });
-          
+
           // Use in() to match specific languages
           // Exclude null/empty/N/A language values to prevent matching leads with N/A language
           // Note: We don't check language_id because some leads might only have language text
@@ -2074,21 +2061,21 @@ const LeadSearchPage: React.FC = () => {
           for (const stage of filters.stage) {
             const trimmedStage = stage.trim();
             console.log('🔍 Looking up stage:', trimmedStage);
-            
+
             // Special case: "Created" should map to stage ID 0
             if (trimmedStage.toLowerCase() === 'created') {
               stageIds.push(0);
               console.log('✅ Using stage_id 0 for "Created"');
               continue;
             }
-            
+
             // Try exact match first (case-insensitive)
             let stageLookup = await supabase
               .from('lead_stages')
               .select('id')
               .ilike('name', trimmedStage)
               .limit(1);
-            
+
             // If no exact match, try with wildcards
             if (!stageLookup.data || stageLookup.data.length === 0) {
               stageLookup = await supabase
@@ -2097,7 +2084,7 @@ const LeadSearchPage: React.FC = () => {
                 .ilike('name', `%${trimmedStage}%`)
                 .limit(1);
             }
-            
+
             if (stageLookup.data && stageLookup.data.length > 0) {
               const stageId = stageLookup.data[0].id;
               // Ensure stageId is a number
@@ -2112,7 +2099,7 @@ const LeadSearchPage: React.FC = () => {
               console.log('❌ No stage found for:', trimmedStage);
             }
           }
-          
+
           if (stageIds.length > 0) {
             console.log('✅ Applying stage filter with IDs:', stageIds);
             // Use IN operator for multiple stage_ids
@@ -2169,7 +2156,7 @@ const LeadSearchPage: React.FC = () => {
         idField: string | null
       ) => {
         if (!filterValues || filterValues.length === 0) return;
-        
+
         console.log(`👥 [New Leads ${roleName} Filter] Starting filter application:`, {
           roleName,
           filterValues,
@@ -2177,11 +2164,11 @@ const LeadSearchPage: React.FC = () => {
           idField,
           employeeMappingSize: nameToIdMapping.size
         });
-        
+
         // Convert filter values (display names) to employee IDs
         const employeeIds: number[] = [];
         const unmatchedNames: string[] = [];
-        
+
         for (const filterValue of filterValues) {
           // Check if filterValue is already a numeric ID
           const numericId = parseInt(filterValue, 10);
@@ -2200,7 +2187,7 @@ const LeadSearchPage: React.FC = () => {
             }
           }
         }
-        
+
         console.log(`👥 [New Leads ${roleName} Filter] Filter summary:`, {
           totalFilterValues: filterValues.length,
           employeeIdsFound: employeeIds,
@@ -2208,10 +2195,10 @@ const LeadSearchPage: React.FC = () => {
           unmatchedNames,
           unmatchedNamesCount: unmatchedNames.length
         });
-        
+
         // Build OR condition if we have both text field and ID field
         const orConditions: string[] = [];
-        
+
         // Add ID-based filter if we have IDs and an ID field
         if (employeeIds.length > 0 && idField) {
           if (employeeIds.length === 1) {
@@ -2220,7 +2207,7 @@ const LeadSearchPage: React.FC = () => {
             orConditions.push(`${idField}.in.(${employeeIds.join(',')})`);
           }
         }
-        
+
         // Add text-based filter if we have unmatched names and a text field
         if (unmatchedNames.length > 0 && textField) {
           if (unmatchedNames.length === 1) {
@@ -2229,7 +2216,7 @@ const LeadSearchPage: React.FC = () => {
             orConditions.push(`${textField}.in.(${unmatchedNames.join(',')})`);
           }
         }
-        
+
         // Also add text field filter for all filter values (in case some leads have names stored)
         if (textField && filterValues.length > 0) {
           if (filterValues.length === 1) {
@@ -2238,7 +2225,7 @@ const LeadSearchPage: React.FC = () => {
             orConditions.push(`${textField}.in.(${filterValues.join(',')})`);
           }
         }
-        
+
         if (orConditions.length > 0) {
           if (orConditions.length === 1) {
             // Single condition, apply directly
@@ -2262,33 +2249,33 @@ const LeadSearchPage: React.FC = () => {
           console.log(`❌ [New Leads ${roleName} Filter] No valid conditions to apply - filter will not work`);
         }
       };
-      
+
       // Individual role filters for new leads
       // Scheduler: text field 'scheduler' (display name), no ID field
       if (filters.scheduler && filters.scheduler.length > 0) {
         applyRoleFilterForNewLeads('Scheduler', filters.scheduler, 'scheduler', null);
       }
-      
+
       // Manager: ID field 'meeting_manager_id', text field 'manager' (may contain name or ID)
       if (filters.manager && filters.manager.length > 0) {
         applyRoleFilterForNewLeads('Manager', filters.manager, 'manager', 'meeting_manager_id');
       }
-      
+
       // Lawyer: ID field 'meeting_lawyer_id', text field 'lawyer' (may contain name or ID)
       if (filters.lawyer && filters.lawyer.length > 0) {
         applyRoleFilterForNewLeads('Lawyer', filters.lawyer, 'lawyer', 'meeting_lawyer_id');
       }
-      
+
       // Expert: ID field 'expert_id' or 'expert', text field 'expert' (may contain name or ID)
       if (filters.expert && filters.expert.length > 0) {
         applyRoleFilterForNewLeads('Expert', filters.expert, 'expert', 'expert_id');
       }
-      
+
       // Closer: text field 'closer' (display name), no ID field
       if (filters.closer && filters.closer.length > 0) {
         applyRoleFilterForNewLeads('Closer', filters.closer, 'closer', null);
       }
-      
+
       // Case Handler: ID field 'case_handler_id', text field 'handler' (may contain name or ID)
       if (filters.case_handler && filters.case_handler.length > 0) {
         applyRoleFilterForNewLeads('Case Handler', filters.case_handler, 'handler', 'case_handler_id');
@@ -2308,9 +2295,9 @@ const LeadSearchPage: React.FC = () => {
             name
           )
         `);
-      
+
       console.log('📋 Legacy leads query base:', legacyLeadsQuery);
-      
+
       // Apply filters for legacy leads (mapping fields)
       // Use date strings directly - cdate column handles date comparisons correctly
       if (filters.fromDate) {
@@ -2329,28 +2316,28 @@ const LeadSearchPage: React.FC = () => {
           categoryCount: filters.category.length,
           mappingSize: categoryNameToIdMapping.size
         });
-        
+
         // Use the category name to ID mapping we created earlier (no database queries needed)
         const categoryIds: number[] = [];
         const lookupResults: Array<{ formattedName: string; categoryId: number | undefined; found: boolean }> = [];
-        
+
         for (const formattedCategoryName of filters.category) {
           const categoryId = categoryNameToIdMapping.get(formattedCategoryName);
           const found = categoryId !== undefined;
-          
+
           lookupResults.push({
             formattedName: formattedCategoryName,
             categoryId,
             found
           });
-          
+
           if (categoryId !== undefined) {
             categoryIds.push(categoryId);
             console.log('🔍 [Legacy Leads Category Filter] Found category_id:', categoryId, 'for category:', formattedCategoryName);
           } else {
             console.log('⚠️ [Legacy Leads Category Filter] No category ID found for:', formattedCategoryName);
             // Debug: Check if the mapping contains similar entries
-            const similarEntries = Array.from(categoryNameToIdMapping.keys()).filter(key => 
+            const similarEntries = Array.from(categoryNameToIdMapping.keys()).filter(key =>
               key.toLowerCase().includes(formattedCategoryName.toLowerCase().split(' (')[0]) ||
               formattedCategoryName.toLowerCase().includes(key.toLowerCase().split(' (')[0])
             );
@@ -2359,16 +2346,16 @@ const LeadSearchPage: React.FC = () => {
             }
           }
         }
-        
+
         console.log('🏷️ [Legacy Leads Category Filter] Category ID lookup summary:', {
           totalSelected: filters.category.length,
           lookupResults,
           categoryIdsFound: categoryIds,
           categoryIdsCount: categoryIds.length
         });
-        
+
         console.log(`🔍 [Legacy Leads Category Filter] DEBUG Lead 174503: Category filter - categoryIds found:`, categoryIds, 'Lead has category_id: 122, included:', categoryIds.includes(122));
-        
+
         if (categoryIds.length > 0) {
           // Use IN operator for multiple category_ids
           console.log('🏷️ [Legacy Leads Category Filter] Applying category_id filter (IN):', categoryIds);
@@ -2383,15 +2370,15 @@ const LeadSearchPage: React.FC = () => {
       }
       if (filters.language && filters.language.length > 0) {
         console.log('🌐 Adding language filter for legacy leads:', filters.language);
-        
+
         // Check if filtering for N/A
-        const hasNAFilter = filters.language.some(lang => 
+        const hasNAFilter = filters.language.some(lang =>
           lang.toUpperCase() === 'N/A' || lang === 'N/A'
         );
-        const nonNALanguages = filters.language.filter(lang => 
+        const nonNALanguages = filters.language.filter(lang =>
           lang.toUpperCase() !== 'N/A' && lang !== 'N/A'
         );
-        
+
         // Map language codes to full names for matching
         const languageCodeToFullName: Record<string, string> = {
           'EN': 'English',
@@ -2412,7 +2399,7 @@ const LeadSearchPage: React.FC = () => {
           'POR': 'Portuguese',
           'PORTUGUESE': 'Portuguese',
         };
-        
+
         if (hasNAFilter && nonNALanguages.length === 0) {
           // Only filtering for N/A - find leads where language_id is null
           // For legacy leads, language_id is the primary field, so we just check that
@@ -2421,19 +2408,19 @@ const LeadSearchPage: React.FC = () => {
         } else if (hasNAFilter && nonNALanguages.length > 0) {
           // Filtering for both N/A and specific languages
           console.log('🌐 Filtering for both N/A and specific languages for legacy leads:', nonNALanguages);
-          
+
           // Expand filter array to include both codes and full names for non-N/A languages
           const expandedLanguageFilter = new Set<string>();
           nonNALanguages.forEach(lang => {
             const upperLang = lang.toUpperCase();
             expandedLanguageFilter.add(lang); // Add original value
             expandedLanguageFilter.add(upperLang); // Add uppercase version
-            
+
             // If it's a code, also add the full name
             if (languageCodeToFullName[upperLang]) {
               expandedLanguageFilter.add(languageCodeToFullName[upperLang]);
             }
-            
+
             // If it's already a full name, also try to find if it maps to a code
             Object.entries(languageCodeToFullName).forEach(([code, fullName]) => {
               if (fullName.toLowerCase() === lang.toLowerCase()) {
@@ -2442,17 +2429,17 @@ const LeadSearchPage: React.FC = () => {
               }
             });
           });
-          
+
           const expandedFilterArray = Array.from(expandedLanguageFilter);
-          
+
           // OR condition: language_id is null OR misc_language.name in expanded array
           const orConditions = ['language_id.is.null'];
           expandedFilterArray.forEach(lang => {
             orConditions.push(`misc_language.name.eq.${lang}`);
           });
-          
+
           legacyLeadsQuery = legacyLeadsQuery.or(orConditions.join(','));
-          
+
           console.log('🌐 Mixed language filter (N/A + specific languages) for legacy leads:', {
             original: filters.language,
             expanded: expandedFilterArray,
@@ -2466,12 +2453,12 @@ const LeadSearchPage: React.FC = () => {
             const upperLang = lang.toUpperCase();
             expandedLanguageFilter.add(lang); // Add original value
             expandedLanguageFilter.add(upperLang); // Add uppercase version
-            
+
             // If it's a code, also add the full name
             if (languageCodeToFullName[upperLang]) {
               expandedLanguageFilter.add(languageCodeToFullName[upperLang]);
             }
-            
+
             // If it's already a full name, also try to find if it maps to a code
             Object.entries(languageCodeToFullName).forEach(([code, fullName]) => {
               if (fullName.toLowerCase() === lang.toLowerCase()) {
@@ -2480,13 +2467,13 @@ const LeadSearchPage: React.FC = () => {
               }
             });
           });
-          
+
           const expandedFilterArray = Array.from(expandedLanguageFilter);
           console.log('🌐 Expanded language filter (excluding N/A) for legacy leads:', {
             original: filters.language,
             expanded: expandedFilterArray
           });
-          
+
           // Use in() to match specific languages and explicitly exclude null language_id
           // This prevents matching leads with N/A language
           if (expandedFilterArray.length === 1) {
@@ -2527,14 +2514,14 @@ const LeadSearchPage: React.FC = () => {
               .select('id')
               .ilike('name', `%${stage}%`)
               .limit(1);
-            
+
             if (stageLookup.data && stageLookup.data.length > 0) {
               const stageId = stageLookup.data[0].id;
               stageIds.push(stageId);
               console.log('🔍 Found stage_id:', stageId, 'for stage:', stage);
             }
           }
-          
+
           if (stageIds.length > 0) {
             // Use IN operator for multiple stage_ids
             legacyLeadsQuery = legacyLeadsQuery.in('stage', stageIds);
@@ -2558,14 +2545,14 @@ const LeadSearchPage: React.FC = () => {
               .select('id')
               .eq('name', source)
               .limit(1);
-            
+
             if (sourceLookup.data && sourceLookup.data.length > 0) {
               const sourceId = sourceLookup.data[0].id;
               sourceIds.push(sourceId);
               console.log('🔍 Found source_id:', sourceId, 'for source:', source);
             }
           }
-          
+
           if (sourceIds.length > 0) {
             // Use IN operator for multiple source_ids
             legacyLeadsQuery = legacyLeadsQuery.in('source_id', sourceIds);
@@ -2775,7 +2762,7 @@ const LeadSearchPage: React.FC = () => {
           taggedLegacyLeadIds = new Set<string>();
         }
       }
-      
+
       // Store categoryIds for later debugging (from legacy leads filter section)
       let legacyCategoryIds: number[] = [];
       if (filters.category && filters.category.length > 0) {
@@ -2786,7 +2773,7 @@ const LeadSearchPage: React.FC = () => {
           }
         }
       }
-      
+
       // Execute both queries with explicit limit to ensure we get all results
       // Supabase default limit is 1000, but we'll set it explicitly to be safe
       console.log('🚀 [Query Execution] Executing queries with limits...');
@@ -2820,7 +2807,7 @@ const LeadSearchPage: React.FC = () => {
           case_handler_id: lead.case_handler_id
         }))
       });
-      
+
       console.log('📊 [Query Results] Legacy leads result:', {
         data: legacyLeadsResult.data,
         error: legacyLeadsResult.error,
@@ -2832,7 +2819,7 @@ const LeadSearchPage: React.FC = () => {
           category_id: lead.category_id
         }))
       });
-      
+
       // Debug: Check if any results match the selected categories
       if (filters.category && filters.category.length > 0) {
         // Get category IDs for new leads too
@@ -2844,16 +2831,16 @@ const LeadSearchPage: React.FC = () => {
             newLeadsCategoryIds.push(categoryId);
           }
         }
-        
+
         console.log('🔍 [Query Results] Checking if results match selected categories:', {
           selectedCategoryNames: categoryNames,
           selectedFormattedCategories: filters.category,
           newLeadsCategoryIds,
           legacyCategoryIds,
-          newLeadsMatchingByCategoryId: newLeadsResult.data?.filter((lead: any) => 
+          newLeadsMatchingByCategoryId: newLeadsResult.data?.filter((lead: any) =>
             newLeadsCategoryIds.length > 0 && newLeadsCategoryIds.includes(lead.category_id)
           ).length || 0,
-          newLeadsMatchingByCategoryName: newLeadsResult.data?.filter((lead: any) => 
+          newLeadsMatchingByCategoryName: newLeadsResult.data?.filter((lead: any) =>
             categoryNames.includes(lead.category)
           ).length || 0,
           legacyLeadsMatching: legacyLeadsResult.data?.filter((lead: any) => {
@@ -2882,30 +2869,30 @@ const LeadSearchPage: React.FC = () => {
             case_handler: filters.case_handler?.length > 0
           },
           sampleNewLeadsRoles: newLeadsResult.data?.slice(0, 10).map((lead: any) => {
-            const schedulerMatch = filters.scheduler?.length > 0 
-              ? (filters.scheduler.includes(lead.scheduler) || 
-                 (lead.meeting_scheduler_id && filters.scheduler.some(name => nameToIdMapping.get(name) === lead.meeting_scheduler_id)))
+            const schedulerMatch = filters.scheduler?.length > 0
+              ? (filters.scheduler.includes(lead.scheduler) ||
+                (lead.meeting_scheduler_id && filters.scheduler.some(name => nameToIdMapping.get(name) === lead.meeting_scheduler_id)))
               : null;
             const managerMatch = filters.manager?.length > 0
               ? (filters.manager.includes(lead.manager) ||
-                 (lead.meeting_manager_id && filters.manager.some(name => nameToIdMapping.get(name) === lead.meeting_manager_id)))
+                (lead.meeting_manager_id && filters.manager.some(name => nameToIdMapping.get(name) === lead.meeting_manager_id)))
               : null;
             const lawyerMatch = filters.lawyer?.length > 0
               ? (filters.lawyer.includes(lead.lawyer) ||
-                 (lead.meeting_lawyer_id && filters.lawyer.some(name => nameToIdMapping.get(name) === lead.meeting_lawyer_id)))
+                (lead.meeting_lawyer_id && filters.lawyer.some(name => nameToIdMapping.get(name) === lead.meeting_lawyer_id)))
               : null;
             const expertMatch = filters.expert?.length > 0
               ? (filters.expert.includes(lead.expert) ||
-                 (lead.expert_id && filters.expert.some(name => nameToIdMapping.get(name) === lead.expert_id)))
+                (lead.expert_id && filters.expert.some(name => nameToIdMapping.get(name) === lead.expert_id)))
               : null;
             const closerMatch = filters.closer?.length > 0
               ? filters.closer.includes(lead.closer)
               : null;
             const caseHandlerMatch = filters.case_handler?.length > 0
               ? (filters.case_handler.includes(lead.handler) ||
-                 (lead.case_handler_id && filters.case_handler.some(name => nameToIdMapping.get(name) === lead.case_handler_id)))
+                (lead.case_handler_id && filters.case_handler.some(name => nameToIdMapping.get(name) === lead.case_handler_id)))
               : null;
-            
+
             return {
               id: lead.id,
               scheduler: lead.scheduler,
@@ -2928,10 +2915,10 @@ const LeadSearchPage: React.FC = () => {
           })
         });
       }
-      
+
       // Debug role filters separately
-      if (filters.scheduler?.length > 0 || filters.manager?.length > 0 || filters.lawyer?.length > 0 || 
-          filters.expert?.length > 0 || filters.closer?.length > 0 || filters.case_handler?.length > 0) {
+      if (filters.scheduler?.length > 0 || filters.manager?.length > 0 || filters.lawyer?.length > 0 ||
+        filters.expert?.length > 0 || filters.closer?.length > 0 || filters.case_handler?.length > 0) {
         console.log('👥 [Query Results] Role filter matching summary:', {
           schedulerFilter: filters.scheduler,
           managerFilter: filters.manager,
@@ -2939,7 +2926,7 @@ const LeadSearchPage: React.FC = () => {
           expertFilter: filters.expert,
           closerFilter: filters.closer,
           caseHandlerFilter: filters.case_handler,
-          newLeadsMatchingScheduler: newLeadsResult.data?.filter((lead: any) => 
+          newLeadsMatchingScheduler: newLeadsResult.data?.filter((lead: any) =>
             filters.scheduler?.includes(lead.scheduler) ||
             (lead.meeting_scheduler_id && filters.scheduler?.some(name => nameToIdMapping.get(name) === lead.meeting_scheduler_id))
           ).length || 0,
@@ -2990,7 +2977,7 @@ const LeadSearchPage: React.FC = () => {
           .maybeSingle();
         if (!debugCheckError && debugLeadCheck) {
           console.log(`🔍 DEBUG Lead ${debugLeadId}: Exists in database:`, debugLeadCheck);
-          
+
           // Check what category name corresponds to category_id 122
           let categoryNameFor122 = null;
           try {
@@ -3007,7 +2994,7 @@ const LeadSearchPage: React.FC = () => {
           } catch (e) {
             console.log(`🔍 DEBUG Lead ${debugLeadId}: Error fetching category name for ID ${debugLeadCheck.category_id}:`, e);
           }
-          
+
           // Check why it was filtered out
           console.log(`🔍 DEBUG Lead ${debugLeadId}: Filter analysis:`, {
             fromDate: filters.fromDate,
@@ -3060,19 +3047,19 @@ const LeadSearchPage: React.FC = () => {
 
           return categoryName;
         }
-        
+
         // Fallback to direct category field
         return lead.category || 'No Category';
       };
 
       console.log('🔄 Processing new leads...');
-      
+
       // If filtering for N/A only, filter out leads with non-empty language values
-      const hasNAFilterOnly = filters.language && 
-        filters.language.length === 1 && 
+      const hasNAFilterOnly = filters.language &&
+        filters.language.length === 1 &&
         (filters.language[0].toUpperCase() === 'N/A' || filters.language[0] === 'N/A') &&
         filters.language.every(lang => lang.toUpperCase() === 'N/A' || lang === 'N/A');
-      
+
       // Filter leads if N/A only filter is active
       let filteredNewLeads = newLeadsResult.data || [];
       if (hasNAFilterOnly) {
@@ -3080,11 +3067,11 @@ const LeadSearchPage: React.FC = () => {
         filteredNewLeads = filteredNewLeads.filter(lead => {
           // language_id must be null AND language must be null/empty/N/A
           const languageIdNull = lead.language_id === null || lead.language_id === undefined;
-          const languageEmpty = !lead.language || 
-                                lead.language === null || 
-                                lead.language === '' || 
-                                lead.language === 'N/A' ||
-                                String(lead.language).trim() === '';
+          const languageEmpty = !lead.language ||
+            lead.language === null ||
+            lead.language === '' ||
+            lead.language === 'N/A' ||
+            String(lead.language).trim() === '';
           return languageIdNull && languageEmpty;
         });
         console.log('🌐 Client-side N/A filter result:', {
@@ -3092,14 +3079,14 @@ const LeadSearchPage: React.FC = () => {
           after: filteredNewLeads.length
         });
       }
-      
+
       // Calculate sublead suffixes for new leads (similar to Clients.tsx)
       // Group subleads by master_id and calculate suffixes based on id ordering
       const newSubLeadSuffixMap = new Map<string, number>();
       const newMasterIdsWithSubLeads = new Set<string>(); // Track which master IDs have subleads
       const newLeadsWithMaster = filteredNewLeads.filter((l: any) => l.master_id);
       const newMasterIds = Array.from(new Set(newLeadsWithMaster.map((l: any) => l.master_id?.toString()).filter(Boolean)));
-      
+
       for (const masterId of newMasterIds) {
         const sameMasterLeads = filteredNewLeads.filter((l: any) => l.master_id?.toString() === masterId);
         // Sort by id ascending (same as Clients.tsx)
@@ -3108,12 +3095,12 @@ const LeadSearchPage: React.FC = () => {
           const bId = typeof b.id === 'string' ? parseInt(b.id) || 0 : (b.id || 0);
           return aId - bId;
         });
-        
+
         // Mark this master ID as having subleads
         if (sameMasterLeads.length > 0) {
           newMasterIdsWithSubLeads.add(masterId);
         }
-        
+
         sameMasterLeads.forEach((lead: any, index: number) => {
           const leadKey = lead.id?.toString();
           if (leadKey) {
@@ -3122,11 +3109,11 @@ const LeadSearchPage: React.FC = () => {
           }
         });
       }
-      
+
       // Map new leads with proper category formatting and role information
       let mappedNewLeads = filteredNewLeads.map(lead => {
         const anyLead = lead as any;
-        
+
         // Format lead number with sublead handling (similar to Clients.tsx)
         let displayLeadNumber: string;
         if (anyLead.master_id) {
@@ -3138,12 +3125,12 @@ const LeadSearchPage: React.FC = () => {
             // Calculate suffix based on position in ordered list of subleads with same master_id
             const leadKey = anyLead.id?.toString();
             const suffix = leadKey ? newSubLeadSuffixMap.get(leadKey) : undefined;
-            
+
             // Find the master lead to get its lead_number (prefer lead_number over manual_id for new leads)
             const masterLead = filteredNewLeads.find((l: any) => l.id === anyLead.master_id);
             // For new leads, always use lead_number (not manual_id) for sublead display
             const masterLeadNumber = masterLead?.lead_number || anyLead.master_id?.toString() || '';
-            
+
             // Use calculated suffix if available, otherwise default to /2
             displayLeadNumber = suffix ? `${masterLeadNumber}/${suffix}` : `${masterLeadNumber}/2`;
           }
@@ -3155,7 +3142,7 @@ const LeadSearchPage: React.FC = () => {
           // Check if this lead's ID is in the set of master IDs that have subleads
           const leadIdStr = anyLead.id?.toString();
           const hasSubLeads = leadIdStr && newMasterIdsWithSubLeads.has(leadIdStr);
-          
+
           // Check if it already has a suffix
           if (hasSubLeads && baseNumber && !baseNumber.includes('/')) {
             displayLeadNumber = `${baseNumber}/1`;
@@ -3181,19 +3168,19 @@ const LeadSearchPage: React.FC = () => {
       });
 
       console.log('🔄 Processing legacy leads...');
-      
+
       // Debug: Log the structure of the first legacy lead to see what fields are available
       if (legacyLeadsResult.data && legacyLeadsResult.data.length > 0) {
         console.log('🔍 First legacy lead structure:', Object.keys(legacyLeadsResult.data[0]));
         console.log('🔍 First legacy lead sample data:', legacyLeadsResult.data[0]);
       }
-      
+
       // Create source, stage, category, and employee mapping for legacy leads
       const sourceMapping = new Map<number, string>();
       const stageMapping = new Map<number, string>();
       const categoryMapping = new Map<number, string>();
       const employeeMapping = new Map<number, string>();
-      
+
       try {
         const [sourcesResult, stagesResult, categoriesResult, employeesResult] = await Promise.all([
           supabase.from('misc_leadsource').select('id, name'),
@@ -3201,14 +3188,14 @@ const LeadSearchPage: React.FC = () => {
           supabase.from('misc_category').select('id, name, parent_id, misc_maincategory!parent_id(id, name)'),
           supabase.from('tenants_employee').select('id, display_name').not('display_name', 'is', null)
         ]);
-        
+
         if (sourcesResult.data) {
           sourcesResult.data.forEach(source => {
             sourceMapping.set(source.id, source.name);
           });
           console.log('✅ Loaded source mapping:', sourceMapping.size, 'sources');
         }
-        
+
         if (stagesResult.data) {
           stagesResult.data.forEach(stage => {
             // Store both string and numeric keys to handle both cases
@@ -3219,7 +3206,7 @@ const LeadSearchPage: React.FC = () => {
           console.log('✅ Loaded stage mapping:', stageMapping.size, 'stages');
           console.log('🔍 Sample stage mapping entries:', Array.from(stageMapping.entries()).slice(0, 5));
         }
-        
+
         if (categoriesResult.data) {
           categoriesResult.data.forEach(category => {
             const mainRel = (category as any).misc_maincategory;
@@ -3233,7 +3220,7 @@ const LeadSearchPage: React.FC = () => {
           });
           console.log('✅ Loaded category mapping:', categoryMapping.size, 'categories');
         }
-        
+
         if (employeesResult.data) {
           // Employee mapping already created at the beginning of search function
           console.log('✅ Employee data available for mapping:', employeesResult.data.length, 'employees');
@@ -3241,13 +3228,13 @@ const LeadSearchPage: React.FC = () => {
       } catch (error) {
         console.log('⚠️ Failed to load source/stage/category/employee mapping:', error);
       }
-      
+
       // If filtering for N/A only, filter out legacy leads with non-null language_id
-      const hasNAFilterOnlyLegacy = filters.language && 
-        filters.language.length === 1 && 
+      const hasNAFilterOnlyLegacy = filters.language &&
+        filters.language.length === 1 &&
         (filters.language[0].toUpperCase() === 'N/A' || filters.language[0] === 'N/A') &&
         filters.language.every(lang => lang.toUpperCase() === 'N/A' || lang === 'N/A');
-      
+
       // Filter legacy leads if N/A only filter is active
       let filteredLegacyLeads = legacyLeadsResult.data || [];
       if (hasNAFilterOnlyLegacy) {
@@ -3261,14 +3248,14 @@ const LeadSearchPage: React.FC = () => {
           after: filteredLegacyLeads.length
         });
       }
-      
+
       // Calculate sublead suffixes for legacy leads (similar to Clients.tsx)
       // Group subleads by master_id and calculate suffixes based on id ordering
       const legacySubLeadSuffixMap = new Map<string, number>();
       const legacyMasterIdsWithSubLeads = new Set<string>(); // Track which master IDs have subleads
       const legacyLeadsWithMaster = filteredLegacyLeads.filter((l: any) => l.master_id);
       const legacyMasterIds = Array.from(new Set(legacyLeadsWithMaster.map((l: any) => l.master_id?.toString()).filter(Boolean)));
-      
+
       for (const masterId of legacyMasterIds) {
         const sameMasterLeads = filteredLegacyLeads.filter((l: any) => l.master_id?.toString() === masterId);
         // Sort by id ascending (same as Clients.tsx)
@@ -3277,12 +3264,12 @@ const LeadSearchPage: React.FC = () => {
           const bId = typeof b.id === 'string' ? parseInt(b.id) || 0 : (b.id || 0);
           return aId - bId;
         });
-        
+
         // Mark this master ID as having subleads
         if (sameMasterLeads.length > 0) {
           legacyMasterIdsWithSubLeads.add(masterId);
         }
-        
+
         sameMasterLeads.forEach((lead: any, index: number) => {
           const leadKey = lead.id?.toString();
           if (leadKey) {
@@ -3291,14 +3278,14 @@ const LeadSearchPage: React.FC = () => {
           }
         });
       }
-      
+
       // Map legacy leads to match new leads format using joined data
       let mappedLegacyLeads = filteredLegacyLeads.map(legacyLead => {
-        const sourceName = legacyLead.source_id ? 
+        const sourceName = legacyLead.source_id ?
           sourceMapping.get(legacyLead.source_id) || legacyLead.source_external_id || 'Unknown' :
           legacyLead.source_external_id || 'Unknown';
-          
-        const categoryName = legacyLead.category_id ? 
+
+        const categoryName = legacyLead.category_id ?
           categoryMapping.get(legacyLead.category_id) || legacyLead.category || 'No Category' :
           legacyLead.category || 'No Category';
 
@@ -3316,7 +3303,7 @@ const LeadSearchPage: React.FC = () => {
           closer: getEmployeeName(legacyLead.closer_id),
           case_handler: getEmployeeName(legacyLead.case_handler_id),
         };
-          
+
         // Format lead number with sublead handling (similar to Clients.tsx)
         let displayLeadNumber: string;
         const legacyLeadAny = legacyLead as any;
@@ -3329,11 +3316,11 @@ const LeadSearchPage: React.FC = () => {
             // Calculate suffix based on position in ordered list of subleads with same master_id
             const leadKey = legacyLead.id?.toString();
             const suffix = leadKey ? legacySubLeadSuffixMap.get(leadKey) : undefined;
-            
+
             // Find the master lead to get its lead_number or manual_id
             const masterLead = filteredLegacyLeads.find((l: any) => l.id === legacyLeadAny.master_id);
             const masterLeadNumber = masterLead?.lead_number || masterLead?.manual_id || legacyLeadAny.master_id?.toString() || '';
-            
+
             // Use calculated suffix if available, otherwise default to /2
             displayLeadNumber = suffix ? `${masterLeadNumber}/${suffix}` : `${masterLeadNumber}/2`;
           }
@@ -3347,7 +3334,7 @@ const LeadSearchPage: React.FC = () => {
           // Check if this lead's ID is in the set of master IDs that have subleads
           const leadIdStr = legacyLead.id?.toString();
           const hasSubLeads = leadIdStr && legacyMasterIdsWithSubLeads.has(leadIdStr);
-          
+
           // Check if it already has a suffix
           if (hasSubLeads && baseNumber && !baseNumber.includes('/')) {
             displayLeadNumber = `${baseNumber}/1`;
@@ -3363,13 +3350,13 @@ const LeadSearchPage: React.FC = () => {
           display_lead_number: String(displayLeadNumber),
           name: legacyLead.name,
           topic: legacyLead.topic,
-          
+
           // Contact Info
           email: legacyLead.email,
           phone: legacyLead.phone,
           mobile: legacyLead.mobile,
           additional_contacts: legacyLead.additional_emails || legacyLead.additional_phones,
-          
+
           // Status & Classification
           // Preserve original numeric stage ID so getStageName/getStageColour can look it up
           stage: legacyLead.stage,
@@ -3379,7 +3366,7 @@ const LeadSearchPage: React.FC = () => {
           status: legacyLead.status ? legacyLead.status.toString() : null,
           eligibility_status: legacyLead.eligibility_status,
           priority: legacyLead.priority,
-          
+
           // Financial Information
           meeting_amount: legacyLead.meeting_total,
           meeting_currency: legacyLead.meeting_total_currency_id,
@@ -3399,7 +3386,7 @@ const LeadSearchPage: React.FC = () => {
           // Currency fields for all amounts
           currency_id: legacyLead.currency_id,
           currency: legacyLead.currency_id,
-          
+
           // Meeting Information
           meeting_date: legacyLead.meeting_date,
           meeting_time: legacyLead.meeting_time,
@@ -3415,13 +3402,13 @@ const LeadSearchPage: React.FC = () => {
           meeting_complexity: legacyLead.meeting_complexity,
           meeting_probability: legacyLead.meeting_probability,
           meeting_car_no: legacyLead.meeting_car_no,
-          
+
           // Applicants Information
           potential_applicants: legacyLead.potential_applicants,
           potential_applicants_meeting: legacyLead.potential_applicants,
           number_of_applicants_meeting: legacyLead.potential_applicants_meeting,
           no_of_applicants: legacyLead.no_of_applicants,
-          
+
           // Timeline & Dates
           created_at: legacyLead.cdate || new Date().toISOString(),
           updated_at: legacyLead.udate,
@@ -3436,7 +3423,7 @@ const LeadSearchPage: React.FC = () => {
           latest_interaction: legacyLead.latest_interaction,
           stage_changed_at: legacyLead.stage_changed_at,
           unactivated_at: legacyLead.unactivated_at,
-          
+
           // Details & Notes
           facts: legacyLead.description,
           special_notes: legacyLead.special_notes,
@@ -3450,7 +3437,7 @@ const LeadSearchPage: React.FC = () => {
           external_notes: legacyLead.external_notes,
           deactivate_notes: legacyLead.deactivate_notes,
           unactivation_reason: legacyLead.unactivation_reason,
-          
+
           // Roles
           roles: roles,
           scheduler: roles.scheduler,
@@ -3461,7 +3448,7 @@ const LeadSearchPage: React.FC = () => {
           case_handler: roles.case_handler,
           handler: roles.case_handler,
           helper: null, // Not available in legacy leads
-          
+
           // Additional Info
           desired_location: legacyLead.desired_location,
           client_country: legacyLead.client_country,
@@ -3514,7 +3501,7 @@ const LeadSearchPage: React.FC = () => {
           mappedLegacyLeads = [];
         }
       }
-      
+
       // DEBUG: Check if lead 174503 is still in mapped legacy leads after all processing
       const debugLeadFinal = mappedLegacyLeads.find((lead: any) => lead.id === debugLeadId);
       if (debugLeadFinal) {
@@ -3558,12 +3545,12 @@ const LeadSearchPage: React.FC = () => {
         ...mappedNewLeads,
         ...mappedLegacyLeads
       ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      
+
       console.log('🎯 Final combined results:', {
         totalCount: allResults.length,
         results: allResults
       });
-      
+
       setResults(allResults);
     } catch (error) {
       console.error('Error searching leads:', error);
@@ -3576,20 +3563,20 @@ const LeadSearchPage: React.FC = () => {
 
   const getStageBadge = (stage: string | number | null | undefined) => {
     if (!stage && stage !== 0) return <span className="badge badge-outline">No Stage</span>;
-    
+
     // Convert stage to string for getStageName/getStageColour (handles both numeric IDs and stage names)
     const stageStr = String(stage);
-    
+
     // Get stage name and color from stageUtils
     const stageName = getStageName(stageStr);
     const stageColour = getStageColour(stageStr);
     const badgeTextColour = getContrastingTextColor(stageColour);
-    
+
     // Use dynamic color if available, otherwise fallback to default purple
     const backgroundColor = stageColour || '#3f28cd';
     const textColor = stageColour ? badgeTextColour : '#ffffff';
-    
-    return <span 
+
+    return <span
       className="badge stage-badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
       style={{
         backgroundColor: backgroundColor,
@@ -3649,61 +3636,61 @@ const LeadSearchPage: React.FC = () => {
     }
 
     return (
-  <div 
-      key={lead.id} 
-      className={cardClasses}
-      onClick={(e) => {
-        // Pass the full lead object so we can access manual_id and other properties
-        handleLeadClick(lead, e);
-      }}
-    >
-      <div className="card-body p-5 relative">
-        {isLegacyInactive && (
-          <span className="badge badge-xs absolute top-1 left-3 bg-white border-red-400 text-red-500 shadow-sm">
-            Not active
-          </span>
-        )}
-        <div className="flex justify-between items-start mb-2">
+      <div
+        key={lead.id}
+        className={cardClasses}
+        onClick={(e) => {
+          // Pass the full lead object so we can access manual_id and other properties
+          handleLeadClick(lead, e);
+        }}
+      >
+        <div className="card-body p-5 relative">
+          {isLegacyInactive && (
+            <span className="badge badge-xs absolute top-1 left-3 bg-white border-red-400 text-red-500 shadow-sm">
+              Not active
+            </span>
+          )}
+          <div className="flex justify-between items-start mb-2">
             <div className="flex items-center gap-2">
-            <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors">
-              {lead.name}
-            </h2>
+              <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors">
+                {lead.name}
+              </h2>
             </div>
             {getStageBadge(lead.stage)}
+          </div>
+
+          <p className="text-sm text-base-content/60 font-mono mb-4">
+            #{(lead as any).display_lead_number || lead.lead_number || lead.id}
+          </p>
+
+          <div className="divider my-0"></div>
+
+          <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
+            <div className="flex items-center gap-2" title="Date Created">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+              <span className="font-medium">{new Date(lead.created_at).toLocaleDateString()}</span>
+            </div>
+            <div className="flex items-center gap-2" title="Category">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+              <span>{displayCategory || 'N/A'}</span>
+            </div>
+            <div className="flex items-center gap-2" title="Source">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+              <span>{lead.source || 'N/A'}</span>
+            </div>
+            <div className="flex items-center gap-2" title="Language">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" /></svg>
+              <span>{lead.language || 'N/A'}</span>
+            </div>
+          </div>
+
+          <div className="mt-4 pt-4 border-t border-base-200/50">
+            <p className="text-sm font-semibold text-base-content/80">{lead.topic || 'No topic specified'}</p>
+          </div>
+
         </div>
-        
-        <p className="text-sm text-base-content/60 font-mono mb-4">
-          #{(lead as any).display_lead_number || lead.lead_number || lead.id}
-        </p>
-
-        <div className="divider my-0"></div>
-
-        <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
-          <div className="flex items-center gap-2" title="Date Created">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-            <span className="font-medium">{new Date(lead.created_at).toLocaleDateString()}</span>
-          </div>
-          <div className="flex items-center gap-2" title="Category">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
-            <span>{displayCategory || 'N/A'}</span>
-          </div>
-          <div className="flex items-center gap-2" title="Source">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-            <span>{lead.source || 'N/A'}</span>
-          </div>
-          <div className="flex items-center gap-2" title="Language">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" /></svg>
-            <span>{lead.language || 'N/A'}</span>
-          </div>
-        </div>
-
-        <div className="mt-4 pt-4 border-t border-base-200/50">
-          <p className="text-sm font-semibold text-base-content/80">{lead.topic || 'No topic specified'}</p>
-        </div>
-
       </div>
-    </div>
-  );
+    );
   };
 
   return (
@@ -3716,20 +3703,20 @@ const LeadSearchPage: React.FC = () => {
           {/* Date Range Row */}
           <div className="form-control flex flex-col col-span-2 sm:col-span-1">
             <label className="label mb-2"><span className="label-text">From date</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
+            <input
+              type="date"
+              className="input input-bordered"
               value={filters.fromDate}
-              onChange={e => handleFilterChange('fromDate', e.target.value)} 
+              onChange={e => handleFilterChange('fromDate', e.target.value)}
             />
           </div>
           <div className="form-control flex flex-col col-span-2 sm:col-span-1">
             <label className="label mb-2"><span className="label-text">To date</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
+            <input
+              type="date"
+              className="input input-bordered"
               value={filters.toDate}
-              onChange={e => handleFilterChange('toDate', e.target.value)} 
+              onChange={e => handleFilterChange('toDate', e.target.value)}
             />
           </div>
           <MainCategoryInput
@@ -3971,19 +3958,19 @@ const LeadSearchPage: React.FC = () => {
             <label className="label mb-2"><span className="label-text">Content</span></label>
             <input type="text" className="input input-bordered" onChange={e => handleFilterChange('content', e.target.value)} />
           </div>
-          
+
           {/* View Mode Toggle */}
           <div className="col-span-2 flex items-end gap-3">
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium">View:</span>
               <div className="btn-group">
-             <button 
+                <button
                   className={`btn btn-sm ${viewMode === 'cards' ? 'btn-primary' : 'btn-outline'}`}
                   onClick={() => setViewMode('cards')}
                 >
                   Cards
                 </button>
-                <button 
+                <button
                   className={`btn btn-sm ${viewMode === 'table' ? 'btn-primary' : 'btn-outline'}`}
                   onClick={() => setViewMode('table')}
                 >
@@ -4006,8 +3993,8 @@ const LeadSearchPage: React.FC = () => {
 
           {/* Search Buttons: span both columns on mobile */}
           <div className="col-span-2 flex items-end gap-3">
-             <button 
-              className="btn btn-primary flex-1" 
+            <button
+              className="btn btn-primary flex-1"
               onClick={handleSearch}
               disabled={isSearching}
             >
@@ -4031,9 +4018,9 @@ const LeadSearchPage: React.FC = () => {
             viewMode === 'table' ? (
               <TableView leads={results} selectedColumns={selectedColumns} onLeadClick={handleLeadClick} />
             ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {results.map(renderResultCard)}
-            </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {results.map(renderResultCard)}
+              </div>
             )
           ) : (
             <div className="text-center p-8 bg-base-200 rounded-lg">

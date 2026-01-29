@@ -8234,24 +8234,25 @@ const reports: ReportSection[] = [
       // { label: 'Employee', icon: UserIcon, component: EmployeeReport },
       // { label: 'Unhandled', icon: UserIcon, component: UnhandledReport },
       { label: 'Expert', icon: AcademicCapIcon, component: ExpertReport },
+      { label: 'Sales Pipeline', icon: BanknotesIcon, route: '/reports/closer-super-pipeline' },
     ],
   },
-  {
-    category: 'Schedulers',
-    items: [
-      { label: 'Super Pipeline', icon: BanknotesIcon, component: SchedulerSuperPipelineReport },
-      // { label: 'Schedulers Quality', icon: StarIcon, component: SchedulersQualityReport },
-      // { label: 'Performance', icon: ChartBarIcon, component: PerformanceReport },
-      // { label: 'Performance by Cat.', icon: ChartBarIcon, component: PerformanceByCatReport },
-    ],
-  },
-  {
-    category: 'Closers',
-    items: [
-      { label: 'Super Pipeline', icon: BanknotesIcon, route: '/reports/closer-super-pipeline' },
-      // { label: 'Closers Quality', icon: StarIcon, component: ClosersQualityReport },
-    ],
-  },
+  // {
+  //   category: 'Schedulers',
+  //   items: [
+  //     { label: 'Super Pipeline', icon: BanknotesIcon, component: SchedulerSuperPipelineReport },
+  //     // { label: 'Schedulers Quality', icon: StarIcon, component: SchedulersQualityReport },
+  //     // { label: 'Performance', icon: ChartBarIcon, component: PerformanceReport },
+  //     // { label: 'Performance by Cat.', icon: ChartBarIcon, component: PerformanceByCatReport },
+  //   ],
+  // },
+  // {
+  //   category: 'Closers',
+  //   items: [
+  //     { label: 'Super Pipeline', icon: BanknotesIcon, route: '/reports/closer-super-pipeline' },
+  //     // { label: 'Closers Quality', icon: StarIcon, component: ClosersQualityReport },
+  //   ],
+  // },
   {
     category: 'Experts',
     items: [
@@ -8712,10 +8713,30 @@ export default function ReportsPage() {
                             {/* Content */}
                             <div className="relative z-10 p-6 md:p-8 min-h-[200px] flex flex-col justify-between text-white">
                               {/* Category Label */}
-                              <div className="mb-4">
+                              <div className="mb-4 flex items-center justify-between gap-2">
                                 <span className="inline-block px-3 py-1 bg-white/20 backdrop-blur-sm rounded-full text-xs font-semibold uppercase tracking-wide">
                                   {section.category}
                                 </span>
+                                <div className="flex items-center gap-2">
+                                  {/* Under Construction Badge */}
+                                  {(section.category === 'Marketing' ||
+                                    (section.category === 'Contribution' && item.label === 'All') ||
+                                    item.label === 'Bonuses (v4)') && (
+                                      <span className="inline-flex items-center gap-1 px-2 py-1 bg-yellow-500/90 backdrop-blur-sm rounded-full text-[10px] font-semibold uppercase tracking-wide text-white">
+                                        <WrenchScrewdriverIcon className="w-3 h-3 text-white" />
+                                        Under Construction
+                                      </span>
+                                    )}
+                                  {/* Admin Access Only Badge */}
+                                  {(item.label === 'Sales Contribution' ||
+                                    item.label === 'Edit Contracts' ||
+                                    item.label === 'Employee Unavailabilities' ||
+                                    item.label === 'Employee Salaries') && (
+                                      <span className="inline-block px-2 py-1 bg-red-500/90 backdrop-blur-sm rounded-full text-[10px] font-semibold uppercase tracking-wide text-white">
+                                        Admin access only!
+                                      </span>
+                                    )}
+                                </div>
                               </div>
 
                               {/* Icon and Label */}
