@@ -4703,15 +4703,17 @@ const SalesContributionPage = () => {
   return (
     <div className="w-full px-4 py-6">
       <div className="mb-2">
-        <button
-          onClick={() => navigate('/reports')}
-          className="btn btn-ghost btn-sm mb-4"
-        >
-          ← Back to Reports
-        </button>
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-4">
           <div className="flex items-center gap-4">
             <h1 className="text-3xl font-bold">Sales Contribution Report</h1>
+            <button
+              onClick={() => navigate('/reports')}
+              className="btn btn-ghost btn-sm"
+            >
+              ← Back to Reports
+            </button>
+          </div>
+          <div className="flex flex-col md:flex-row gap-4 items-center">
             <div className="flex items-center gap-3">
               <span className={`text-sm font-medium transition-colors ${viewMode === 'employee' ? 'text-primary' : 'text-gray-500'}`}>
                 Employee
@@ -4726,8 +4728,6 @@ const SalesContributionPage = () => {
                 Fields
               </span>
             </div>
-          </div>
-          <div className="flex flex-col md:flex-row gap-4 items-center">
             <button
               onClick={async () => {
                 await fetchRolePercentages();
@@ -4741,12 +4741,11 @@ const SalesContributionPage = () => {
             </button>
             {/* Total Signed Value */}
             <div className="flex items-center gap-2">
-              <label className="text-sm font-medium whitespace-nowrap">Total Signed:</label>
-              <div className="px-4 py-2 bg-base-200 rounded-lg border border-base-300 min-w-[120px] text-right">
+              <div className="px-4 py-2 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg min-w-[120px] text-right text-white shadow-md">
                 {loadingSignedValue ? (
-                  <span className="loading loading-spinner loading-sm"></span>
+                  <span className="loading loading-spinner loading-sm text-white"></span>
                 ) : (
-                  <span className="font-semibold">{formatCurrency(totalSignedValue)}</span>
+                  <span className="font-semibold text-white">{formatCurrency(totalSignedValue)}</span>
                 )}
               </div>
             </div>
@@ -4798,7 +4797,7 @@ const SalesContributionPage = () => {
 
       <div className="card bg-base-100 shadow-xl mb-6 md:-mt-4" data-filters-section>
         <div className="card-body md:py-4">
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-3 md:gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-7 gap-3 md:gap-4">
             {/* From Date - Mobile: 2 cols, Desktop: 1 col */}
             <div className="col-span-1">
               <label className="label py-1 md:py-2">
@@ -4863,41 +4862,39 @@ const SalesContributionPage = () => {
                 ))}
               </select>
             </div>
-            {/* Search Employee and Button - Mobile: 2 cols together, Desktop: separate */}
-            <div className="col-span-2 md:col-span-1">
+            {/* Search Employee Input - Mobile: 2 cols, Desktop: wider (2 cols) */}
+            <div className="col-span-2 md:col-span-2">
               <label className="label py-1 md:py-2">
                 <span className="label-text text-xs md:text-base md:font-semibold">Search Employee</span>
               </label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  className="input input-bordered input-sm md:input-md flex-1 md:text-base"
-                  placeholder="Search..."
-                  value={employeeSearchTerm}
-                  onChange={(e) => setEmployeeSearchTerm(e.target.value)}
-                />
-                <button
-                  className="btn btn-primary btn-sm md:btn-md md:text-base flex-shrink-0"
-                  onClick={handleSearch}
-                  disabled={loading}
-                  title="Search"
-                >
-                  {loading ? (
-                    <>
-                      <span className="loading loading-spinner loading-xs"></span>
-                      <span className="hidden md:inline">Searching...</span>
-                    </>
-                  ) : (
-                    <>
-                      <MagnifyingGlassIcon className="w-4 h-4 md:hidden" />
-                      <span className="hidden md:inline">Search</span>
-                    </>
-                  )}
-                </button>
-              </div>
+              <input
+                type="text"
+                className="input input-bordered input-sm md:input-md w-full md:text-base"
+                placeholder="Search..."
+                value={employeeSearchTerm}
+                onChange={(e) => setEmployeeSearchTerm(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleSearch();
+                  }
+                }}
+              />
             </div>
-            {/* Empty div for desktop grid alignment */}
-            <div className="hidden md:block md:col-span-1"></div>
+            {/* Search Button - Icon only, far right */}
+            <div className="col-span-2 md:col-span-1 flex items-end">
+              <button
+                className="btn btn-primary btn-sm md:btn-md w-full md:w-auto flex items-center justify-center"
+                onClick={handleSearch}
+                disabled={loading}
+                title="Search"
+              >
+                {loading ? (
+                  <span className="loading loading-spinner loading-xs"></span>
+                ) : (
+                  <MagnifyingGlassIcon className="w-4 h-4 md:w-5 md:h-5" />
+                )}
+              </button>
+            </div>
           </div>
         </div>
       </div>

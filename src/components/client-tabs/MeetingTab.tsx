@@ -2237,27 +2237,55 @@ const formatEmailBody = async (
         return;
       }
 
-      // Get current user's full_name and employee_id from database
+      // Get current user's employee_id and display_name from database using auth_id
       let currentUserFullName = '';
       let currentUserEmployeeId: number | null = null;
       try {
-        const { data: userData } = await supabase
-          .from('users')
-          .select(`
-            full_name,
-            employee_id,
-            tenants_employee!employee_id(
-              id,
-              display_name
-            )
-          `)
-          .eq('email', account.username)
-          .single();
-        if (userData) {
-          // Prefer display_name from tenants_employee if available, otherwise use full_name
-          const employee = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
-          currentUserFullName = employee?.display_name || userData.full_name || '';
-          currentUserEmployeeId = userData.employee_id || null;
+        // First get auth_id from Supabase auth
+        const { data: { user: authUser } } = await supabase.auth.getUser();
+        if (authUser?.id) {
+          // Get employee_id from users table using auth_id
+          const { data: userData } = await supabase
+            .from('users')
+            .select(`
+              full_name,
+              employee_id,
+              tenants_employee!employee_id(
+                id,
+                display_name
+              )
+            `)
+            .eq('auth_id', authUser.id)
+            .single();
+          
+          if (userData) {
+            // Prefer display_name from tenants_employee if available, otherwise use full_name
+            const employee = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
+            currentUserFullName = employee?.display_name || userData.full_name || '';
+            currentUserEmployeeId = userData.employee_id || null;
+          }
+        }
+        
+        // Fallback to email-based lookup if auth_id lookup fails
+        if (!currentUserFullName && account.username) {
+          const { data: userDataByEmail } = await supabase
+            .from('users')
+            .select(`
+              full_name,
+              employee_id,
+              tenants_employee!employee_id(
+                id,
+                display_name
+              )
+            `)
+            .eq('email', account.username)
+            .single();
+          
+          if (userDataByEmail) {
+            const employee = Array.isArray(userDataByEmail.tenants_employee) ? userDataByEmail.tenants_employee[0] : userDataByEmail.tenants_employee;
+            currentUserFullName = employee?.display_name || userDataByEmail.full_name || '';
+            currentUserEmployeeId = userDataByEmail.employee_id || null;
+          }
         }
       } catch (error) {
         console.log('Could not fetch user data:', error);

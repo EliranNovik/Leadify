@@ -864,7 +864,13 @@ const Meetings: React.FC = () => {
                 }).filter(Boolean);
                 
                 if (attendeeNames.length > 0) {
-                  attendeesText = attendeeNames.join(', ');
+                  // Check if this appears to be all employees (more than 10 attendees suggests all employees)
+                  // For staff meetings with many attendees, show "All employees" instead of listing all names
+                  if (attendeeNames.length > 10) {
+                    attendeesText = 'All employees';
+                  } else {
+                    attendeesText = attendeeNames.join(', ');
+                  }
                 }
               }
               
@@ -883,7 +889,7 @@ const Meetings: React.FC = () => {
                 value: '--',
                 location: staffMeeting.location || 'Teams',
                 staff: ['--'],
-                name: attendeesText, // Client column shows employee names (not emails)
+                name: attendeesText, // Client column shows employee names (not emails) or "All employees" if many attendees
                 topic: staffMeeting.description || 'Internal Meeting',
                 link: staffMeeting.teams_join_url || staffMeeting.teams_meeting_url || '',
                 manager: '--',

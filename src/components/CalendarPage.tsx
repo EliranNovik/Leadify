@@ -1005,7 +1005,7 @@ const CalendarPage: React.FC = () => {
         .from('leads_lead')
         .select(`
           id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, 
-          meeting_manager_id, meeting_lawyer_id, total, total_base, currency_id, meeting_total_currency_id, 
+          meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, total, total_base, currency_id, meeting_total_currency_id, 
           expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination,
           accounting_currencies!leads_lead_currency_id_fkey (
             id,
@@ -1087,6 +1087,7 @@ const CalendarPage: React.FC = () => {
           meeting_time: legacyLead.meeting_time || '09:00',
           meeting_manager: getEmployeeDisplayNameLocal(legacyLead.meeting_manager_id, employees),
           helper: getEmployeeDisplayNameLocal(legacyLead.meeting_lawyer_id, employees),
+          scheduler: getEmployeeDisplayNameLocal(legacyLead.meeting_scheduler_id, employees),
           meeting_location: getLegacyMeetingLocation(legacyLead.meeting_location_id) || 'Teams',
           meeting_location_id: legacyLead.meeting_location_id,
           teams_meeting_url: null,
@@ -1111,6 +1112,8 @@ const CalendarPage: React.FC = () => {
             stage: legacyLead.stage || 'Unknown',
             manager: getEmployeeDisplayNameLocal(legacyLead.meeting_manager_id, employees),
             helper: getEmployeeDisplayNameLocal(legacyLead.meeting_lawyer_id, employees),
+            scheduler: getEmployeeDisplayNameLocal(legacyLead.meeting_scheduler_id, employees),
+            scheduler_id: legacyLead.meeting_scheduler_id,
             balance: parseFloat(legacyLead.total || '0'),
             // balance_currency is already set to a symbol (₪, $, €, £, etc.) from the JOIN processing above
             // Use it directly (same as Clients.tsx balance badge which uses selectedClient.balance_currency)
@@ -1620,7 +1623,7 @@ const CalendarPage: React.FC = () => {
             const { data: newLeadsData } = await supabase
               .from('leads')
               .select(`
-                id, name, lead_number, master_id, onedrive_folder_link, stage, manager, helper, category, category_id,
+                id, name, lead_number, master_id, onedrive_folder_link, stage, manager, helper, scheduler, category, category_id,
                 balance, balance_currency, currency_id, expert_notes, expert, probability, phone, email, 
                 meeting_confirmation, meeting_confirmation_by, eligibility_status,
                 manual_interactions, number_of_applicants_meeting, meeting_collection_id,
@@ -1713,7 +1716,7 @@ const CalendarPage: React.FC = () => {
             const { data: legacyLeadsData } = await supabase
               .from('leads_lead')
               .select(`
-                id, name, lead_number, master_id, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
+                id, name, lead_number, master_id, stage, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, category, category_id,
                 total, total_base, currency_id, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
                 meeting_location_id, meeting_collection_id, meeting_confirmation, meeting_confirmation_by,
                 accounting_currencies!leads_lead_currency_id_fkey (
@@ -1846,10 +1849,12 @@ const CalendarPage: React.FC = () => {
                   // Store original IDs for employee lookup (for avatars)
                   manager_id: meeting.legacy_lead.meeting_manager_id,
                   helper_id: meeting.legacy_lead.meeting_lawyer_id,
+                  scheduler_id: meeting.legacy_lead.meeting_scheduler_id,
                   expert_id: meeting.legacy_lead.expert_id,
                   // Convert IDs to display names for display
                   manager: getEmployeeDisplayName(meeting.legacy_lead.meeting_manager_id),
                   helper: getEmployeeDisplayName(meeting.legacy_lead.meeting_lawyer_id),
+                  scheduler: getEmployeeDisplayName(meeting.legacy_lead.meeting_scheduler_id),
                   // Store total_base and total for balance logic
                   total_base: meeting.legacy_lead.total_base ?? null,
                   total: meeting.legacy_lead.total ?? null,
@@ -1902,6 +1907,7 @@ const CalendarPage: React.FC = () => {
                   // Store original IDs for employee lookup (for avatars)
                   manager_id: meeting.lead.meeting_manager_id || meeting.lead.manager,
                   helper_id: meeting.lead.meeting_lawyer_id || meeting.lead.helper,
+                  scheduler_id: meeting.lead.scheduler,
                   expert_id: meeting.lead.expert,
                   // Convert IDs to display names for display
                   manager: meeting.lead.meeting_manager_id 
@@ -1910,6 +1916,11 @@ const CalendarPage: React.FC = () => {
                   helper: meeting.lead.meeting_lawyer_id 
                     ? getEmployeeDisplayName(meeting.lead.meeting_lawyer_id) 
                     : (meeting.lead.helper || '--'),
+                  scheduler: meeting.lead.scheduler 
+                    ? (typeof meeting.lead.scheduler === 'number' || (typeof meeting.lead.scheduler === 'string' && !isNaN(Number(meeting.lead.scheduler))))
+                      ? getEmployeeDisplayName(meeting.lead.scheduler)
+                      : meeting.lead.scheduler
+                    : '--',
                   expert: meeting.lead.expert 
                     ? (typeof meeting.lead.expert === 'number' || (typeof meeting.lead.expert === 'string' && !isNaN(Number(meeting.lead.expert))))
                       ? getEmployeeDisplayName(meeting.lead.expert)
@@ -2301,7 +2312,7 @@ const CalendarPage: React.FC = () => {
     if (!hasStage) {
       return (
         <span
-          className="inline-flex items-center px-1.5 py-0.5 sm:px-2 sm:py-0.5 md:px-3 md:py-1 rounded-md sm:rounded-lg text-[10px] sm:text-xs md:text-sm font-semibold border"
+          className="inline-flex items-center px-1.5 py-0.5 sm:px-2 sm:py-0.5 rounded-md text-[10px] sm:text-xs font-semibold border"
           style={{ backgroundColor: NEUTRAL_STAGE_BG, color: NEUTRAL_STAGE_TEXT, borderColor: '#e5e7eb' }}
         >
           No Stage
@@ -2314,7 +2325,7 @@ const CalendarPage: React.FC = () => {
 
     return (
       <span
-        className="inline-flex items-center px-1.5 py-0.5 sm:px-2 sm:py-0.5 md:px-3 md:py-1 rounded-md sm:rounded-lg text-[10px] sm:text-xs md:text-sm font-semibold shadow-sm"
+        className="inline-flex items-center px-1.5 py-0.5 sm:px-2 sm:py-0.5 rounded-md text-[10px] sm:text-xs font-semibold shadow-sm"
         style={{ backgroundColor: stageColour, color: textColour, border: `1px solid ${stageColour}` }}
       >
         {label}
@@ -2566,7 +2577,7 @@ const CalendarPage: React.FC = () => {
         const { data: leadsData, error: leadsError } = await supabase
           .from('leads')
           .select(`
-            id, name, lead_number, stage, manager, helper, category, category_id, balance, balance_currency, 
+            id, name, lead_number, stage, manager, helper, scheduler, category, category_id, balance, balance_currency, 
             expert_notes, expert, probability, phone, email, language, number_of_applicants_meeting, eligibility_status,
             currency_id,
             accounting_currencies!leads_currency_id_fkey (
@@ -2637,7 +2648,7 @@ const CalendarPage: React.FC = () => {
         const { data: legacyLeadsData, error: legacyLeadsError } = await supabase
           .from('leads_lead')
           .select(`
-            id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id, 
+            id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, category, category_id, 
             total, total_base, currency_id, meeting_total_currency_id, probability, phone, email, mobile, topic, language_id,
             accounting_currencies!leads_lead_currency_id_fkey (
               id,
@@ -2711,7 +2722,7 @@ const CalendarPage: React.FC = () => {
         .from('leads_lead')
         .select(`
           id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, 
-          meeting_manager_id, meeting_lawyer_id, total, total_base, currency_id, meeting_total_currency_id, 
+          meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, total, total_base, currency_id, meeting_total_currency_id, 
           expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination, topic, language_id,
           accounting_currencies!leads_lead_currency_id_fkey (
             id,
@@ -2794,6 +2805,7 @@ const CalendarPage: React.FC = () => {
           meeting_time: legacyLead.meeting_time || '09:00',
           meeting_manager: getEmployeeDisplayName(legacyLead.meeting_manager_id),
           helper: getEmployeeDisplayName(legacyLead.meeting_lawyer_id),
+          scheduler: getEmployeeDisplayName(legacyLead.meeting_scheduler_id),
           meeting_location: getLegacyMeetingLocation(legacyLead.meeting_location_id) || 'Teams',
           meeting_location_id: legacyLead.meeting_location_id,
           teams_meeting_url: null,
@@ -2812,6 +2824,8 @@ const CalendarPage: React.FC = () => {
             topic: legacyLead.topic || '',
             manager: getEmployeeDisplayName(legacyLead.meeting_manager_id),
             helper: getEmployeeDisplayName(legacyLead.meeting_lawyer_id),
+            scheduler: getEmployeeDisplayName(legacyLead.meeting_scheduler_id),
+            scheduler_id: legacyLead.meeting_scheduler_id,
             // Store total_base and total for balance logic
             total_base: legacyLead.total_base ?? null,
             total: legacyLead.total ?? null,
@@ -3990,6 +4004,19 @@ const CalendarPage: React.FC = () => {
               </div>
             )}
 
+            {/* Scheduler */}
+            {meeting.calendar_type !== 'staff' && (
+              <div className="flex justify-between items-center py-1">
+                <span className="text-xs md:text-base font-semibold text-gray-500">Scheduler</span>
+                <div className="flex items-center gap-2">
+                  {renderEmployeeAvatar(lead.scheduler_id || lead.scheduler || meeting.scheduler, 'md', false)}
+                  <span className="text-sm md:text-lg font-bold text-gray-800">
+                    {getEmployeeDisplayName(lead.scheduler || meeting.scheduler) || '---'}
+                  </span>
+                </div>
+              </div>
+            )}
+
             {/* Staff Meeting Attendees */}
             {meeting.calendar_type === 'staff' && (
               <div className="flex items-center gap-2 py-1">
@@ -4337,13 +4364,18 @@ const CalendarPage: React.FC = () => {
                 </>
               ) : (
                 <>
-                  <Link 
-                    to={buildClientRoute(lead)} 
-                    className="hover:opacity-80 text-xs sm:text-sm"
-                    style={{ color: '#3b28c7' }}
-                  >
-                    {lead.name || meeting.name} ({lead.lead_number || meeting.lead_number})
-                  </Link>
+                  <div className="flex flex-col">
+                    <Link 
+                      to={buildClientRoute(lead)} 
+                      className="hover:opacity-80 text-xs sm:text-sm"
+                      style={{ color: '#3b28c7' }}
+                    >
+                      {lead.name || meeting.name}
+                    </Link>
+                    <span className="text-xs text-gray-500">
+                      ({lead.lead_number || meeting.lead_number})
+                    </span>
+                  </div>
                   {(() => {
                     const badge = getCalendarTypeBadgeStyles(meeting.calendar_type);
                     if (!badge) return null;
@@ -4396,7 +4428,37 @@ const CalendarPage: React.FC = () => {
               </div>
             )}
           </td>
-          <td className="text-xs sm:text-sm">{getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A'}</td>
+          <td>
+            {meeting.calendar_type === 'staff' ? (
+              null
+            ) : (
+              <div className="flex items-center gap-2">
+                {/* Desktop only - employee image */}
+                <div className="hidden md:block">
+                  {renderEmployeeAvatar(lead.scheduler_id || lead.scheduler || meeting.scheduler, 'md', false)}
+                </div>
+                <span className="text-xs sm:text-sm">{getEmployeeDisplayName(lead.scheduler || meeting.scheduler)}</span>
+              </div>
+            )}
+          </td>
+          <td className="text-xs sm:text-sm">
+            {(() => {
+              const categoryText = getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A';
+              // Split category name and main category (in parentheses) into two rows
+              const match = categoryText.match(/^(.+?)\s*\((.+?)\)$/);
+              if (match) {
+                const [, categoryName, mainCategory] = match;
+                return (
+                  <div className="flex flex-col">
+                    <span>{categoryName}</span>
+                    <span className="text-gray-500">({mainCategory})</span>
+                  </div>
+                );
+              }
+              // If no parentheses, just show the text
+              return <span>{categoryText}</span>;
+            })()}
+          </td>
           <td className="text-xs sm:text-sm">
             {(() => {
               // Same logic as Clients.tsx balance badge
@@ -4477,12 +4539,91 @@ const CalendarPage: React.FC = () => {
             })()}
           </td>
           <td>
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center gap-2">
-                {/* Desktop only - employee image */}
-                <div className="hidden md:block">
-                  {renderEmployeeAvatar(lead.expert_id || lead.expert || meeting.expert, 'md', false)}
-                </div>
+            <div className="flex items-center gap-2">
+              {/* Desktop only - employee image */}
+              <div className="hidden md:block relative">
+                {renderEmployeeAvatar(lead.expert_id || lead.expert || meeting.expert, 'md', false)}
+              </div>
+              <div className="flex flex-col gap-0.5">
+                {/* Expert status icon above the name */}
+                {meeting.calendar_type !== 'staff' && (() => {
+                  // For NEW leads: use eligibility_status field (text values)
+                  // For LEGACY leads: use expert_examination field (numeric values)
+                  if (lead.lead_type !== 'legacy') {
+                    const eligibilityStatus = lead.eligibility_status;
+                    
+                    if (!eligibilityStatus || eligibilityStatus === '') {
+                      return (
+                        <span className="w-5 h-5 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Expert opinion not checked">
+                          <QuestionMarkCircleIcon className="w-3 h-3" />
+                        </span>
+                      );
+                    }
+
+                    if (eligibilityStatus === 'not_feasible') {
+                      return (
+                        <span className="w-5 h-5 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Not Feasible">
+                          <XCircleIcon className="w-3 h-3" />
+                        </span>
+                      );
+                    } else if (eligibilityStatus === 'feasible_no_check') {
+                      return (
+                        <span className="w-5 h-5 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Feasible (no check)">
+                          <CheckCircleIcon className="w-3 h-3" />
+                        </span>
+                      );
+                    } else if (eligibilityStatus === 'feasible_with_check') {
+                      return (
+                        <span className="w-5 h-5 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Feasible (with check)">
+                          <ExclamationTriangleIcon className="w-3 h-3" />
+                        </span>
+                      );
+                    }
+
+                    return (
+                      <span className="w-5 h-5 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Expert opinion not checked">
+                        <QuestionMarkCircleIcon className="w-3 h-3" />
+                      </span>
+                    );
+                  }
+
+                  const expertExamination = lead.expert_examination;
+
+                  if (!expertExamination || expertExamination === 0 || expertExamination === '0') {
+                    return (
+                      <span className="w-5 h-5 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Expert opinion not checked">
+                        <QuestionMarkCircleIcon className="w-3 h-3" />
+                      </span>
+                    );
+                  }
+
+                  if (expertExamination === 1 || expertExamination === '1') {
+                    return (
+                      <span className="w-5 h-5 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Not Feasible">
+                        <XCircleIcon className="w-3 h-3" />
+                      </span>
+                    );
+                  } else if (expertExamination === 5 || expertExamination === '5') {
+                    return (
+                      <span className="w-5 h-5 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Feasible (further check)">
+                        <ExclamationTriangleIcon className="w-3 h-3" />
+                      </span>
+                    );
+                  } else if (expertExamination === 8 || expertExamination === '8') {
+                    return (
+                      <span className="w-5 h-5 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Feasible (no check)">
+                        <CheckCircleIcon className="w-3 h-3" />
+                      </span>
+                    );
+                  }
+
+                  return (
+                    <span className="w-5 h-5 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Expert opinion status unknown">
+                      <QuestionMarkCircleIcon className="w-3 h-3" />
+                    </span>
+                  );
+                })()}
+                {/* Employee name below the icon */}
                 <span className="text-xs sm:text-sm">
                   {(() => {
                     // Use expert_id if available (for proper lookup), otherwise use expert
@@ -4499,88 +4640,6 @@ const CalendarPage: React.FC = () => {
                   })()}
                 </span>
               </div>
-              {(() => {
-                if (meeting.calendar_type === 'staff') {
-                  return null;
-                }
-
-                // For NEW leads: use eligibility_status field (text values)
-                // For LEGACY leads: use expert_examination field (numeric values)
-                if (lead.lead_type !== 'legacy') {
-                  const eligibilityStatus = lead.eligibility_status;
-                  
-                  if (!eligibilityStatus || eligibilityStatus === '') {
-                    return (
-                      <span className="w-9 h-9 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
-                        <QuestionMarkCircleIcon className="w-5 h-5" />
-                      </span>
-                    );
-                  }
-
-                  if (eligibilityStatus === 'not_feasible') {
-                    return (
-                      <span className="w-9 h-9 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
-                        <XCircleIcon className="w-5 h-5" />
-                      </span>
-                    );
-                  } else if (eligibilityStatus === 'feasible_no_check') {
-                    return (
-                      <span className="w-9 h-9 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
-                        <CheckCircleIcon className="w-5 h-5" />
-                      </span>
-                    );
-                  } else if (eligibilityStatus === 'feasible_with_check') {
-                    return (
-                      <span className="w-9 h-9 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (with check)">
-                        <ExclamationTriangleIcon className="w-5 h-5" />
-                      </span>
-                    );
-                  }
-
-                  return (
-                    <span className="w-9 h-9 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
-                      <QuestionMarkCircleIcon className="w-5 h-5" />
-                    </span>
-                  );
-                }
-
-                const expertExamination = lead.expert_examination;
-
-                if (!expertExamination || expertExamination === 0 || expertExamination === '0') {
-                  return (
-                    <span className="w-9 h-9 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
-                      <QuestionMarkCircleIcon className="w-5 h-5" />
-                    </span>
-                  );
-                }
-
-                if (expertExamination === 1 || expertExamination === '1') {
-                  return (
-                    <span className="w-9 h-9 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
-                      <XCircleIcon className="w-5 h-5" />
-                    </span>
-                  );
-                } else if (expertExamination === 5 || expertExamination === '5') {
-                  return (
-                    <span className="w-9 h-9 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (further check)">
-                      <ExclamationTriangleIcon className="w-5 h-5" />
-                    </span>
-                  );
-                } else if (expertExamination === 8 || expertExamination === '8') {
-                  return (
-                    <span className="w-9 h-9 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
-                      <CheckCircleIcon className="w-5 h-5" />
-                    </span>
-                  );
-                }
-
-                return (
-                  <span className="px-2 py-1 rounded-full bg-gray-400 text-white gap-1 inline-flex items-center font-semibold shadow-md text-xs" title="Expert opinion status unknown">
-                    <QuestionMarkCircleIcon className="w-3 h-3" />
-                    Unknown
-                  </span>
-                );
-              })()}
             </div>
           </td>
           <td className="text-xs sm:text-sm">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
@@ -5062,6 +5121,7 @@ const CalendarPage: React.FC = () => {
                 <th className="text-gray-900">Time</th>
                 <th className="text-gray-900">Manager</th>
                 <th className="text-gray-900">Helper</th>
+                <th className="text-gray-900">Scheduler</th>
                 <th className="text-gray-900">Category</th>
                 <th className="text-gray-900">Value</th>
                 <th className="text-gray-900">Expert</th>
@@ -5073,18 +5133,18 @@ const CalendarPage: React.FC = () => {
             </thead>
             <tbody>
               {isLoading ? (
-                <tr><td colSpan={11} className="text-center p-8 text-lg">Loading meetings...</td></tr>
+                <tr><td colSpan={12} className="text-center p-8 text-lg">Loading meetings...</td></tr>
               ) : filteredMeetings.length > 0 ? (
                 filteredMeetings.map(renderMeetingRow)
               ) : isLegacyLoading ? (
-                <tr><td colSpan={11} className="text-center p-8 text-lg">
+                <tr><td colSpan={12} className="text-center p-8 text-lg">
                   <div className="flex items-center justify-center gap-2">
                     <span className="loading loading-spinner loading-sm"></span>
                     Loading meetings...
                   </div>
                 </td></tr>
               ) : (
-                <tr><td colSpan={11} className="text-center p-8 text-lg">No meetings found for the selected filters.</td></tr>
+                <tr><td colSpan={12} className="text-center p-8 text-lg">No meetings found for the selected filters.</td></tr>
               )}
             </tbody>
           </table>
@@ -5517,6 +5577,7 @@ const CalendarPage: React.FC = () => {
                                   </div>
                                 </th>
                                 <th className="text-left text-base font-semibold">Helper</th>
+                                <th className="text-left text-base font-semibold">Scheduler</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -5529,15 +5590,20 @@ const CalendarPage: React.FC = () => {
                                         {meeting.lead?.name || 'N/A'}
                                       </span>
                                     ) : (
-                                      <Link 
-                                        to={buildClientRoute(meeting.lead)}
-                                        className="hover:underline font-medium"
-                                        style={{ color: '#3b28c7' }}
-                                        onMouseEnter={(e) => e.currentTarget.style.opacity = '0.8'}
-                                        onMouseLeave={(e) => e.currentTarget.style.opacity = '1'}
-                                      >
-                                        {meeting.lead?.lead_number || meeting.lead_number} - {meeting.lead?.name || 'N/A'}
-                                      </Link>
+                                      <div className="flex flex-col">
+                                        <Link 
+                                          to={buildClientRoute(meeting.lead)}
+                                          className="hover:opacity-80 font-medium"
+                                          style={{ color: '#3b28c7' }}
+                                          onMouseEnter={(e) => e.currentTarget.style.opacity = '0.8'}
+                                          onMouseLeave={(e) => e.currentTarget.style.opacity = '1'}
+                                        >
+                                          {meeting.lead?.name || 'N/A'}
+                                        </Link>
+                                        <span className="text-xs text-gray-500">
+                                          ({meeting.lead?.lead_number || meeting.lead_number})
+                                        </span>
+                                      </div>
                                     )}
                                   </td>
                                   
@@ -5548,7 +5614,24 @@ const CalendarPage: React.FC = () => {
                                   <td className="text-base">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
                                   
                                   {/* Category */}
-                                  <td className="text-base">{getCategoryName(meeting.lead?.category_id, meeting.lead?.category) || 'N/A'}</td>
+                                  <td className="text-base">
+                                    {(() => {
+                                      const categoryText = getCategoryName(meeting.lead?.category_id, meeting.lead?.category) || 'N/A';
+                                      // Split category name and main category (in parentheses) into two rows
+                                      const match = categoryText.match(/^(.+?)\s*\((.+?)\)$/);
+                                      if (match) {
+                                        const [, categoryName, mainCategory] = match;
+                                        return (
+                                          <div className="flex flex-col">
+                                            <span>{categoryName}</span>
+                                            <span className="text-xs text-gray-500">({mainCategory})</span>
+                                          </div>
+                                        );
+                                      }
+                                      // If no parentheses, just show the text
+                                      return <span>{categoryText}</span>;
+                                    })()}
+                                  </td>
                                   
                                   {/* Expert */}
                                   <td className="text-base">
@@ -5775,6 +5858,18 @@ const CalendarPage: React.FC = () => {
                                       );
                                     })()}
                                   </div>
+                                  </td>
+
+                                {/* Scheduler */}
+                                  <td className="text-base">
+                                    {meeting.calendar_type === 'staff' ? (
+                                      null
+                                    ) : (
+                                      <div className="flex items-center gap-2">
+                                        {renderEmployeeAvatar(lead.scheduler_id || lead.scheduler || meeting.scheduler, 'md', false)}
+                                        <span className="text-xs sm:text-sm">{getEmployeeDisplayName(lead.scheduler || meeting.scheduler)}</span>
+                                      </div>
+                                    )}
                                   </td>
                                 </tr>
                           ))}
