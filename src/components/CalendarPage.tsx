@@ -439,6 +439,7 @@ const CalendarPage: React.FC = () => {
   const [availableStaff, setAvailableStaff] = useState<string[]>([]);
   const [modalSelectedDate, setModalSelectedDate] = useState<string>('');
   const [selectedStaffFilter, setSelectedStaffFilter] = useState<string>('');
+  const [allLanguages, setAllLanguages] = useState<Array<{ id: number; name: string }>>([]);
   
   // Employee Availability State
   const [employeeAvailability, setEmployeeAvailability] = useState<{[key: string]: any[]}>({});
@@ -1006,11 +1007,14 @@ const CalendarPage: React.FC = () => {
         .select(`
           id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, 
           meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, total, total_base, currency_id, meeting_total_currency_id, 
-          expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination,
+          expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination, language_id,
           accounting_currencies!leads_lead_currency_id_fkey (
             id,
             name,
             iso_code
+          ),
+          misc_language!leads_lead_language_id_fkey (
+            name
           )
         `)
         .gte('meeting_date', fromDate)
@@ -1080,6 +1084,19 @@ const CalendarPage: React.FC = () => {
       
       // Process legacy meetings
       const processedLegacyMeetings = legacyData.map((legacyLead: any) => {
+        // Extract language name from joined table (same as Clients.tsx)
+        const legacyLanguageRecord = Array.isArray(legacyLead.misc_language)
+          ? legacyLead.misc_language[0]
+          : legacyLead.misc_language;
+        
+        let languageName = '';
+        if (legacyLanguageRecord?.name) {
+          languageName = legacyLanguageRecord.name;
+        } else if (legacyLead.language_id) {
+          // If join failed, will be fetched later in assign staff modal
+          languageName = '';
+        }
+        
         const meeting = {
           id: `legacy_${legacyLead.id}`,
           created_at: legacyLead.meeting_date || new Date().toISOString(),
@@ -1123,7 +1140,8 @@ const CalendarPage: React.FC = () => {
             probability: parseFloat(legacyLead.probability || '0'),
             category_id: legacyLead.category_id || null,
             category: getCategoryName(legacyLead.category_id) || legacyLead.category || 'Unassigned',
-            language: null,
+            language: languageName || null, // Always use the language name (never use ID) - same as Clients.tsx
+            language_id: legacyLead.language_id || null, // Keep ID for reference
             onedrive_folder_link: '',
             expert_notes: '',
             manual_interactions: [],
@@ -1624,7 +1642,7 @@ const CalendarPage: React.FC = () => {
               .from('leads')
               .select(`
                 id, name, lead_number, master_id, onedrive_folder_link, stage, manager, helper, scheduler, category, category_id,
-                balance, balance_currency, currency_id, expert_notes, expert, probability, phone, email, 
+                balance, balance_currency, currency_id, expert_notes, expert, probability, phone, email, language, language_id,
                 meeting_confirmation, meeting_confirmation_by, eligibility_status,
                 manual_interactions, number_of_applicants_meeting, meeting_collection_id,
                 meeting_manager_id, meeting_lawyer_id,
@@ -1926,6 +1944,9 @@ const CalendarPage: React.FC = () => {
                       ? getEmployeeDisplayName(meeting.lead.expert)
                       : meeting.lead.expert
                     : '--',
+                  // Language: preserve from meeting.lead (spread above) and also store language_id if available
+                  language: meeting.lead.language || null,
+                  language_id: meeting.lead.language_id || null,
                   // Store formatted lead_number for display (with sublead suffix if applicable)
                   lead_number: displayLeadNumber,
                   // Keep original lead_number for navigation (buildClientRoute uses lead_number which should have / if sublead)
@@ -3577,9 +3598,193 @@ const CalendarPage: React.FC = () => {
     }
   };
 
-  const openAssignStaffModal = () => {
+  const openAssignStaffModal = async () => {
     setIsAssignStaffModalOpen(true);
-    fetchAssignStaffData();
+    // Use existing meetings state instead of fetching again
+    // Filter meetings to date range: 7 days ago to 30 days in the future
+    const today = new Date().toISOString().split('T')[0];
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const thirtyDaysFromNow = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    
+    // Initialize modal date to today if not set
+    if (!modalSelectedDate) {
+      setModalSelectedDate(today);
+    }
+    
+    // Fetch languages if not already loaded (must be done before processing meetings)
+    let languagesToUse = allLanguages;
+    if (languagesToUse.length === 0) {
+      try {
+        const { data: languagesData, error: languagesError } = await supabase
+          .from('misc_language')
+          .select('id, name')
+          .order('name', { ascending: true });
+        
+        if (!languagesError && languagesData) {
+          setAllLanguages(languagesData);
+          languagesToUse = languagesData;
+          console.log('✅ Assign Staff Modal - Loaded languages:', languagesData.length);
+        } else if (languagesError) {
+          console.error('❌ Assign Staff Modal - Error fetching languages:', languagesError);
+        }
+      } catch (error) {
+        console.error('❌ Assign Staff Modal - Exception fetching languages:', error);
+      }
+    } else {
+      console.log('✅ Assign Staff Modal - Using cached languages:', languagesToUse.length);
+    }
+    
+    // Process existing meetings to match assign staff modal format
+    // Use the same logic as calendar page for manager, scheduler, helper
+    const processedMeetings = meetings
+      .filter((meeting: any) => {
+        const meetingDate = meeting.meeting_date;
+        return meetingDate && meetingDate >= sevenDaysAgo && meetingDate <= thirtyDaysFromNow;
+      })
+      .map((meeting: any) => {
+        const lead = meeting.lead || {};
+        const isLegacyLead = lead.lead_type === 'legacy' || meeting.legacy_lead_id;
+        
+        // Get manager, helper, scheduler, expert - convert IDs to display names if needed
+        let manager = '--';
+        let helper = '--';
+        let scheduler = '--';
+        let expert = '--';
+        
+        // Manager: check if it's already a display name or needs conversion
+        const managerValue = lead.manager || meeting.meeting_manager;
+        if (managerValue && managerValue !== '--') {
+          // If it's a number or numeric string, convert to display name
+          if (typeof managerValue === 'number' || (typeof managerValue === 'string' && !isNaN(Number(managerValue)))) {
+            manager = getEmployeeDisplayName(managerValue) || '--';
+          } else {
+            manager = managerValue;
+          }
+        }
+        
+        // Helper: check if it's already a display name or needs conversion
+        const helperValue = lead.helper || meeting.helper;
+        if (helperValue && helperValue !== '--') {
+          // If it's a number or numeric string, convert to display name
+          if (typeof helperValue === 'number' || (typeof helperValue === 'string' && !isNaN(Number(helperValue)))) {
+            helper = getEmployeeDisplayName(helperValue) || '--';
+          } else {
+            helper = helperValue;
+          }
+        }
+        
+        // Scheduler: check if it's already a display name or needs conversion
+        const schedulerValue = lead.scheduler || meeting.scheduler;
+        if (schedulerValue && schedulerValue !== '--') {
+          // If it's a number or numeric string, convert to display name
+          if (typeof schedulerValue === 'number' || (typeof schedulerValue === 'string' && !isNaN(Number(schedulerValue)))) {
+            scheduler = getEmployeeDisplayName(schedulerValue) || '--';
+          } else {
+            scheduler = schedulerValue;
+          }
+        }
+        
+        // Expert: check if it's already a display name or needs conversion
+        const expertValue = lead.expert || meeting.expert;
+        if (expertValue && expertValue !== '--') {
+          // If it's a number or numeric string, convert to display name
+          if (typeof expertValue === 'number' || (typeof expertValue === 'string' && !isNaN(Number(expertValue)))) {
+            expert = getEmployeeDisplayName(expertValue) || '--';
+          } else {
+            expert = expertValue;
+          }
+        }
+        
+        // Get IDs for reference (for saving changes)
+        let managerId = lead.manager_id || lead.meeting_manager_id || null;
+        let helperId = lead.helper_id || lead.meeting_lawyer_id || null;
+        let schedulerId = lead.scheduler_id || null;
+        let expertId = lead.expert_id || null;
+        
+        // If we don't have IDs but have display names, try to find the ID
+        if (!managerId && manager && manager !== '--') {
+          const emp = allEmployees.find((e: any) => e.display_name === manager);
+          if (emp) managerId = emp.id;
+        }
+        if (!helperId && helper && helper !== '--') {
+          const emp = allEmployees.find((e: any) => e.display_name === helper);
+          if (emp) helperId = emp.id;
+        }
+        if (!schedulerId && scheduler && scheduler !== '--') {
+          const emp = allEmployees.find((e: any) => e.display_name === scheduler);
+          if (emp) schedulerId = emp.id;
+        }
+        if (!expertId && expert && expert !== '--') {
+          const emp = allEmployees.find((e: any) => e.display_name === expert);
+          if (emp) expertId = emp.id;
+        }
+        
+        // Get language - same logic as Clients.tsx
+        // For new leads: use language field directly (text value like "HE", "EN", "Hebrew", etc.)
+        // For legacy leads: use language field (which should be name from JOIN) or convert language_id
+        let language = 'N/A';
+        
+        // Check all possible sources for language (in priority order)
+        // For new leads: language is stored as text in lead.language
+        // For legacy leads: language is stored as name in lead.language (from JOIN) or we need to convert language_id
+        const languageText = lead.language;
+        const languageId = lead.language_id;
+        
+        // First priority: if we have a language text value (for new leads or legacy with JOIN)
+        if (languageText && typeof languageText === 'string' && languageText.trim() !== '' && languageText !== 'N/A' && languageText !== 'null') {
+          // Check if it's a numeric string (ID) or actual text
+          if (!/^\d+$/.test(languageText.trim())) {
+            // It's actual text (like "HE", "EN", "Hebrew", "English"), use it directly
+            language = languageText.trim();
+          } else {
+            // It's a numeric string, treat as ID and convert
+            const numericId = parseInt(languageText.trim(), 10);
+            if (languagesToUse.length > 0) {
+              const languageObj = languagesToUse.find((lang: any) => String(lang.id) === String(numericId));
+              if (languageObj?.name) {
+                language = languageObj.name;
+              }
+            }
+          }
+        }
+        // Second priority: if we have language_id, convert it to name (for legacy leads where JOIN failed)
+        else if (languageId && languagesToUse.length > 0) {
+          const languageObj = languagesToUse.find((lang: any) => {
+            return String(lang.id) === String(languageId);
+          });
+          if (languageObj?.name) {
+            language = languageObj.name;
+          }
+        }
+        
+        return {
+          ...meeting,
+          // Use manager, scheduler, helper, expert (converted to display names)
+          meeting_manager: manager,
+          helper: helper,
+          scheduler: scheduler,
+          expert: expert,
+          language: language,
+          // Store IDs for reference (for saving changes)
+          manager_id: managerId,
+          helper_id: helperId,
+          scheduler_id: schedulerId,
+          expert_id: expertId,
+          language_id: lead.language_id || null,
+        };
+      });
+    
+    setAssignStaffMeetings(processedMeetings);
+    
+    // Extract unique staff names for filter dropdown from allEmployees
+    const allStaffNames = new Set<string>();
+    allEmployees.forEach((emp: any) => {
+      if (emp.display_name) {
+        allStaffNames.add(emp.display_name);
+      }
+    });
+    setAvailableStaff(Array.from(allStaffNames).sort());
+    
     fetchEmployeeAvailability();
     // DISABLED: fetchMeetingCountsAndPreviousManagers(); // causing timeouts
   };
@@ -4913,8 +5118,7 @@ const CalendarPage: React.FC = () => {
               style={{ border: 'none', outline: 'none' }}
               onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)}
             >
-              <span className="text-sm">{expandedMeetingId === meeting.id ? 'Show Less' : 'Show More'}</span>
-              <ChevronDownIcon className={`w-5 h-5 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+              <ChevronDownIcon className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
             </button>
           </td>
         </tr>
@@ -5635,30 +5839,70 @@ const CalendarPage: React.FC = () => {
                               </tr>
                             </thead>
                             <tbody>
-                          {filteredMeetings.map((meeting) => (
-                                <tr key={meeting.id} className="hover:bg-gray-50">
+                          {filteredMeetings.map((meeting) => {
+                            const lead = meeting.lead || {};
+                            
+                            // Check if meeting should show green indicator:
+                            // 1. For potential_client: if lead has passed stage 20 (21 and higher) BUT NOT stage 55
+                            // 2. For active_client: if 2 hours have passed after meeting time
+                            const hasPassedStage = (() => {
+                              // For potential_client meetings: check if stage > 20 and stage is not 55
+                              if (meeting.calendar_type === 'potential_client') {
+                                const leadStage = lead.stage ? Number(lead.stage) : null;
+                                const meetingStage = meeting.stage ? Number(meeting.stage) : null;
+                                const currentStage = leadStage || meetingStage;
+                                
+                                // Stage must be > 20 AND not equal to 55
+                                return currentStage !== null && currentStage > 20 && currentStage !== 55;
+                              }
+                              
+                              // For active_client meetings: check if 2 hours have passed after meeting time
+                              if (meeting.calendar_type === 'active_client' && meeting.meeting_date && meeting.meeting_time) {
+                                try {
+                                  const meetingDateTime = new Date(`${meeting.meeting_date}T${meeting.meeting_time}`);
+                                  const now = new Date();
+                                  const hoursPassed = (now.getTime() - meetingDateTime.getTime()) / (1000 * 60 * 60);
+                                  return hoursPassed >= 2;
+                                } catch (error) {
+                                  console.error('Error calculating meeting time:', error);
+                                  return false;
+                                }
+                              }
+                              
+                              return false;
+                            })();
+                            
+                            return (
+                                <tr key={meeting.id} className={`hover:bg-gray-50 ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}>
                                   {/* Lead */}
                                   <td className="text-base">
-                                    {meeting.calendar_type === 'staff' ? (
-                                      <span className="font-medium">
-                                        {meeting.lead?.name || 'N/A'}
-                                      </span>
-                                    ) : (
+                                    <div className="flex items-center gap-1 sm:gap-2">
+                                      {hasPassedStage && (
+                                        <CheckCircleIcon className="w-4 h-4 sm:w-5 sm:h-5 text-green-500 flex-shrink-0" />
+                                      )}
                                       <div className="flex flex-col">
-                                        <Link 
-                                          to={buildClientRoute(meeting.lead)}
-                                          className="hover:opacity-80 font-medium"
-                                          style={{ color: '#3b28c7' }}
-                                          onMouseEnter={(e) => e.currentTarget.style.opacity = '0.8'}
-                                          onMouseLeave={(e) => e.currentTarget.style.opacity = '1'}
-                                        >
-                                          {meeting.lead?.name || 'N/A'}
-                                        </Link>
-                                        <span className="text-xs text-gray-500">
-                                          ({meeting.lead?.lead_number || meeting.lead_number})
-                                        </span>
+                                        {meeting.calendar_type === 'staff' ? (
+                                          <span className="font-medium">
+                                            {meeting.lead?.name || 'N/A'}
+                                          </span>
+                                        ) : (
+                                          <>
+                                            <Link 
+                                              to={buildClientRoute(meeting.lead)}
+                                              className="hover:opacity-80 font-medium"
+                                              style={{ color: '#3b28c7' }}
+                                              onMouseEnter={(e) => e.currentTarget.style.opacity = '0.8'}
+                                              onMouseLeave={(e) => e.currentTarget.style.opacity = '1'}
+                                            >
+                                              {meeting.lead?.name || 'N/A'}
+                                            </Link>
+                                            <span className="text-xs text-gray-500">
+                                              ({meeting.lead?.lead_number || meeting.lead_number})
+                                            </span>
+                                          </>
+                                        )}
                                       </div>
-                                    )}
+                                    </div>
                                   </td>
                                   
                                   {/* Time */}
@@ -5690,7 +5934,7 @@ const CalendarPage: React.FC = () => {
                                   {/* Expert */}
                                   <td className="text-base">
                                     <div className="flex flex-col gap-2">
-                                      <span>{meeting.lead?.expert || 'N/A'}</span>
+                                      <span>{meeting.expert || meeting.lead?.expert || 'N/A'}</span>
                                       {(() => {
                                         if (meeting.calendar_type === 'staff') {
                                           return null;
@@ -5779,7 +6023,7 @@ const CalendarPage: React.FC = () => {
                                   </td>
                                   
                                   {/* Language */}
-                                  <td className="text-base">{meeting.lead?.language || 'N/A'}</td>
+                                  <td className="text-base">{meeting.language || meeting.lead?.language || 'N/A'}</td>
                                   
                                   {/* Balance */}
                                   <td className="font-medium text-base">
@@ -5853,13 +6097,14 @@ const CalendarPage: React.FC = () => {
                                   <div className="relative">
                                     {(() => {
                                       const state = getMeetingDropdownState(meeting.id);
+                                      const hasManager = meeting.meeting_manager && meeting.meeting_manager !== '--' && meeting.meeting_manager.trim() !== '';
                                       return (
                                         <>
                                             <div className="flex items-center gap-2">
                                           <input
                                             type="text"
                                             placeholder={meeting.meeting_manager || "Select manager..."}
-                                                className="input input-sm input-bordered w-full pr-8 cursor-pointer staff-dropdown-input"
+                                                className={`input input-md input-bordered w-full pr-8 cursor-pointer staff-dropdown-input ${!hasManager ? 'border-red-500 bg-red-50' : ''}`}
                                             value={state.managerSearch}
                                             onChange={(e) => updateMeetingDropdownState(meeting.id, { managerSearch: e.target.value })}
                                                 onFocus={(e) => {
@@ -5872,7 +6117,7 @@ const CalendarPage: React.FC = () => {
                                                 }, 500)}
                                           />
                                           <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
-                                                <ChevronDownIcon className="w-3 h-3 text-gray-400" />
+                                                <ChevronDownIcon className="w-4 h-4 text-gray-400" />
                                           </div>
                                               </div>
                                         </>
@@ -5892,7 +6137,7 @@ const CalendarPage: React.FC = () => {
                                           <input
                                             type="text"
                                             placeholder={meeting.helper || "Select helper..."}
-                                                className="input input-sm input-bordered w-full pr-8 cursor-pointer staff-dropdown-input"
+                                                className="input input-md input-bordered w-full pr-8 cursor-pointer staff-dropdown-input"
                                             value={state.helperSearch}
                                             onChange={(e) => updateMeetingDropdownState(meeting.id, { helperSearch: e.target.value })}
                                                 onFocus={(e) => {
@@ -5905,7 +6150,7 @@ const CalendarPage: React.FC = () => {
                                                 }, 500)}
                                           />
                                           <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
-                                                <ChevronDownIcon className="w-3 h-3 text-gray-400" />
+                                                <ChevronDownIcon className="w-4 h-4 text-gray-400" />
                                           </div>
                                               </div>
                                         </>
@@ -5926,7 +6171,8 @@ const CalendarPage: React.FC = () => {
                                     )}
                                   </td>
                                 </tr>
-                          ))}
+                            );
+                          })}
                             </tbody>
                           </table>
                         </div>
