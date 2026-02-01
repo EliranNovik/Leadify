@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { useMsal } from '@azure/msal-react';
-import { 
-  CalendarIcon, 
-  PlusIcon, 
-  TrashIcon, 
+import {
+  CalendarIcon,
+  PlusIcon,
+  TrashIcon,
   ClockIcon,
   CheckIcon,
   XMarkIcon,
@@ -91,9 +91,9 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
     const lastDayOfMonth = new Date(currentYear, currentMonth + 1, 0);
     const firstDayOfWeek = firstDayOfMonth.getDay();
     const daysInMonth = lastDayOfMonth.getDate();
-    
+
     const days: CalendarDay[] = [];
-    
+
     // Add previous month's trailing days
     for (let i = firstDayOfWeek - 1; i >= 0; i--) {
       const date = new Date(currentYear, currentMonth, -i);
@@ -106,7 +106,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         hasMeeting: false
       });
     }
-    
+
     // Add current month's days
     for (let dayNum = 1; dayNum <= daysInMonth; dayNum++) {
       const date = new Date(currentYear, currentMonth, dayNum);
@@ -115,16 +115,16 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
       const day = String(date.getDate()).padStart(2, '0');
       const dateString = `${year}-${month}-${day}`;
       const dayUnavailableTimes = unavailableTimes.filter(ut => ut.date === dateString);
-      
+
       // Check if this date is in any unavailable range
       const rangeInfo = unavailableRanges.find(range => {
         const isInRange = dateString >= range.startDate && dateString <= range.endDate;
         return isInRange;
       });
-      
+
       // Check if this date has a meeting
       const hasMeeting = meetingDates.has(dateString);
-      
+
       days.push({
         date,
         isCurrentMonth: true,
@@ -135,7 +135,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         hasMeeting
       });
     }
-    
+
     // Add next month's leading days
     const remainingDays = 42 - days.length;
     for (let dayNum = 1; dayNum <= remainingDays; dayNum++) {
@@ -149,7 +149,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         hasMeeting: false
       });
     }
-    
+
     return days;
   };
 
@@ -159,10 +159,10 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
       const { data: { user } } = await supabase.auth.getUser();
       if (!user?.id) return;
 
-      // Get user data with employee_id (same as Dashboard)
+      // Get employee_id from users table using auth_id (same logic as Clients.tsx)
       let userEmployeeId: number | null = null;
       let userDisplayName: string | null = null;
-      
+
       const { data: userData, error: userError } = await supabase
         .from('users')
         .select(`
@@ -181,58 +181,54 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         return;
       }
 
+      // Get employee_id directly from users table (same as Clients.tsx)
       if (userData?.employee_id) {
         userEmployeeId = userData.employee_id;
       }
-      
+
       // Get display name from employee relationship or fallback to full_name
       if (userData?.tenants_employee) {
-        const empData = Array.isArray(userData.tenants_employee) 
-          ? userData.tenants_employee[0] 
+        const empData = Array.isArray(userData.tenants_employee)
+          ? userData.tenants_employee[0]
           : userData.tenants_employee;
         if (empData?.display_name) {
           userDisplayName = empData.display_name;
         }
       }
-      
+
       if (!userDisplayName && userData?.full_name) {
         userDisplayName = userData.full_name;
       }
 
-      const { data: employeeData, error } = await supabase
-        .from('tenants_employee')
-        .select('unavailable_times, outlook_calendar_sync, id')
-        .eq('display_name', userDisplayName || '')
-        .single();
-
-      if (error) {
-        console.error('Error fetching unavailable times:', error);
-        return;
-      }
-
-      if (employeeData) {
-        setUnavailableTimes(employeeData.unavailable_times || []);
-        setOutlookSyncEnabled(employeeData.outlook_calendar_sync || false);
-        setCurrentEmployeeId(employeeData.id);
-      }
-
-      try {
-        const { data: rangesData, error: rangesError } = await supabase
+      // Use employee_id directly instead of matching by display_name (same as Clients.tsx)
+      if (userEmployeeId) {
+        const { data: employeeData, error } = await supabase
           .from('tenants_employee')
-          .select('unavailable_ranges')
-          .eq('display_name', userDisplayName || '')
+          .select('unavailable_times, outlook_calendar_sync, id, unavailable_ranges')
+          .eq('id', userEmployeeId)
           .single();
 
-        if (!rangesError && rangesData?.unavailable_ranges) {
-          setUnavailableRanges(rangesData.unavailable_ranges);
+        if (error) {
+          console.error('Error fetching unavailable times:', error);
+          return;
         }
-      } catch (rangesError) {
-        console.log('unavailable_ranges column not found, using empty array');
-        setUnavailableRanges([]);
+
+        if (employeeData) {
+          setUnavailableTimes(employeeData.unavailable_times || []);
+          setOutlookSyncEnabled(employeeData.outlook_calendar_sync || false);
+          setCurrentEmployeeId(employeeData.id);
+
+          // Also set unavailable ranges if available
+          if (employeeData.unavailable_ranges) {
+            setUnavailableRanges(employeeData.unavailable_ranges);
+          }
+        }
+      } else {
+        console.error('No employee_id found in users table for current user');
       }
 
-      // Fetch meetings where user is manager or helper (use employee_id from users table if available, otherwise use id from tenants_employee)
-      await fetchUserMeetings(userDisplayName || '', userEmployeeId || employeeData?.id || undefined);
+      // Fetch meetings where user is manager or helper (use employee_id from users table)
+      await fetchUserMeetings(userDisplayName || '', userEmployeeId || undefined);
     } catch (error) {
       console.error('Error fetching unavailable times:', error);
     }
@@ -301,7 +297,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
             );
           }
         }
-        
+
         // Check new lead roles
         if (meeting.lead) {
           const newLead = meeting.lead;
@@ -318,7 +314,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
             }
             return false;
           };
-          
+
           return (
             checkField(newLead.scheduler) ||
             checkField(newLead.manager) ||
@@ -331,7 +327,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
             checkField(meeting.helper)
           );
         }
-        
+
         // Fallback: check meeting-level fields
         if (employeeId) {
           return (
@@ -340,7 +336,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
             meeting.helper?.toString() === employeeId.toString()
           );
         }
-        
+
         // Fallback: check by display name
         if (userDisplayName) {
           return (
@@ -349,7 +345,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
             meeting.helper?.trim() === userDisplayName.trim()
           );
         }
-        
+
         return false;
       };
 
@@ -428,7 +424,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
           if (legacyLead.closer_id && Number(legacyLead.closer_id) === employeeId) return 'Closer';
           if (legacyLead.case_handler_id && Number(legacyLead.case_handler_id) === employeeId) return 'Handler';
         }
-        
+
         // Check new lead roles and meeting-level roles
         if (meeting.lead || meeting.meeting_manager || meeting.helper) {
           const newLead = meeting.lead;
@@ -488,7 +484,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
     try {
       const fileExt = file.name.split('.').pop();
       const fileName = `employee_${currentEmployeeId}_${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
-      
+
       const { data, error } = await supabase.storage
         .from('employee-unavailability-documents')
         .upload(fileName, file, {
@@ -527,7 +523,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
     const end1Min = timeToMinutes(end1);
     const start2Min = timeToMinutes(start2);
     const end2Min = timeToMinutes(end2);
-    
+
     // Check if ranges overlap (not just touching)
     return (start1Min < end2Min && end1Min > start2Min);
   };
@@ -571,7 +567,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         reasonsData.forEach((reason: any) => {
           const reasonStartDate = reason.start_date;
           const reasonEndDate = reason.end_date || reasonStartDate;
-          
+
           // Check if the selected date falls within this unavailability
           if (dateString >= reasonStartDate && dateString <= reasonEndDate) {
             let reasonText = '';
@@ -688,8 +684,8 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
       // Check for exact duplicates (same date, same time)
       const exactDuplicate = existing.find((ex: any) => {
         if (ex.isAllDay) return false; // All day entries don't conflict with time-based entries
-        return ex.startTime === newUnavailableTime.startTime && 
-               ex.endTime === newUnavailableTime.endTime;
+        return ex.startTime === newUnavailableTime.startTime &&
+          ex.endTime === newUnavailableTime.endTime;
       });
 
       if (exactDuplicate) {
@@ -711,8 +707,8 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
       });
 
       if (overlapping) {
-        const overlapTime = overlapping.isAllDay 
-          ? 'All Day' 
+        const overlapTime = overlapping.isAllDay
+          ? 'All Day'
           : `${overlapping.startTime} - ${overlapping.endTime}`;
         toast.error(`This time overlaps with an existing unavailability (${overlapTime})`);
         setLoading(false);
@@ -722,8 +718,8 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
       // For sick_days and vacation, check if there's already an entry for this date and type
       // For general, allow multiple entries on the same day (but not duplicates/overlaps)
       if (newUnavailableTime.unavailabilityType !== 'general') {
-        const typeConflict = existing.find((ex: any) => 
-          ex.type === newUnavailabilityTime.unavailabilityType && ex.isAllDay
+        const typeConflict = existing.find((ex: any) =>
+          ex.type === newUnavailableTime.unavailabilityType && ex.isAllDay
         );
 
         if (typeConflict) {
@@ -813,10 +809,10 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
       setShowAddModal(false);
       setNewUnavailableTime({ startTime: '09:00', endTime: '17:00', reason: '', unavailabilityType: 'general', documentFile: null });
       setExistingUnavailabilities([]);
-      
+
       // Refresh unavailable times
       await fetchUnavailableTimes();
-      
+
       // Trigger refresh of team availability
       if (onAvailabilityChange) {
         onAvailabilityChange();
@@ -842,11 +838,11 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
     });
 
     const [year, month, day] = unavailableTime.date.split('-').map(Number);
-    const startDateTime = new Date(year, month - 1, day, 
-      parseInt(unavailableTime.startTime.split(':')[0]), 
+    const startDateTime = new Date(year, month - 1, day,
+      parseInt(unavailableTime.startTime.split(':')[0]),
       parseInt(unavailableTime.startTime.split(':')[1]), 0);
-    const endDateTime = new Date(year, month - 1, day, 
-      parseInt(unavailableTime.endTime.split(':')[0]), 
+    const endDateTime = new Date(year, month - 1, day,
+      parseInt(unavailableTime.endTime.split(':')[0]),
       parseInt(unavailableTime.endTime.split(':')[1]), 0);
 
     const event = {
@@ -903,10 +899,10 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         }
 
         toast.success('Unavailable time deleted successfully');
-        
+
         // Refresh unavailable times
         await fetchUnavailableTimes();
-        
+
         // Trigger refresh of team availability
         if (onAvailabilityChange) {
           onAvailabilityChange();
@@ -1049,7 +1045,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
       setNewUnavailableRange({ startDate: '', endDate: '', reason: '', unavailabilityType: 'general', documentFile: null });
       setRangeMeetings(new Map());
       setRangeMeetings(new Map());
-      
+
       // Trigger refresh of team availability
       if (onAvailabilityChange) {
         onAvailabilityChange();
@@ -1076,7 +1072,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
 
     const [startYear, startMonth, startDay] = range.startDate.split('-').map(Number);
     const [endYear, endMonth, endDay] = range.endDate.split('-').map(Number);
-    
+
     const startDateTime = new Date(startYear, startMonth - 1, startDay, 0, 0, 0, 0);
     const endDateTime = new Date(endYear, endMonth - 1, endDay, 23, 59, 59, 999);
 
@@ -1136,10 +1132,10 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         }
 
         toast.success('Unavailable range deleted successfully');
-        
+
         // Refresh unavailable times
         await fetchUnavailableTimes();
-        
+
         // Trigger refresh of team availability
         if (onAvailabilityChange) {
           onAvailabilityChange();
@@ -1217,13 +1213,13 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
           if (!day.isCurrentMonth) {
             return <div key={idx} className="aspect-square"></div>;
           }
-          
+
           const isPast = day.date < today;
           const isUnavailable = day.unavailableTimes.length > 0 || day.isInUnavailableRange;
-          
+
           // Only show green if not unavailable (red takes precedence)
           const showGreen = day.hasMeeting && !isUnavailable;
-          
+
           return (
             <button
               key={idx}
@@ -1231,13 +1227,13 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                 if (!isPast) {
                   setSelectedDate(day.date);
                   setShowAddModal(true);
-                  
+
                   // Fetch existing unavailabilities for this date
                   if (currentEmployeeId) {
                     const existing = await fetchExistingUnavailabilitiesForDate(day.date);
                     setExistingUnavailabilities(existing);
                   }
-                  
+
                   // Fetch meetings for this date
                   const { data: { user } } = await supabase.auth.getUser();
                   if (user?.id) {
@@ -1246,13 +1242,13 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                       .select('full_name')
                       .eq('auth_id', user.id)
                       .maybeSingle();
-                    
+
                     const { data: employeeData } = await supabase
                       .from('tenants_employee')
                       .select('id')
                       .eq('user_id', user.id)
                       .maybeSingle();
-                    
+
                     const meetings = await fetchMeetingsForDate(
                       day.date,
                       userData?.full_name || '',
@@ -1303,19 +1299,19 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold">Add Unavailable Time</h3>
               <button
-                  onClick={() => {
-                    setShowAddModal(false);
-                    setSelectedDate(null);
-                    setNewUnavailableTime({ startTime: '09:00', endTime: '17:00', reason: '', unavailabilityType: 'general', documentFile: null });
-                    setSelectedDateMeetings([]);
-                    setExistingUnavailabilities([]);
-                  }}
+                onClick={() => {
+                  setShowAddModal(false);
+                  setSelectedDate(null);
+                  setNewUnavailableTime({ startTime: '09:00', endTime: '17:00', reason: '', unavailabilityType: 'general', documentFile: null });
+                  setSelectedDateMeetings([]);
+                  setExistingUnavailabilities([]);
+                }}
                 className="btn btn-ghost btn-sm btn-circle"
               >
                 <XMarkIcon className="w-5 h-5" />
               </button>
             </div>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="label">
@@ -1328,7 +1324,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                   disabled
                 />
               </div>
-              
+
               {/* Existing Unavailabilities on this date */}
               {existingUnavailabilities.length > 0 && (
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
@@ -1360,7 +1356,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                   </div>
                 </div>
               )}
-              
+
               {/* Meetings on this date */}
               {selectedDateMeetings.length > 0 && (
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
@@ -1389,7 +1385,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                   </div>
                 </div>
               )}
-              
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="label">
@@ -1414,7 +1410,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                   />
                 </div>
               </div>
-              
+
               <div>
                 <label className="label">
                   <span className="label-text">Type</span>
@@ -1422,8 +1418,8 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                 <select
                   className="select select-bordered w-full"
                   value={newUnavailableTime.unavailabilityType}
-                  onChange={(e) => setNewUnavailableTime({ 
-                    ...newUnavailableTime, 
+                  onChange={(e) => setNewUnavailableTime({
+                    ...newUnavailableTime,
                     unavailabilityType: e.target.value as 'sick_days' | 'vacation' | 'general',
                     documentFile: e.target.value !== 'sick_days' ? null : newUnavailableTime.documentFile
                   })}
@@ -1454,11 +1450,10 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                     <span className="label-text">Doctors Documents</span>
                   </label>
                   <div
-                    className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
-                      newUnavailableTime.documentFile
-                        ? 'border-primary bg-primary/5'
-                        : 'border-gray-300 hover:border-primary/50'
-                    }`}
+                    className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${newUnavailableTime.documentFile
+                      ? 'border-primary bg-primary/5'
+                      : 'border-gray-300 hover:border-primary/50'
+                      }`}
                     onDragOver={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -1532,7 +1527,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                   </div>
                 </div>
               )}
-              
+
               <div className="flex gap-2 justify-end">
                 <button
                   className="btn btn-ghost"
@@ -1576,7 +1571,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                 <XMarkIcon className="w-5 h-5" />
               </button>
             </div>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="label">
@@ -1588,7 +1583,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                   value={newUnavailableRange.startDate}
                   onChange={async (e) => {
                     setNewUnavailableRange({ ...newUnavailableRange, startDate: e.target.value });
-                    
+
                     // Fetch meetings for the range when dates change
                     if (e.target.value && newUnavailableRange.endDate) {
                       const { data: { user } } = await supabase.auth.getUser();
@@ -1598,18 +1593,18 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                           .select('full_name')
                           .eq('auth_id', user.id)
                           .maybeSingle();
-                        
+
                         const { data: employeeData } = await supabase
                           .from('tenants_employee')
                           .select('id')
                           .eq('user_id', user.id)
                           .maybeSingle();
-                        
+
                         const meetingsMap = new Map<string, any[]>();
                         const startDate = new Date(e.target.value);
                         const endDate = new Date(newUnavailableRange.endDate);
                         const currentDate = new Date(startDate);
-                        
+
                         while (currentDate <= endDate) {
                           const meetings = await fetchMeetingsForDate(
                             new Date(currentDate),
@@ -1622,14 +1617,14 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                           }
                           currentDate.setDate(currentDate.getDate() + 1);
                         }
-                        
+
                         setRangeMeetings(meetingsMap);
                       }
                     }
                   }}
                 />
               </div>
-              
+
               <div>
                 <label className="label">
                   <span className="label-text">End Date</span>
@@ -1640,7 +1635,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                   value={newUnavailableRange.endDate}
                   onChange={async (e) => {
                     setNewUnavailableRange({ ...newUnavailableRange, endDate: e.target.value });
-                    
+
                     // Fetch meetings for the range when dates change
                     if (newUnavailableRange.startDate && e.target.value) {
                       const { data: { user } } = await supabase.auth.getUser();
@@ -1650,18 +1645,18 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                           .select('full_name')
                           .eq('auth_id', user.id)
                           .maybeSingle();
-                        
+
                         const { data: employeeData } = await supabase
                           .from('tenants_employee')
                           .select('id')
                           .eq('user_id', user.id)
                           .maybeSingle();
-                        
+
                         const meetingsMap = new Map<string, any[]>();
                         const startDate = new Date(newUnavailableRange.startDate);
                         const endDate = new Date(e.target.value);
                         const currentDate = new Date(startDate);
-                        
+
                         while (currentDate <= endDate) {
                           const meetings = await fetchMeetingsForDate(
                             new Date(currentDate),
@@ -1674,14 +1669,14 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                           }
                           currentDate.setDate(currentDate.getDate() + 1);
                         }
-                        
+
                         setRangeMeetings(meetingsMap);
                       }
                     }
                   }}
                 />
               </div>
-              
+
               {/* Meetings in this date range */}
               {rangeMeetings.size > 0 && (
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 max-h-48 overflow-y-auto">
@@ -1719,7 +1714,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                   </div>
                 </div>
               )}
-              
+
               <div>
                 <label className="label">
                   <span className="label-text">Type</span>
@@ -1727,8 +1722,8 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                 <select
                   className="select select-bordered w-full"
                   value={newUnavailableRange.unavailabilityType}
-                  onChange={(e) => setNewUnavailableRange({ 
-                    ...newUnavailableRange, 
+                  onChange={(e) => setNewUnavailableRange({
+                    ...newUnavailableRange,
                     unavailabilityType: e.target.value as 'sick_days' | 'vacation' | 'general',
                     documentFile: e.target.value !== 'sick_days' ? null : newUnavailableRange.documentFile
                   })}
@@ -1759,11 +1754,10 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                     <span className="label-text">Doctors Documents</span>
                   </label>
                   <div
-                    className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
-                      newUnavailableRange.documentFile
-                        ? 'border-primary bg-primary/5'
-                        : 'border-gray-300 hover:border-primary/50'
-                    }`}
+                    className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${newUnavailableRange.documentFile
+                      ? 'border-primary bg-primary/5'
+                      : 'border-gray-300 hover:border-primary/50'
+                      }`}
                     onDragOver={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -1837,7 +1831,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                   </div>
                 </div>
               )}
-              
+
               <div className="flex gap-2 justify-end">
                 <button
                   className="btn btn-ghost"

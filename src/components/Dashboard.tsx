@@ -7670,9 +7670,9 @@ const Dashboard: React.FC = () => {
                                         : 'text-gray-900 bg-white/80 border-b border-gray-200/50'
                                         }`}
                                     >
-                                      <span>{item.employeeName}</span>
+                                      <span className="text-xs truncate flex-1 min-w-0">{item.employeeName}</span>
                                       {item.department && (
-                                        <span className="text-xs">{item.department}</span>
+                                        <span className="text-xs ml-2 flex-shrink-0">{item.department}</span>
                                       )}
                                     </div>
 
@@ -7878,21 +7878,21 @@ const Dashboard: React.FC = () => {
                                           <img
                                             src={item.photo_url}
                                             alt={item.employeeName}
-                                            className="w-14 h-14 rounded-full object-cover shadow-lg"
+                                            className="w-20 h-20 rounded-full object-cover shadow-lg"
                                             onError={(e) => {
                                               const target = e.target as HTMLImageElement;
                                               const targetParent = target.parentElement;
                                               if (targetParent) {
                                                 target.style.display = 'none';
                                                 const fallback = document.createElement('div');
-                                                fallback.className = `w-14 h-14 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-sm font-bold`;
+                                                fallback.className = `w-20 h-20 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`;
                                                 fallback.textContent = employeeInitials;
                                                 targetParent.insertBefore(fallback, target);
                                               }
                                             }}
                                           />
                                         ) : (
-                                          <div className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-sm font-bold`}>
+                                          <div className={`w-20 h-20 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`}>
                                             {employeeInitials}
                                           </div>
                                         )}
@@ -7901,14 +7901,14 @@ const Dashboard: React.FC = () => {
                                       {/* Time Range */}
                                       <div className="flex-1 text-center px-2 mb-3">
                                         {item.time && item.time !== 'All Day' && (
-                                          <div className={`text-sm font-semibold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
+                                          <div className={`text-lg font-bold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
                                             {item.time.includes(' - ')
                                               ? item.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
                                               : formatTimeString(item.time)}
                                           </div>
                                         )}
                                         {item.date && item.date.includes('to') && (
-                                          <div className={`text-xs font-medium mt-1 ${item.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                                          <div className={`text-base font-bold mt-1 ${item.photo ? 'text-white' : 'text-gray-800'}`}>
                                             {item.date}
                                           </div>
                                         )}
@@ -8061,21 +8061,21 @@ const Dashboard: React.FC = () => {
                                           <img
                                             src={item.photo_url}
                                             alt={item.employeeName}
-                                            className="w-14 h-14 rounded-full object-cover shadow-lg"
+                                            className="w-20 h-20 rounded-full object-cover shadow-lg"
                                             onError={(e) => {
                                               const target = e.target as HTMLImageElement;
                                               const targetParent = target.parentElement;
                                               if (targetParent) {
                                                 target.style.display = 'none';
                                                 const fallback = document.createElement('div');
-                                                fallback.className = `w-14 h-14 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-sm font-bold`;
+                                                fallback.className = `w-20 h-20 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`;
                                                 fallback.textContent = employeeInitials;
                                                 targetParent.insertBefore(fallback, target);
                                               }
                                             }}
                                           />
                                         ) : (
-                                          <div className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-sm font-bold`}>
+                                          <div className={`w-20 h-20 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`}>
                                             {employeeInitials}
                                           </div>
                                         )}
@@ -8084,14 +8084,14 @@ const Dashboard: React.FC = () => {
                                       {/* Time Range */}
                                       <div className="flex-1 text-center px-2 mb-3">
                                         {item.time && item.time !== 'All Day' && (
-                                          <div className={`text-sm font-semibold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
+                                          <div className={`text-lg font-bold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
                                             {item.time.includes(' - ')
                                               ? item.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
                                               : formatTimeString(item.time)}
                                           </div>
                                         )}
                                         {item.date && item.date.includes('to') && (
-                                          <div className={`text-xs font-medium mt-1 ${item.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                                          <div className={`text-base font-bold mt-1 ${item.photo ? 'text-white' : 'text-gray-800'}`}>
                                             {item.date}
                                           </div>
                                         )}

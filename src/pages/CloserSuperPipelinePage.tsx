@@ -30,7 +30,7 @@ const CloserSuperPipelinePage = () => {
     categories: [], // Changed to array for multi-select
     employee: '',
     languages: [], // Changed to array for multi-select
-    stages: ['40', '50'], // Changed to array, default to stages 40 and 50
+    stages: ['40', '50'], // Default stages: 40 and 50
     tags: [], // Changed to array for multi-select
     minProbability: 80,
     maxProbability: 100,
@@ -760,7 +760,7 @@ const CloserSuperPipelinePage = () => {
       categories: [], // Reset to empty array
       employee: '',
       languages: [], // Reset to empty array
-      stages: ['40', '50'], // Reset to default stages
+      stages: [], // Reset to empty array (no default stages)
       tags: [], // Reset to empty array
       minProbability: 80,
       maxProbability: 100,
@@ -1119,15 +1119,27 @@ const CloserSuperPipelinePage = () => {
     try {
       const allLeads: any[] = [];
 
-      // Get selected stages from filters (default to [40, 50] if empty)
+      // Get selected stages from filters (only filter if stages are selected)
       const selectedStageIds = (filters.stages && filters.stages.length > 0)
         ? filters.stages.map(id => id.toString())
-        : ['40', '50'];
+        : [];
+
+      // Convert stage IDs to numbers for database query (stage column is numeric)
+      const selectedStageIdsNumeric = selectedStageIds.map(id => {
+        const numId = Number(id);
+        if (isNaN(numId)) {
+          console.warn(`⚠️ WARNING: Invalid stage ID "${id}" cannot be converted to number`);
+        }
+        return numId;
+      }).filter(id => !isNaN(id));
 
       console.log('🔍 DEBUG: Starting handleSearch', {
         applyDateFilters,
         filters,
+        filtersStages: filters.stages,
         selectedStageIds,
+        selectedStageIdsNumeric,
+        selectedStageIdsNumericTypes: selectedStageIdsNumeric.map(id => typeof id),
         minProbability: filters.minProbability,
         maxProbability: filters.maxProbability
       });
@@ -1172,9 +1184,17 @@ const CloserSuperPipelinePage = () => {
         .not('closer', 'is', null) // Only leads with closer assigned
         .is('unactivated_at', null); // Only active leads (closer pipeline doesn't check eligible)
 
-      // Apply stage filter - use selected stages from filters
-      if (selectedStageIds.length > 0) {
-        newLeadsQuery = newLeadsQuery.in('stage', selectedStageIds);
+      // Apply stage filter - use selected stages from filters (convert to numbers for database query)
+      // Only apply filter if stages are selected (no hardcoded default)
+      if (selectedStageIdsNumeric.length > 0) {
+        console.log('🔍 DEBUG: Applying stage filter to new leads query', {
+          selectedStageIds,
+          selectedStageIdsNumeric,
+          stageFilterWillBe: `stage.in(${selectedStageIdsNumeric.join(',')})`
+        });
+        newLeadsQuery = newLeadsQuery.in('stage', selectedStageIdsNumeric);
+      } else {
+        console.log('🔍 DEBUG: No stage filter applied - showing all stages (user has not selected any stages)');
       }
 
       // Apply category filter (main category - need to filter by all subcategories)
@@ -1213,6 +1233,13 @@ const CloserSuperPipelinePage = () => {
       }
 
       // Apply employee filter (closer)
+      // Note: The closer field can contain either employee ID (as string) OR employee name
+      // Since PostgREST's or() might not work well with other filters, we'll fetch leads
+      // matching other criteria and filter by employee client-side
+      let needsClientSideEmployeeFilter = false;
+      let employeeFilterId: string | null = null;
+      let employeeFilterName: string | null = null;
+      
       if (filters.employee) {
         if (filters.employee === '--') {
           // Show NULL closer or NULL scheduler entries
@@ -1220,12 +1247,15 @@ const CloserSuperPipelinePage = () => {
         } else {
           const employee = employees.find(emp => emp.id.toString() === filters.employee);
           if (employee) {
-            console.log('🔍 DEBUG: Applying employee filter to new leads', {
+            console.log('🔍 DEBUG: Will filter by employee client-side', {
               employeeId: filters.employee,
               employeeName: employee.name,
-              queryWillFilterBy: `closer = "${employee.name}"`
+              reason: 'PostgREST or() may not work correctly with other filters'
             });
-            newLeadsQuery = newLeadsQuery.eq('closer', employee.name);
+            // Store filter criteria for client-side filtering
+            needsClientSideEmployeeFilter = true;
+            employeeFilterId = filters.employee;
+            employeeFilterName = employee.name.trim();
           } else {
             console.warn('🔍 DEBUG: Employee filter set but employee not found', {
               employeeId: filters.employee,
@@ -1256,8 +1286,8 @@ const CloserSuperPipelinePage = () => {
           actual: directNewLeadData.closer
         },
         correctStage: {
-          passes: selectedStageIds.includes(directNewLeadData.stage?.toString()),
-          required: selectedStageIds.join(' or '),
+          passes: selectedStageIdsNumeric.length === 0 || selectedStageIdsNumeric.includes(Number(directNewLeadData.stage)),
+          required: selectedStageIds.length > 0 ? selectedStageIds.join(' or ') : 'Any (no filter)',
           actual: directNewLeadData.stage
         },
         isActive: {
@@ -1282,10 +1312,41 @@ const CloserSuperPipelinePage = () => {
         employeeMatch: {
           passes: !filters.employee || (() => {
             const employee = employees.find(emp => emp.id.toString() === filters.employee);
-            return employee ? directNewLeadData.closer === employee.name : false;
+            if (!employee) return false;
+            
+            // Helper function to check if a value matches the employee (by ID or name)
+            const matchesEmployee = (value: any): boolean => {
+              if (!value) return false;
+              
+              const employeeIdNum = Number(filters.employee);
+              const employeeName = (employee.name || '').trim().toLowerCase();
+              
+              // Try to match by ID first (works for both string "84" and number 84)
+              const valueAsNumber = Number(value);
+              if (!isNaN(valueAsNumber) && isFinite(valueAsNumber)) {
+                if (valueAsNumber === employeeIdNum) {
+                  return true;
+                }
+              }
+              
+              // Also try to match by name (works for string "Einat")
+              if (typeof value === 'string') {
+                const trimmed = value.trim().toLowerCase();
+                if (trimmed === employeeName) {
+                  return true;
+                }
+              }
+              
+              return false;
+            };
+            
+            // Check both closer and scheduler fields
+            return matchesEmployee(directNewLeadData.closer) || matchesEmployee(directNewLeadData.scheduler);
           })(),
-          required: filters.employee || 'Any',
-          actual: directNewLeadData.closer
+          required: filters.employee ? `closer or scheduler = "${filters.employee}" (ID) or "${employees.find(emp => emp.id.toString() === filters.employee)?.name}" (name)` : 'Any',
+          actual: { closer: directNewLeadData.closer, scheduler: directNewLeadData.scheduler },
+          expectedEmployeeId: filters.employee,
+          expectedEmployeeName: filters.employee ? employees.find(emp => emp.id.toString() === filters.employee)?.name : null
         }
       } : {};
 
@@ -1372,6 +1433,7 @@ const CloserSuperPipelinePage = () => {
       console.log('🔍 DEBUG: Executing new leads query...', {
         activeFilters: {
           stages: selectedStageIds,
+          stagesNumeric: selectedStageIdsNumeric,
           probability: `${filters.minProbability}-${filters.maxProbability}`,
           closer: 'not null',
           unactivated_at: 'null',
@@ -1380,6 +1442,60 @@ const CloserSuperPipelinePage = () => {
           employee: filters.employee ? (employees.find(emp => emp.id.toString() === filters.employee)?.name || 'NOT FOUND') : 'any'
         }
       });
+      
+      // Test query: Check if there are any leads with the selected stages (without other filters)
+      if (selectedStageIdsNumeric.length > 0) {
+        const { data: testStageLeads, error: testStageError } = await supabase
+          .from('leads')
+          .select('id, lead_number, stage')
+          .in('stage', selectedStageIdsNumeric)
+          .limit(5);
+        console.log('🔍 DEBUG: Test query - leads with selected stages (no other filters)', {
+          testStageLeads,
+          testStageError,
+          count: testStageLeads?.length || 0,
+          sampleStages: testStageLeads?.map(l => ({ lead: l.lead_number, stage: l.stage })) || []
+        });
+      }
+
+      // Test query: Check employee filter syntax
+      if (filters.employee && filters.employee !== '--') {
+        const employee = employees.find(emp => emp.id.toString() === filters.employee);
+        if (employee) {
+          const employeeIdStr = filters.employee;
+          const employeeNameTrimmed = employee.name.trim();
+          
+          // Test 1: Filter by ID only
+          const { data: testById, error: testByIdError } = await supabase
+            .from('leads')
+            .select('id, lead_number, closer')
+            .eq('closer', employeeIdStr)
+            .limit(3);
+          
+          // Test 2: Filter by name only (case-insensitive)
+          const { data: testByName, error: testByNameError } = await supabase
+            .from('leads')
+            .select('id, lead_number, closer')
+            .ilike('closer', `%${employeeNameTrimmed}%`)
+            .limit(3);
+          
+          // Test 3: Filter using or() with both conditions
+          const { data: testByOr, error: testByOrError } = await supabase
+            .from('leads')
+            .select('id, lead_number, closer')
+            .or(`closer.eq.${employeeIdStr},closer.ilike.%${employeeNameTrimmed}%`)
+            .limit(3);
+          
+          console.log('🔍 DEBUG: Employee filter test queries', {
+            employeeId: employeeIdStr,
+            employeeName: employeeNameTrimmed,
+            testById: { count: testById?.length || 0, results: testById, error: testByIdError },
+            testByName: { count: testByName?.length || 0, results: testByName, error: testByNameError },
+            testByOr: { count: testByOr?.length || 0, results: testByOr, error: testByOrError }
+          });
+        }
+      }
+      
       const { data: newLeads, error: newLeadsError } = await newLeadsQuery.order('created_at', { ascending: false });
 
       // Check if lead L210471 is in the query results
@@ -1515,6 +1631,89 @@ const CloserSuperPipelinePage = () => {
         });
       }
 
+      // Apply employee filter client-side (closer field can contain either ID or name)
+      // Use the same logic as SalesContributionPage.tsx: check type first, then match accordingly
+      if (needsClientSideEmployeeFilter && employeeFilterId && employeeFilterName) {
+        const beforeEmployeeFilter = filteredNewLeads.length;
+        const employeeFilterIdNum = Number(employeeFilterId);
+        const employeeFilterNameLower = employeeFilterName.toLowerCase().trim();
+        
+        // Sample a few leads to debug what closer values we're seeing
+        const sampleLeads = filteredNewLeads.slice(0, 10).map((lead: any) => ({
+          lead_number: lead.lead_number,
+          closer: lead.closer,
+          closerType: typeof lead.closer,
+          closerString: String(lead.closer || '').trim(),
+          closerAsNumber: Number(lead.closer),
+          matchesById: Number(lead.closer) === employeeFilterIdNum,
+          matchesByName: typeof lead.closer === 'string' && lead.closer.trim().toLowerCase() === employeeFilterNameLower
+        }));
+        console.log('🔍 DEBUG: Sample closer values before filtering', {
+          employeeFilterId: employeeFilterId,
+          employeeFilterIdNum,
+          employeeFilterName: employeeFilterName,
+          employeeFilterNameLower,
+          sampleLeads
+        });
+        
+        // Helper function to check if a value matches the employee (by ID or name)
+        const matchesEmployee = (value: any): boolean => {
+          if (!value) return false;
+          
+          // Try to match by ID first (works for both string "84" and number 84)
+          const valueAsNumber = Number(value);
+          if (!isNaN(valueAsNumber) && isFinite(valueAsNumber)) {
+            if (valueAsNumber === employeeFilterIdNum) {
+              return true;
+            }
+          }
+          
+          // Also try to match by name (works for string "Einat")
+          if (typeof value === 'string') {
+            const trimmed = value.trim().toLowerCase();
+            if (trimmed === employeeFilterNameLower) {
+              return true;
+            }
+          }
+          
+          return false;
+        };
+        
+        // Count matches for debugging
+        let matchedByCloser = 0;
+        let matchedByScheduler = 0;
+        let noRoles = 0;
+        
+        filteredNewLeads = filteredNewLeads.filter((lead: any) => {
+          // Check both closer and scheduler fields (employee can be in either role)
+          const matchesCloser = matchesEmployee(lead.closer);
+          const matchesScheduler = matchesEmployee(lead.scheduler);
+          
+          if (matchesCloser) matchedByCloser++;
+          if (matchesScheduler) matchedByScheduler++;
+          if (!lead.closer && !lead.scheduler) noRoles++;
+          
+          return matchesCloser || matchesScheduler;
+        });
+        
+        console.log('🔍 DEBUG: Employee filter match breakdown', {
+          matchedByCloser,
+          matchedByScheduler,
+          noRoles,
+          totalFiltered: filteredNewLeads.length
+        });
+        
+        console.log('🔍 DEBUG: Applied client-side employee filter', {
+          employeeId: employeeFilterId,
+          employeeIdNum: employeeFilterIdNum,
+          employeeName: employeeFilterName,
+          employeeNameLower: employeeFilterNameLower,
+          beforeFilter: beforeEmployeeFilter,
+          afterFilter: filteredNewLeads.length,
+          sampleLeads
+        });
+      }
+
       if (filteredNewLeads) {
         filteredNewLeads.forEach((lead: any) => {
           // Convert expert_notes array to string
@@ -1625,8 +1824,10 @@ const CloserSuperPipelinePage = () => {
       }
 
       // Fetch legacy leads
-      // Get selected stages for legacy (convert to numbers)
-      const selectedLegacyStageIds = selectedStageIds.map(id => Number(id));
+      // Get selected stages for legacy (convert to numbers) - only if stages are selected
+      const selectedLegacyStageIds = selectedStageIds.length > 0
+        ? selectedStageIds.map(id => Number(id)).filter(id => !isNaN(id))
+        : [];
 
       console.log('🔍 DEBUG: Starting legacy leads query', {
         minProbability: filters.minProbability,
@@ -1676,8 +1877,16 @@ const CloserSuperPipelinePage = () => {
         .eq('status', 0); // Only active leads
 
       // Apply stage filter for legacy leads - use selected stages
+      // Only apply filter if stages are selected (no hardcoded default)
       if (selectedLegacyStageIds.length > 0) {
+        console.log('🔍 DEBUG: Applying stage filter to legacy leads query', {
+          selectedStageIds,
+          selectedLegacyStageIds,
+          stageFilterWillBe: `stage.in(${selectedLegacyStageIds.join(',')})`
+        });
         legacyLeadsQuery = legacyLeadsQuery.in('stage', selectedLegacyStageIds);
+      } else {
+        console.log('🔍 DEBUG: No stage filter applied to legacy leads - showing all stages (user has not selected any stages)');
       }
 
       // Apply closer_id filter (only if not filtering for NULL)
@@ -1686,11 +1895,12 @@ const CloserSuperPipelinePage = () => {
       }
 
       // Apply date filter based on meeting_date when explicitly requested (when Show is clicked)
+      // Only apply date filters if dates are actually provided (not empty strings)
       if (applyDateFilters) {
-        if (filters.fromDate) {
+        if (filters.fromDate && filters.fromDate.trim() !== '') {
           legacyLeadsQuery = legacyLeadsQuery.gte('meeting_date', filters.fromDate);
         }
-        if (filters.toDate) {
+        if (filters.toDate && filters.toDate.trim() !== '') {
           legacyLeadsQuery = legacyLeadsQuery.lte('meeting_date', filters.toDate);
         }
       }
@@ -1773,8 +1983,11 @@ const CloserSuperPipelinePage = () => {
         const hasProbability = directLeadData.probability !== null && directLeadData.probability !== '';
         const hasCloser = directLeadData.closer_id !== null;
         const correctStatus = directLeadData.status === 0;
-        const correctStage = selectedLegacyStageIds.includes(Number(directLeadData.stage));
-        const passesAll = hasProbability && hasCloser && correctStatus && correctStage;
+        const correctStage = selectedLegacyStageIds.length === 0 || selectedLegacyStageIds.includes(Number(directLeadData.stage));
+        const correctEmployee = !filters.employee || filters.employee === '--' || (filters.employee !== '--' && Number(filters.employee) === directLeadData.closer_id);
+        const correctDateRange = !applyDateFilters || (!filters.fromDate || filters.fromDate.trim() === '' || (directLeadData.meeting_date && directLeadData.meeting_date >= filters.fromDate)) &&
+          (!filters.toDate || filters.toDate.trim() === '' || (directLeadData.meeting_date && directLeadData.meeting_date <= filters.toDate));
+        const passesAll = hasProbability && hasCloser && correctStatus && correctStage && correctEmployee && correctDateRange;
 
         console.log('🔍 DEBUG: Direct query for lead 76792 - FULL DETAILS', {
           found: true,
@@ -1796,14 +2009,18 @@ const CloserSuperPipelinePage = () => {
             hasProbability: { result: hasProbability, required: 'probability IS NOT NULL AND != ""', actual: directLeadData.probability },
             hasCloser: { result: hasCloser, required: 'closer_id IS NOT NULL', actual: directLeadData.closer_id },
             correctStatus: { result: correctStatus, required: 'status = 0', actual: directLeadData.status },
-            correctStage: { result: correctStage, required: `stage IN (${selectedLegacyStageIds.join(', ')})`, actual: directLeadData.stage, stageNumber: Number(directLeadData.stage) }
+            correctStage: { result: correctStage, required: selectedLegacyStageIds.length > 0 ? `stage IN (${selectedLegacyStageIds.join(', ')})` : 'any stage', actual: directLeadData.stage, stageNumber: Number(directLeadData.stage), selectedStages: selectedLegacyStageIds },
+            correctEmployee: { result: correctEmployee, required: filters.employee ? (filters.employee === '--' ? 'NULL closer' : `closer_id = ${filters.employee}`) : 'any employee', actual: directLeadData.closer_id, filterEmployee: filters.employee },
+            correctDateRange: { result: correctDateRange, required: applyDateFilters ? `meeting_date between ${filters.fromDate || 'any'} and ${filters.toDate || 'any'}` : 'no date filter', actual: directLeadData.meeting_date, fromDate: filters.fromDate, toDate: filters.toDate, applyDateFilters }
           },
           passesAllFilters: passesAll,
           failingFilters: [
             !hasProbability && 'probability filter',
             !hasCloser && 'closer_id filter',
             !correctStatus && 'status filter',
-            !correctStage && 'stage filter'
+            !correctStage && 'stage filter',
+            !correctEmployee && 'employee filter',
+            !correctDateRange && 'date range filter'
           ].filter(Boolean)
         });
       } else {
@@ -1826,6 +2043,17 @@ const CloserSuperPipelinePage = () => {
           cdate: directLeadData.cdate || directLeadData.meeting_date
         });
       }
+
+      // Test query first to see if it returns any results (limit 1)
+      const { data: testQueryResults, error: testQueryError } = await legacyLeadsQuery
+        .order('cdate', { ascending: false })
+        .limit(1);
+      
+      console.log('🔍 DEBUG: Test query (limit 1) before pagination', {
+        foundResults: testQueryResults?.length || 0,
+        error: testQueryError,
+        sampleResult: testQueryResults?.[0] || null
+      });
 
       // Fetch all results using pagination to avoid 1000 limit
       let allLegacyLeads: any[] = [];
@@ -2550,6 +2778,19 @@ const CloserSuperPipelinePage = () => {
           </div>
           <div className="relative">
             <label className="block text-sm font-medium text-gray-700 mb-1">Category (Multi-select)</label>
+            <input
+              type="text"
+              className="w-full mb-2 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Search categories..."
+              value={categorySearch}
+              onChange={(e) => {
+                setCategorySearch(e.target.value);
+                if (!showCategoryDropdown) {
+                  setShowCategoryDropdown(true);
+                }
+              }}
+              onFocus={() => setShowCategoryDropdown(true)}
+            />
             <div
               className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
               onClick={() => setShowCategoryDropdown(true)}
@@ -2587,17 +2828,6 @@ const CloserSuperPipelinePage = () => {
                   onClick={() => setShowCategoryDropdown(false)}
                 />
                 <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                  <div className="sticky top-0 bg-white border-b border-gray-200 px-4 py-2">
-                    <input
-                      type="text"
-                      className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      placeholder="Search categories..."
-                      value={categorySearch}
-                      onChange={(e) => setCategorySearch(e.target.value)}
-                      onClick={(e) => e.stopPropagation()}
-                      onFocus={(e) => e.stopPropagation()}
-                    />
-                  </div>
                   <div
                     className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
                     onClick={(e) => {
@@ -2692,6 +2922,19 @@ const CloserSuperPipelinePage = () => {
           </div>
           <div className="relative">
             <label className="block text-sm font-medium text-gray-700 mb-1">Language (Multi-select)</label>
+            <input
+              type="text"
+              className="w-full mb-2 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Search languages..."
+              value={languageSearch}
+              onChange={(e) => {
+                setLanguageSearch(e.target.value);
+                if (!showLanguageDropdown) {
+                  setShowLanguageDropdown(true);
+                }
+              }}
+              onFocus={() => setShowLanguageDropdown(true)}
+            />
             <div
               className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
               onClick={() => setShowLanguageDropdown(true)}
@@ -2729,17 +2972,6 @@ const CloserSuperPipelinePage = () => {
                   onClick={() => setShowLanguageDropdown(false)}
                 />
                 <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                  <div className="sticky top-0 bg-white border-b border-gray-200 px-4 py-2">
-                    <input
-                      type="text"
-                      className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      placeholder="Search languages..."
-                      value={languageSearch}
-                      onChange={(e) => setLanguageSearch(e.target.value)}
-                      onClick={(e) => e.stopPropagation()}
-                      onFocus={(e) => e.stopPropagation()}
-                    />
-                  </div>
                   <div
                     className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
                     onClick={(e) => {
@@ -2779,6 +3011,19 @@ const CloserSuperPipelinePage = () => {
           </div>
           <div className="relative">
             <label className="block text-sm font-medium text-gray-700 mb-1">Stage (Multi-select)</label>
+            <input
+              type="text"
+              className="w-full mb-2 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Search stages..."
+              value={stageSearch}
+              onChange={(e) => {
+                setStageSearch(e.target.value);
+                if (!showStageDropdown) {
+                  setShowStageDropdown(true);
+                }
+              }}
+              onFocus={() => setShowStageDropdown(true)}
+            />
             <div
               className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
               onClick={() => setShowStageDropdown(true)}
@@ -2816,27 +3061,6 @@ const CloserSuperPipelinePage = () => {
                   onClick={() => setShowStageDropdown(false)}
                 />
                 <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                  <div className="sticky top-0 bg-white border-b border-gray-200 px-4 py-2">
-                    <input
-                      type="text"
-                      className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      placeholder="Search stages..."
-                      value={stageSearch}
-                      onChange={(e) => setStageSearch(e.target.value)}
-                      onClick={(e) => e.stopPropagation()}
-                      onFocus={(e) => e.stopPropagation()}
-                    />
-                  </div>
-                  <div
-                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm font-semibold"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setFilters(prev => ({ ...prev, stages: ['40', '50'] }));
-                      setStageSearch('');
-                    }}
-                  >
-                    Reset to Default (40, 50)
-                  </div>
                   <div
                     className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
                     onClick={(e) => {
@@ -2876,6 +3100,19 @@ const CloserSuperPipelinePage = () => {
           </div>
           <div className="relative">
             <label className="block text-sm font-medium text-gray-700 mb-1">Tags (Multi-select)</label>
+            <input
+              type="text"
+              className="w-full mb-2 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Search tags..."
+              value={tagsSearch}
+              onChange={(e) => {
+                setTagsSearch(e.target.value);
+                if (!showTagsDropdown) {
+                  setShowTagsDropdown(true);
+                }
+              }}
+              onFocus={() => setShowTagsDropdown(true)}
+            />
             <div
               className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
               onClick={() => setShowTagsDropdown(true)}
@@ -2909,17 +3146,6 @@ const CloserSuperPipelinePage = () => {
                   onClick={() => setShowTagsDropdown(false)}
                 />
                 <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                  <div className="sticky top-0 bg-white border-b border-gray-200 px-4 py-2">
-                    <input
-                      type="text"
-                      className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      placeholder="Search tags..."
-                      value={tagsSearch}
-                      onChange={(e) => setTagsSearch(e.target.value)}
-                      onClick={(e) => e.stopPropagation()}
-                      onFocus={(e) => e.stopPropagation()}
-                    />
-                  </div>
                   <div
                     className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
                     onClick={(e) => {

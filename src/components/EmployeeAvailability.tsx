@@ -171,64 +171,92 @@ const EmployeeAvailability: React.FC = () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user?.id) return;
 
-      // First, get the user's full_name from users table
+      // Get employee_id from users table using auth_id (same logic as Clients.tsx and CompactAvailabilityCalendar.tsx)
+      let userEmployeeId: number | null = null;
+      let userDisplayName: string | null = null;
+      
       const { data: userData, error: userError } = await supabase
         .from('users')
-        .select('full_name')
+        .select(`
+          full_name,
+          employee_id,
+          tenants_employee!employee_id(
+            id,
+            display_name
+          )
+        `)
         .eq('auth_id', user.id)
         .single();
 
-      if (userError || !userData?.full_name) {
-        console.error('Error getting user full name:', userError);
+      if (userError || !userData) {
+        console.error('Error getting user data:', userError);
         return;
       }
 
-      // Then find the employee record using display_name
-      const { data: employeeData, error } = await supabase
-        .from('tenants_employee')
-        .select('id, unavailable_times, outlook_calendar_sync')
-        .eq('display_name', userData.full_name)
-        .single();
-
-      if (error) {
-        console.error('Error fetching unavailable times:', error);
-        return;
+      // Get employee_id directly from users table (same as Clients.tsx)
+      if (userData?.employee_id) {
+        userEmployeeId = userData.employee_id;
       }
-
-      if (employeeData) {
-        setUnavailableTimes(employeeData.unavailable_times || []);
-        setUnavailableRanges([]); // Initialize as empty array for now
-        setOutlookSyncEnabled(employeeData.outlook_calendar_sync || false);
-        setCurrentEmployeeId(employeeData.id);
-      }
-
-      // Fetch from new employee_unavailability_reasons table
-      if (employeeData?.id) {
-        const { data: reasonsData, error: reasonsError } = await supabase
-          .from('employee_unavailability_reasons')
-          .select('*')
-          .eq('employee_id', employeeData.id)
-          .order('start_date', { ascending: false });
-
-        if (!reasonsError && reasonsData) {
-          setUnavailabilityReasons(reasonsData);
+      
+      // Get display name from employee relationship or fallback to full_name
+      if (userData?.tenants_employee) {
+        const empData = Array.isArray(userData.tenants_employee)
+          ? userData.tenants_employee[0]
+          : userData.tenants_employee;
+        if (empData?.display_name) {
+          userDisplayName = empData.display_name;
         }
       }
+      
+      if (!userDisplayName && userData?.full_name) {
+        userDisplayName = userData.full_name;
+      }
 
-      // Try to fetch unavailable_ranges separately (in case column doesn't exist yet)
-      try {
-        const { data: rangesData, error: rangesError } = await supabase
+      // Use employee_id directly instead of matching by display_name (same as Clients.tsx)
+      if (userEmployeeId) {
+        const { data: employeeData, error } = await supabase
           .from('tenants_employee')
-          .select('unavailable_ranges')
-          .eq('display_name', userData.full_name)
+          .select('id, unavailable_times, outlook_calendar_sync, unavailable_ranges')
+          .eq('id', userEmployeeId)
           .single();
 
-        if (!rangesError && rangesData?.unavailable_ranges) {
-          setUnavailableRanges(rangesData.unavailable_ranges);
+        if (error) {
+          console.error('Error fetching unavailable times:', error);
+          return;
         }
-      } catch (rangesError) {
-        console.log('unavailable_ranges column not found, using empty array');
-        setUnavailableRanges([]);
+
+        if (employeeData) {
+          setUnavailableTimes(employeeData.unavailable_times || []);
+          setOutlookSyncEnabled(employeeData.outlook_calendar_sync || false);
+          setCurrentEmployeeId(employeeData.id);
+          
+          // Also set unavailable ranges if available
+          try {
+            if (employeeData.unavailable_ranges) {
+              setUnavailableRanges(employeeData.unavailable_ranges);
+            } else {
+              setUnavailableRanges([]);
+            }
+          } catch (rangesError) {
+            console.log('unavailable_ranges column not found, using empty array');
+            setUnavailableRanges([]);
+          }
+        }
+
+        // Fetch from new employee_unavailability_reasons table
+        if (employeeData?.id) {
+          const { data: reasonsData, error: reasonsError } = await supabase
+            .from('employee_unavailability_reasons')
+            .select('*')
+            .eq('employee_id', employeeData.id)
+            .order('start_date', { ascending: false });
+
+          if (!reasonsError && reasonsData) {
+            setUnavailabilityReasons(reasonsData);
+          }
+        }
+      } else {
+        console.error('No employee_id found in users table for current user');
       }
     } catch (error) {
       console.error('Error fetching unavailable times:', error);
@@ -299,15 +327,15 @@ const EmployeeAvailability: React.FC = () => {
         return;
       }
 
-      // Get the user's full_name from users table
+      // Get employee_id from users table using auth_id (same logic as Clients.tsx)
       const { data: userData, error: userError } = await supabase
         .from('users')
-        .select('full_name')
+        .select('employee_id')
         .eq('auth_id', user.id)
         .single();
 
-      if (userError || !userData?.full_name) {
-        toast.error('Could not get user information');
+      if (userError || !userData?.employee_id) {
+        toast.error('Could not get user information or employee ID not found');
         return;
       }
 
@@ -406,14 +434,14 @@ const EmployeeAvailability: React.FC = () => {
       const updatedTimes = [...unavailableTimes, newTime];
       setUnavailableTimes(updatedTimes);
 
-      // Save to database
+      // Save to database using employee_id (same logic as Clients.tsx)
       const { error } = await supabase
         .from('tenants_employee')
         .update({ 
           unavailable_times: updatedTimes,
           last_sync_date: new Date().toISOString()
         })
-        .eq('display_name', userData.full_name);
+        .eq('id', userData.employee_id);
 
       if (error) {
         console.error('Error saving unavailable time:', error);
@@ -499,15 +527,15 @@ const EmployeeAvailability: React.FC = () => {
         return;
       }
 
-      // Get the user's full_name from users table
+      // Get employee_id from users table using auth_id (same logic as Clients.tsx)
       const { data: userData, error: userError } = await supabase
         .from('users')
-        .select('full_name')
+        .select('employee_id')
         .eq('auth_id', user.id)
         .single();
 
-      if (userError || !userData?.full_name) {
-        toast.error('Could not get user information');
+      if (userError || !userData?.employee_id) {
+        toast.error('Could not get user information or employee ID not found');
         return;
       }
 
@@ -526,14 +554,14 @@ const EmployeeAvailability: React.FC = () => {
       const updatedTimes = unavailableTimes.filter(ut => ut.id !== timeId);
       setUnavailableTimes(updatedTimes);
 
-      // Save to database
+      // Save to database using employee_id (same logic as Clients.tsx)
       const { error } = await supabase
         .from('tenants_employee')
         .update({ 
           unavailable_times: updatedTimes,
           last_sync_date: new Date().toISOString()
         })
-        .eq('display_name', userData.full_name);
+        .eq('id', userData.employee_id);
 
       if (error) {
         console.error('Error deleting unavailable time:', error);
@@ -606,15 +634,15 @@ const EmployeeAvailability: React.FC = () => {
         return;
       }
 
-      // Get the user's full_name from users table
+      // Get employee_id from users table using auth_id (same logic as Clients.tsx)
       const { data: userData, error: userError } = await supabase
         .from('users')
-        .select('full_name')
+        .select('employee_id')
         .eq('auth_id', user.id)
         .single();
 
-      if (userError || !userData?.full_name) {
-        toast.error('Could not get user information');
+      if (userError || !userData?.employee_id) {
+        toast.error('Could not get user information or employee ID not found');
         return;
       }
 
@@ -689,7 +717,7 @@ const EmployeeAvailability: React.FC = () => {
             unavailable_ranges: updatedRanges,
             last_sync_date: new Date().toISOString()
           })
-          .eq('display_name', userData.full_name);
+          .eq('id', userData.employee_id);
 
         if (error) {
           // If column doesn't exist, show warning but continue
@@ -787,15 +815,15 @@ const EmployeeAvailability: React.FC = () => {
         return;
       }
 
-      // Get the user's full_name from users table
+      // Get employee_id from users table using auth_id (same logic as Clients.tsx)
       const { data: userData, error: userError } = await supabase
         .from('users')
-        .select('full_name')
+        .select('employee_id')
         .eq('auth_id', user.id)
         .single();
 
-      if (userError || !userData?.full_name) {
-        toast.error('Could not get user information');
+      if (userError || !userData?.employee_id) {
+        toast.error('Could not get user information or employee ID not found');
         return;
       }
 
@@ -814,7 +842,7 @@ const EmployeeAvailability: React.FC = () => {
       const updatedRanges = unavailableRanges.filter(r => r.id !== rangeId);
       setUnavailableRanges(updatedRanges);
 
-      // Save to database - try to update unavailable_ranges column
+      // Save to database - try to update unavailable_ranges column using employee_id (same logic as Clients.tsx)
       try {
         const { error } = await supabase
           .from('tenants_employee')
@@ -822,7 +850,7 @@ const EmployeeAvailability: React.FC = () => {
             unavailable_ranges: updatedRanges,
             last_sync_date: new Date().toISOString()
           })
-          .eq('display_name', userData.full_name);
+          .eq('id', userData.employee_id);
 
         if (error) {
           // If column doesn't exist, show warning but continue
@@ -883,15 +911,15 @@ const EmployeeAvailability: React.FC = () => {
         return;
       }
 
-      // Get the user's full_name from users table
+      // Get employee_id from users table using auth_id (same logic as Clients.tsx)
       const { data: userData, error: userError } = await supabase
         .from('users')
-        .select('full_name')
+        .select('employee_id')
         .eq('auth_id', user.id)
         .single();
 
-      if (userError || !userData?.full_name) {
-        toast.error('Could not get user information');
+      if (userError || !userData?.employee_id) {
+        toast.error('Could not get user information or employee ID not found');
         return;
       }
 
@@ -904,7 +932,7 @@ const EmployeeAvailability: React.FC = () => {
           outlook_calendar_sync: newSyncStatus,
           last_sync_date: new Date().toISOString()
         })
-        .eq('display_name', userData.full_name);
+        .eq('id', userData.employee_id);
 
       if (error) {
         console.error('Error updating sync status:', error);
