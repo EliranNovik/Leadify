@@ -504,7 +504,7 @@ const webhookController = {
       });
 
       // Validate required fields
-      if (!formData.name || !formData.email) {
+      if (!formData.name) {
         console.error('❌ Missing required fields:', {
           name: formData.name,
           email: formData.email,
@@ -512,7 +512,7 @@ const webhookController = {
           reqBody: req.body
         });
         return res.status(400).json({ 
-          error: 'Missing required fields: name and email are required' 
+          error: 'Missing required fields: name is required' 
         });
       }
 
