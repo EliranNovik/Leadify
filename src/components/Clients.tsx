@@ -4586,7 +4586,7 @@ const Clients: React.FC<ClientsProps> = ({
             `)
             .eq('auth_id', authUser.id)
             .single();
-          
+
           if (userData) {
             // Prefer display_name from tenants_employee if available, otherwise use full_name
             const employee = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
@@ -4594,7 +4594,7 @@ const Clients: React.FC<ClientsProps> = ({
             currentUserEmployeeId = userData.employee_id || null;
           }
         }
-        
+
         // Fallback to email-based lookup if auth_id lookup fails
         if (!currentUserFullName && account.username) {
           const { data: userDataByEmail } = await supabase
@@ -4609,7 +4609,7 @@ const Clients: React.FC<ClientsProps> = ({
             `)
             .eq('email', account.username)
             .single();
-          
+
           if (userDataByEmail) {
             const employee = Array.isArray(userDataByEmail.tenants_employee) ? userDataByEmail.tenants_employee[0] : userDataByEmail.tenants_employee;
             currentUserFullName = employee?.display_name || userDataByEmail.full_name || '';
@@ -4637,7 +4637,7 @@ const Clients: React.FC<ClientsProps> = ({
       if (selectedLocation && selectedLocation.id && restrictedLocationIds.includes(selectedLocation.id)) {
         // Extract hour from the selected time (e.g., "10:30" -> "10")
         const selectedTimeHour = meetingFormData.time.split(':')[0];
-        
+
         // Check if there's already a meeting at the same date, same hour, and location
         // We need to fetch all meetings for that date and location, then filter by hour
         const { data: allMeetingsForDate, error: conflictError } = await supabase
@@ -8030,7 +8030,7 @@ const Clients: React.FC<ClientsProps> = ({
       if (selectedLocation && selectedLocation.id && restrictedLocationIds.includes(selectedLocation.id)) {
         // Extract hour from the selected time (e.g., "10:30" -> "10")
         const selectedTimeHour = rescheduleFormData.time.split(':')[0];
-        
+
         // Check if there's already a meeting at the same date, same hour, and location
         // We need to fetch all meetings for that date and location, then filter by hour
         // Exclude the meeting we're rescheduling (if it exists and hasn't been canceled yet)
