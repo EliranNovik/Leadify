@@ -53,6 +53,7 @@ import CollectionDueReportPage from './pages/CollectionDueReportPage';
 import CloserSuperPipelinePage from './pages/CloserSuperPipelinePage';
 import SalesContributionPage from './pages/SalesContributionPage';
 import EditContractsPage from './pages/EditContractsPage';
+import ReassignLeadsPage from './pages/ReassignLeadsPage';
 import EmployeeUnavailabilitiesReport from './pages/EmployeeUnavailabilitiesReport';
 import EmployeeSalariesReport from './pages/EmployeeSalariesReport';
 import MasterLeadPage from './components/MasterLeadPage';
@@ -697,6 +698,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/reports/closer-super-pipeline" element={<CloserSuperPipelinePage />} />
                     <Route path="/reports/sales-contribution" element={<SalesContributionPage />} />
                     <Route path="/reports/edit-contracts" element={<EditContractsPage />} />
+                    <Route path="/reports/reassign-leads" element={<ReassignLeadsPage />} />
                     <Route path="/reports/employee-unavailabilities" element={<EmployeeUnavailabilitiesReport />} />
                     <Route path="/reports/employee-salaries" element={<EmployeeSalariesReport />} />
                     <Route path="/sales/signed" element={<SignedSalesReportPage />} />
