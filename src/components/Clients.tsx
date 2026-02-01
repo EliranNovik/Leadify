@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useLocation, useNavigate, useParams, useNavigationType } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
-import { usePersistedState } from '../hooks/usePersistedState';
 import { getStageName, fetchStageNames, areStagesEquivalent, normalizeStageName, getStageColour } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { fetchAllLeads, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
@@ -1097,15 +1096,15 @@ const Clients: React.FC<ClientsProps> = ({
 
     return '/clients';
   }, []);
-  const [activeTab, setActiveTab] = usePersistedState('clients_activeTab', 'info', { storage: 'sessionStorage' });
+  const [activeTab, setActiveTab] = useState('info');
   const [isStagesOpen, setIsStagesOpen] = useState(false);
   const [isActionsOpen, setIsActionsOpen] = useState(false);
   const [isBalanceModalOpen, setIsBalanceModalOpen] = useState(false);
   // Track the last route to detect route changes and force refetch
   const lastRouteRef = useRef<string>('');
   // Default to collapsed on mobile, expanded on desktop
-  const [isClientInfoCollapsed, setIsClientInfoCollapsed] = usePersistedState('clients_isClientInfoCollapsed', false, { storage: 'sessionStorage' });
-  const [isProgressCollapsed, setIsProgressCollapsed] = usePersistedState('clients_isProgressCollapsed', false, { storage: 'sessionStorage' });
+  const [isClientInfoCollapsed, setIsClientInfoCollapsed] = useState(false);
+  const [isProgressCollapsed, setIsProgressCollapsed] = useState(false);
 
   // Set default collapsed state for mobile on mount
   useEffect(() => {
@@ -1142,15 +1141,15 @@ const Clients: React.FC<ClientsProps> = ({
   const [isCreatingMeeting, setIsCreatingMeeting] = useState(false);
   const [showScheduleMeetingPanel, setShowScheduleMeetingPanel] = useState(false);
   // Tabs inside Schedule Meeting drawer: 'regular' or 'paid'
-  const [meetingType, setMeetingType] = usePersistedState<'regular' | 'paid'>('clients_meetingType', 'regular', { storage: 'sessionStorage' });
+  const [meetingType, setMeetingType] = useState<'regular' | 'paid'>('regular');
   // Controls which stage the lead should move to after successfully creating a meeting
   // - 'meeting_scheduled' for the first meeting
   // - 'another_meeting' for follow-up meetings
-  const [scheduleStageTarget, setScheduleStageTarget] = usePersistedState<'meeting_scheduled' | 'another_meeting'>('clients_scheduleStageTarget', 'meeting_scheduled', { storage: 'sessionStorage' });
+  const [scheduleStageTarget, setScheduleStageTarget] = useState<'meeting_scheduled' | 'another_meeting'>('meeting_scheduled');
   // Toggle for notifying client via email when scheduling a meeting
-  const [notifyClientOnSchedule, setNotifyClientOnSchedule] = usePersistedState('clients_notifyClientOnSchedule', false, { storage: 'sessionStorage' });
-  const [selectedStage, setSelectedStage] = usePersistedState<string | null>('clients_selectedStage', null, { storage: 'sessionStorage' });
-  const [meetingFormData, setMeetingFormData] = usePersistedState('clients_meetingFormData', {
+  const [notifyClientOnSchedule, setNotifyClientOnSchedule] = useState(false);
+  const [selectedStage, setSelectedStage] = useState<string | null>(null);
+  const [meetingFormData, setMeetingFormData] = useState({
     date: '',
     time: '09:00',
     location: '',
@@ -1166,7 +1165,7 @@ const Clients: React.FC<ClientsProps> = ({
     paid_category: '',
     paid_currency: '',
     meeting_total: '',
-  }, { storage: 'sessionStorage' });
+  });
   const [meetingLocations, setMeetingLocations] = useState<
     Array<{ id: string | number; name: string; default_link?: string | null }>
   >([]);
@@ -1260,57 +1259,13 @@ const Clients: React.FC<ClientsProps> = ({
   // Remove tabScales and wave zoom effect
   // ---
 
-  // Local loading state for client data - REMOVED for faster loading
+  // Local loading state for client data
+  const [localLoading, setLocalLoading] = useState(true);
   const [backgroundLoading, setBackgroundLoading] = useState(false);
-  // clientNotFound state removed - page renders immediately
-
-  // Cache employees data to avoid refetching on every mount
-  const employeesCacheRef = useRef<{ data?: any[]; timestamp?: number }>({});
-  const EMPLOYEES_CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
 
   // Fetch all employees, categories, and currencies for name lookup
   useEffect(() => {
     const fetchEmployees = async () => {
-      // Check cache first
-      const now = Date.now();
-      const cache = employeesCacheRef.current;
-      if (cache.data && cache.timestamp && (now - cache.timestamp) < EMPLOYEES_CACHE_DURATION) {
-        setAllEmployees(cache.data);
-        // Rebuild availability map from cached data
-        const availabilityMap: { [key: string]: any[] } = {};
-        cache.data.forEach((emp: any) => {
-          const unavailableTimes = emp.unavailable_times || [];
-          const unavailableRanges = emp.unavailable_ranges || [];
-          unavailableTimes.forEach((time: any) => {
-            const date = time.date;
-            if (!availabilityMap[date]) availabilityMap[date] = [];
-            availabilityMap[date].push({ employeeId: emp.id, employeeName: emp.display_name, ...time });
-          });
-          unavailableRanges.forEach((range: any) => {
-            const startDate = new Date(range.startDate);
-            const endDate = new Date(range.endDate);
-            const currentDate = new Date(startDate);
-            while (currentDate <= endDate) {
-              const dateString = currentDate.toISOString().split('T')[0];
-              if (!availabilityMap[dateString]) availabilityMap[dateString] = [];
-              availabilityMap[dateString].push({
-                employeeId: emp.id,
-                employeeName: emp.display_name,
-                date: dateString,
-                startTime: 'All Day',
-                endTime: 'All Day',
-                reason: range.reason,
-                isRange: true,
-                rangeId: range.id
-              });
-              currentDate.setDate(currentDate.getDate() + 1);
-            }
-          });
-        });
-        setEmployeeAvailabilityData(availabilityMap);
-        return; // Use cached data
-      }
-
       try {
         const { data, error } = await supabase
           .from('tenants_employee')
@@ -1391,9 +1346,6 @@ const Clients: React.FC<ClientsProps> = ({
         });
 
         setEmployeeAvailabilityData(availabilityMap);
-
-        // Update cache
-        employeesCacheRef.current = { data: mapped, timestamp: Date.now() };
       } catch (error) {
         console.error('Clients: Error fetching employees:', error);
         setAllEmployees([]);
@@ -3062,112 +3014,355 @@ const Clients: React.FC<ClientsProps> = ({
     const currentRoute = location.pathname;
     const routeChanged = lastRouteRef.current !== currentRoute;
 
-    // Helper function to check if we have the correct client loaded
-    const hasCorrectClient = (): boolean => {
-      if (!selectedClient || !lead_number) return false;
-
+    // If this is a back/forward navigation (POP) and we already have the client loaded, skip the fetch
+    // Note: routeChanged can be true on POP navigation, so we check navType first
+    if (navType === 'POP' && selectedClient && lead_number) {
       const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
       const currentClientId = isLegacy
         ? selectedClient.id?.toString().replace('legacy_', '')
         : selectedClient.id?.toString();
       const currentLeadNumber = selectedClient.lead_number;
 
+      // Check if we have the correct client already loaded
       if (isLegacy) {
-        return currentClientId === lead_number;
+        if (currentClientId === lead_number) {
+          console.log('🔍 Clients: POP navigation with cached client, skipping fetch');
+          setLocalLoading(false);
+          lastRouteRef.current = currentRoute; // Update route ref to prevent future refetches
+          return; // Skip fetch - we have the cached client
+        }
       } else {
-        return currentLeadNumber === lead_number || currentClientId === lead_number;
+        if (currentLeadNumber === lead_number || currentClientId === lead_number) {
+          console.log('🔍 Clients: POP navigation with cached client, skipping fetch');
+          setLocalLoading(false);
+          lastRouteRef.current = currentRoute; // Update route ref to prevent future refetches
+          return; // Skip fetch - we have the cached client
+        }
       }
-    };
-
-    // If we have the correct client already loaded, skip fetch (regardless of navigation type)
-    if (hasCorrectClient() && !location.pathname.includes('/master')) {
-      console.log('🔍 Clients: Already have correct client loaded, skipping fetch');
-      // Loading state removed for faster rendering
-      lastRouteRef.current = currentRoute; // Update route ref to prevent future refetches
-      return; // Skip fetch - we have the cached client
     }
 
-    // Only refetch if route actually changed to a different client
-    // For POP navigation, we already checked above if we have the client
+    // Always refetch if route changed (including coming back from /master)
+    // But skip if it's a POP navigation and we already handled it above
     if (routeChanged && navType !== 'POP') {
-      // Check if we're navigating to a different client (not just route string change)
-      const isDifferentClient = !hasCorrectClient();
-      if (isDifferentClient) {
-        lastRouteRef.current = currentRoute;
-        // Clear selectedClient only if it's actually a different client
-        setSelectedClient(null);
-        // Loading state removed
-        // Continue to fetch data below
-      } else {
-        // Same client, just route string changed (e.g., coming back from /master)
-        lastRouteRef.current = currentRoute;
-        // Loading state removed
-        // Loading state removed
-        return; // Skip fetch - same client
-      }
+      lastRouteRef.current = currentRoute;
+      // Clear selectedClient immediately to reset all child components
+      setSelectedClient(null);
+      // Continue to fetch data below - don't return early
     } else if (routeChanged && navType === 'POP') {
       // POP navigation but client doesn't match - update route ref and continue
       lastRouteRef.current = currentRoute;
-    } else if (!routeChanged && selectedClient && lead_number) {
-      // Same route, check if we have the correct client
-      if (hasCorrectClient() && !location.pathname.includes('/master')) {
-        // Loading state removed
-        // Loading state removed
-        return; // Already have the correct client loaded
+    } else if (selectedClient && lead_number && !location.pathname.includes('/master')) {
+      // Only skip fetch if we have the same client AND we're not on the master route
+      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      const currentClientId = isLegacy
+        ? selectedClient.id?.toString().replace('legacy_', '')
+        : selectedClient.id?.toString();
+      const currentLeadNumber = selectedClient.lead_number;
+
+      // For legacy leads, compare by ID; for new leads, compare by lead_number
+      if (isLegacy) {
+        // Legacy lead: compare numeric ID
+        if (currentClientId === lead_number) {
+          setLocalLoading(false); // Ensure loading is cleared
+          return; // Already have the correct legacy client loaded
+        }
+      } else {
+        // New lead: compare by lead_number or manual_id
+        if (currentLeadNumber === lead_number || currentClientId === lead_number) {
+          setLocalLoading(false); // Ensure loading is cleared
+          return; // Already have the correct new client loaded
+        }
       }
     }
 
-    // Only set loading to true if we actually need to fetch (don't block UI unnecessarily)
-    // Delay setting loading to true until we're sure we need to fetch
     let isMounted = true;
     const fetchEssentialData = async () => {
-      // Use the same logic that works when clicking "Go to Clients List"
-      // Fetch all leads and find the matching one - this is simpler and more reliable
+      // Always set loading when fetching new data
+      setLocalLoading(true);
+      // Use fullLeadNumber if lead_number is empty (fallback for route parsing)
       const effectiveLeadNumber = lead_number || fullLeadNumber;
-      console.log('🔍 fetchEssentialData: Starting fetch for lead_number:', effectiveLeadNumber);
-
       if (effectiveLeadNumber) {
-        // Use fetchAllLeads() - the same method that works when navigating
+        // Try to find the lead in both tables - run queries in parallel for faster loading
         let clientData = null;
 
-        try {
-          const allLeads = await fetchAllLeads();
-          console.log('🔍 fetchEssentialData: Fetched all leads, searching for:', effectiveLeadNumber);
+        const isManualIdCandidate = /^\d+$/.test(effectiveLeadNumber);
+        const isLegacyLeadId = /^\d+$/.test(effectiveLeadNumber);
 
-          // Search for the matching lead
-          const matchingLead = allLeads.find((lead: any) => {
-            const leadNum = lead.lead_number?.toString() || '';
-            const manualId = lead.manual_id?.toString() || '';
-            const leadId = lead.id?.toString().replace('legacy_', '') || '';
+        // Run all possible queries in parallel to find the lead faster
+        const queries = [];
 
-            // Try multiple matching strategies
-            return leadNum === effectiveLeadNumber ||
-              leadNum.toLowerCase() === effectiveLeadNumber.toLowerCase() ||
-              manualId === effectiveLeadNumber ||
-              manualId === effectiveLeadNumber.replace(/^[LC]/i, '') ||
-              leadId === effectiveLeadNumber ||
-              leadId === effectiveLeadNumber.replace(/^[LC]/i, '');
-          });
-
-          if (matchingLead) {
-            console.log('✅ fetchEssentialData: Found matching lead', {
-              id: matchingLead.id,
-              lead_number: matchingLead.lead_number,
-              manual_id: matchingLead.manual_id
-            });
-            clientData = matchingLead;
-          } else {
-            console.log('⚠️ fetchEssentialData: No matching lead found in all leads');
-          }
-        } catch (error) {
-          console.error('❌ fetchEssentialData: Error fetching all leads:', error);
+        if (isManualIdCandidate) {
+          queries.push(
+            supabase
+              .from('leads')
+              .select('*')
+              .eq('manual_id', effectiveLeadNumber)
+              .then(({ data, error }) => ({ type: 'manual', data, error }))
+          );
         }
 
-        // OLD COMPLEX QUERY LOGIC REMOVED - using simple fetchAllLeads approach instead
+        if (isLegacyLeadId) {
+          queries.push(
+            supabase
+              .from('leads_lead')
+              .select(`
+                *,
+                accounting_currencies!leads_lead_currency_id_fkey (
+                  name,
+                  iso_code
+                ),
+                misc_language!leads_lead_language_id_fkey (
+                  name
+                )
+              `)
+              .eq('id', parseInt(effectiveLeadNumber))
+              .single()
+              .then(({ data, error }) => ({ type: 'legacy', data, error }))
+          );
+        }
+
+        // Also try by lead_number for new leads
+        // If effectiveLeadNumber contains '/', it's a sublead - query by exact match
+        // Otherwise, query by lead_number
+        if (effectiveLeadNumber.includes('/')) {
+          queries.push(
+            supabase
+              .from('leads')
+              .select('*')
+              .eq('lead_number', effectiveLeadNumber)
+              .single()
+              .then(({ data, error }) => ({ type: 'lead_number', data, error }))
+          );
+        } else {
+          queries.push(
+            supabase
+              .from('leads')
+              .select('*')
+              .eq('lead_number', effectiveLeadNumber)
+              .single()
+              .then(({ data, error }) => ({ type: 'lead_number', data, error }))
+          );
+        }
+
+        // Wait for all queries to complete
+        const results = await Promise.allSettled(queries);
+
+        // Process results in priority order: manual_id > legacy > lead_number
+        for (const result of results) {
+          if (result.status === 'fulfilled') {
+            const { type, data, error } = result.value;
+
+            if (type === 'manual' && data && data.length > 0) {
+              let chosenLead = null;
+              if (requestedLeadNumber) {
+                chosenLead = data.find((lead: any) => lead.lead_number === requestedLeadNumber);
+              }
+              if (!chosenLead) {
+                const masterLead = data.find((lead: any) => typeof lead.lead_number === 'string' && lead.lead_number.includes('/1'));
+                chosenLead = masterLead || data.sort((a: any, b: any) => {
+                  const aNum = typeof a.lead_number === 'string' ? a.lead_number : '';
+                  const bNum = typeof b.lead_number === 'string' ? b.lead_number : '';
+                  return aNum.localeCompare(bNum);
+                })[0];
+              }
+
+              if (chosenLead) {
+                const categoryName = getCategoryName(chosenLead.category_id, chosenLead.category);
+                const chosenStageId = resolveStageId(chosenLead.stage);
+                clientData = {
+                  ...chosenLead,
+                  category: categoryName,
+                  stage: chosenStageId ?? (typeof chosenLead.stage === 'number' ? chosenLead.stage : null),
+                  emails: [],
+                  handler:
+                    (chosenLead.handler && chosenLead.handler.trim() !== '' && chosenLead.handler !== 'Not assigned')
+                      ? chosenLead.handler
+                      : (chosenLead.case_handler_id !== null && chosenLead.case_handler_id !== undefined
+                        ? getEmployeeDisplayName(String(chosenLead.case_handler_id))
+                        : 'Not assigned'),
+                };
+                break; // Found it, stop searching
+              }
+            } else if (type === 'legacy' && data && !error) {
+              // Process legacy lead
+              const legacyLead = data;
+              const legacyCurrencyRecord = Array.isArray(legacyLead.accounting_currencies)
+                ? legacyLead.accounting_currencies[0]
+                : legacyLead.accounting_currencies;
+              const legacyLanguageRecord = Array.isArray(legacyLead.misc_language)
+                ? legacyLead.misc_language[0]
+                : legacyLead.misc_language;
+
+              // Get scheduler name if available (defer to avoid blocking)
+              let schedulerName = '---';
+              if (legacyLead.meeting_scheduler_id) {
+                schedulerName = getEmployeeDisplayName(String(legacyLead.meeting_scheduler_id));
+              }
+
+              // Calculate sub-lead suffix if this is a sub-lead (has master_id)
+              // Optimized: Use a simpler query without ordering for faster results
+              let subLeadSuffix: number | undefined;
+              if (legacyLead.master_id) {
+                // Use a faster query - just count and find index, no ordering needed initially
+                const { data: existingSubLeads } = await supabase
+                  .from('leads_lead')
+                  .select('id')
+                  .eq('master_id', legacyLead.master_id)
+                  .not('master_id', 'is', null)
+                  .limit(100); // Limit to prevent huge queries
+
+                if (existingSubLeads) {
+                  // Sort in memory (faster than DB sort for small datasets)
+                  existingSubLeads.sort((a, b) => a.id - b.id);
+                  const currentLeadIndex = existingSubLeads.findIndex(sub => sub.id === legacyLead.id);
+                  // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
+                  subLeadSuffix = currentLeadIndex >= 0 ? currentLeadIndex + 2 : existingSubLeads.length + 2;
+                }
+              }
+
+              const legacyStageId = resolveStageId(legacyLead.stage);
+
+              // Extract language name from joined table
+              let languageName = '';
+              if (legacyLanguageRecord?.name) {
+                languageName = legacyLanguageRecord.name;
+              } else if (legacyLead.language_id) {
+                // If join failed, fetch language name directly by language_id
+                try {
+                  const { data: langData } = await supabase
+                    .from('misc_language')
+                    .select('name')
+                    .eq('id', legacyLead.language_id)
+                    .maybeSingle();
+                  if (langData?.name) {
+                    languageName = langData.name;
+                  }
+                } catch (langError) {
+                  console.error('Error fetching language name:', langError);
+                }
+              }
+
+              // Create transformed data by explicitly selecting only the fields we want
+              // This ensures unwanted fields (description, tracking fields, language_id) are never included
+              clientData = {
+                id: `legacy_${legacyLead.id}`,
+                name: legacyLead.name || '',
+                email: legacyLead.email || '',
+                phone: legacyLead.phone || '',
+                mobile: legacyLead.mobile || '',
+                topic: legacyLead.topic || '',
+                lead_number: formatLegacyLeadNumber(legacyLead, subLeadSuffix),
+                stage: legacyStageId ?? (typeof legacyLead.stage === 'number' ? legacyLead.stage : null),
+                source: String(legacyLead.source_id || ''),
+                created_at: legacyLead.cdate,
+                updated_at: legacyLead.udate,
+                notes: legacyLead.notes || '',
+                special_notes: legacyLead.special_notes || '',
+                next_followup: legacyLead.next_followup || '',
+                probability: legacyLead.probability !== null && legacyLead.probability !== undefined ? Number(legacyLead.probability) : 0,
+                category: getCategoryName(legacyLead.category_id, legacyLead.category),
+                language: languageName, // Always use the language name (never use ID)
+                balance: String(legacyLead.total || ''),
+                balance_currency: legacyCurrencyRecord?.name || (() => {
+                  switch (legacyLead.currency_id) {
+                    case 1: return '₪';
+                    case 2: return '€';
+                    case 3: return '$';
+                    case 4: return '£';
+                    default: return '₪';
+                  }
+                })(),
+                lead_type: 'legacy',
+                client_country: null,
+                emails: [],
+                closer: legacyLead.closer_id,
+                closer_id: legacyLead.closer_id || null, // Include closer_id for RolesTab
+                handler:
+                  legacyLead.case_handler_id !== null && legacyLead.case_handler_id !== undefined
+                    ? getEmployeeDisplayName(String(legacyLead.case_handler_id))
+                    : 'Not assigned',
+                case_handler_id: legacyLead.case_handler_id || null, // Include case_handler_id for RolesTab
+                scheduler: schedulerName,
+                unactivation_reason: legacyLead.unactivation_reason || null,
+                deactivate_notes: legacyLead.deactivate_notes || null,
+                unactivated_by: legacyLead.unactivated_by || null,
+                unactivated_at: legacyLead.unactivated_at || null,
+                status: legacyLead.status || null,
+                sales_roles_locked: legacyLead.sales_roles_locked || null,
+                reason_id: legacyLead.reason_id || null,
+                manual_id: legacyLead.manual_id || null,
+                master_id: legacyLead.master_id || null,
+                eligibile: legacyLead.eligibile || null,
+                no_of_applicants: legacyLead.no_of_applicants || null,
+                meeting_scheduler_id: legacyLead.meeting_scheduler_id || null,
+                meeting_manager_id: legacyLead.meeting_manager_id || null,
+                meeting_lawyer_id: legacyLead.meeting_lawyer_id || null,
+                expert_id: legacyLead.expert_id || null,
+                vat: (legacyLead as any).vat || null,
+                potential_total: legacyLead.potential_total || null,
+                description: legacyLead.description || null,
+                description_last_edited_by: legacyLead.description_last_edited_by || null,
+                description_last_edited_at: legacyLead.description_last_edited_at || null,
+                special_notes_last_edited_by: legacyLead.special_notes_last_edited_by || null,
+                special_notes_last_edited_at: legacyLead.special_notes_last_edited_at || null,
+                // Note: language_id is excluded as we use language (name) instead
+              };
+              break; // Found it, stop searching
+            } else if (type === 'lead_number' && data && !error) {
+              // Process new lead by lead_number
+              const newLead = data;
+              const categoryName = getCategoryName(newLead.category_id, newLead.category);
+              const newStageId = resolveStageId(newLead.stage);
+              clientData = {
+                ...newLead,
+                category: categoryName,
+                stage: newStageId ?? (typeof newLead.stage === 'number' ? newLead.stage : null),
+                emails: [],
+                handler:
+                  (newLead.handler && newLead.handler.trim() !== '' && newLead.handler !== 'Not assigned')
+                    ? newLead.handler
+                    : (newLead.case_handler_id !== null && newLead.case_handler_id !== undefined
+                      ? getEmployeeDisplayName(String(newLead.case_handler_id))
+                      : 'Not assigned'),
+              };
+              break; // Found it, stop searching
+            }
+          }
+        }
+
+        // If no client found from parallel queries, try fallback lookup
+        if (!clientData) {
+          const numericLeadCandidate = effectiveLeadNumber.replace(/^[LC]/i, '');
+          if (numericLeadCandidate && /^\d+$/.test(numericLeadCandidate)) {
+            const { data: leadsByManualId, error: manualLookupError } = await supabase
+              .from('leads')
+              .select('*')
+              .eq('manual_id', numericLeadCandidate)
+              .order('created_at', { ascending: false })
+              .limit(1);
+
+            if (!manualLookupError && leadsByManualId?.[0]) {
+              const leadByManualId = leadsByManualId[0];
+              const categoryName = getCategoryName(leadByManualId.category_id, leadByManualId.category);
+              const manualStageId = resolveStageId(leadByManualId.stage);
+              clientData = {
+                ...leadByManualId,
+                category: categoryName,
+                stage: manualStageId ?? (typeof leadByManualId.stage === 'number' ? leadByManualId.stage : null),
+                emails: [],
+                handler:
+                  (leadByManualId.handler && leadByManualId.handler.trim() !== '' && leadByManualId.handler !== 'Not assigned')
+                    ? leadByManualId.handler
+                    : (leadByManualId.case_handler_id !== null && leadByManualId.case_handler_id !== undefined
+                      ? getEmployeeDisplayName(String(leadByManualId.case_handler_id))
+                      : 'Not assigned'),
+              };
+            }
+          }
+        }
 
         // Set client data and stop loading as soon as we have it
         if (clientData && isMounted) {
-          console.log('✅ fetchEssentialData: Client found, setting selectedClient', { id: clientData.id, lead_number: clientData.lead_number });
           // Set unactivated view BEFORE setting selectedClient
           try {
             const isLegacy = clientData.lead_type === 'legacy' || clientData.id?.toString().startsWith('legacy_');
@@ -3184,13 +3379,13 @@ const Clients: React.FC<ClientsProps> = ({
 
           // Set the client immediately for faster rendering
           setSelectedClient(normalizeClientStage(clientData));
+          setLocalLoading(false); // Stop loading immediately - don't wait for anything else
 
           // Clear flag after a brief delay
           setTimeout(() => {
             isSettingUpClientRef.current = false;
           }, 100);
         } else if (!clientData) {
-          console.log('❌ fetchEssentialData: No client data found after all queries and fallbacks');
           // If still no client found, try to get latest lead
           // Only do this if there's no lead_number in the URL (empty route)
           // If there IS a lead_number, it means we're trying to load a specific client, so don't jump to latest
@@ -3215,17 +3410,17 @@ const Clients: React.FC<ClientsProps> = ({
 
               // Set the client
               setSelectedClient(normalizeClientStage(latestLead));
+              setLocalLoading(false); // Stop loading immediately
 
               // Clear flag after a brief delay
               setTimeout(() => {
                 isSettingUpClientRef.current = false;
               }, 100);
             } else {
-              // Loading state removed
+              setLocalLoading(false);
             }
           } else {
-            // Client ID in URL but not found - just log, don't block UI
-            console.warn('Client not found for lead_number:', effectiveLeadNumber);
+            setLocalLoading(false);
           }
         }
       } else {
@@ -3260,61 +3455,28 @@ const Clients: React.FC<ClientsProps> = ({
 
           // Now set the client
           setSelectedClient(normalizeClientStage(latestLead));
-          // Loading state removed // Stop loading immediately
+          setLocalLoading(false); // Stop loading immediately
 
           // Clear flag after a brief delay
           setTimeout(() => {
             isSettingUpClientRef.current = false;
           }, 100);
         } else {
-          // Loading state removed
+          setLocalLoading(false);
         }
       }
     };
 
     fetchEssentialData();
 
-    // Timeout removed - page renders immediately without blocking
-
     return () => {
       isMounted = false;
+      // Don't set loading to false here - it should only be set in the async function
     };
-  }, [lead_number, fullLeadNumber, requestedLeadNumber, buildClientRoute, droppedStageId, userManuallyExpanded, location.pathname, selectedClient]); // Added location.pathname to ensure refetch on route change
+  }, [lead_number, fullLeadNumber, requestedLeadNumber, buildClientRoute, droppedStageId, userManuallyExpanded, location.pathname]); // Added location.pathname to ensure refetch on route change
   // Background loading for non-essential data (runs after essential data is loaded)
-  // Cache reference data to avoid refetching on every mount
-  const backgroundDataCacheRef = useRef<{
-    categories?: any[];
-    sources?: string[];
-    languages?: string[];
-    currencies?: any[];
-    meetingLocations?: any[];
-    tags?: any[];
-    timestamp?: number;
-  }>({});
-  const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
-
   useEffect(() => {
     const loadBackgroundData = async () => {
-      // Check cache first
-      const now = Date.now();
-      const cache = backgroundDataCacheRef.current;
-      if (cache.timestamp && (now - cache.timestamp) < CACHE_DURATION &&
-        cache.categories && cache.sources && cache.languages && cache.currencies) {
-        // Use cached data
-        setMainCategories(cache.categories.map((cat: any) =>
-          cat.misc_maincategory ? `${cat.name} (${cat.misc_maincategory.name})` : cat.name
-        ).filter(Boolean));
-        setSources(cache.sources);
-        setLanguagesList(cache.languages);
-        setCurrencies(cache.currencies);
-        if (cache.meetingLocations) setMeetingLocations(cache.meetingLocations);
-        if (cache.tags) {
-          setAllTags(cache.tags);
-          setTagsList(cache.tags.map((tag: any) => tag.name));
-        }
-        return; // Skip fetch if cache is valid
-      }
-
       setBackgroundLoading(true);
       try {
         // Fetch all non-essential data in parallel for better performance
@@ -3375,27 +3537,25 @@ const Clients: React.FC<ClientsProps> = ({
 
         // Process currencies
         const { newCurrencies, legacyCurrencies } = currenciesResult;
-        let finalCurrencies: any[] = [];
         if (!newCurrencies.error && newCurrencies.data && newCurrencies.data.length > 0) {
-          finalCurrencies = newCurrencies.data;
-          setCurrencies(finalCurrencies);
+          setCurrencies(newCurrencies.data);
         } else if (!legacyCurrencies.error && legacyCurrencies.data && legacyCurrencies.data.length > 0) {
-          finalCurrencies = legacyCurrencies.data.map(currency => ({
+          const transformedCurrencies = legacyCurrencies.data.map(currency => ({
             id: currency.id.toString(),
             front_name: currency.iso_code === 'NIS' ? '₪' : currency.iso_code === 'EUR' ? '€' : currency.iso_code === 'USD' ? '$' : currency.iso_code === 'GBP' ? '£' : currency.iso_code,
             iso_code: currency.iso_code,
             name: currency.name
           }));
-          setCurrencies(finalCurrencies);
+          setCurrencies(transformedCurrencies);
         } else {
           // Fallback to hardcoded currencies
-          finalCurrencies = [
+          const fallbackCurrencies = [
             { id: '1', front_name: '₪', iso_code: 'NIS', name: '₪' },
             { id: '2', front_name: '€', iso_code: 'EUR', name: '€' },
             { id: '3', front_name: '$', iso_code: 'USD', name: '$' },
             { id: '4', front_name: '£', iso_code: 'GBP', name: '£' }
           ];
-          setCurrencies(finalCurrencies);
+          setCurrencies(fallbackCurrencies);
         }
 
         // Process meeting locations from tenants_meetinglocation
@@ -3408,7 +3568,6 @@ const Clients: React.FC<ClientsProps> = ({
               default_link: loc.default_link ?? null,
             }));
           setMeetingLocations(processedLocations);
-          backgroundDataCacheRef.current.meetingLocations = processedLocations;
         }
 
         // Process tags
@@ -3416,15 +3575,7 @@ const Clients: React.FC<ClientsProps> = ({
           setAllTags(tagsResult.data);
           const tagNames = tagsResult.data.map((tag: any) => tag.name);
           setTagsList(tagNames);
-          backgroundDataCacheRef.current.tags = tagsResult.data;
         }
-
-        // Update cache with all fetched data
-        backgroundDataCacheRef.current.categories = categoriesResult.data || [];
-        backgroundDataCacheRef.current.sources = sourcesResult.data?.map((row: any) => row.name).filter(Boolean) || [];
-        backgroundDataCacheRef.current.languages = languagesResult.data?.map((row: any) => row.name).filter(Boolean) || [];
-        backgroundDataCacheRef.current.currencies = finalCurrencies;
-        backgroundDataCacheRef.current.timestamp = Date.now();
 
         console.log('✅ Background data loading completed');
       } catch (error) {
@@ -4435,7 +4586,7 @@ const Clients: React.FC<ClientsProps> = ({
             `)
             .eq('auth_id', authUser.id)
             .single();
-
+          
           if (userData) {
             // Prefer display_name from tenants_employee if available, otherwise use full_name
             const employee = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
@@ -4443,7 +4594,7 @@ const Clients: React.FC<ClientsProps> = ({
             currentUserEmployeeId = userData.employee_id || null;
           }
         }
-
+        
         // Fallback to email-based lookup if auth_id lookup fails
         if (!currentUserFullName && account.username) {
           const { data: userDataByEmail } = await supabase
@@ -4458,7 +4609,7 @@ const Clients: React.FC<ClientsProps> = ({
             `)
             .eq('email', account.username)
             .single();
-
+          
           if (userDataByEmail) {
             const employee = Array.isArray(userDataByEmail.tenants_employee) ? userDataByEmail.tenants_employee[0] : userDataByEmail.tenants_employee;
             currentUserFullName = employee?.display_name || userDataByEmail.full_name || '';
@@ -4486,7 +4637,7 @@ const Clients: React.FC<ClientsProps> = ({
       if (selectedLocation && selectedLocation.id && restrictedLocationIds.includes(selectedLocation.id)) {
         // Extract hour from the selected time (e.g., "10:30" -> "10")
         const selectedTimeHour = meetingFormData.time.split(':')[0];
-
+        
         // Check if there's already a meeting at the same date, same hour, and location
         // We need to fetch all meetings for that date and location, then filter by hour
         const { data: allMeetingsForDate, error: conflictError } = await supabase
@@ -7879,7 +8030,7 @@ const Clients: React.FC<ClientsProps> = ({
       if (selectedLocation && selectedLocation.id && restrictedLocationIds.includes(selectedLocation.id)) {
         // Extract hour from the selected time (e.g., "10:30" -> "10")
         const selectedTimeHour = rescheduleFormData.time.split(':')[0];
-
+        
         // Check if there's already a meeting at the same date, same hour, and location
         // We need to fetch all meetings for that date and location, then filter by hour
         // Exclude the meeting we're rescheduling (if it exists and hasn't been canceled yet)
@@ -10097,48 +10248,13 @@ const Clients: React.FC<ClientsProps> = ({
     normalizeCurrencyForForm,
   ]);
 
-  // Calculate unactivation status (must be before early return to follow Rules of Hooks)
-  // ===== TOP PRIORITY: Check unactivation status FIRST, before any other logic =====
-  // This must be checked immediately to prevent flickering and ensure badge is always shown
-  const isLegacyForView = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-  const statusValue = selectedClient ? (selectedClient as any).status : null;
-  // Only show unactivated box for new leads (not legacy leads)
-  const isUnactivated = selectedClient && statusValue !== null && statusValue !== undefined && !isLegacyForView
-    ? (statusValue === 'inactive')
-    : false;
-
-  // Debug logging - only log when values actually change (must be before early return)
-  useEffect(() => {
-    console.log('🔍 RENDER TOP PRIORITY: Checking unactivation status', {
-      selectedClientId: selectedClient?.id,
-      isLegacyForView,
-      statusValue,
-      isUnactivated,
-      userManuallyExpanded,
-      hasSelectedClient: !!selectedClient
-    });
-  }, [selectedClient?.id, isLegacyForView, statusValue, isUnactivated, userManuallyExpanded, selectedClient]);
-
-  // Only show "Please select a client" if there's no client ID in URL and no selected client
-  // Page renders immediately - no loading state
-  if (!selectedClient) {
-    if (!lead_number && !fullLeadNumber) {
-      // No client ID in URL - show message
-      return (
-        <div className="p-6">
-          <h1 className="text-2xl font-bold mb-4">Clients</h1>
-          <div className="alert">
-            <span>Please select a client from search or create a new one.</span>
-          </div>
-        </div>
-      );
-    }
-    // Client ID in URL but not loaded yet - render empty state (data will load in background)
-    // This allows the page to render immediately without blocking
+  if (!localLoading && !selectedClient) {
     return (
       <div className="p-6">
         <h1 className="text-2xl font-bold mb-4">Clients</h1>
-        <div className="text-base-content/70">Loading...</div>
+        <div className="alert">
+          <span>Please select a client from search or create a new one.</span>
+        </div>
       </div>
     );
   }
@@ -11408,8 +11524,25 @@ const Clients: React.FC<ClientsProps> = ({
   };
 
   // ===== TOP PRIORITY: Check unactivation status FIRST, before any other logic =====
-  // Note: isLegacyForView, statusValue, and isUnactivated are already defined above before the early return
-  // This section is kept for reference but the actual logic is moved up to follow Rules of Hooks
+  // This must be checked immediately to prevent flickering and ensure badge is always shown
+  const isLegacyForView = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+  const statusValue = selectedClient ? (selectedClient as any).status : null;
+  // Only show unactivated box for new leads (not legacy leads)
+  const isUnactivated = selectedClient && statusValue !== null && statusValue !== undefined && !isLegacyForView
+    ? (statusValue === 'inactive')
+    : false;
+
+  // Debug logging - only log when values actually change
+  useEffect(() => {
+    console.log('🔍 RENDER TOP PRIORITY: Checking unactivation status', {
+      selectedClientId: selectedClient?.id,
+      isLegacyForView,
+      statusValue,
+      isUnactivated,
+      userManuallyExpanded,
+      hasSelectedClient: !!selectedClient
+    });
+  }, [selectedClient?.id, isLegacyForView, statusValue, isUnactivated, userManuallyExpanded, selectedClient]);
 
   // Show unactivated view if lead is unactivated and user hasn't clicked to expand
   // This takes priority over loading state to prevent flickering
@@ -11741,7 +11874,14 @@ const Clients: React.FC<ClientsProps> = ({
     );
   }
 
-  // Removed loading screen - render immediately with available data
+  // Show loading state while determining view (only if not unactivated)
+  if (localLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="loading loading-spinner loading-lg"></div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-base-100">
@@ -13193,7 +13333,7 @@ const Clients: React.FC<ClientsProps> = ({
                     : (statusValueForBadge === 'inactive');
 
                   // Get deactivate_notes for both legacy and new leads
-                  const deactivateNotes = selectedClient ? ((selectedClient as any).deactivate_notes || null) : null;
+                  const deactivateNotes = (selectedClient as any).deactivate_notes || null;
 
                   // Detect if text contains Hebrew characters for RTL/LTR alignment
                   const hasHebrew = deactivateNotes ? /[\u0590-\u05FF]/.test(deactivateNotes) : false;
@@ -15326,7 +15466,12 @@ const Clients: React.FC<ClientsProps> = ({
         loginRequest={loginRequest}
         onOfferSent={onClientUpdate}
       />
-      {/* Removed loading overlay - page loads immediately */}
+      {/* Loading overlay spinner */}
+      {localLoading && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/60">
+          <span className="loading loading-spinner loading-lg text-primary"></span>
+        </div>
+      )}
       {showSubLeadDrawer && (
         <div className="fixed inset-0 z-50 flex">
           <div
