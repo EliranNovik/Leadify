@@ -154,6 +154,8 @@ const MultiSelectInput = ({
 
 const ReassignLeadsReport: React.FC = () => {
     const { instance } = useMsal();
+    const [hasCollectionAccess, setHasCollectionAccess] = useState<boolean | null>(null);
+    const [checkingAccess, setCheckingAccess] = useState(true);
     const [reassignFilters, setReassignFilters] = usePersistedFilters('reportsPage_reassignFilters', {
         fromDate: '',
         toDate: '',
@@ -403,6 +405,69 @@ const ReassignLeadsReport: React.FC = () => {
         window.addEventListener('scroll', handleScroll);
         return () => window.removeEventListener('scroll', handleScroll);
     }, [reassignResults.length]);
+
+    // Check if user has collection access (is_collection = true)
+    useEffect(() => {
+        const checkCollectionAccess = async () => {
+            try {
+                setCheckingAccess(true);
+                const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+                if (authError || !user) {
+                    setHasCollectionAccess(false);
+                    setCheckingAccess(false);
+                    return;
+                }
+
+                // Try to find user by auth_id first
+                let { data: userData, error } = await supabase
+                    .from('users')
+                    .select('employee_id')
+                    .eq('auth_id', user.id)
+                    .maybeSingle();
+
+                // If not found by auth_id, try by email
+                if (!userData && user.email) {
+                    const { data: userByEmail, error: emailError } = await supabase
+                        .from('users')
+                        .select('employee_id')
+                        .eq('email', user.email)
+                        .maybeSingle();
+
+                    userData = userByEmail;
+                    error = emailError;
+                }
+
+                if (!error && userData && userData.employee_id) {
+                    const { data: employeeData, error: employeeError } = await supabase
+                        .from('tenants_employee')
+                        .select('is_collection')
+                        .eq('id', userData.employee_id)
+                        .maybeSingle();
+
+                    if (!employeeError && employeeData) {
+                        // Check if is_collection is true (handle boolean, string 't', or number)
+                        const collectionStatus = employeeData.is_collection === true ||
+                            employeeData.is_collection === 't' ||
+                            employeeData.is_collection === 'true' ||
+                            employeeData.is_collection === 1;
+                        setHasCollectionAccess(collectionStatus);
+                    } else {
+                        setHasCollectionAccess(false);
+                    }
+                } else {
+                    setHasCollectionAccess(false);
+                }
+            } catch (error) {
+                console.error('Error checking collection access:', error);
+                setHasCollectionAccess(false);
+            } finally {
+                setCheckingAccess(false);
+            }
+        };
+
+        checkCollectionAccess();
+    }, []);
 
     // Fetch employees with photo_url
     useEffect(() => {
@@ -1738,6 +1803,34 @@ const ReassignLeadsReport: React.FC = () => {
             setSelectedRoleForReassign(activeRoleFilter);
         }
     }, [activeRoleFilter]);
+
+    // Show loading state while checking access
+    if (checkingAccess) {
+        return (
+            <div className="p-4 md:p-6">
+                <div className="flex items-center justify-center min-h-[400px]">
+                    <span className="loading loading-spinner loading-lg"></span>
+                </div>
+            </div>
+        );
+    }
+
+    // Show access denied message if user doesn't have collection access
+    if (!hasCollectionAccess) {
+        return (
+            <div className="p-4 md:p-6">
+                <div className="alert alert-error shadow-lg">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <div>
+                        <h3 className="font-bold">Access Denied</h3>
+                        <div className="text-sm">You do not have permission to access this report. This tool is only available for users with collection access (is_collection = true).</div>
+                    </div>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div ref={scrollContainerRef} className="p-4 md:p-6">

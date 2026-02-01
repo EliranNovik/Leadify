@@ -8307,42 +8307,66 @@ export default function ReportsPage() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showSearchDropdown, setShowSearchDropdown] = useState<boolean>(false);
   const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
+  const [hasCollectionAccess, setHasCollectionAccess] = useState<boolean>(false);
 
   console.log('Selected report:', selectedReport);
 
-  // Fetch superuser status
+  // Fetch superuser status and collection access
   useEffect(() => {
-    const fetchSuperUserStatus = async () => {
+    const fetchUserPermissions = async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
-          const { data: userData, error: userError } = await supabase
+          // Try to find user by auth_id first
+          let { data: userData, error: userError } = await supabase
             .from('users')
-            .select('is_superuser')
+            .select('is_superuser, employee_id')
             .eq('auth_id', user.id)
-            .single();
+            .maybeSingle();
 
           // If not found by auth_id, try by email
           if ((userError || !userData) && user.email) {
             const { data: userByEmail } = await supabase
               .from('users')
-              .select('is_superuser')
+              .select('is_superuser, employee_id')
               .eq('email', user.email)
               .maybeSingle();
 
-            if (userByEmail) {
-              setIsSuperUser(userByEmail.is_superuser === true || userByEmail.is_superuser === 'true' || userByEmail.is_superuser === 1);
-            }
-          } else if (userData) {
+            userData = userByEmail;
+          }
+
+          if (userData) {
+            // Check superuser status
             setIsSuperUser(userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1);
+
+            // Check collection access (is_collection = true)
+            if (userData.employee_id) {
+              const { data: employeeData, error: employeeError } = await supabase
+                .from('tenants_employee')
+                .select('is_collection')
+                .eq('id', userData.employee_id)
+                .maybeSingle();
+
+              if (!employeeError && employeeData) {
+                const collectionStatus = employeeData.is_collection === true ||
+                  employeeData.is_collection === 't' ||
+                  employeeData.is_collection === 'true' ||
+                  employeeData.is_collection === 1;
+                setHasCollectionAccess(collectionStatus);
+              } else {
+                setHasCollectionAccess(false);
+              }
+            } else {
+              setHasCollectionAccess(false);
+            }
           }
         }
       } catch (error) {
-        console.error('Error fetching superuser status:', error);
+        console.error('Error fetching user permissions:', error);
       }
     };
 
-    fetchSuperUserStatus();
+    fetchUserPermissions();
   }, []);
 
   // Close dropdown when report is selected
@@ -8353,19 +8377,41 @@ export default function ReportsPage() {
     }
   }, [selectedReport]);
 
-  // Filter reports based on search query and superuser status
+  // Filter reports based on search query, superuser status, and collection access
   const filteredReports = useMemo(() => {
-    // First filter by superuser status
+    // First filter by superuser status and collection access
     let reportsToFilter = reports;
+    const canAccessTools = isSuperUser || hasCollectionAccess;
+    
     if (!isSuperUser) {
       reportsToFilter = reports
-        .filter(section => section.category !== 'Tools')
+        .filter(section => {
+          // Show Tools section if user has collection access or is superuser
+          if (section.category === 'Tools') {
+            return canAccessTools;
+          }
+          return true;
+        })
         .map((section) => {
           // Filter out Sales Contribution from Contribution category if not superuser
           if (section.category === 'Contribution') {
             return {
               ...section,
               items: section.items.filter(item => item.label !== 'Sales Contribution'),
+            };
+          }
+          // Filter Tools items based on permissions
+          if (section.category === 'Tools' && canAccessTools) {
+            return {
+              ...section,
+              items: section.items.filter(item => {
+                // Re-assign leads requires collection access
+                if (item.label === 'Re-assign leads') {
+                  return hasCollectionAccess || isSuperUser;
+                }
+                // Other tools require superuser access
+                return isSuperUser;
+              }),
             };
           }
           return section;
@@ -8393,7 +8439,7 @@ export default function ReportsPage() {
         };
       })
       .filter((section) => section.items.length > 0);
-  }, [searchQuery, isSuperUser]);
+  }, [searchQuery, isSuperUser, hasCollectionAccess]);
 
   return (
     <div className="p-0 md:p-6 space-y-8">
