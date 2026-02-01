@@ -409,7 +409,7 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
     displayPhone
   });
   return (
-    <div className="text-black">
+    <div>
       <div className="flex items-center gap-3 mb-4">
         <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ backgroundColor: '#391BC8' }}>
           <UserIcon className="w-5 h-5 text-white" />
@@ -650,27 +650,27 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
 
       <div className="space-y-3">
         {/* Email */}
-        <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
-          <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Email</p>
-          <a href={displayEmail ? `mailto:${displayEmail}` : undefined} className="text-sm text-gray-900 text-right break-all">
+        <div className="flex items-center gap-4 md:gap-6 pb-2 border-b border-gray-200 last:border-b-0">
+          <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text flex-shrink-0">Email</p>
+          <a href={displayEmail ? `mailto:${displayEmail}` : undefined} className="text-sm text-gray-900 break-all">
             {displayEmail || '---'}
           </a>
         </div>
 
         {/* Phone */}
-        <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
-          <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Phone</p>
-          <a href={displayPhone ? `tel:${displayPhone}` : undefined} className="text-sm text-gray-900 text-right">
+        <div className="flex items-center gap-4 md:gap-6 pb-2 border-b border-gray-200 last:border-b-0">
+          <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text flex-shrink-0">Phone</p>
+          <a href={displayPhone ? `tel:${displayPhone}` : undefined} className="text-sm text-gray-900">
             {displayPhone || '---'}
           </a>
         </div>
 
         {/* Category */}
         <div className="pb-2 border-b border-gray-200 last:border-b-0">
-          <div className="flex justify-between items-center">
-            <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Category</p>
+          <div className="flex items-center gap-4 md:gap-6">
+            <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text flex-shrink-0">Category</p>
             <div className="flex items-center gap-2">
-              <p className="text-sm text-black text-right">
+              <p className="text-sm text-black">
                 {selectedClient ? getCategoryDisplayName(selectedClient.category_id, selectedClient.category) || 'Not specified' : 'Not specified'}
               </p>
               {(!selectedClient?.category_id && !selectedClient?.category) && (
@@ -750,17 +750,17 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
         </div>
 
         {/* Topic */}
-        <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
-          <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Topic</p>
-          <p className="text-sm text-gray-900 text-right">
+        <div className="flex items-center gap-4 md:gap-6 pb-2 border-b border-gray-200 last:border-b-0">
+          <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text flex-shrink-0">Topic</p>
+          <p className="text-sm text-gray-900">
             {selectedClient ? (selectedClient.topic || 'German Citizenship') : 'German Citizenship'}
           </p>
         </div>
 
         {/* Source */}
-        <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
-          <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Source</p>
-          <p className="text-sm text-gray-900 text-right">
+        <div className="flex items-center gap-4 md:gap-6 pb-2 border-b border-gray-200 last:border-b-0">
+          <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text flex-shrink-0">Source</p>
+          <p className="text-sm text-gray-900">
             {selectedClient ? (() => {
               // Prioritize source_id (foreign key to misc_leadsource), fallback to source field
               const sourceId = selectedClient.source_id ?? selectedClient.source;
@@ -776,9 +776,9 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
       {/* Progress & Follow-up - Mobile view inline */}
       <div className="space-y-3 md:hidden">
         {/* Probability */}
-        <div className="pb-2 border-b border-gray-200 last:border-b-0">
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Probability</p>
+        <div className="pb-2">
+          <div className="flex items-center gap-4 md:gap-6 mb-2">
+            <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text flex-shrink-0">Probability</p>
             <span className="text-sm font-semibold text-gray-900">{selectedClient?.probability || 0}%</span>
           </div>
           <div className="w-full bg-gray-200 rounded-full h-2">
@@ -790,9 +790,9 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
         </div>
 
         {/* Next Follow-up */}
-        <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
-          <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Next Follow-up</p>
-          <p className="text-sm text-gray-900 text-right">
+        <div className="flex items-center gap-4 md:gap-6 pb-2">
+          <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text flex-shrink-0">Next Follow-up</p>
+          <p className="text-sm text-gray-900">
             {selectedClient?.next_followup ? (
               new Date(selectedClient.next_followup).toLocaleDateString('en-US', {
                 month: 'short',
@@ -811,9 +811,9 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
           selectedClient?.closer !== null &&
           selectedClient?.closer !== undefined &&
           (getEmployeeDisplayName ? getEmployeeDisplayName(selectedClient?.closer) !== 'Not assigned' : selectedClient?.closer !== 'Not assigned') ? (
-          <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
-            <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Closer</p>
-            <p className="text-sm text-gray-900 text-right">
+          <div className="flex items-center gap-4 md:gap-6 pb-2">
+            <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text flex-shrink-0">Closer</p>
+            <p className="text-sm text-gray-900">
               {getEmployeeDisplayName ? getEmployeeDisplayName(selectedClient?.closer) : selectedClient?.closer}
             </p>
           </div>

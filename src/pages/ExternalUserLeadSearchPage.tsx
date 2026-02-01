@@ -4,6 +4,7 @@ import { supabase, type Lead } from '../lib/supabase';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
 import LeadDetailsModal from '../components/LeadDetailsModal';
+import { usePersistedState, usePersistedFilters } from '../hooks/usePersistedState';
 
 // Static dropdown options - moved outside component to prevent re-creation on every render
 const REASON_OPTIONS = ["Inquiry", "Follow-up", "Complaint", "Consultation", "Other"];
@@ -346,112 +347,6 @@ const MultiSelectInput = ({
 };
 
 // Special component for main category selection with auto-subcategory selection
-// Column Selector Component for Table View
-const ColumnSelector = ({ 
-  selectedColumns, 
-  onColumnsChange, 
-  showDropdown, 
-  onShowDropdown, 
-  onHideDropdown 
-}: {
-  selectedColumns: string[];
-  onColumnsChange: (columns: string[]) => void;
-  showDropdown: boolean;
-  onShowDropdown: () => void;
-  onHideDropdown: () => void;
-}) => {
-  const containerRef = React.useRef<HTMLDivElement>(null);
-
-  // Handle clicks outside the component to close dropdown
-  React.useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        onHideDropdown();
-      }
-    };
-
-    if (showDropdown) {
-      // Add event listener with a small delay to avoid immediate closing
-      setTimeout(() => {
-        document.addEventListener('mousedown', handleClickOutside);
-      }, 100);
-    }
-
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [showDropdown, onHideDropdown]);
-
-  const groupedColumns = AVAILABLE_COLUMNS.reduce((acc, column) => {
-    if (!acc[column.category]) {
-      acc[column.category] = [];
-    }
-    acc[column.category].push(column);
-    return acc;
-  }, {} as Record<string, typeof AVAILABLE_COLUMNS>);
-
-  const handleColumnToggle = (columnKey: string) => {
-    if (selectedColumns.includes(columnKey)) {
-      onColumnsChange(selectedColumns.filter(col => col !== columnKey));
-    } else {
-      onColumnsChange([...selectedColumns, columnKey]);
-    }
-    // Don't close dropdown - let user select multiple columns
-    // Dropdown will close when clicking outside
-  };
-
-  return (
-    <div ref={containerRef} className="form-control flex flex-col col-span-2 sm:col-span-1 relative">
-      <label className="label mb-2">
-        <span className="label-text">Table Columns</span>
-        <span className="label-text-alt text-purple-600 font-medium">
-          {selectedColumns.length} selected
-        </span>
-      </label>
-      
-      <div className="relative">
-        <button
-          type="button"
-          className="input input-bordered w-full text-left flex items-center justify-between"
-          onClick={onShowDropdown}
-        >
-          <span>Select columns for table view...</span>
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-          </svg>
-        </button>
-        
-        {showDropdown && (
-          <div className="absolute z-20 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto">
-            <div className="p-2">
-              {Object.entries(groupedColumns).map(([category, columns]) => (
-                <div key={category} className="mb-4">
-                  <h4 className="font-semibold text-sm text-gray-700 mb-2 border-b pb-1">
-                    {category}
-                  </h4>
-                  <div className="space-y-1">
-                    {columns.map((column) => (
-                      <label key={column.key} className="flex items-center space-x-2 cursor-pointer hover:bg-gray-50 p-1 rounded">
-                        <input
-                          type="checkbox"
-                          checked={selectedColumns.includes(column.key)}
-                          onChange={() => handleColumnToggle(column.key)}
-                          className="checkbox checkbox-sm"
-                        />
-                        <span className="text-sm">{column.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
 const MainCategoryInput = ({ 
   label, 
   field, 
@@ -873,43 +768,36 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
 };
 
 const ExternalUserLeadSearchPage: React.FC = () => {
-  // Initialize filters with current date - ensure no persistent state interferes
+  // Initialize filters with current date
   const todayStr = new Date().toISOString().split('T')[0];
   
-  const [filters, setFilters] = useState({
+  const [filters, setFilters] = usePersistedFilters('externalUserLeadSearch_filters', {
     fromDate: todayStr, // Default to today
     toDate: todayStr, // Default to today
     category: [] as string[],
     language: [] as string[],
-    reason: [] as string[],
-    tags: [] as string[],
-    fileId: '',
     status: [] as string[],
     source: [] as string[],
     eligibilityDeterminedOnly: false,
     stage: [] as string[],
     topic: [] as string[],
-    content: '',
-    scheduler: [] as string[],
-    manager: [] as string[],
-    lawyer: [] as string[],
-    expert: [] as string[],
-    closer: [] as string[],
-    case_handler: [] as string[],
-    expert_examination: [] as string[],
+  }, {
+    storage: 'sessionStorage',
   });
-  const [results, setResults] = useState<Lead[]>([]);
+  const [results, setResults] = usePersistedState<Lead[]>('externalUserLeadSearch_results', [], {
+    storage: 'sessionStorage',
+  });
   const [isSearching, setIsSearching] = useState(false);
-  const [searchPerformed, setSearchPerformed] = useState(false);
+  const [searchPerformed, setSearchPerformed] = usePersistedState('externalUserLeadSearch_performed', false, {
+    storage: 'sessionStorage',
+  });
   const [stageOptions, setStageOptions] = useState<string[]>([]);
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
   const [mainCategoryOptions, setMainCategoryOptions] = useState<string[]>([]);
   const [sourceOptions, setSourceOptions] = useState<string[]>([]);
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
   const [topicOptions, setTopicOptions] = useState<string[]>([]);
-  const [reasonOptions, setReasonOptions] = useState<string[]>([]);
-  const [tagOptions, setTagOptions] = useState<string[]>([]);
-  const [roleOptions, setRoleOptions] = useState<string[]>([]);
+  const [allowedSourceIds, setAllowedSourceIds] = useState<number[]>([]);
   const [showTopicDropdown, setShowTopicDropdown] = useState(false);
   const [filteredTopicOptions, setFilteredTopicOptions] = useState<string[]>([]);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
@@ -922,24 +810,10 @@ const ExternalUserLeadSearchPage: React.FC = () => {
   const [filteredSourceOptions, setFilteredSourceOptions] = useState<string[]>([]);
   const [showStageDropdown, setShowStageDropdown] = useState(false);
   const [filteredStageOptions, setFilteredStageOptions] = useState<string[]>([]);
-  const [showReasonDropdown, setShowReasonDropdown] = useState(false);
-  const [filteredReasonOptions, setFilteredReasonOptions] = useState<string[]>([]);
-  const [showTagDropdown, setShowTagDropdown] = useState(false);
-  const [filteredTagOptions, setFilteredTagOptions] = useState<string[]>([]);
   const [showStatusDropdown, setShowStatusDropdown] = useState(false);
-  const [showExpertExaminationDropdown, setShowExpertExaminationDropdown] = useState(false);
   const [filteredStatusOptions, setFilteredStatusOptions] = useState<string[]>([]);
-  const [filteredExpertExaminationOptions, setFilteredExpertExaminationOptions] = useState<string[]>([]);
-  const [showSchedulerDropdown, setShowSchedulerDropdown] = useState(false);
-  const [showManagerDropdown, setShowManagerDropdown] = useState(false);
-  const [showLawyerDropdown, setShowLawyerDropdown] = useState(false);
-  const [showExpertDropdown, setShowExpertDropdown] = useState(false);
-  const [showCloserDropdown, setShowCloserDropdown] = useState(false);
-  const [showCaseHandlerDropdown, setShowCaseHandlerDropdown] = useState(false);
-  const [filteredRoleOptions, setFilteredRoleOptions] = useState<string[]>([]);
   const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
-  const [selectedColumns, setSelectedColumns] = useState<string[]>(['name', 'lead_number', 'email', 'phone', 'stage', 'source', 'created_at']);
-  const [showColumnSelector, setShowColumnSelector] = useState(false);
+  const [selectedColumns] = useState<string[]>(['name', 'lead_number', 'email', 'phone', 'stage', 'source', 'created_at']);
   const navigate = useNavigate();
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -993,32 +867,6 @@ const ExternalUserLeadSearchPage: React.FC = () => {
     setIsModalOpen(true);
   };
 
-  // Clear any old persistent storage that might interfere with filters
-  // This ensures that old persistent state code doesn't break the filters
-  useEffect(() => {
-    // Clear any old localStorage/sessionStorage keys that might have been used for persistent state
-    try {
-      const keysToCheck = [
-        'leadSearchPage_filters',
-        'leadSearch_filters',
-        'leadSearchPage_results',
-        'leadSearch_results',
-        'leadSearchPage_searchPerformed',
-        'leadSearch_searchPerformed',
-        'LeadSearchPage_filters',
-        'LeadSearch_filters',
-        'LeadSearchPage_results',
-        'LeadSearch_results',
-      ];
-      keysToCheck.forEach(key => {
-        localStorage.removeItem(key);
-        sessionStorage.removeItem(key);
-      });
-      console.log('✅ Cleared any old persistent storage for LeadSearchPage');
-    } catch (error) {
-      console.warn('⚠️ Error clearing old persistent storage:', error);
-    }
-  }, []);
 
   // Initialize stage names cache on mount
   useEffect(() => {
@@ -1122,31 +970,97 @@ const ExternalUserLeadSearchPage: React.FC = () => {
     fetchMainCategories();
   }, []);
 
-  // Fetch source options from misc_leadsource table
+  // Fetch current user's extern_source_id and get allowed source IDs
   useEffect(() => {
-    const fetchSourceOptions = async () => {
+    const fetchUserSourceIds = async () => {
       try {
-        const { data, error } = await supabase
-          .from('misc_leadsource')
-          .select('id, name')
-          .eq('active', true)
-          .order('name');
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
         
-        if (error) throw error;
-        
-        const sources = data?.map(source => source.name) || [];
-        setSourceOptions(sources);
-        console.log('✅ Fetched source options from misc_leadsource:', sources);
+        if (authError || !user) {
+          console.error('Error getting auth user:', authError);
+          return;
+        }
+
+        // Fetch user data with extern_source_id
+        const { data: userData, error: userError } = await supabase
+          .from('users')
+          .select('id, extern_source_id')
+          .eq('auth_id', user.id)
+          .maybeSingle();
+
+        // If not found by auth_id, try by email
+        let finalUserData = userData;
+        if ((userError || !userData) && user.email) {
+          const { data: userByEmail } = await supabase
+            .from('users')
+            .select('id, extern_source_id')
+            .eq('email', user.email)
+            .maybeSingle();
+          
+          if (userByEmail) {
+            finalUserData = userByEmail;
+          }
+        }
+
+        if (finalUserData?.extern_source_id) {
+          // extern_source_id is a JSONB array of source IDs
+          let sourceIds: number[] = [];
+          
+          if (Array.isArray(finalUserData.extern_source_id)) {
+            sourceIds = finalUserData.extern_source_id.filter(id => typeof id === 'number');
+          } else if (typeof finalUserData.extern_source_id === 'string') {
+            // Try to parse if it's a JSON string
+            try {
+              const parsed = JSON.parse(finalUserData.extern_source_id);
+              if (Array.isArray(parsed)) {
+                sourceIds = parsed.filter(id => typeof id === 'number');
+              }
+            } catch (e) {
+              console.error('Error parsing extern_source_id:', e);
+            }
+          }
+
+          setAllowedSourceIds(sourceIds);
+          console.log('✅ Loaded allowed source IDs for user:', sourceIds);
+
+          // Fetch source names for display
+          if (sourceIds.length > 0) {
+            const { data: sourcesData, error: sourcesError } = await supabase
+              .from('misc_leadsource')
+              .select('id, name')
+              .in('id', sourceIds)
+              .eq('active', true)
+              .order('name');
+            
+            if (!sourcesError && sourcesData) {
+              const sourceNames = sourcesData.map(s => s.name);
+              setSourceOptions(sourceNames);
+              setFilteredSourceOptions(sourceNames);
+              console.log('✅ Fetched source names for allowed sources:', sourceNames);
+            } else {
+              console.error('Error fetching source names:', sourcesError);
+              setSourceOptions([]);
+              setFilteredSourceOptions([]);
+            }
+          } else {
+            setSourceOptions([]);
+            setFilteredSourceOptions([]);
+          }
+        } else {
+          console.log('⚠️ No extern_source_id found for user, no source filtering will be applied');
+          setAllowedSourceIds([]);
+          setSourceOptions([]);
+          setFilteredSourceOptions([]);
+        }
       } catch (error) {
-        console.error('Error fetching source options:', error);
-        // Fallback to hardcoded options if database fetch fails
-        setSourceOptions([
-          "Manual", "AI Assistant", "Referral", "Website", "Other"
-        ]);
+        console.error('Error fetching user source IDs:', error);
+        setAllowedSourceIds([]);
+        setSourceOptions([]);
+        setFilteredSourceOptions([]);
       }
     };
 
-    fetchSourceOptions();
+    fetchUserSourceIds();
   }, []);
 
   // Fetch language options from misc_language table
@@ -1176,76 +1090,6 @@ const ExternalUserLeadSearchPage: React.FC = () => {
     fetchLanguageOptions();
   }, []);
 
-  // Fetch tag options from misc_leadtag table
-  useEffect(() => {
-    const fetchTagOptions = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('misc_leadtag')
-          .select('name, "order", active')
-          .eq('active', true)
-          .order('order', { ascending: true })
-          .order('name', { ascending: true });
-
-        if (error) throw error;
-
-        const tags =
-          data?.map(tag => tag.name).filter((name): name is string => !!name) || [];
-
-        if (tags.length > 0) {
-          setTagOptions(tags);
-          setFilteredTagOptions(tags);
-        } else {
-          // Fallback to static options if table is empty
-          setTagOptions(TAG_OPTIONS);
-          setFilteredTagOptions(TAG_OPTIONS);
-        }
-      } catch (error) {
-        console.error('Error fetching tag options:', error);
-        // Fallback to static options on error
-        setTagOptions(TAG_OPTIONS);
-        setFilteredTagOptions(TAG_OPTIONS);
-      }
-    };
-
-    fetchTagOptions();
-  }, []);
-
-  // Fetch reason options from lead_stage_reasons table
-  useEffect(() => {
-    const fetchReasonOptions = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('lead_stage_reasons')
-          .select('name, order_value, is_active')
-          .eq('is_active', true)
-          .order('order_value', { ascending: true })
-          .order('name', { ascending: true });
-
-        if (error) throw error;
-
-        const reasons =
-          data?.map(reason => reason.name).filter((name): name is string => !!name) || [];
-
-        if (reasons.length > 0) {
-          setReasonOptions(reasons);
-          setFilteredReasonOptions(reasons);
-        } else {
-          // Fallback to static options if table is empty
-          setReasonOptions(REASON_OPTIONS);
-          setFilteredReasonOptions(REASON_OPTIONS);
-        }
-      } catch (error) {
-        console.error('Error fetching reason options:', error);
-        // Fallback to static options on error
-        setReasonOptions(REASON_OPTIONS);
-        setFilteredReasonOptions(REASON_OPTIONS);
-      }
-    };
-
-    fetchReasonOptions();
-  }, []);
-
   // Fetch topic options from both leads and leads_lead tables
   useEffect(() => {
     const fetchTopicOptions = async () => {
@@ -1273,32 +1117,6 @@ const ExternalUserLeadSearchPage: React.FC = () => {
     fetchTopicOptions();
   }, []);
 
-  // Fetch role options from tenants_employee table
-  useEffect(() => {
-    const fetchRoleOptions = async () => {
-      try {
-        const { data: employees, error } = await supabase
-          .from('tenants_employee')
-          .select('id, display_name')
-          .not('display_name', 'is', null)
-          .order('display_name');
-
-        if (error) {
-          console.error('Error fetching employees for role options:', error);
-          return;
-        }
-
-        if (employees) {
-          const employeeNames = employees.map(emp => emp.display_name);
-          setRoleOptions(employeeNames);
-        }
-      } catch (error) {
-        console.error('Error fetching employees for role options:', error);
-      }
-    };
-
-    fetchRoleOptions();
-  }, []);
 
   // Initialize filtered options when data is loaded
   useEffect(() => {
@@ -1313,24 +1131,13 @@ const ExternalUserLeadSearchPage: React.FC = () => {
     setFilteredLanguageOptions(languageOptions);
   }, [languageOptions]);
 
-  useEffect(() => {
-    setFilteredSourceOptions(sourceOptions);
-  }, [sourceOptions]);
 
   useEffect(() => {
     setFilteredStageOptions(stageOptions);
   }, [stageOptions]);
 
   useEffect(() => {
-    setFilteredTagOptions(tagOptions);
-  }, [tagOptions]);
-
-  useEffect(() => {
     setFilteredStatusOptions(STATUS_OPTIONS);
-  }, []);
-
-  useEffect(() => {
-    setFilteredExpertExaminationOptions(EXPERT_EXAMINATION_OPTIONS);
   }, []);
 
   // Handle filtering for all dropdowns when user types
@@ -1364,40 +1171,16 @@ const ExternalUserLeadSearchPage: React.FC = () => {
     setFilteredStageOptions(stageOptions);
   }, [stageOptions]);
 
-  // Tags filtering is now handled by MultiSelectInput component
-  useEffect(() => {
-    setFilteredTagOptions(TAG_OPTIONS);
-  }, []);
-
-  // Status filtering is now handled by MultiSelectInput component
-  useEffect(() => {
-    setFilteredStatusOptions(STATUS_OPTIONS);
-  }, []);
-
-  // Role filtering is now handled by MultiSelectInput component
-  useEffect(() => {
-    setFilteredRoleOptions(roleOptions);
-  }, [roleOptions]);
-
   const handleFilterChange = (field: string, value: any) => {
     // For multi-select fields, don't update the filter directly - 
     // the MultiSelectInput component handles its own input state
     const multiSelectFields = [
       'category',
       'language',
-      'reason',
-      'tags',
       'status',
       'source',
       'stage',
       'topic',
-      'scheduler',
-      'manager',
-      'lawyer',
-      'expert',
-      'closer',
-      'case_handler',
-      'expert_examination',
     ];
     if (multiSelectFields.includes(field)) {
       // Do nothing - MultiSelectInput handles its own input state
@@ -1504,17 +1287,7 @@ const ExternalUserLeadSearchPage: React.FC = () => {
       case 'language': setShowLanguageDropdown(true); break;
       case 'source': setShowSourceDropdown(true); break;
       case 'stage': setShowStageDropdown(true); break;
-      case 'reason': setShowReasonDropdown(true); break;
-      case 'tags': setShowTagDropdown(true); break;
       case 'status': setShowStatusDropdown(true); break;
-      case 'expert_examination': setShowExpertExaminationDropdown(true); break;
-      case 'scheduler': setShowSchedulerDropdown(true); break;
-      case 'manager': setShowManagerDropdown(true); break;
-      case 'lawyer': setShowLawyerDropdown(true); break;
-      case 'expert': setShowExpertDropdown(true); break;
-      case 'closer': setShowCloserDropdown(true); break;
-      case 'case_handler': setShowCaseHandlerDropdown(true); break;
-      case 'columns': setShowColumnSelector(true); break;
     }
   };
 
@@ -1526,17 +1299,7 @@ const ExternalUserLeadSearchPage: React.FC = () => {
       case 'language': setShowLanguageDropdown(false); break;
       case 'source': setShowSourceDropdown(false); break;
       case 'stage': setShowStageDropdown(false); break;
-      case 'reason': setShowReasonDropdown(false); break;
-      case 'tags': setShowTagDropdown(false); break;
       case 'status': setShowStatusDropdown(false); break;
-      case 'expert_examination': setShowExpertExaminationDropdown(false); break;
-      case 'scheduler': setShowSchedulerDropdown(false); break;
-      case 'manager': setShowManagerDropdown(false); break;
-      case 'lawyer': setShowLawyerDropdown(false); break;
-      case 'expert': setShowExpertDropdown(false); break;
-      case 'closer': setShowCloserDropdown(false); break;
-      case 'case_handler': setShowCaseHandlerDropdown(false); break;
-      case 'columns': setShowColumnSelector(false); break;
     }
   };
 
@@ -2126,15 +1889,41 @@ const ExternalUserLeadSearchPage: React.FC = () => {
           console.error('⚠️ Stage lookup failed for new leads, skipping stage filter:', error);
         }
       }
-      if (filters.source && filters.source.length > 0) {
-        console.log('📡 Adding source filter for new leads:', filters.source);
-        if (filters.source.length === 1) {
-          // Single source - use exact match
-          newLeadsQuery = newLeadsQuery.eq('source', filters.source[0]);
+      // Filter by allowed source IDs from extern_source_id, and optionally by selected sources
+      if (allowedSourceIds.length > 0) {
+        // Get source names for the allowed IDs
+        const { data: allowedSources, error: sourcesError } = await supabase
+          .from('misc_leadsource')
+          .select('id, name')
+          .in('id', allowedSourceIds)
+          .eq('active', true);
+        
+        if (!sourcesError && allowedSources && allowedSources.length > 0) {
+          const allowedSourceNames = allowedSources.map(s => s.name);
+          
+          // If user has selected specific sources, filter by those; otherwise use all allowed sources
+          const sourcesToFilter = filters.source && filters.source.length > 0 
+            ? filters.source.filter(s => allowedSourceNames.includes(s))
+            : allowedSourceNames;
+          
+          if (sourcesToFilter.length > 0) {
+            console.log('📡 Filtering new leads by sources:', sourcesToFilter);
+            if (sourcesToFilter.length === 1) {
+              newLeadsQuery = newLeadsQuery.eq('source', sourcesToFilter[0]);
+            } else {
+              newLeadsQuery = newLeadsQuery.in('source', sourcesToFilter);
+            }
+          } else {
+            console.log('⚠️ No valid sources to filter by, filtering out all new leads');
+            newLeadsQuery = newLeadsQuery.eq('source', '__nonexistent__');
+          }
         } else {
-          // Multiple sources - use IN operator for exact matches
-          newLeadsQuery = newLeadsQuery.in('source', filters.source);
+          console.log('⚠️ No active sources found for allowed source IDs, filtering out all new leads');
+          newLeadsQuery = newLeadsQuery.eq('source', '__nonexistent__');
         }
+      } else {
+        console.log('⚠️ No allowed source IDs found, filtering out all new leads');
+        newLeadsQuery = newLeadsQuery.eq('source', '__nonexistent__');
       }
       if (filters.topic && filters.topic.length > 0) {
         console.log('💬 Adding topic filter for new leads:', filters.topic);
@@ -2145,23 +1934,6 @@ const ExternalUserLeadSearchPage: React.FC = () => {
           // Multiple topics - use IN operator for exact matches
           newLeadsQuery = newLeadsQuery.in('topic', filters.topic);
         }
-      }
-      if (filters.reason && filters.reason.length > 0) {
-        console.log('🎯 Adding reason filter for new leads:', filters.reason);
-        // For new leads, reasons are stored as text (unactivation_reason)
-        if (filters.reason.length === 1) {
-          newLeadsQuery = newLeadsQuery.eq('unactivation_reason', filters.reason[0]);
-        } else {
-          newLeadsQuery = newLeadsQuery.in('unactivation_reason', filters.reason);
-        }
-      }
-      if (filters.fileId) {
-        console.log('📁 Adding fileId filter for new leads:', filters.fileId);
-        newLeadsQuery = newLeadsQuery.ilike('file_id', `%${filters.fileId}%`);
-      }
-      if (filters.content) {
-        console.log('📝 Adding content filter for new leads:', filters.content);
-        newLeadsQuery = newLeadsQuery.or(`facts.ilike.%${filters.content}%,special_notes.ilike.%${filters.content}%,general_notes.ilike.%${filters.content}%`);
       }
       // Helper function to apply role filter for new leads (handles both display names and IDs)
       const applyRoleFilterForNewLeads = (
@@ -2265,36 +2037,6 @@ const ExternalUserLeadSearchPage: React.FC = () => {
         }
       };
       
-      // Individual role filters for new leads
-      // Scheduler: text field 'scheduler' (display name), no ID field
-      if (filters.scheduler && filters.scheduler.length > 0) {
-        applyRoleFilterForNewLeads('Scheduler', filters.scheduler, 'scheduler', null);
-      }
-      
-      // Manager: ID field 'meeting_manager_id', text field 'manager' (may contain name or ID)
-      if (filters.manager && filters.manager.length > 0) {
-        applyRoleFilterForNewLeads('Manager', filters.manager, 'manager', 'meeting_manager_id');
-      }
-      
-      // Lawyer: ID field 'meeting_lawyer_id', text field 'lawyer' (may contain name or ID)
-      if (filters.lawyer && filters.lawyer.length > 0) {
-        applyRoleFilterForNewLeads('Lawyer', filters.lawyer, 'lawyer', 'meeting_lawyer_id');
-      }
-      
-      // Expert: ID field 'expert_id' or 'expert', text field 'expert' (may contain name or ID)
-      if (filters.expert && filters.expert.length > 0) {
-        applyRoleFilterForNewLeads('Expert', filters.expert, 'expert', 'expert_id');
-      }
-      
-      // Closer: text field 'closer' (display name), no ID field
-      if (filters.closer && filters.closer.length > 0) {
-        applyRoleFilterForNewLeads('Closer', filters.closer, 'closer', null);
-      }
-      
-      // Case Handler: ID field 'case_handler_id', text field 'handler' (may contain name or ID)
-      if (filters.case_handler && filters.case_handler.length > 0) {
-        applyRoleFilterForNewLeads('Case Handler', filters.case_handler, 'handler', 'case_handler_id');
-      }
       if (filters.eligibilityDeterminedOnly) {
         console.log('✅ Adding eligibility filter for new leads');
         newLeadsQuery = newLeadsQuery.eq('eligible', true);
@@ -2549,45 +2291,42 @@ const ExternalUserLeadSearchPage: React.FC = () => {
           console.log('⚠️ Stage lookup failed, skipping stage filter for legacy leads:', error);
         }
       }
-      if (filters.source && filters.source.length > 0) {
-        console.log('📡 Adding source filter for legacy leads:', filters.source);
-        try {
-          // Look up all selected sources to get their source_ids
-          const sourceIds: number[] = [];
-          for (const source of filters.source) {
-            const sourceLookup = await supabase
-              .from('misc_leadsource')
-              .select('id')
-              .eq('name', source)
-              .limit(1);
-            
-            if (sourceLookup.data && sourceLookup.data.length > 0) {
-              const sourceId = sourceLookup.data[0].id;
-              sourceIds.push(sourceId);
-              console.log('🔍 Found source_id:', sourceId, 'for source:', source);
-            }
-          }
+      // Filter by allowed source IDs from extern_source_id, and optionally by selected sources
+      if (allowedSourceIds.length > 0) {
+        // If user has selected specific sources, map them to IDs and filter by those
+        let sourceIdsToFilter = allowedSourceIds;
+        
+        if (filters.source && filters.source.length > 0) {
+          // Get source IDs for the selected source names
+          const { data: selectedSources, error: selectedError } = await supabase
+            .from('misc_leadsource')
+            .select('id, name')
+            .in('name', filters.source)
+            .in('id', allowedSourceIds)
+            .eq('active', true);
           
-          if (sourceIds.length > 0) {
-            // Use IN operator for multiple source_ids
-            legacyLeadsQuery = legacyLeadsQuery.in('source_id', sourceIds);
+          if (!selectedError && selectedSources && selectedSources.length > 0) {
+            sourceIdsToFilter = selectedSources.map(s => s.id);
+            console.log('📡 Filtering legacy leads by selected source IDs:', sourceIdsToFilter);
           } else {
-            console.log('❌ No source_ids found for any sources');
-            // Fallback to exact match on misc_leadsource.name
-            if (filters.source.length === 1) {
-              legacyLeadsQuery = legacyLeadsQuery.eq('misc_leadsource.name', filters.source[0]);
-            } else {
-              legacyLeadsQuery = legacyLeadsQuery.in('misc_leadsource.name', filters.source);
-            }
+            console.log('⚠️ No valid selected sources found, filtering out all legacy leads');
+            legacyLeadsQuery = legacyLeadsQuery.eq('source_id', -1);
+            sourceIdsToFilter = [];
           }
-        } catch (error) {
-          console.log('⚠️ Source lookup failed, falling back to misc_leadsource.name:', error);
-          if (filters.source.length === 1) {
-            legacyLeadsQuery = legacyLeadsQuery.eq('misc_leadsource.name', filters.source[0]);
+        } else {
+          console.log('📡 Filtering legacy leads by all allowed source IDs:', allowedSourceIds);
+        }
+        
+        if (sourceIdsToFilter.length > 0) {
+          if (sourceIdsToFilter.length === 1) {
+            legacyLeadsQuery = legacyLeadsQuery.eq('source_id', sourceIdsToFilter[0]);
           } else {
-            legacyLeadsQuery = legacyLeadsQuery.in('misc_leadsource.name', filters.source);
+            legacyLeadsQuery = legacyLeadsQuery.in('source_id', sourceIdsToFilter);
           }
         }
+      } else {
+        console.log('⚠️ No allowed source IDs found, filtering out all legacy leads');
+        legacyLeadsQuery = legacyLeadsQuery.eq('source_id', -1);
       }
       if (filters.topic && filters.topic.length > 0) {
         console.log('💬 Adding topic filter for legacy leads:', filters.topic);
@@ -2599,183 +2338,9 @@ const ExternalUserLeadSearchPage: React.FC = () => {
           legacyLeadsQuery = legacyLeadsQuery.in('topic', filters.topic);
         }
       }
-      if (filters.reason && filters.reason.length > 0) {
-        console.log('🎯 Adding reason filter for legacy leads:', filters.reason);
-        try {
-          const legacyReasonIds: string[] = [];
-
-          for (const reasonName of filters.reason) {
-            const { data: reasonRows, error: reasonError } = await supabase
-              .from('lead_stage_reasons')
-              .select('legacy_id')
-              .ilike('name', reasonName)
-              .limit(1);
-
-            if (reasonError) {
-              console.error('Error looking up legacy_id for reason', reasonName, reasonError);
-              continue;
-            }
-
-            if (reasonRows && reasonRows.length > 0) {
-              const legacyId = reasonRows[0].legacy_id;
-              if (legacyId !== null && legacyId !== undefined) {
-                legacyReasonIds.push(String(legacyId));
-              }
-            }
-          }
-
-          if (legacyReasonIds.length > 0) {
-            console.log('✅ Applying legacy reason_id filter with values:', legacyReasonIds);
-            legacyLeadsQuery = legacyLeadsQuery.in('reason_id', legacyReasonIds);
-          } else {
-            console.log('⚠️ No legacy_ids found for selected reasons, skipping legacy reason filter');
-          }
-        } catch (error) {
-          console.error('⚠️ Reason lookup failed for legacy leads, skipping reason filter:', error);
-        }
-      }
-      if (filters.fileId) {
-        console.log('📁 Adding fileId filter for legacy leads:', filters.fileId);
-        legacyLeadsQuery = legacyLeadsQuery.ilike('file_id', `%${filters.fileId}%`);
-      }
-      if (filters.content) {
-        console.log('📝 Adding content filter for legacy leads:', filters.content);
-        legacyLeadsQuery = legacyLeadsQuery.or(`special_notes.ilike.%${filters.content}%,notes.ilike.%${filters.content}%,description.ilike.%${filters.content}%`);
-      }
-      // Individual role filters for legacy leads
-      if (filters.scheduler && filters.scheduler.length > 0) {
-        console.log('👥 Adding scheduler filter for legacy leads:', filters.scheduler);
-        const schedulerIds = filters.scheduler.map(name => nameToIdMapping.get(name)).filter(id => id !== undefined) as number[];
-        if (schedulerIds.length > 0) {
-          legacyLeadsQuery = legacyLeadsQuery.in('meeting_scheduler_id', schedulerIds);
-        }
-      }
-      if (filters.manager && filters.manager.length > 0) {
-        console.log('👥 Adding manager filter for legacy leads:', filters.manager);
-        const managerIds = filters.manager.map(name => nameToIdMapping.get(name)).filter(id => id !== undefined) as number[];
-        if (managerIds.length > 0) {
-          legacyLeadsQuery = legacyLeadsQuery.in('meeting_manager_id', managerIds);
-        }
-      }
-      if (filters.lawyer && filters.lawyer.length > 0) {
-        console.log('👥 Adding lawyer filter for legacy leads:', filters.lawyer);
-        const lawyerIds = filters.lawyer.map(name => nameToIdMapping.get(name)).filter(id => id !== undefined) as number[];
-        if (lawyerIds.length > 0) {
-          legacyLeadsQuery = legacyLeadsQuery.in('meeting_lawyer_id', lawyerIds);
-        }
-      }
-      if (filters.expert && filters.expert.length > 0) {
-        console.log('👥 Adding expert filter for legacy leads:', filters.expert);
-        const expertIds = filters.expert.map(name => nameToIdMapping.get(name)).filter(id => id !== undefined) as number[];
-        if (expertIds.length > 0) {
-          legacyLeadsQuery = legacyLeadsQuery.in('expert_id', expertIds);
-        }
-      }
-      if (filters.closer && filters.closer.length > 0) {
-        console.log('👥 Adding closer filter for legacy leads:', filters.closer);
-        const closerIds = filters.closer.map(name => nameToIdMapping.get(name)).filter(id => id !== undefined) as number[];
-        if (closerIds.length > 0) {
-          legacyLeadsQuery = legacyLeadsQuery.in('closer_id', closerIds);
-        }
-      }
-      if (filters.case_handler && filters.case_handler.length > 0) {
-        console.log('👥 Adding case_handler filter for legacy leads:', filters.case_handler);
-        const caseHandlerIds = filters.case_handler.map(name => nameToIdMapping.get(name)).filter(id => id !== undefined) as number[];
-        if (caseHandlerIds.length > 0) {
-          legacyLeadsQuery = legacyLeadsQuery.in('case_handler_id', caseHandlerIds);
-        }
-      }
       if (filters.eligibilityDeterminedOnly) {
         console.log('✅ Adding eligibility filter for legacy leads');
         legacyLeadsQuery = legacyLeadsQuery.eq('eligibile', 'true');
-      }
-      if (filters.expert_examination && filters.expert_examination.length > 0) {
-        console.log('🧪 Adding expert_examination filter for legacy leads:', filters.expert_examination);
-
-        const selected = filters.expert_examination as string[];
-        const numericValues: number[] = [];
-
-        for (const value of selected) {
-          switch (value) {
-            case 'Not Feasible':
-              numericValues.push(1);
-              break;
-            case 'Feasible (further check)':
-              numericValues.push(5);
-              break;
-            case 'Feasible (no check)':
-              numericValues.push(8);
-              break;
-            case 'Not checked':
-              numericValues.push(0);
-              break;
-          }
-        }
-
-        if (numericValues.length > 0) {
-          // Apply IN filter for all selected expert_examination codes
-          legacyLeadsQuery = legacyLeadsQuery.in('expert_examination', numericValues);
-        }
-      }
-
-      // If tags filter is applied, prefetch lead IDs from leads_lead_tags
-      // Use string-based sets to avoid bigint/Number precision issues
-      let taggedNewLeadIds = new Set<string>();
-      let taggedLegacyLeadIds = new Set<string>();
-
-      if (filters.tags && filters.tags.length > 0) {
-        try {
-          console.log('🏷️ Preparing tag-based lead filters using leads_lead_tags:', filters.tags);
-
-          // Look up tag IDs for selected tag names
-          const { data: tagRows, error: tagError } = await supabase
-            .from('misc_leadtag')
-            .select('id, name')
-            .in('name', filters.tags);
-
-          if (tagError) throw tagError;
-
-          const tagIds = (tagRows || [])
-            .map(row => row.id)
-            .filter((id): id is number => id !== null && id !== undefined);
-
-          if (tagIds.length > 0) {
-            console.log('🏷️ Found tag IDs for filter:', tagIds);
-
-            // Fetch mapping between tags and leads from bridge table
-            const { data: tagLinks, error: linkError } = await supabase
-              .from('leads_lead_tags')
-              .select('lead_id, newlead_id, leadtag_id')
-              .in('leadtag_id', tagIds)
-              .limit(10000);
-
-            if (linkError) throw linkError;
-
-            (tagLinks || []).forEach(link => {
-              if (link.newlead_id) {
-                taggedNewLeadIds.add(String(link.newlead_id));
-              }
-              if (link.lead_id !== null && link.lead_id !== undefined) {
-                // Store legacy lead IDs as strings to avoid bigint precision issues
-                taggedLegacyLeadIds.add(String(link.lead_id));
-              }
-            });
-
-            console.log('🏷️ Tag-based lead sets prepared:', {
-              newLeadCount: taggedNewLeadIds.size,
-              legacyLeadCount: taggedLegacyLeadIds.size,
-            });
-          } else {
-            console.log('⚠️ No tag IDs found for selected tag names, tag filter will exclude all leads.');
-            // Use a special marker to indicate that no leads should match
-            taggedNewLeadIds = new Set<string>(['__none__']);
-            taggedLegacyLeadIds = new Set<string>(['__none__']);
-          }
-        } catch (error) {
-          console.error('⚠️ Failed to build tag-based filters from leads_lead_tags, skipping tag filter:', error);
-          taggedNewLeadIds = new Set<string>();
-          taggedLegacyLeadIds = new Set<string>();
-        }
       }
       
       // Store categoryIds for later debugging (from legacy leads filter section)
@@ -2931,41 +2496,6 @@ const ExternalUserLeadSearchPage: React.FC = () => {
         });
       }
       
-      // Debug role filters separately
-      if (filters.scheduler?.length > 0 || filters.manager?.length > 0 || filters.lawyer?.length > 0 || 
-          filters.expert?.length > 0 || filters.closer?.length > 0 || filters.case_handler?.length > 0) {
-        console.log('👥 [Query Results] Role filter matching summary:', {
-          schedulerFilter: filters.scheduler,
-          managerFilter: filters.manager,
-          lawyerFilter: filters.lawyer,
-          expertFilter: filters.expert,
-          closerFilter: filters.closer,
-          caseHandlerFilter: filters.case_handler,
-          newLeadsMatchingScheduler: newLeadsResult.data?.filter((lead: any) => 
-            filters.scheduler?.includes(lead.scheduler) ||
-            (lead.meeting_scheduler_id && filters.scheduler?.some(name => nameToIdMapping.get(name) === lead.meeting_scheduler_id))
-          ).length || 0,
-          newLeadsMatchingManager: newLeadsResult.data?.filter((lead: any) =>
-            filters.manager?.includes(lead.manager) ||
-            (lead.meeting_manager_id && filters.manager?.some(name => nameToIdMapping.get(name) === lead.meeting_manager_id))
-          ).length || 0,
-          newLeadsMatchingLawyer: newLeadsResult.data?.filter((lead: any) =>
-            filters.lawyer?.includes(lead.lawyer) ||
-            (lead.meeting_lawyer_id && filters.lawyer?.some(name => nameToIdMapping.get(name) === lead.meeting_lawyer_id))
-          ).length || 0,
-          newLeadsMatchingExpert: newLeadsResult.data?.filter((lead: any) =>
-            filters.expert?.includes(lead.expert) ||
-            (lead.expert_id && filters.expert?.some(name => nameToIdMapping.get(name) === lead.expert_id))
-          ).length || 0,
-          newLeadsMatchingCloser: newLeadsResult.data?.filter((lead: any) =>
-            filters.closer?.includes(lead.closer)
-          ).length || 0,
-          newLeadsMatchingCaseHandler: newLeadsResult.data?.filter((lead: any) =>
-            filters.case_handler?.includes(lead.handler) ||
-            (lead.case_handler_id && filters.case_handler?.some(name => nameToIdMapping.get(name) === lead.case_handler_id))
-          ).length || 0
-        });
-      }
 
       // DEBUG: Check if lead 174503 is in the query results
       const debugLeadId = 174503;
@@ -3485,37 +3015,6 @@ const ExternalUserLeadSearchPage: React.FC = () => {
         };
       });
 
-      // Apply tag-based filters using leads_lead_tags mapping (if present)
-      if (filters.tags && filters.tags.length > 0) {
-        console.log('🏷️ Applying tag-based filtering to mapped leads...');
-
-        if (taggedNewLeadIds.size > 0) {
-          const beforeTagFilter = mappedNewLeads.length;
-          mappedNewLeads = mappedNewLeads.filter(lead => taggedNewLeadIds.has(String(lead.id)));
-          console.log(`🏷️ Tag filter for new leads: ${beforeTagFilter} → ${mappedNewLeads.length}`);
-        } else {
-          console.log('🏷️ No tagged new leads found, filtering out all new leads for tag filter.');
-          mappedNewLeads = [];
-        }
-
-        if (taggedLegacyLeadIds.size > 0) {
-          const beforeTagFilter = mappedLegacyLeads.length;
-          const debugLeadBeforeTags = mappedLegacyLeads.find((lead: any) => lead.id === debugLeadId);
-          mappedLegacyLeads = mappedLegacyLeads.filter(lead => taggedLegacyLeadIds.has(String(lead.id)));
-          const debugLeadAfterTags = mappedLegacyLeads.find((lead: any) => lead.id === debugLeadId);
-          console.log(`🏷️ Tag filter for legacy leads: ${beforeTagFilter} → ${mappedLegacyLeads.length}`);
-          if (debugLeadBeforeTags && !debugLeadAfterTags) {
-            console.log(`🔍 DEBUG Lead ${debugLeadId}: Filtered out by tag filter. Tagged legacy lead IDs include 174503:`, taggedLegacyLeadIds.has(String(debugLeadId)));
-          }
-        } else {
-          console.log('🏷️ No tagged legacy leads found, filtering out all legacy leads for tag filter.');
-          const debugLeadBeforeTags = mappedLegacyLeads.find((lead: any) => lead.id === debugLeadId);
-          if (debugLeadBeforeTags) {
-            console.log(`🔍 DEBUG Lead ${debugLeadId}: Filtered out because no tagged leads found (tag filter active but lead not tagged)`);
-          }
-          mappedLegacyLeads = [];
-        }
-      }
       
       // DEBUG: Check if lead 174503 is still in mapped legacy leads after all processing
       const debugLeadFinal = mappedLegacyLeads.find((lead: any) => lead.id === debugLeadId);
@@ -3761,24 +3260,6 @@ const ExternalUserLeadSearchPage: React.FC = () => {
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
           />
-          <MultiSelectInput
-            label="Reason"
-            field="reason"
-            values={filters.reason}
-            placeholder="Type reason or choose from suggestions..."
-            options={filteredReasonOptions}
-            showDropdown={showReasonDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <div className="form-control flex flex-col col-span-2 sm:col-span-1">
-            <label className="label mb-2"><span className="label-text">File id</span></label>
-            <input type="text" className="input input-bordered" onChange={e => handleFilterChange('fileId', e.target.value)} />
-          </div>
-
           {/* Column 2 */}
           <MultiSelectInput
             label="Language"
@@ -3787,19 +3268,6 @@ const ExternalUserLeadSearchPage: React.FC = () => {
             placeholder="Type language or choose from suggestions..."
             options={filteredLanguageOptions}
             showDropdown={showLanguageDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Tags"
-            field="tags"
-            values={filters.tags}
-            placeholder="Type tag or choose from suggestions..."
-            options={filteredTagOptions}
-            showDropdown={showTagDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
             onFilterChange={handleFilterChange}
@@ -3815,32 +3283,6 @@ const ExternalUserLeadSearchPage: React.FC = () => {
             placeholder="Select status..."
             options={filteredStatusOptions}
             showDropdown={showStatusDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Expert examination"
-            field="expert_examination"
-            values={filters.expert_examination}
-            placeholder="Select expert examination result..."
-            options={filteredExpertExaminationOptions}
-            showDropdown={showExpertExaminationDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Source"
-            field="source"
-            values={filters.source}
-            placeholder="Type source or choose from suggestions..."
-            options={filteredSourceOptions}
-            showDropdown={showSourceDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
             onFilterChange={handleFilterChange}
@@ -3865,6 +3307,19 @@ const ExternalUserLeadSearchPage: React.FC = () => {
           </div>
 
           {/* Column 4 */}
+          <MultiSelectInput
+            label="Source"
+            field="source"
+            values={filters.source}
+            placeholder="Type source or choose from suggestions..."
+            options={filteredSourceOptions}
+            showDropdown={showSourceDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+          />
           <MultiSelectInput
             label="Stage"
             field="stage"
@@ -3891,88 +3346,6 @@ const ExternalUserLeadSearchPage: React.FC = () => {
             onShowDropdown={handleShowDropdown}
             onHideDropdown={handleHideDropdown}
           />
-          <MultiSelectInput
-            label="Scheduler"
-            field="scheduler"
-            values={filters.scheduler}
-            placeholder="Type scheduler name or choose from suggestions..."
-            options={filteredRoleOptions}
-            showDropdown={showSchedulerDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Manager"
-            field="manager"
-            values={filters.manager}
-            placeholder="Type manager name or choose from suggestions..."
-            options={filteredRoleOptions}
-            showDropdown={showManagerDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Lawyer"
-            field="lawyer"
-            values={filters.lawyer}
-            placeholder="Type lawyer name or choose from suggestions..."
-            options={filteredRoleOptions}
-            showDropdown={showLawyerDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Expert"
-            field="expert"
-            values={filters.expert}
-            placeholder="Type expert name or choose from suggestions..."
-            options={filteredRoleOptions}
-            showDropdown={showExpertDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Closer"
-            field="closer"
-            values={filters.closer}
-            placeholder="Type closer name or choose from suggestions..."
-            options={filteredRoleOptions}
-            showDropdown={showCloserDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Case Handler"
-            field="case_handler"
-            values={filters.case_handler}
-            placeholder="Type case handler name or choose from suggestions..."
-            options={filteredRoleOptions}
-            showDropdown={showCaseHandlerDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <div className="form-control flex flex-col col-span-2 sm:col-span-1">
-            <label className="label mb-2"><span className="label-text">Content</span></label>
-            <input type="text" className="input input-bordered" onChange={e => handleFilterChange('content', e.target.value)} />
-          </div>
           
           {/* View Mode Toggle */}
           <div className="col-span-2 flex items-end gap-3">
@@ -3994,17 +3367,6 @@ const ExternalUserLeadSearchPage: React.FC = () => {
               </div>
             </div>
           </div>
-
-          {/* Column Selector for Table View */}
-          {viewMode === 'table' && (
-            <ColumnSelector
-              selectedColumns={selectedColumns}
-              onColumnsChange={setSelectedColumns}
-              showDropdown={showColumnSelector}
-              onShowDropdown={() => handleShowDropdown('columns')}
-              onHideDropdown={() => handleHideDropdown('columns')}
-            />
-          )}
 
           {/* Search Buttons: span both columns on mobile */}
           <div className="col-span-2 flex items-end gap-3">

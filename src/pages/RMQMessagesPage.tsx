@@ -43,6 +43,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns';
 import EmployeeModal from '../components/EmployeeModal';
+import { useExternalUser } from '../hooks/useExternalUser';
 
 interface User {
   id: string;
@@ -136,6 +137,9 @@ interface MessagingModalProps {
 }
 
 const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initialConversationId, initialUserId, initialMessage, initialLeadNumber, initialLeadName }) => {
+  // Check if user is external
+  const { isExternalUser } = useExternalUser();
+  
   // State management
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -6859,13 +6863,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   {/* Tools Dropdown Menu */}
                   {showDesktopTools && !isRecording && (
                     <div className="absolute bottom-12 left-0 z-50 bg-base-100 border border-base-300 rounded-lg shadow-lg min-w-[180px]">
-                      <button
-                        onClick={() => handleDesktopToolSelect('lead')}
-                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-base-200 text-left transition-colors"
-                      >
-                        <PlusIcon className="w-5 h-5 text-green-600" />
-                        <span className="text-sm text-base-content/90">Attach Lead</span>
-                      </button>
+                      {!isExternalUser && (
+                        <button
+                          onClick={() => handleDesktopToolSelect('lead')}
+                          className="w-full flex items-center gap-3 px-4 py-3 hover:bg-base-200 text-left transition-colors"
+                        >
+                          <PlusIcon className="w-5 h-5 text-green-600" />
+                          <span className="text-sm text-base-content/90">Attach Lead</span>
+                        </button>
+                      )}
                       <button
                         onClick={() => handleDesktopToolSelect('file')}
                         disabled={isUploadingFile}
@@ -8076,13 +8082,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     </button>
                     {showMobileTools && (
                       <div className="absolute bottom-12 left-0 z-50 bg-white border border-gray-200 rounded-xl shadow-xl w-64 divide-y divide-gray-100">
-                        <button
-                          onClick={() => handleMobileToolSelect('lead')}
-                          className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2"
-                        >
-                          <PlusIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
-                          Attach lead
-                        </button>
+                        {!isExternalUser && (
+                          <button
+                            onClick={() => handleMobileToolSelect('lead')}
+                            className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2"
+                          >
+                            <PlusIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                            Attach lead
+                          </button>
+                        )}
                         <button
                           onClick={() => handleMobileToolSelect('file')}
                           className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2"

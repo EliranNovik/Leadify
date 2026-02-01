@@ -6035,12 +6035,19 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     return (
       <>
         <div className="navbar bg-base-100 px-2 md:px-0 h-16 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
-          {/* Logo */}
+          {/* Logo and Logout Button */}
           <div className="flex-1 justify-start flex items-center gap-4">
-            <div className="h-16 flex items-center">
+            <div className="h-16 flex items-center gap-3">
               <Link to="/" className="flex items-center gap-2">
                 <span className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
               </Link>
+              <button
+                onClick={handleSignOut}
+                className="btn btn-ghost btn-sm btn-circle"
+                title="Sign Out"
+              >
+                <ArrowRightOnRectangleIcon className="w-5 h-5" />
+              </button>
             </div>
           </div>
           
