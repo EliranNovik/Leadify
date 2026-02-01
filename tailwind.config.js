@@ -19,6 +19,21 @@ module.exports = {
         'red-400': '#f87171',
         // Add any other colors you use in your app here
       },
+      keyframes: {
+        'fade-in': {
+          '0%': {
+            opacity: '0',
+            transform: 'translateY(10px)',
+          },
+          '100%': {
+            opacity: '1',
+            transform: 'translateY(0)',
+          },
+        },
+      },
+      animation: {
+        'fade-in': 'fade-in 0.5s ease-out',
+      },
     },
   },
   plugins: [daisyui],

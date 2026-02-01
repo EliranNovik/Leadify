@@ -65,7 +65,7 @@ const MyAvailabilitySection: React.FC<{ onAvailabilityChange?: () => void; onOpe
 const Dashboard: React.FC = () => {
   // Get auth state from context to skip redundant checks
   const { user: authUser, isInitialized } = useAuthContext();
-  const { isExternalUser, isLoading: isLoadingExternal, userName: externalUserName } = useExternalUser();
+  const { isExternalUser, isLoading: isLoadingExternal, userName: externalUserName, userImage: externalUserImage } = useExternalUser();
 
   // State to track if auth check is complete (prevents flash of dashboard before redirect)
   // If user is already authenticated via context, skip the check
@@ -5979,23 +5979,33 @@ const Dashboard: React.FC = () => {
   };
 
   // External user view - check after all hooks are called
+  // Wait for external user check to complete to prevent flash
   if (isLoadingExternal) {
+    // Show minimal loading state instead of white screen
     return (
-      <div className="min-h-screen bg-white flex items-center justify-center">
-        <div className="text-center">
-          <div className="loading loading-spinner loading-lg text-primary"></div>
-          <p className="mt-4 text-gray-600">Loading...</p>
-        </div>
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="loading loading-spinner loading-lg"></div>
       </div>
     );
   }
 
+  // Debug logging for external user detection
+  console.log('Dashboard render check:', {
+    isExternalUser,
+    isLoadingExternal,
+    externalUserName,
+    authUserId: authUser?.id
+  });
+
   if (isExternalUser) {
+    console.log('Rendering ExternalUserDashboard');
     return <ExternalUserDashboard userName={externalUserName} />;
   }
 
+  console.log('Rendering regular Dashboard');
+
   return (
-    <div className="p-0 md:p-6 space-y-8">
+    <div className="p-0 md:p-6 space-y-8 animate-fade-in">
       {/* 1. Summary Boxes: 4 columns */}
       <div className="flex md:grid md:grid-cols-4 gap-3 md:gap-6 mb-8 w-full mt-6 md:mt-0 overflow-x-auto scrollbar-hide pb-2 md:pb-0 overflow-y-visible">
         {/* Meetings Today */}

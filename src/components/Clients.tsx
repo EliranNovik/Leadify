@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useLocation, useNavigate, useParams, useNavigationType } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
+import { usePersistedState } from '../hooks/usePersistedState';
 import { getStageName, fetchStageNames, areStagesEquivalent, normalizeStageName, getStageColour } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { fetchAllLeads, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
@@ -1096,15 +1097,15 @@ const Clients: React.FC<ClientsProps> = ({
 
     return '/clients';
   }, []);
-  const [activeTab, setActiveTab] = useState('info');
+  const [activeTab, setActiveTab] = usePersistedState('clients_activeTab', 'info', { storage: 'sessionStorage' });
   const [isStagesOpen, setIsStagesOpen] = useState(false);
   const [isActionsOpen, setIsActionsOpen] = useState(false);
   const [isBalanceModalOpen, setIsBalanceModalOpen] = useState(false);
   // Track the last route to detect route changes and force refetch
   const lastRouteRef = useRef<string>('');
   // Default to collapsed on mobile, expanded on desktop
-  const [isClientInfoCollapsed, setIsClientInfoCollapsed] = useState(false);
-  const [isProgressCollapsed, setIsProgressCollapsed] = useState(false);
+  const [isClientInfoCollapsed, setIsClientInfoCollapsed] = usePersistedState('clients_isClientInfoCollapsed', false, { storage: 'sessionStorage' });
+  const [isProgressCollapsed, setIsProgressCollapsed] = usePersistedState('clients_isProgressCollapsed', false, { storage: 'sessionStorage' });
 
   // Set default collapsed state for mobile on mount
   useEffect(() => {
@@ -1141,15 +1142,15 @@ const Clients: React.FC<ClientsProps> = ({
   const [isCreatingMeeting, setIsCreatingMeeting] = useState(false);
   const [showScheduleMeetingPanel, setShowScheduleMeetingPanel] = useState(false);
   // Tabs inside Schedule Meeting drawer: 'regular' or 'paid'
-  const [meetingType, setMeetingType] = useState<'regular' | 'paid'>('regular');
+  const [meetingType, setMeetingType] = usePersistedState<'regular' | 'paid'>('clients_meetingType', 'regular', { storage: 'sessionStorage' });
   // Controls which stage the lead should move to after successfully creating a meeting
   // - 'meeting_scheduled' for the first meeting
   // - 'another_meeting' for follow-up meetings
-  const [scheduleStageTarget, setScheduleStageTarget] = useState<'meeting_scheduled' | 'another_meeting'>('meeting_scheduled');
+  const [scheduleStageTarget, setScheduleStageTarget] = usePersistedState<'meeting_scheduled' | 'another_meeting'>('clients_scheduleStageTarget', 'meeting_scheduled', { storage: 'sessionStorage' });
   // Toggle for notifying client via email when scheduling a meeting
-  const [notifyClientOnSchedule, setNotifyClientOnSchedule] = useState(false);
-  const [selectedStage, setSelectedStage] = useState<string | null>(null);
-  const [meetingFormData, setMeetingFormData] = useState({
+  const [notifyClientOnSchedule, setNotifyClientOnSchedule] = usePersistedState('clients_notifyClientOnSchedule', false, { storage: 'sessionStorage' });
+  const [selectedStage, setSelectedStage] = usePersistedState<string | null>('clients_selectedStage', null, { storage: 'sessionStorage' });
+  const [meetingFormData, setMeetingFormData] = usePersistedState('clients_meetingFormData', {
     date: '',
     time: '09:00',
     location: '',
@@ -1165,7 +1166,7 @@ const Clients: React.FC<ClientsProps> = ({
     paid_category: '',
     paid_currency: '',
     meeting_total: '',
-  });
+  }, { storage: 'sessionStorage' });
   const [meetingLocations, setMeetingLocations] = useState<
     Array<{ id: string | number; name: string; default_link?: string | null }>
   >([]);
@@ -1260,12 +1261,57 @@ const Clients: React.FC<ClientsProps> = ({
   // ---
 
   // Local loading state for client data
-  const [localLoading, setLocalLoading] = useState(true);
+  // Initialize loading to false - will be set to true only when actually fetching
+  const [localLoading, setLocalLoading] = useState(false);
   const [backgroundLoading, setBackgroundLoading] = useState(false);
+
+  // Cache employees data to avoid refetching on every mount
+  const employeesCacheRef = useRef<{ data?: any[]; timestamp?: number }>({});
+  const EMPLOYEES_CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
 
   // Fetch all employees, categories, and currencies for name lookup
   useEffect(() => {
     const fetchEmployees = async () => {
+      // Check cache first
+      const now = Date.now();
+      const cache = employeesCacheRef.current;
+      if (cache.data && cache.timestamp && (now - cache.timestamp) < EMPLOYEES_CACHE_DURATION) {
+        setAllEmployees(cache.data);
+        // Rebuild availability map from cached data
+        const availabilityMap: { [key: string]: any[] } = {};
+        cache.data.forEach((emp: any) => {
+          const unavailableTimes = emp.unavailable_times || [];
+          const unavailableRanges = emp.unavailable_ranges || [];
+          unavailableTimes.forEach((time: any) => {
+            const date = time.date;
+            if (!availabilityMap[date]) availabilityMap[date] = [];
+            availabilityMap[date].push({ employeeId: emp.id, employeeName: emp.display_name, ...time });
+          });
+          unavailableRanges.forEach((range: any) => {
+            const startDate = new Date(range.startDate);
+            const endDate = new Date(range.endDate);
+            const currentDate = new Date(startDate);
+            while (currentDate <= endDate) {
+              const dateString = currentDate.toISOString().split('T')[0];
+              if (!availabilityMap[dateString]) availabilityMap[dateString] = [];
+              availabilityMap[dateString].push({
+                employeeId: emp.id,
+                employeeName: emp.display_name,
+                date: dateString,
+                startTime: 'All Day',
+                endTime: 'All Day',
+                reason: range.reason,
+                isRange: true,
+                rangeId: range.id
+              });
+              currentDate.setDate(currentDate.getDate() + 1);
+            }
+          });
+        });
+        setEmployeeAvailabilityData(availabilityMap);
+        return; // Use cached data
+      }
+
       try {
         const { data, error } = await supabase
           .from('tenants_employee')
@@ -1346,6 +1392,9 @@ const Clients: React.FC<ClientsProps> = ({
         });
 
         setEmployeeAvailabilityData(availabilityMap);
+        
+        // Update cache
+        employeesCacheRef.current = { data: mapped, timestamp: Date.now() };
       } catch (error) {
         console.error('Clients: Error fetching employees:', error);
         setAllEmployees([]);
@@ -3014,71 +3063,64 @@ const Clients: React.FC<ClientsProps> = ({
     const currentRoute = location.pathname;
     const routeChanged = lastRouteRef.current !== currentRoute;
 
-    // If this is a back/forward navigation (POP) and we already have the client loaded, skip the fetch
-    // Note: routeChanged can be true on POP navigation, so we check navType first
-    if (navType === 'POP' && selectedClient && lead_number) {
+    // Helper function to check if we have the correct client loaded
+    const hasCorrectClient = (): boolean => {
+      if (!selectedClient || !lead_number) return false;
+      
       const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
       const currentClientId = isLegacy
         ? selectedClient.id?.toString().replace('legacy_', '')
         : selectedClient.id?.toString();
       const currentLeadNumber = selectedClient.lead_number;
 
-      // Check if we have the correct client already loaded
       if (isLegacy) {
-        if (currentClientId === lead_number) {
-          console.log('🔍 Clients: POP navigation with cached client, skipping fetch');
-          setLocalLoading(false);
-          lastRouteRef.current = currentRoute; // Update route ref to prevent future refetches
-          return; // Skip fetch - we have the cached client
-        }
+        return currentClientId === lead_number;
       } else {
-        if (currentLeadNumber === lead_number || currentClientId === lead_number) {
-          console.log('🔍 Clients: POP navigation with cached client, skipping fetch');
-          setLocalLoading(false);
-          lastRouteRef.current = currentRoute; // Update route ref to prevent future refetches
-          return; // Skip fetch - we have the cached client
-        }
+        return currentLeadNumber === lead_number || currentClientId === lead_number;
       }
-    }
+    };
 
-    // Always refetch if route changed (including coming back from /master)
-    // But skip if it's a POP navigation and we already handled it above
+    // If we have the correct client already loaded, skip fetch (regardless of navigation type)
+    if (hasCorrectClient() && !location.pathname.includes('/master')) {
+      console.log('🔍 Clients: Already have correct client loaded, skipping fetch');
+      // Ensure loading is false immediately
+      setLocalLoading(false);
+      lastRouteRef.current = currentRoute; // Update route ref to prevent future refetches
+      return; // Skip fetch - we have the cached client
+    }
+    
+    // Only refetch if route actually changed to a different client
+    // For POP navigation, we already checked above if we have the client
     if (routeChanged && navType !== 'POP') {
-      lastRouteRef.current = currentRoute;
-      // Clear selectedClient immediately to reset all child components
-      setSelectedClient(null);
-      // Continue to fetch data below - don't return early
+      // Check if we're navigating to a different client (not just route string change)
+      const isDifferentClient = !hasCorrectClient();
+      if (isDifferentClient) {
+        lastRouteRef.current = currentRoute;
+        // Clear selectedClient only if it's actually a different client
+        setSelectedClient(null);
+        // Continue to fetch data below
+      } else {
+        // Same client, just route string changed (e.g., coming back from /master)
+        lastRouteRef.current = currentRoute;
+        setLocalLoading(false);
+        return; // Skip fetch - same client
+      }
     } else if (routeChanged && navType === 'POP') {
       // POP navigation but client doesn't match - update route ref and continue
       lastRouteRef.current = currentRoute;
-    } else if (selectedClient && lead_number && !location.pathname.includes('/master')) {
-      // Only skip fetch if we have the same client AND we're not on the master route
-      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-      const currentClientId = isLegacy
-        ? selectedClient.id?.toString().replace('legacy_', '')
-        : selectedClient.id?.toString();
-      const currentLeadNumber = selectedClient.lead_number;
-
-      // For legacy leads, compare by ID; for new leads, compare by lead_number
-      if (isLegacy) {
-        // Legacy lead: compare numeric ID
-        if (currentClientId === lead_number) {
-          setLocalLoading(false); // Ensure loading is cleared
-          return; // Already have the correct legacy client loaded
-        }
-      } else {
-        // New lead: compare by lead_number or manual_id
-        if (currentLeadNumber === lead_number || currentClientId === lead_number) {
-          setLocalLoading(false); // Ensure loading is cleared
-          return; // Already have the correct new client loaded
-        }
+    } else if (!routeChanged && selectedClient && lead_number) {
+      // Same route, check if we have the correct client
+      if (hasCorrectClient() && !location.pathname.includes('/master')) {
+        setLocalLoading(false);
+        return; // Already have the correct client loaded
       }
     }
 
+    // Only set loading to true if we actually need to fetch (don't block UI unnecessarily)
+    // Delay setting loading to true until we're sure we need to fetch
     let isMounted = true;
     const fetchEssentialData = async () => {
-      // Always set loading when fetching new data
-      setLocalLoading(true);
+      // Fetch data but don't show loading screen - page renders immediately
       // Use fullLeadNumber if lead_number is empty (fallback for route parsing)
       const effectiveLeadNumber = lead_number || fullLeadNumber;
       if (effectiveLeadNumber) {
@@ -3095,7 +3137,7 @@ const Clients: React.FC<ClientsProps> = ({
           queries.push(
             supabase
               .from('leads')
-              .select('*')
+              .select('id, name, email, phone, mobile, topic, lead_number, stage, source_id, created_at, updated_at, notes, special_notes, next_followup, probability, category_id, category, language_id, language, balance, balance_currency, proposal_total, currency_id, handler, case_handler_id, closer_id, scheduler_id, manager_id, lawyer_id, expert_id, status, deactivate_notes, unactivation_reason, unactivated_by, unactivated_at, reason_id, manual_id, master_id, number_of_applicants_meeting, sales_roles_locked, vat, potential_total')
               .eq('manual_id', effectiveLeadNumber)
               .then(({ data, error }) => ({ type: 'manual', data, error }))
           );
@@ -3106,7 +3148,7 @@ const Clients: React.FC<ClientsProps> = ({
             supabase
               .from('leads_lead')
               .select(`
-                *,
+                id, name, email, phone, mobile, topic, lead_number, stage, source_id, cdate, udate, notes, special_notes, next_followup, probability, category_id, category, language_id, total, currency_id, case_handler_id, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, status, deactivate_notes, unactivation_reason, unactivated_by, unactivated_at, reason_id, manual_id, master_id, no_of_applicants, eligibile, vat, potential_total, sales_roles_locked,
                 accounting_currencies!leads_lead_currency_id_fkey (
                   name,
                   iso_code
@@ -3128,7 +3170,7 @@ const Clients: React.FC<ClientsProps> = ({
           queries.push(
             supabase
               .from('leads')
-              .select('*')
+              .select('id, name, email, phone, mobile, topic, lead_number, stage, source_id, created_at, updated_at, notes, special_notes, next_followup, probability, category_id, category, language_id, language, balance, balance_currency, proposal_total, currency_id, handler, case_handler_id, closer_id, scheduler_id, manager_id, lawyer_id, expert_id, status, deactivate_notes, unactivation_reason, unactivated_by, unactivated_at, reason_id, manual_id, master_id, number_of_applicants_meeting, sales_roles_locked, vat, potential_total')
               .eq('lead_number', effectiveLeadNumber)
               .single()
               .then(({ data, error }) => ({ type: 'lead_number', data, error }))
@@ -3137,7 +3179,7 @@ const Clients: React.FC<ClientsProps> = ({
           queries.push(
             supabase
               .from('leads')
-              .select('*')
+              .select('id, name, email, phone, mobile, topic, lead_number, stage, source_id, created_at, updated_at, notes, special_notes, next_followup, probability, category_id, category, language_id, language, balance, balance_currency, proposal_total, currency_id, handler, case_handler_id, closer_id, scheduler_id, manager_id, lawyer_id, expert_id, status, deactivate_notes, unactivation_reason, unactivated_by, unactivated_at, reason_id, manual_id, master_id, number_of_applicants_meeting, sales_roles_locked, vat, potential_total')
               .eq('lead_number', effectiveLeadNumber)
               .single()
               .then(({ data, error }) => ({ type: 'lead_number', data, error }))
@@ -3200,22 +3242,24 @@ const Clients: React.FC<ClientsProps> = ({
               }
 
               // Calculate sub-lead suffix if this is a sub-lead (has master_id)
-              // Optimized: Use a simpler query without ordering for faster results
+              // Optimized: Only calculate if needed, and use a simpler query
               let subLeadSuffix: number | undefined;
               if (legacyLead.master_id) {
-                // Use a faster query - just count and find index, no ordering needed initially
-                const { data: existingSubLeads } = await supabase
+                // Use a faster query - just get IDs and count, no full data fetch
+                const { data: existingSubLeads, count } = await supabase
                   .from('leads_lead')
-                  .select('id')
+                  .select('id', { count: 'exact' })
                   .eq('master_id', legacyLead.master_id)
-                  .not('master_id', 'is', null)
-                  .limit(100); // Limit to prevent huge queries
+                  .lt('id', legacyLead.id) // Only count leads with smaller ID (already sorted)
+                  .limit(100);
 
-                if (existingSubLeads) {
-                  // Sort in memory (faster than DB sort for small datasets)
+                if (existingSubLeads && count !== null) {
+                  // Suffix is count + 2 (first sub-lead is /2, second is /3, etc.)
+                  subLeadSuffix = count + 2;
+                } else if (existingSubLeads) {
+                  // Fallback: sort in memory if count not available
                   existingSubLeads.sort((a, b) => a.id - b.id);
                   const currentLeadIndex = existingSubLeads.findIndex(sub => sub.id === legacyLead.id);
-                  // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
                   subLeadSuffix = currentLeadIndex >= 0 ? currentLeadIndex + 2 : existingSubLeads.length + 2;
                 }
               }
@@ -3336,7 +3380,7 @@ const Clients: React.FC<ClientsProps> = ({
           if (numericLeadCandidate && /^\d+$/.test(numericLeadCandidate)) {
             const { data: leadsByManualId, error: manualLookupError } = await supabase
               .from('leads')
-              .select('*')
+              .select('id, name, email, phone, mobile, topic, lead_number, stage, source_id, created_at, updated_at, notes, special_notes, next_followup, probability, category_id, category, language_id, language, balance, balance_currency, proposal_total, currency_id, handler, case_handler_id, closer_id, scheduler_id, manager_id, lawyer_id, expert_id, status, deactivate_notes, unactivation_reason, unactivated_by, unactivated_at, reason_id, manual_id, master_id, number_of_applicants_meeting, sales_roles_locked, vat, potential_total')
               .eq('manual_id', numericLeadCandidate)
               .order('created_at', { ascending: false })
               .limit(1);
@@ -3379,7 +3423,7 @@ const Clients: React.FC<ClientsProps> = ({
 
           // Set the client immediately for faster rendering
           setSelectedClient(normalizeClientStage(clientData));
-          setLocalLoading(false); // Stop loading immediately - don't wait for anything else
+          // Don't set loading to false - we removed loading screen, but keep state clean
 
           // Clear flag after a brief delay
           setTimeout(() => {
@@ -3475,8 +3519,40 @@ const Clients: React.FC<ClientsProps> = ({
     };
   }, [lead_number, fullLeadNumber, requestedLeadNumber, buildClientRoute, droppedStageId, userManuallyExpanded, location.pathname]); // Added location.pathname to ensure refetch on route change
   // Background loading for non-essential data (runs after essential data is loaded)
+  // Cache reference data to avoid refetching on every mount
+  const backgroundDataCacheRef = useRef<{ 
+    categories?: any[]; 
+    sources?: string[]; 
+    languages?: string[]; 
+    currencies?: any[]; 
+    meetingLocations?: any[]; 
+    tags?: any[]; 
+    timestamp?: number;
+  }>({});
+  const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
   useEffect(() => {
     const loadBackgroundData = async () => {
+      // Check cache first
+      const now = Date.now();
+      const cache = backgroundDataCacheRef.current;
+      if (cache.timestamp && (now - cache.timestamp) < CACHE_DURATION && 
+          cache.categories && cache.sources && cache.languages && cache.currencies) {
+        // Use cached data
+        setMainCategories(cache.categories.map((cat: any) => 
+          cat.misc_maincategory ? `${cat.name} (${cat.misc_maincategory.name})` : cat.name
+        ).filter(Boolean));
+        setSources(cache.sources);
+        setLanguagesList(cache.languages);
+        setCurrencies(cache.currencies);
+        if (cache.meetingLocations) setMeetingLocations(cache.meetingLocations);
+        if (cache.tags) {
+          setAllTags(cache.tags);
+          setTagsList(cache.tags.map((tag: any) => tag.name));
+        }
+        return; // Skip fetch if cache is valid
+      }
+
       setBackgroundLoading(true);
       try {
         // Fetch all non-essential data in parallel for better performance
@@ -3537,25 +3613,27 @@ const Clients: React.FC<ClientsProps> = ({
 
         // Process currencies
         const { newCurrencies, legacyCurrencies } = currenciesResult;
+        let finalCurrencies: any[] = [];
         if (!newCurrencies.error && newCurrencies.data && newCurrencies.data.length > 0) {
-          setCurrencies(newCurrencies.data);
+          finalCurrencies = newCurrencies.data;
+          setCurrencies(finalCurrencies);
         } else if (!legacyCurrencies.error && legacyCurrencies.data && legacyCurrencies.data.length > 0) {
-          const transformedCurrencies = legacyCurrencies.data.map(currency => ({
+          finalCurrencies = legacyCurrencies.data.map(currency => ({
             id: currency.id.toString(),
             front_name: currency.iso_code === 'NIS' ? '₪' : currency.iso_code === 'EUR' ? '€' : currency.iso_code === 'USD' ? '$' : currency.iso_code === 'GBP' ? '£' : currency.iso_code,
             iso_code: currency.iso_code,
             name: currency.name
           }));
-          setCurrencies(transformedCurrencies);
+          setCurrencies(finalCurrencies);
         } else {
           // Fallback to hardcoded currencies
-          const fallbackCurrencies = [
+          finalCurrencies = [
             { id: '1', front_name: '₪', iso_code: 'NIS', name: '₪' },
             { id: '2', front_name: '€', iso_code: 'EUR', name: '€' },
             { id: '3', front_name: '$', iso_code: 'USD', name: '$' },
             { id: '4', front_name: '£', iso_code: 'GBP', name: '£' }
           ];
-          setCurrencies(fallbackCurrencies);
+          setCurrencies(finalCurrencies);
         }
 
         // Process meeting locations from tenants_meetinglocation
@@ -3568,6 +3646,7 @@ const Clients: React.FC<ClientsProps> = ({
               default_link: loc.default_link ?? null,
             }));
           setMeetingLocations(processedLocations);
+          backgroundDataCacheRef.current.meetingLocations = processedLocations;
         }
 
         // Process tags
@@ -3575,7 +3654,15 @@ const Clients: React.FC<ClientsProps> = ({
           setAllTags(tagsResult.data);
           const tagNames = tagsResult.data.map((tag: any) => tag.name);
           setTagsList(tagNames);
+          backgroundDataCacheRef.current.tags = tagsResult.data;
         }
+
+        // Update cache with all fetched data
+        backgroundDataCacheRef.current.categories = categoriesResult.data || [];
+        backgroundDataCacheRef.current.sources = sourcesResult.data?.map((row: any) => row.name).filter(Boolean) || [];
+        backgroundDataCacheRef.current.languages = languagesResult.data?.map((row: any) => row.name).filter(Boolean) || [];
+        backgroundDataCacheRef.current.currencies = finalCurrencies;
+        backgroundDataCacheRef.current.timestamp = Date.now();
 
         console.log('✅ Background data loading completed');
       } catch (error) {
@@ -10248,13 +10335,47 @@ const Clients: React.FC<ClientsProps> = ({
     normalizeCurrencyForForm,
   ]);
 
-  if (!localLoading && !selectedClient) {
+  // Calculate unactivation status (must be before early return to follow Rules of Hooks)
+  // ===== TOP PRIORITY: Check unactivation status FIRST, before any other logic =====
+  // This must be checked immediately to prevent flickering and ensure badge is always shown
+  const isLegacyForView = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+  const statusValue = selectedClient ? (selectedClient as any).status : null;
+  // Only show unactivated box for new leads (not legacy leads)
+  const isUnactivated = selectedClient && statusValue !== null && statusValue !== undefined && !isLegacyForView
+    ? (statusValue === 'inactive')
+    : false;
+
+  // Debug logging - only log when values actually change (must be before early return)
+  useEffect(() => {
+    console.log('🔍 RENDER TOP PRIORITY: Checking unactivation status', {
+      selectedClientId: selectedClient?.id,
+      isLegacyForView,
+      statusValue,
+      isUnactivated,
+      userManuallyExpanded,
+      hasSelectedClient: !!selectedClient
+    });
+  }, [selectedClient?.id, isLegacyForView, statusValue, isUnactivated, userManuallyExpanded, selectedClient]);
+
+  // Only show "Please select a client" if there's no client ID in URL and no selected client
+  // If there's a client ID in URL, wait for selectedClient to load before rendering main content
+  if (!selectedClient) {
+    if (!lead_number && !fullLeadNumber) {
+      // No client ID in URL - show message
+      return (
+        <div className="p-6">
+          <h1 className="text-2xl font-bold mb-4">Clients</h1>
+          <div className="alert">
+            <span>Please select a client from search or create a new one.</span>
+          </div>
+        </div>
+      );
+    }
+    // Client ID in URL but not loaded yet - show minimal loading (no spinner, just wait)
     return (
       <div className="p-6">
         <h1 className="text-2xl font-bold mb-4">Clients</h1>
-        <div className="alert">
-          <span>Please select a client from search or create a new one.</span>
-        </div>
+        <div className="text-base-content/70">Loading client data...</div>
       </div>
     );
   }
@@ -11524,25 +11645,8 @@ const Clients: React.FC<ClientsProps> = ({
   };
 
   // ===== TOP PRIORITY: Check unactivation status FIRST, before any other logic =====
-  // This must be checked immediately to prevent flickering and ensure badge is always shown
-  const isLegacyForView = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-  const statusValue = selectedClient ? (selectedClient as any).status : null;
-  // Only show unactivated box for new leads (not legacy leads)
-  const isUnactivated = selectedClient && statusValue !== null && statusValue !== undefined && !isLegacyForView
-    ? (statusValue === 'inactive')
-    : false;
-
-  // Debug logging - only log when values actually change
-  useEffect(() => {
-    console.log('🔍 RENDER TOP PRIORITY: Checking unactivation status', {
-      selectedClientId: selectedClient?.id,
-      isLegacyForView,
-      statusValue,
-      isUnactivated,
-      userManuallyExpanded,
-      hasSelectedClient: !!selectedClient
-    });
-  }, [selectedClient?.id, isLegacyForView, statusValue, isUnactivated, userManuallyExpanded, selectedClient]);
+  // Note: isLegacyForView, statusValue, and isUnactivated are already defined above before the early return
+  // This section is kept for reference but the actual logic is moved up to follow Rules of Hooks
 
   // Show unactivated view if lead is unactivated and user hasn't clicked to expand
   // This takes priority over loading state to prevent flickering
@@ -11874,14 +11978,7 @@ const Clients: React.FC<ClientsProps> = ({
     );
   }
 
-  // Show loading state while determining view (only if not unactivated)
-  if (localLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="loading loading-spinner loading-lg"></div>
-      </div>
-    );
-  }
+  // Removed loading screen - render immediately with available data
 
   return (
     <div className="min-h-screen bg-base-100">
@@ -13333,7 +13430,7 @@ const Clients: React.FC<ClientsProps> = ({
                     : (statusValueForBadge === 'inactive');
 
                   // Get deactivate_notes for both legacy and new leads
-                  const deactivateNotes = (selectedClient as any).deactivate_notes || null;
+                  const deactivateNotes = selectedClient ? ((selectedClient as any).deactivate_notes || null) : null;
 
                   // Detect if text contains Hebrew characters for RTL/LTR alignment
                   const hasHebrew = deactivateNotes ? /[\u0590-\u05FF]/.test(deactivateNotes) : false;
@@ -15466,12 +15563,7 @@ const Clients: React.FC<ClientsProps> = ({
         loginRequest={loginRequest}
         onOfferSent={onClientUpdate}
       />
-      {/* Loading overlay spinner */}
-      {localLoading && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/60">
-          <span className="loading loading-spinner loading-lg text-primary"></span>
-        </div>
-      )}
+      {/* Removed loading overlay - page loads immediately */}
       {showSubLeadDrawer && (
         <div className="fixed inset-0 z-50 flex">
           <div

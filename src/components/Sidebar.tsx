@@ -141,7 +141,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
   const [userDepartment, setUserDepartment] = React.useState<string>('');
   const [userOfficialName, setUserOfficialName] = React.useState<string>('');
   const [isSuperUser, setIsSuperUser] = React.useState<boolean>(false);
-  const [isLoadingUserInfo, setIsLoadingUserInfo] = React.useState<boolean>(true);
+  const [isLoadingUserInfo, setIsLoadingUserInfo] = React.useState<boolean>(false); // Start as false to not block UI
 
   // Helper function to get role display name
   const getRoleDisplayName = (role: string): string => {
@@ -182,8 +182,8 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
     }
 
     const fetchUserInfo = async (retryCount = 0) => {
+      // Don't set loading to true - run in background to not block UI
       try {
-        setIsLoadingUserInfo(true);
 
         // Get the current auth user
         const { data: { user }, error: authError } = await supabase.auth.getUser();
@@ -458,8 +458,9 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
   }, [isSuperUser]);
 
   // Hide sidebar completely for external users - check after all hooks are called
+  // Wait for external user check to complete to prevent flash
   if (isLoadingExternal) {
-    return null; // Show nothing while loading
+    return null; // Show nothing while checking external user status
   }
 
   if (isExternalUser) {
@@ -642,19 +643,19 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                           <>
                             <button
                               className={`group flex items-center p-3 rounded-lg w-full transition-all duration-200 ${item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
-                                  ? (isExpanded ? 'bg-white text-black font-bold shadow-lg' : 'text-black')
-                                  : (isExpanded ? 'sidebar-active-purple text-white shadow-lg' : 'text-base-content')
+                                ? (isExpanded ? 'bg-white text-black font-bold shadow-lg' : 'text-black')
+                                : (isExpanded ? 'sidebar-active-purple text-white shadow-lg' : 'text-base-content')
                                 }`}
                               onClick={() => setExpandedMenu(isExpanded ? null : item.label)}
                               type="button"
                             >
                               <Icon className={`w-6 h-6 min-w-[1.5rem] ${item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
-                                  ? (isExpanded ? 'text-black' : 'text-black')
-                                  : (isExpanded ? 'text-white' : 'text-black')
+                                ? (isExpanded ? 'text-black' : 'text-black')
+                                : (isExpanded ? 'text-white' : 'text-black')
                                 }`} />
                               <span className={`ml-3 font-medium ${item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
-                                  ? (isExpanded ? 'text-black' : 'text-black')
-                                  : (isExpanded ? 'text-white' : 'text-black')
+                                ? (isExpanded ? 'text-black' : 'text-black')
+                                : (isExpanded ? 'text-white' : 'text-black')
                                 }`}>{item.label}</span>
                               <svg className={`w-4 h-4 ml-auto transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                             </button>
@@ -669,17 +670,17 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                                         to={sub.path!}
                                         onClick={onClose}
                                         className={`group flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 cursor-pointer ${item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
-                                            ? (isSubActive ? 'bg-purple-600 text-white font-bold shadow' : 'text-black')
-                                            : (isSubActive ? 'bg-white text-black font-bold shadow' : 'text-black')
+                                          ? (isSubActive ? 'bg-purple-600 text-white font-bold shadow' : 'text-black')
+                                          : (isSubActive ? 'bg-white text-black font-bold shadow' : 'text-black')
                                           }`}
                                       >
                                         <SubIcon className={`w-5 h-5 min-w-[1.25rem] ${item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
-                                            ? (isSubActive ? 'text-white' : 'text-black')
-                                            : (isSubActive ? 'text-black' : 'text-black')
+                                          ? (isSubActive ? 'text-white' : 'text-black')
+                                          : (isSubActive ? 'text-black' : 'text-black')
                                           }`} />
                                         <span className={`text-base font-medium whitespace-nowrap opacity-100 ${item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
-                                            ? (isSubActive ? 'text-white' : 'text-black')
-                                            : (isSubActive ? 'text-black' : 'text-black')
+                                          ? (isSubActive ? 'text-white' : 'text-black')
+                                          : (isSubActive ? 'text-black' : 'text-black')
                                           }`}>{sub.label}</span>
                                       </Link>
                                     </li>

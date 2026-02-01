@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { supabase, sessionManager, isAuthError, handleSessionExpiration } from '../lib/supabase';
+import { preCheckExternalUser } from '../hooks/useExternalUser';
 
 interface AuthState {
   user: any;
@@ -160,6 +161,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') {
         // For INITIAL_SESSION, ensure we mark as initialized
         updateAuthState(session, true);
+        
+        // Pre-check external user status in the background
+        // This ensures the check is ready when the dashboard loads
+        if (session?.user?.id) {
+          preCheckExternalUser(session.user.id).catch(err => {
+            console.error('Error pre-checking external user:', err);
+          });
+        }
       } else if (event === 'SIGNED_OUT') {
         // Only clear if we actually had a user
         setAuthState(prev => {

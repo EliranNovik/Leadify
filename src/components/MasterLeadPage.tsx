@@ -1,4 +1,4 @@
-import React, { useState, useEffect, Fragment } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
@@ -7,16 +7,23 @@ import {
   UserIcon,
   CurrencyDollarIcon,
   TagIcon,
-  CheckCircleIcon,
-  XCircleIcon,
-  ClockIcon,
   LinkIcon,
   ExclamationTriangleIcon,
-  XMarkIcon
+  XMarkIcon,
+  DocumentTextIcon
 } from '@heroicons/react/24/outline';
 import { createPortal } from 'react-dom';
 import { toast } from 'react-hot-toast';
 import { getFrontendBaseUrl } from '../lib/api';
+import { usePersistedState } from '../hooks/usePersistedState';
+import {
+  fetchNewMasterLead,
+  fetchLegacyMasterLead,
+  extractNumericId,
+  formatLegacyLeadNumber,
+  type SubLead,
+  type ContractData
+} from '../lib/masterLeadApi';
 
 // Helper function to process HTML for editing with consistent styling
 const processHtmlForEditing = (html: string): string => {
@@ -72,39 +79,66 @@ const executeCommand = (command: string, value?: string) => {
   }
 };
 
-interface SubLead {
-  id: string;
-  lead_number: string;
-  actual_lead_id: string; // The actual lead ID for navigation
-  manual_id?: string;
-  name: string;
-  total?: number;
-  currency?: string;
-  currency_symbol?: string;
-  category?: string;
-  stage?: string;
-  contact?: string;
-  applicants?: number;
-  agreement?: string | React.ReactNode;
-  docs_url?: string;
-  scheduler?: string;
-  closer?: string;
-  handler?: string;
-  master_id?: string;
-  isMaster?: boolean;
-  route?: string;
-}
+// SubLead and ContractData are now imported from masterLeadApi
 
 const MasterLeadPage: React.FC = () => {
   const { lead_number } = useParams<{ lead_number: string }>();
   const navigate = useNavigate();
-  const [subLeads, setSubLeads] = useState<SubLead[]>([]);
+  
+  // Persisted state - convert Map to/from array for serialization
+  const [contractsDataArray, setContractsDataArray] = usePersistedState<Array<[string, ContractData]>>(
+    'masterLeadPage_contractsData',
+    [],
+    { storage: 'sessionStorage' }
+  );
+  
+  // Convert array to Map and vice versa
+  const contractsDataMap = useMemo(() => {
+    return new Map<string, ContractData>(contractsDataArray);
+  }, [contractsDataArray]);
+  
+  const setContractsDataMap = (updater: (prev: Map<string, ContractData>) => Map<string, ContractData>) => {
+    const newMap = updater(contractsDataMap);
+    setContractsDataArray(Array.from(newMap.entries()));
+  };
+  
+  const [subLeads, setSubLeads] = usePersistedState<SubLead[]>(
+    'masterLeadPage_subLeads',
+    [],
+    { storage: 'sessionStorage' }
+  );
+  
+  const [masterLeadInfo, setMasterLeadInfo] = usePersistedState<any>(
+    'masterLeadPage_masterLeadInfo',
+    null,
+    { storage: 'sessionStorage' }
+  );
+  
   const [loading, setLoading] = useState(true);
+  
+  // Check persisted data on mount and set loading accordingly
+  useEffect(() => {
+    if (lead_number && masterLeadInfo && subLeads.length > 0) {
+      const decodedLeadNumber = decodeURIComponent(lead_number);
+      const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
+      const persistedLeadNumber = String(masterLeadInfo.lead_number || masterLeadInfo.id || '');
+      const persistedBaseNumber = persistedLeadNumber.includes('/') ? persistedLeadNumber.split('/')[0] : persistedLeadNumber;
+      
+      // Check if persisted data matches current lead
+      if (persistedBaseNumber === baseLeadNumber || subLeads.some(subLead => {
+        const subLeadNumber = String(subLead.lead_number || subLead.id || '');
+        const subLeadBase = subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber;
+        return subLeadBase === baseLeadNumber || subLeadNumber === baseLeadNumber;
+      })) {
+        // We have matching persisted data, set loading to false immediately
+        setLoading(false);
+        setSubLeadsLoading(false);
+      }
+    }
+  }, []); // Only run on mount
   const [subLeadsLoading, setSubLeadsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [masterLeadInfo, setMasterLeadInfo] = useState<any>(null);
   const [viewingContract, setViewingContract] = useState<{ id: string; mode: 'view' | 'edit'; contractHtml?: string; signedContractHtml?: string; status?: string; public_token?: string; signed_at?: string } | null>(null);
-  const [contractsDataMap, setContractsDataMap] = useState<Map<string, { id: string; isLegacy: boolean; contractHtml?: string; signedContractHtml?: string; public_token?: string; signed_at?: string }>>(new Map());
 
   // Add compact table styles
   const compactTableStyles = `
@@ -123,80 +157,6 @@ const MasterLeadPage: React.FC = () => {
     }
   `;
 
-  // Helper function to get category name with main category
-  const getCategoryName = (categoryId: string | number | null | undefined, categories: any[]) => {
-    if (!categoryId || !categories || categories.length === 0) {
-      return 'Unknown';
-    }
-
-    const category = categories.find((cat: any) => cat.id.toString() === categoryId.toString());
-    if (category) {
-      // Return category name with main category in parentheses
-      if (category.misc_maincategory?.name) {
-        return `${category.name} (${category.misc_maincategory.name})`;
-      } else {
-        return category.name; // Fallback if no main category
-      }
-    }
-
-    return 'Unknown';
-  };
-
-  // Helper function to format lead number for legacy leads (same logic as Clients.tsx)
-  const formatLegacyLeadNumber = (legacyLead: any, subLeadSuffix?: number, hasSubLeads: boolean = false): string => {
-    const masterId = legacyLead.master_id;
-    const leadId = String(legacyLead.id);
-
-    // If master_id is null/empty, it's a master lead
-    // Only add /1 suffix if it actually has subleads
-    if (!masterId || String(masterId).trim() === '') {
-      return hasSubLeads ? `${leadId}/1` : leadId;
-    }
-
-    // If master_id exists, it's a sub-lead
-    // Use provided suffix if available, otherwise calculate it
-    if (subLeadSuffix !== undefined) {
-      return `${masterId}/${subLeadSuffix}`;
-    }
-
-    // If suffix not provided, return a placeholder that will be calculated when data is fetched
-    return `${masterId}/?`;
-  };
-
-  // Helper function to get currency symbol
-  const getCurrencySymbol = (currencyCode?: string) => {
-    if (!currencyCode) return '₪';
-    const symbols: { [key: string]: string } = {
-      'ILS': '₪',
-      'NIS': '₪',
-      'USD': '$',
-      'EUR': '€',
-      'GBP': '£',
-      'CAD': 'C$',
-      'AUD': 'A$'
-    };
-    return symbols[currencyCode.toUpperCase()] || currencyCode;
-  };
-
-  // Helper function to get currency info from lead data
-  const getCurrencyInfo = (lead: any) => {
-    // Use accounting_currencies name if available, otherwise fallback
-    if (lead.accounting_currencies?.name) {
-      return {
-        currency: lead.accounting_currencies.name,
-        symbol: getCurrencySymbol(lead.accounting_currencies.iso_code || lead.accounting_currencies.name)
-      };
-    } else {
-      // Fallback currency mapping based on currency_id
-      switch (lead.currency_id) {
-        case 1: return { currency: 'NIS', symbol: '₪' };
-        case 2: return { currency: 'USD', symbol: '$' };
-        case 3: return { currency: 'EUR', symbol: '€' };
-        default: return { currency: 'NIS', symbol: '₪' };
-      }
-    }
-  };
-
   // Helper function to get contrasting text color based on background
   const getContrastingTextColor = (hexColor?: string | null) => {
     if (!hexColor) return '#ffffff';
@@ -214,22 +174,6 @@ const MasterLeadPage: React.FC = () => {
 
     const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     return luminance > 0.55 ? '#111827' : '#ffffff';
-  };
-
-  // Helper function to format contact information - only show name
-  const getContactInfo = (lead: any, contactMap: Map<string, any>) => {
-    // Get contact info from the contact map
-    const contactInfo = contactMap.get(String(lead.id));
-
-    // Only return the name, no phone/email
-    if (contactInfo?.name && contactInfo.name.trim()) {
-      return contactInfo.name.trim();
-    } else if (lead.name && lead.name.trim()) {
-      // Fallback to lead name if no contact info
-      return lead.name.trim();
-    }
-
-    return '---';
   };
 
   const getStageBadge = (stage?: string | number) => {
@@ -263,357 +207,34 @@ const MasterLeadPage: React.FC = () => {
     );
   };
 
-  const buildClientRoute = (manualId?: string | null, leadNumberValue?: string | null) => {
-    const manualString = manualId?.toString().trim() || '';
-    const leadString = leadNumberValue?.toString().trim() || '';
-    const isSubLeadNumber = leadString.includes('/');
 
-    if (isSubLeadNumber && manualString !== '') {
-      const query = leadString !== '' ? `?lead=${encodeURIComponent(leadString)}` : '';
-      return `/clients/${encodeURIComponent(manualString)}` + query;
+  // Create agreement button for a lead
+  const createAgreementButton = (lead: SubLead, isLegacy: boolean) => {
+    // For new leads, use the lead ID directly (UUID string)
+    // For legacy leads, extract the numeric ID from the lead ID (format: legacy_123)
+    // The contracts map uses the numeric lead ID as the key for legacy leads
+    const lookupKey = isLegacy 
+      ? lead.id.replace('legacy_', '')
+      : lead.id;
+    
+    const contractData = contractsDataMap.get(lookupKey);
+    if (contractData) {
+      return (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            handleViewContract(contractData.id, contractData.isLegacy);
+          }}
+          className="text-blue-600 hover:text-blue-800 underline cursor-pointer"
+        >
+          View Agreement
+        </button>
+      );
     }
-
-    if (leadString !== '') {
-      return `/clients/${encodeURIComponent(leadString)}`;
-    }
-
-    if (manualString !== '') {
-      return `/clients/${encodeURIComponent(manualString)}`;
-    }
-
-    return '/clients';
+    return '---';
   };
 
-  const extractNumericId = (value: string | null | undefined) => {
-    if (!value) return null;
-    if (/^\d+$/.test(value)) return value;
-    const digitsOnly = value.replace(/\D/g, '');
-    return digitsOnly.length > 0 ? digitsOnly : null;
-  };
-
-  const attemptFetchNewMaster = async (baseLeadNumber: string): Promise<boolean> => {
-    try {
-      const { data: masterLead, error: masterError } = await supabase
-        .from('leads')
-        .select('*')
-        .eq('lead_number', baseLeadNumber)
-        .maybeSingle();
-
-      if (masterError) {
-        console.error('Error fetching new master lead:', masterError);
-      }
-
-      if (!masterLead) {
-        return false;
-      }
-
-      setSubLeadsLoading(true);
-
-      const { data: subLeadsData, error: subLeadsError } = await supabase
-        .from('leads')
-        .select('*')
-        .like('lead_number', `${baseLeadNumber}/%`)
-        .order('lead_number', { ascending: true });
-
-      if (subLeadsError) {
-        console.error('Error fetching new sub-leads:', subLeadsError);
-        setError('Failed to fetch sub-leads');
-        setMasterLeadInfo(masterLead);
-        setSubLeads([]);
-        return true;
-      }
-
-      // Set master lead info early for faster UI update
-      setMasterLeadInfo(masterLead);
-
-      const leadIdsForContacts = [
-        masterLead?.id,
-        ...(subLeadsData?.map((lead: any) => lead.id) || []),
-      ].filter(Boolean);
-
-      const leadIdsForContracts = leadIdsForContacts;
-
-      // Parallelize all independent queries
-      const [
-        { data: categories },
-        { data: stageDefinitions },
-        { data: employees },
-        { data: contactsData, error: contactsError },
-        { data: newContractsData, error: newContractsError }
-      ] = await Promise.all([
-        supabase
-          .from('misc_category')
-          .select(`
-              id,
-              name,
-              parent_id,
-              misc_maincategory!parent_id (
-                id,
-                name
-              )
-            `)
-          .order('name', { ascending: true }),
-        supabase
-          .from('lead_stages')
-          .select('id, name'),
-        supabase
-          .from('tenants_employee')
-          .select('id, display_name'),
-        leadIdsForContacts.length > 0
-          ? supabase
-            .from('contacts')
-            .select('id, lead_id, name, is_main_applicant, relationship')
-            .in('lead_id', leadIdsForContacts.map(id => String(id)))
-          : Promise.resolve({ data: null, error: null }),
-        leadIdsForContracts.length > 0
-          ? supabase
-            .from('contracts')
-            .select('id, client_id')
-            .in('client_id', leadIdsForContracts.map(id => String(id)))
-          : Promise.resolve({ data: null, error: null })
-      ]);
-
-      if (contactsError) {
-        console.error('Error fetching contacts for new leads:', contactsError);
-      }
-      if (newContractsError) {
-        console.error('Error fetching new contracts:', newContractsError);
-      }
-
-      const stageNameLookup = new Map<string, string>();
-      stageDefinitions?.forEach(stage => {
-        if (stage?.id !== undefined && stage?.id !== null) {
-          stageNameLookup.set(String(stage.id), stage.name || String(stage.id));
-        }
-      });
-
-      const employeeMap = new Map<number, string>();
-      employees?.forEach(emp => {
-        if (emp.id && emp.display_name) {
-          employeeMap.set(emp.id, emp.display_name);
-        }
-      });
-
-      const contactsByLead = new Map<string, any[]>();
-      if (contactsData) {
-        contactsData.forEach(contact => {
-          if (!contact.lead_id) return;
-          const key = String(contact.lead_id);
-          const existing = contactsByLead.get(key) || [];
-          existing.push(contact);
-          contactsByLead.set(key, existing);
-        });
-      }
-
-      const isTruthy = (value: any) => value === true || value === 'true' || value === 't' || value === '1';
-
-      const resolveContactName = (lead: any) => {
-        const contactList = (contactsByLead.get(String(lead.id)) || []).slice();
-
-        if (contactList.length > 0) {
-          contactList.sort((a, b) => {
-            const aMain = isTruthy(a.is_main_applicant) || (typeof a.relationship === 'string' && a.relationship.toLowerCase() === 'persecuted_person');
-            const bMain = isTruthy(b.is_main_applicant) || (typeof b.relationship === 'string' && b.relationship.toLowerCase() === 'persecuted_person');
-            if (aMain === bMain) return 0;
-            return aMain ? -1 : 1;
-          });
-
-          const selectedContact = contactList[0];
-          if (selectedContact?.name && selectedContact.name.trim()) {
-            return selectedContact.name.trim();
-          }
-        }
-
-        if (Array.isArray(lead.additional_contacts) && lead.additional_contacts.length > 0) {
-          const additionalContact = lead.additional_contacts.find((contact: any) => contact?.name && contact.name.trim());
-          if (additionalContact?.name) {
-            return additionalContact.name.trim();
-          }
-        }
-
-        const fallbackName = lead.anchor_full_name || lead.contact_name || lead.primary_contact_name || lead.name;
-        return fallbackName && typeof fallbackName === 'string' && fallbackName.trim() ? fallbackName.trim() : '---';
-      };
-
-      const resolveStageName = (stageValue: any) => {
-        if (stageValue === null || stageValue === undefined || stageValue === '') {
-          return 'Unknown';
-        }
-        const stageKey = String(stageValue);
-        return stageNameLookup.get(stageKey) || getStageName(stageKey) || stageKey;
-      };
-
-      const newContractsMap = new Map<string, { id: string; isLegacy: boolean }>();
-      if (newContractsData) {
-        newContractsData.forEach((contract: any) => {
-          if (contract.client_id && contract.id) {
-            newContractsMap.set(String(contract.client_id), {
-              id: contract.id,
-              isLegacy: false
-            });
-          }
-        });
-      }
-
-      // Update contractsDataMap with new leads contracts (merge with existing if any)
-      setContractsDataMap(prev => {
-        const merged = new Map(prev);
-        newContractsMap.forEach((value, key) => {
-          merged.set(key, value);
-        });
-        return merged;
-      });
-
-      const processedSubLeads: SubLead[] = [];
-
-      const formatNewLead = (lead: any, isMaster: boolean, hasSubLeads: boolean = false): SubLead => {
-        let leadNumberValue = lead.lead_number || baseLeadNumber;
-        // For master leads, add /1 suffix ONLY if it has subleads and not already present
-        if (isMaster && hasSubLeads && !leadNumberValue.includes('/')) {
-          leadNumberValue = `${leadNumberValue}/1`;
-        }
-        const manualValue = lead.manual_id ? String(lead.manual_id) : undefined;
-        const totalRaw = lead.balance ?? lead.total ?? lead.meeting_total ?? 0;
-        const totalValue = typeof totalRaw === 'number' ? totalRaw : parseFloat(totalRaw) || 0;
-        const currencyCode = (lead.balance_currency || lead.currency || 'NIS') as string;
-        const categoryName = getCategoryName(lead.category_id, categories || []) || lead.category || 'Unknown';
-        const applicantsValue = lead.number_of_applicants_meeting ?? lead.number_of_applicants ?? lead.applicants ?? 0;
-        const contactName = resolveContactName(lead);
-        // Check if contract exists in newContractsMap (local map for this fetch)
-        const contractData = newContractsMap.get(String(lead.id));
-        const agreementNode = contractData ? (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              handleViewContract(contractData.id, false);
-            }}
-            className="text-blue-600 hover:text-blue-800 underline cursor-pointer"
-          >
-            View Agreement
-          </button>
-        ) : '---';
-
-        // Map scheduler: check ID fields first, then check if text field is numeric
-        let schedulerName = '---';
-        const schedulerIdValue = lead.meeting_scheduler_id || lead.scheduler_id;
-        if (schedulerIdValue) {
-          const schedulerIdNum = typeof schedulerIdValue === 'string' ? parseInt(schedulerIdValue, 10) : schedulerIdValue;
-          if (!isNaN(schedulerIdNum) && employeeMap.has(schedulerIdNum)) {
-            schedulerName = employeeMap.get(schedulerIdNum)!;
-          }
-        }
-        if (schedulerName === '---') {
-          const schedulerText = lead.scheduler || lead.meeting_scheduler;
-          if (schedulerText) {
-            // Check if scheduler text is a numeric string (ID)
-            const schedulerTextNum = typeof schedulerText === 'string' ? parseInt(schedulerText.trim(), 10) : NaN;
-            if (!isNaN(schedulerTextNum) && employeeMap.has(schedulerTextNum)) {
-              schedulerName = employeeMap.get(schedulerTextNum)!;
-            } else {
-              schedulerName = schedulerText;
-            }
-          }
-        }
-
-        // Map closer: check ID fields first, then check if text field is numeric
-        let closerName = '---';
-        const closerIdValue = lead.closer_id || lead.meeting_closer_id;
-        if (closerIdValue) {
-          const closerIdNum = typeof closerIdValue === 'string' ? parseInt(closerIdValue, 10) : closerIdValue;
-          if (!isNaN(closerIdNum) && employeeMap.has(closerIdNum)) {
-            closerName = employeeMap.get(closerIdNum)!;
-          }
-        }
-        if (closerName === '---') {
-          const closerText = lead.closer || lead.meeting_closer;
-          if (closerText) {
-            // Check if closer text is a numeric string (ID)
-            const closerTextNum = typeof closerText === 'string' ? parseInt(closerText.trim(), 10) : NaN;
-            if (!isNaN(closerTextNum) && employeeMap.has(closerTextNum)) {
-              closerName = employeeMap.get(closerTextNum)!;
-            } else {
-              closerName = closerText;
-            }
-          }
-        }
-
-        // Map handler: check ID fields first, then check if text field is numeric
-        let handlerName = '---';
-        const handlerIdValue = lead.case_handler_id || lead.handler_id;
-        if (handlerIdValue) {
-          const handlerIdNum = typeof handlerIdValue === 'string' ? parseInt(handlerIdValue, 10) : handlerIdValue;
-          if (!isNaN(handlerIdNum) && employeeMap.has(handlerIdNum)) {
-            handlerName = employeeMap.get(handlerIdNum)!;
-          }
-        }
-        if (handlerName === '---') {
-          const handlerText = lead.handler || lead.case_handler;
-          if (handlerText) {
-            // Check if handler text is a numeric string (ID)
-            const handlerTextNum = typeof handlerText === 'string' ? parseInt(handlerText.trim(), 10) : NaN;
-            if (!isNaN(handlerTextNum) && employeeMap.has(handlerTextNum)) {
-              handlerName = employeeMap.get(handlerTextNum)!;
-            } else {
-              handlerName = handlerText;
-            }
-          }
-        }
-
-        return {
-          id: String(lead.id),
-          lead_number: leadNumberValue,
-          actual_lead_id: manualValue || leadNumberValue || String(lead.id),
-          manual_id: manualValue,
-          name: lead.name || 'Unknown',
-          total: totalValue,
-          currency: currencyCode,
-          currency_symbol: getCurrencySymbol(currencyCode),
-          category: categoryName,
-          stage: String(lead.stage), // Store stage ID for badge rendering
-          contact: contactName,
-          applicants: Number(applicantsValue) || 0,
-          agreement: agreementNode,
-          scheduler: schedulerName,
-          closer: closerName,
-          handler: handlerName,
-          master_id: lead.master_id || baseLeadNumber,
-          isMaster,
-          route: buildClientRoute(manualValue, leadNumberValue),
-        };
-      };
-
-      // Check if master lead has subleads
-      const hasSubLeads = subLeadsData && subLeadsData.length > 0;
-      processedSubLeads.push(formatNewLead(masterLead, true, hasSubLeads));
-      subLeadsData?.forEach((lead: any) => processedSubLeads.push(formatNewLead(lead, false, false)));
-
-      processedSubLeads.sort((a, b) => {
-        // Master lead always comes first
-        if (a.isMaster && !b.isMaster) return -1;
-        if (!a.isMaster && b.isMaster) return 1;
-
-        // For non-master leads, sort by suffix number
-        const extractOrder = (leadNumber: string) => {
-          const parts = leadNumber.split('/');
-          const lastPart = parts[parts.length - 1];
-          return parseInt(lastPart, 10) || 0;
-        };
-        return extractOrder(a.lead_number) - extractOrder(b.lead_number);
-      });
-
-      setMasterLeadInfo(masterLead);
-      setSubLeads(processedSubLeads);
-      return true;
-    } catch (error) {
-      console.error('Error handling new master lead:', error);
-      setError('An unexpected error occurred while fetching master lead data');
-      return true;
-    } finally {
-      setSubLeadsLoading(false);
-    }
-  };
-
-  const fetchSubLeads = async () => {
+  const fetchSubLeads = useCallback(async () => {
     if (!lead_number) return;
 
     const decodedLeadNumber = decodeURIComponent(lead_number);
@@ -622,438 +243,46 @@ const MasterLeadPage: React.FC = () => {
     try {
       setLoading(true);
       setError(null);
+      setSubLeadsLoading(true);
 
-      const handledNewLead = await attemptFetchNewMaster(baseLeadNumber);
-      if (handledNewLead) {
+      // Try new leads first
+      const newLeadResult = await fetchNewMasterLead(baseLeadNumber, setContractsDataMap);
+      
+      if (newLeadResult.success && newLeadResult.masterLead) {
+        setMasterLeadInfo(newLeadResult.masterLead);
+        // Add agreement buttons to sub-leads
+        const subLeadsWithAgreements = (newLeadResult.subLeads || []).map(lead => ({
+          ...lead,
+          agreement: createAgreementButton(lead, false)
+        }));
+        setSubLeads(subLeadsWithAgreements);
+        setSubLeadsLoading(false);
+        setLoading(false);
         return;
       }
 
+      // Try legacy leads
       const normalizedId = extractNumericId(baseLeadNumber);
       if (!normalizedId) {
-        console.error('Invalid master lead number provided:', lead_number);
         setError('Invalid master lead number');
-        return;
-      }
-      const legacyId = parseInt(normalizedId, 10);
-
-      // First, get the master lead info with related data including employee joins
-      const { data: masterLead, error: masterError } = await supabase
-        .from('leads_lead')
-        .select(`
-            id, name, total, stage, manual_id, master_id,
-            category_id,
-            meeting_scheduler_id,
-            closer_id,
-            case_handler_id,
-            docs_url,
-            currency_id,
-            no_of_applicants,
-            accounting_currencies!leads_lead_currency_id_fkey (
-              name,
-              iso_code
-            ),
-            scheduler:tenants_employee!meeting_scheduler_id (
-              display_name
-            ),
-            closer:tenants_employee!closer_id (
-              display_name
-            ),
-            handler:tenants_employee!case_handler_id (
-              display_name
-            )
-          `)
-        .eq('id', legacyId)
-        .single();
-
-      if (masterError) {
-        console.error('Error fetching master lead:', masterError);
-        setError('Failed to fetch master lead information');
+        setSubLeadsLoading(false);
+        setLoading(false);
         return;
       }
 
-      setMasterLeadInfo(masterLead);
-
-      // Fetch sub-leads with related data including employee joins
-      setSubLeadsLoading(true);
-      const subLeadsQuery = supabase
-        .from('leads_lead')
-        .select(`
-            id, name, total, stage, manual_id, master_id,
-            category_id,
-            meeting_scheduler_id,
-            closer_id,
-            case_handler_id,
-            docs_url,
-            currency_id,
-            no_of_applicants,
-            accounting_currencies!leads_lead_currency_id_fkey (
-              name,
-              iso_code
-            ),
-            scheduler:tenants_employee!meeting_scheduler_id (
-              display_name
-            ),
-            closer:tenants_employee!closer_id (
-              display_name
-            ),
-            handler:tenants_employee!case_handler_id (
-              display_name
-            )
-          `)
-        .or(`master_id.eq.${baseLeadNumber},master_id.eq.${normalizedId}`)
-        .order('id', { ascending: true })
-        .limit(50);
-
-      // Initialize stage names cache and fetch sub-leads in parallel
-      const [
-        { data: subLeadsData, error: subLeadsError },
-        { data: categories },
-        { data: employees },
-        _stageNamesResult
-      ] = await Promise.all([
-        subLeadsQuery,
-        supabase
-          .from('misc_category')
-          .select(`
-              id,
-              name,
-              parent_id,
-              misc_maincategory!parent_id (
-                id,
-                name
-              )
-            `)
-          .order('name', { ascending: true }),
-        supabase
-          .from('tenants_employee')
-          .select('id, display_name'),
-        fetchStageNames() // Run in parallel
-      ]);
-
-      if (subLeadsError) {
-        console.error('Error fetching sub-leads:', subLeadsError);
-        setError('Failed to fetch sub-leads');
-        return;
+      const legacyResult = await fetchLegacyMasterLead(baseLeadNumber, normalizedId, setContractsDataMap);
+      
+      if (legacyResult.success && legacyResult.masterLead) {
+        setMasterLeadInfo(legacyResult.masterLead);
+        // Add agreement buttons to sub-leads
+        const subLeadsWithAgreements = (legacyResult.subLeads || []).map(lead => ({
+          ...lead,
+          agreement: createAgreementButton(lead, true)
+        }));
+        setSubLeads(subLeadsWithAgreements);
+      } else {
+        setError(legacyResult.error || 'Failed to fetch master lead');
       }
-
-      // Fetch contact information for all leads (master + sub-leads)
-      const allLeadIds = [masterLead?.id, ...(subLeadsData?.map(lead => lead.id) || [])].filter(Boolean);
-
-      // Parallelize all contact and contract queries
-      const [
-        { data: leadContacts, error: leadContactsError },
-        { data: contractsData, error: contractsError },
-        { data: legacyContractsData, error: legacyContractsError },
-        { data: stageData }
-      ] = await Promise.all([
-        allLeadIds.length > 0
-          ? supabase
-            .from('lead_leadcontact')
-            .select('lead_id, contact_id')
-            .in('lead_id', allLeadIds)
-          : Promise.resolve({ data: null, error: null }),
-        allLeadIds.length > 0
-          ? supabase
-            .from('contracts')
-            .select('id, legacy_id')
-            .in('legacy_id', allLeadIds)
-            .order('created_at', { ascending: false })
-          : Promise.resolve({ data: null, error: null }),
-        allLeadIds.length > 0
-          ? supabase
-            .from('lead_leadcontact')
-            .select('lead_id, id, public_token, contract_html, signed_contract_html')
-            .in('lead_id', allLeadIds)
-          : Promise.resolve({ data: null, error: null }),
-        allLeadIds.length > 0
-          ? supabase
-            .from('leads_leadstage')
-            .select('lead_id, cdate')
-            .in('lead_id', allLeadIds)
-            .eq('stage', 60)
-            .order('cdate', { ascending: false })
-          : Promise.resolve({ data: null, error: null })
-      ]);
-
-      if (leadContactsError) {
-        console.error('Error fetching lead contacts:', leadContactsError);
-      }
-      if (contractsError) {
-        console.error('Error fetching contracts:', contractsError);
-      }
-      if (legacyContractsError) {
-        console.error('Error fetching legacy contracts:', legacyContractsError);
-      }
-
-      // Process signed dates
-      const signedDatesMap = new Map<number, string>();
-      if (stageData) {
-        stageData.forEach(stage => {
-          const leadId = Number(stage.lead_id);
-          if (!signedDatesMap.has(leadId) ||
-            (stage.cdate && (!signedDatesMap.get(leadId) || new Date(stage.cdate) > new Date(signedDatesMap.get(leadId)!)))) {
-            if (stage.cdate) {
-              signedDatesMap.set(leadId, stage.cdate);
-            }
-          }
-        });
-      }
-
-      // Create agreement link map (lead_id -> agreement URL) - for backwards compatibility
-      const agreementLinkMap = new Map<string, string>();
-
-      // Create contract data map (lead_id -> contract data) - stores full contract info
-      const contractsMap = new Map<string, { id: string; isLegacy: boolean; contractHtml?: string; signedContractHtml?: string; public_token?: string; signed_at?: string }>();
-
-      // First, add contracts from contracts table (new contracts) - takes priority
-      if (contractsData) {
-        contractsData.forEach((contract: any) => {
-          if (contract.legacy_id && contract.id) {
-            // Use the same route format as ContractPage.tsx: /contract/:contractId
-            const agreementUrl = `/contract/${contract.id}`;
-            agreementLinkMap.set(String(contract.legacy_id), agreementUrl);
-
-            // Store contract data for new contracts (not legacy)
-            contractsMap.set(String(contract.legacy_id), {
-              id: contract.id,
-              isLegacy: false
-            });
-          }
-        });
-      }
-
-      // Then, add legacy contracts from lead_leadcontact (old legacy contracts)
-      // Only add if not already in map (new contracts take priority)
-      if (legacyContractsData) {
-        legacyContractsData.forEach((lc: any) => {
-          // Check if there's a contract (either draft or signed)
-          const hasContract = (lc.contract_html && lc.contract_html !== '\\N' && lc.contract_html.trim() !== '') ||
-            (lc.signed_contract_html && lc.signed_contract_html !== '\\N' && lc.signed_contract_html.trim() !== '');
-
-          if (lc.lead_id && lc.id && hasContract && !contractsMap.has(String(lc.lead_id))) {
-            // Get signed date for this lead
-            const leadIdNum = Number(lc.lead_id);
-            const signedDate = signedDatesMap.get(leadIdNum);
-
-            // Store legacy contract data with HTML content and signed date
-            contractsMap.set(String(lc.lead_id), {
-              id: `legacy_${lc.id}`,
-              isLegacy: true,
-              contractHtml: lc.contract_html,
-              signedContractHtml: lc.signed_contract_html,
-              public_token: lc.public_token,
-              signed_at: signedDate
-            });
-
-            // Also store in agreementLinkMap for backwards compatibility (but won't be used for legacy)
-            const agreementUrl = `/clients/${lc.lead_id}/contract`;
-            agreementLinkMap.set(String(lc.lead_id), agreementUrl);
-          }
-        });
-      }
-
-      // Store contracts data map in state
-      setContractsDataMap(contractsMap);
-
-      // Get the contact details for the contact IDs we found (only if we have contact IDs)
-      const contactIds = leadContacts?.map(lc => lc.contact_id).filter(Boolean) || [];
-      let contactDetails: any[] = [];
-
-      if (contactIds.length > 0) {
-        const { data: contacts, error: contactsError } = await supabase
-          .from('leads_contact')
-          .select('id, name, phone, email, mobile')
-          .in('id', contactIds);
-
-        if (contactsError) {
-          console.error('Error fetching contact details:', contactsError);
-        } else {
-          contactDetails = contacts || [];
-        }
-      }
-
-      // Create lookup maps
-      const employeeMap = new Map();
-      employees?.forEach(emp => employeeMap.set(String(emp.id), emp.display_name));
-
-
-      // Create contact lookup map
-      const contactMap = new Map();
-
-      // Create a map of contact_id to contact details
-      const contactDetailsMap = new Map();
-      contactDetails.forEach(contact => {
-        contactDetailsMap.set(contact.id, contact);
-      });
-
-      // Map lead_id to contact details
-      leadContacts?.forEach(leadContact => {
-        if (leadContact.contact_id && contactDetailsMap.has(leadContact.contact_id)) {
-          contactMap.set(String(leadContact.lead_id), contactDetailsMap.get(leadContact.contact_id));
-        }
-      });
-
-      // Process the data
-      const processedSubLeads: SubLead[] = [];
-
-      // Add master lead first
-      if (masterLead) {
-        // Check if master lead has subleads
-        const hasSubLeads = subLeadsData && subLeadsData.length > 0;
-        // Format lead number using the same logic as Clients.tsx
-        const formattedLeadNumber = formatLegacyLeadNumber(masterLead, undefined, hasSubLeads);
-        const displayNumber = masterLead.stage === 100 ? `C${formattedLeadNumber}` : formattedLeadNumber;
-        const currencyInfo = getCurrencyInfo(masterLead);
-
-        processedSubLeads.push({
-          id: `legacy_${masterLead.id}`,
-          lead_number: displayNumber,
-          actual_lead_id: String(masterLead.id),
-          manual_id: masterLead.manual_id,
-          name: masterLead.name || 'Unknown',
-          total: parseFloat(masterLead.total) || 0,
-          currency: currencyInfo.currency,
-          currency_symbol: currencyInfo.symbol,
-          category: getCategoryName(masterLead.category_id, categories || []),
-          stage: String(masterLead.stage), // Store stage ID for badge rendering
-          contact: getContactInfo(masterLead, contactMap),
-          applicants: parseInt(masterLead.no_of_applicants) || 0,
-          agreement: (() => {
-            // Check if contract exists in contractsMap (using lead_id as key)
-            const contractData = contractsMap.get(String(masterLead.id));
-
-            if (contractData) {
-              return (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    // For legacy leads, pass true for isLegacyContract
-                    handleViewContract(contractData.id, contractData.isLegacy);
-                  }}
-                  className="text-blue-600 hover:text-blue-800 underline cursor-pointer"
-                >
-                  View Agreement
-                </button>
-              );
-            }
-            return '---';
-          })(),
-          scheduler: (() => {
-            const scheduler = Array.isArray(masterLead.scheduler) ? masterLead.scheduler[0] : masterLead.scheduler;
-            return (scheduler as any)?.display_name || '---';
-          })(),
-          closer: (() => {
-            const closer = Array.isArray(masterLead.closer) ? masterLead.closer[0] : masterLead.closer;
-            return (closer as any)?.display_name || '---';
-          })(),
-          handler: (() => {
-            const handler = Array.isArray(masterLead.handler) ? masterLead.handler[0] : masterLead.handler;
-            return (handler as any)?.display_name || '---';
-          })(),
-          master_id: masterLead.master_id,
-          isMaster: true,
-          route: `/clients/${masterLead.id}`
-        });
-      }
-
-      // Add sub-leads
-      if (subLeadsData) {
-        // Calculate suffix for each sub-lead
-        const subLeadsWithSuffix = subLeadsData.map((lead, index) => {
-          let subLeadSuffix: number | undefined;
-          if (lead.master_id) {
-            // Find position of this lead in the ordered list of sub-leads with same master_id
-            const sameMasterLeads = subLeadsData.filter(l => l.master_id === lead.master_id);
-            const sortedSameMaster = [...sameMasterLeads].sort((a, b) => a.id - b.id);
-            const currentIndex = sortedSameMaster.findIndex(l => l.id === lead.id);
-            // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
-            subLeadSuffix = currentIndex >= 0 ? currentIndex + 2 : sameMasterLeads.length + 2;
-          }
-          return { lead, subLeadSuffix };
-        });
-
-        subLeadsWithSuffix.forEach(({ lead, subLeadSuffix }, index) => {
-          // Format lead number using the same logic as Clients.tsx
-          // Subleads don't need hasSubLeads check (they're not masters)
-          const formattedLeadNumber = formatLegacyLeadNumber(lead, subLeadSuffix, false);
-          const displayNumber = lead.stage === 100 ? `C${formattedLeadNumber}` : formattedLeadNumber;
-          const currencyInfo = getCurrencyInfo(lead);
-
-          processedSubLeads.push({
-            id: `legacy_${lead.id}`,
-            lead_number: displayNumber,
-            actual_lead_id: String(lead.id),
-            manual_id: lead.manual_id,
-            name: lead.name || 'Unknown',
-            total: parseFloat(lead.total) || 0,
-            currency: currencyInfo.currency,
-            currency_symbol: currencyInfo.symbol,
-            category: getCategoryName(lead.category_id, categories || []),
-            stage: String(lead.stage), // Store stage ID for badge rendering
-            contact: getContactInfo(lead, contactMap),
-            applicants: parseInt(lead.no_of_applicants) || 0,
-            agreement: (() => {
-              // Check if contract exists in contractsMap (using lead_id as key)
-              const contractData = contractsMap.get(String(lead.id));
-
-              if (contractData) {
-                return (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      // For legacy leads, pass true for isLegacyContract
-                      handleViewContract(contractData.id, contractData.isLegacy);
-                    }}
-                    className="text-blue-600 hover:text-blue-800 underline cursor-pointer"
-                  >
-                    View Agreement
-                  </button>
-                );
-              }
-              return '---';
-            })(),
-            scheduler: (() => {
-              const scheduler = Array.isArray(lead.scheduler) ? lead.scheduler[0] : lead.scheduler;
-              return (scheduler as any)?.display_name || '---';
-            })(),
-            closer: (() => {
-              const closer = Array.isArray(lead.closer) ? lead.closer[0] : lead.closer;
-              return (closer as any)?.display_name || '---';
-            })(),
-            handler: (() => {
-              const handler = Array.isArray(lead.handler) ? lead.handler[0] : lead.handler;
-              return (handler as any)?.display_name || '---';
-            })(),
-            master_id: lead.master_id,
-            isMaster: false,
-            route: `/clients/${lead.id}`
-          });
-        });
-      }
-
-      // Sort sub-leads: master first, then by suffix number
-      processedSubLeads.sort((a, b) => {
-        // Master lead always comes first
-        if (a.isMaster && !b.isMaster) return -1;
-        if (!a.isMaster && b.isMaster) return 1;
-
-        // For non-master leads, sort by suffix number
-        const getNumericPart = (leadNumber: string) => {
-          // Remove any prefixes like 'C' and extract the numeric part
-          const cleanNumber = leadNumber.replace(/^C/, '');
-          // Extract the last number after any slash (e.g., "170324/1" -> "1")
-          const parts = cleanNumber.split('/');
-          const lastPart = parts[parts.length - 1];
-          return parseInt(lastPart) || 0;
-        };
-
-        const aNum = getNumericPart(a.lead_number);
-        const bNum = getNumericPart(b.lead_number);
-
-        return aNum - bNum;
-      });
-
-      setSubLeads(processedSubLeads);
     } catch (error) {
       console.error('Error fetching sub-leads:', error);
       setError('An unexpected error occurred while fetching data');
@@ -1061,11 +290,87 @@ const MasterLeadPage: React.FC = () => {
       setLoading(false);
       setSubLeadsLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchSubLeads();
   }, [lead_number]);
+
+  // Track previous lead_number to detect changes
+  const prevLeadNumberRef = useRef<string | undefined>(undefined);
+  const hasCheckedPersistedDataRef = useRef<string | undefined>(undefined);
+  
+  // Initialize stage names cache on mount to ensure badges display correctly
+  useEffect(() => {
+    fetchStageNames().catch(error => {
+      console.error('Error initializing stage names:', error);
+    });
+  }, []);
+  
+  useEffect(() => {
+    if (!lead_number) {
+      setLoading(false);
+      return;
+    }
+    
+    const decodedLeadNumber = decodeURIComponent(lead_number);
+    const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
+    const prevBaseLeadNumber = prevLeadNumberRef.current ? (prevLeadNumberRef.current.includes('/') ? prevLeadNumberRef.current.split('/')[0] : prevLeadNumberRef.current) : undefined;
+    
+    // Clear persisted state when lead_number changes to a different lead
+    if (prevLeadNumberRef.current && baseLeadNumber !== prevBaseLeadNumber) {
+      setSubLeads([]);
+      setMasterLeadInfo(null);
+      setContractsDataArray([]);
+      prevLeadNumberRef.current = decodedLeadNumber;
+      hasCheckedPersistedDataRef.current = undefined;
+      // Fetch new lead data
+      fetchSubLeads();
+      return;
+    }
+    
+    // Check if we've already checked persisted data for this lead_number
+    const alreadyChecked = hasCheckedPersistedDataRef.current === baseLeadNumber;
+    
+    // If already checked, don't do anything (prevent loops)
+    if (alreadyChecked) {
+      return;
+    }
+    
+    // Check if we have persisted data for the current lead (only check once per lead_number)
+    const currentMasterLeadInfo = masterLeadInfo;
+    const currentSubLeads = subLeads;
+    const hasPersistedData = currentMasterLeadInfo && currentSubLeads.length > 0;
+    let currentLeadMatches = false;
+    
+    if (hasPersistedData) {
+      // Check if persisted data matches current lead_number
+      // Convert to string to handle both string and number IDs
+      const persistedLeadNumber = String(currentMasterLeadInfo.lead_number || currentMasterLeadInfo.id || '');
+      const persistedBaseNumber = persistedLeadNumber.includes('/') ? persistedLeadNumber.split('/')[0] : persistedLeadNumber;
+      
+      // Also check if any sub-lead matches
+      const subLeadMatches = currentSubLeads.some(subLead => {
+        const subLeadNumber = String(subLead.lead_number || subLead.id || '');
+        const subLeadBase = subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber;
+        return subLeadBase === baseLeadNumber || subLeadNumber === baseLeadNumber;
+      });
+      
+      currentLeadMatches = persistedBaseNumber === baseLeadNumber || subLeadMatches;
+    }
+    
+    // Mark as checked BEFORE deciding what to do (prevents loops)
+    hasCheckedPersistedDataRef.current = baseLeadNumber;
+    prevLeadNumberRef.current = decodedLeadNumber;
+    
+    // If we have persisted data for the current lead, skip fetching
+    if (hasPersistedData && currentLeadMatches) {
+      console.log('🔍 MasterLeadPage: Using persisted data, skipping fetch');
+      // Set loading to false immediately to prevent loading screen
+      setLoading(false);
+      setSubLeadsLoading(false);
+      return;
+    }
+    
+    // Only fetch if we don't have matching persisted data
+    fetchSubLeads();
+  }, [lead_number, fetchSubLeads]); // Include fetchSubLeads since it's wrapped in useCallback
 
   // Handle view contract - for legacy contracts opens modal, for new contracts navigates
   const handleViewContract = async (contractId: string, isLegacyContract: boolean = false) => {
@@ -1267,7 +572,8 @@ const MasterLeadPage: React.FC = () => {
                     }
 
                     // For legacy leads, format lead number using the same logic as Clients.tsx
-                    const formattedLeadNumber = formatLegacyLeadNumber(masterLeadInfo);
+                    const hasSubLeads = subLeads.length > 1;
+                    const formattedLeadNumber = formatLegacyLeadNumber(masterLeadInfo, undefined, hasSubLeads);
                     let displayNumber = formattedLeadNumber;
 
                     // Add "C" prefix for legacy leads with stage "100" (Success) or higher (after stage 60)
@@ -1365,9 +671,15 @@ const MasterLeadPage: React.FC = () => {
                             </span>
                           </div>
                           {subLead.category && subLead.category !== 'Unknown' && (
-                            <div className="flex items-center gap-2" title="Category">
-                              <TagIcon className="h-4 w-4 text-base-content/50" />
-                              <span className="truncate">{subLead.category}</span>
+                            <div className="flex items-start gap-2" title="Category">
+                              <TagIcon className="h-4 w-4 text-base-content/50 mt-0.5 flex-shrink-0" />
+                              <span className="line-clamp-2 break-words">{subLead.category}</span>
+                            </div>
+                          )}
+                          {subLead.topic && (
+                            <div className="flex items-start gap-2" title="Topic">
+                              <DocumentTextIcon className="h-4 w-4 text-base-content/50 mt-0.5 flex-shrink-0" />
+                              <span className="line-clamp-2 break-words">{subLead.topic}</span>
                             </div>
                           )}
                           {subLead.contact && subLead.contact !== '---' && (
@@ -1425,6 +737,9 @@ const MasterLeadPage: React.FC = () => {
                       <th className="hidden md:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
                         Category
                       </th>
+                      <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                        Topic
+                      </th>
                       <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
                         Stage
                       </th>
@@ -1470,9 +785,14 @@ const MasterLeadPage: React.FC = () => {
                             </span>
                           </div>
                         </td>
-                        <td className="hidden md:table-cell px-3 sm:px-6 py-4 whitespace-nowrap">
+                        <td className="hidden md:table-cell px-3 sm:px-6 py-4">
                           <div className="flex items-center">
-                            <span className="text-gray-900">{subLead.category}</span>
+                            <span className="text-gray-900 line-clamp-2 break-words">{subLead.category}</span>
+                          </div>
+                        </td>
+                        <td className="hidden lg:table-cell px-3 sm:px-6 py-4">
+                          <div className="flex items-center">
+                            <span className="text-gray-900 line-clamp-2 break-words">{subLead.topic || '---'}</span>
                           </div>
                         </td>
                         <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
@@ -1506,7 +826,7 @@ const MasterLeadPage: React.FC = () => {
                     ))}
                     {subLeadsLoading && (
                       <tr>
-                        <td colSpan={9} className="px-6 py-4 text-center">
+                        <td colSpan={10} className="px-6 py-4 text-center">
                           <div className="flex items-center justify-center">
                             <div className="loading loading-spinner loading-sm mr-2"></div>
                             <span className="text-gray-500">Loading sub-leads...</span>

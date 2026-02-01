@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 
 export const useAdminRole = () => {
   const [isAdmin, setIsAdmin] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false); // Start as false to not block UI
 
   const refreshAdminStatus = useCallback(async () => {
     try {
@@ -42,29 +42,29 @@ export const useAdminRole = () => {
 
   useEffect(() => {
     const checkAdminRole = async () => {
+      // Don't set loading to true - run in background to not block UI
       try {
         // Use Supabase Auth instead of MSAL
         const { data: { user }, error: authError } = await supabase.auth.getUser();
         
         if (authError || !user) {
           setIsAdmin(false);
-          setIsLoading(false);
           return;
         }
 
         const userEmail = user.email;
         
-        // Check if this user exists in our users table
-        const { data: allUsers, error: allUsersError } = await supabase
+        // Direct query - skip the allUsers check to speed things up
+        const { data, error } = await supabase
           .from('users')
-          .select('email, role, is_staff, is_superuser')
-          .ilike('email', userEmail || '');
-        
-        // Check if the user exists in our users table
-        if (!allUsers || allUsers.length === 0) {
-          // User not found in custom table, try to sync them
+          .select('role, is_staff, is_superuser')
+          .ilike('email', userEmail || '')
+          .single();
+
+        if (error) {
+          // If user doesn't exist, try to sync them (but don't block)
           try {
-            const { data: syncResult, error: syncError } = await supabase.rpc('create_user_if_missing', {
+            const { data: syncResult } = await supabase.rpc('create_user_if_missing', {
               user_email: userEmail
             });
             
@@ -90,17 +90,6 @@ export const useAdminRole = () => {
           }
           
           setIsAdmin(false);
-          return;
-        }
-        
-        const { data, error } = await supabase
-          .from('users')
-          .select('role, is_staff, is_superuser')
-          .ilike('email', userEmail || '')
-          .single();
-
-        if (error) {
-          setIsAdmin(false);
         } else {
           // User is admin if they have admin role, is_staff, or is_superuser
           const adminStatus = data?.role === 'admin' || 
@@ -111,11 +100,10 @@ export const useAdminRole = () => {
         }
       } catch (error) {
         setIsAdmin(false);
-      } finally {
-        setIsLoading(false);
       }
     };
 
+    // Run in background without blocking
     checkAdminRole();
     
     // Set up a listener for auth state changes

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { AtSymbolIcon, ArrowRightOnRectangleIcon, CheckCircleIcon, Bars3Icon, XMarkIcon } from '@heroicons/react/24/outline';
 import { LockClosedIcon } from '@heroicons/react/24/outline';
+import { preCheckExternalUser } from '../hooks/useExternalUser';
 
 const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -90,6 +91,15 @@ const LoginPage: React.FC = () => {
       setWelcomeImage(imageUrl);
       setSuccess('Signed in! Redirecting...');
       setShowSuccessAnim(true);
+      
+      // Pre-check external user status in the background during the delay
+      // This runs during the 1 second login screen delay, so the check is ready when dashboard loads
+      if (data?.user?.id) {
+        preCheckExternalUser(data.user.id).catch(err => {
+          console.error('Error pre-checking external user:', err);
+        });
+      }
+      
       setTimeout(() => {
         navigate('/', { replace: true });
       }, 2200); // Wait for the welcome animation to finish before navigating
