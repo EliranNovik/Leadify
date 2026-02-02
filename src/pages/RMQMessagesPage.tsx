@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import websocketService, { MessageData, TypingData } from '../lib/websocket';
@@ -139,7 +139,7 @@ interface MessagingModalProps {
 const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initialConversationId, initialUserId, initialMessage, initialLeadNumber, initialLeadName }) => {
   // Check if user is external
   const { isExternalUser } = useExternalUser();
-  
+
   // State management
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -513,6 +513,34 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     if (message.attachment_type && message.attachment_type.startsWith('image/')) return true;
     return false;
   };
+
+  // Preload images for faster display when conversation opens
+  const preloadImages = useCallback((messages: any[]) => {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:preloadImages', message: 'Starting image preload', data: { messageCount: messages.length, imageMessages: messages.filter(m => isImageMessage(m)).length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
+    // #endregion
+
+    const imageMessages = messages.filter(m => isImageMessage(m));
+    const imageUrls = imageMessages.map(m => m.attachment_url).filter(url => url);
+
+    // Preload images in parallel (limit to 10 at a time to avoid overwhelming the browser)
+    const batchSize = 10;
+    for (let i = 0; i < imageUrls.length; i += batchSize) {
+      const batch = imageUrls.slice(i, i + batchSize);
+      batch.forEach(url => {
+        const img = new Image();
+        img.src = url;
+        // #region agent log
+        img.onload = () => fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:preloadImages', message: 'Image preloaded successfully', data: { url }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
+        img.onerror = () => fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:preloadImages', message: 'Image preload failed', data: { url }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
+        // #endregion
+      });
+    }
+
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:preloadImages', message: 'Image preload initiated', data: { totalImages: imageUrls.length, batches: Math.ceil(imageUrls.length / batchSize) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
+    // #endregion
+  }, []);
 
   const isVideoMessage = (message: Message): boolean => {
     if (!message.attachment_url) return false;
@@ -2520,6 +2548,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
         if (validMessageIds.length === 0) {
           setMessages(processedMessages as unknown as Message[]);
+          // Preload images for faster display
+          preloadImages(processedMessages || []);
           return;
         }
 
@@ -2545,63 +2575,39 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
         setMessages(messagesWithReceipts as unknown as Message[]);
 
-        // Mark messages as read for current user when viewing conversation
-        await markMessagesAsRead(messageIds, conversationId);
+        // Preload images for faster display (async, don't wait)
+        preloadImages(messagesWithReceipts);
+
+        // Mark messages as read for current user when viewing conversation (async, don't wait)
+        markMessagesAsRead(messageIds, conversationId).catch(console.error);
       } else {
         setMessages((processedMessages || []) as unknown as Message[]);
+
+        // Preload images for faster display (async, don't wait)
+        preloadImages(processedMessages || []);
       }
 
-      // Mark conversation as read
+      // Mark conversation as read (async, don't wait)
       if (currentUser) {
-        await supabase.rpc('mark_conversation_as_read', {
+        supabase.rpc('mark_conversation_as_read', {
           conv_id: conversationId,
           user_uuid: currentUser.id
-        });
-
-        // Update local unread count
-        setConversations(prev =>
-          prev.map(conv =>
-            conv.id === conversationId
-              ? { ...conv, unread_count: 0 }
-              : conv
-          )
-        );
+        }).then(() => {
+          // Update local unread count
+          setConversations(prev =>
+            prev.map(conv =>
+              conv.id === conversationId
+                ? { ...conv, unread_count: 0 }
+                : conv
+            )
+          );
+        }).catch(console.error);
       }
 
       // Ensure auto-scroll is enabled
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
       setNewMessagesCount(0);
-
-      // Find first unread message (works for both direct chats and group chats)
-      const firstUnreadMessage = findFirstUnreadMessage();
-      firstUnreadMessageIdRef.current = firstUnreadMessage?.id || null;
-
-      // Force scroll after messages are loaded (works for both desktop and mobile)
-      // If there are unread messages, scroll to the first unread message
-      // Otherwise, scroll to bottom
-      // Works for both direct chats (1-on-1) and group chats (multiple participants)
-      // Use instant scroll only - no visible animation when entering chat
-      // Use multiple attempts to ensure scroll happens after DOM updates
-      setTimeout(() => {
-        if (firstUnreadMessage) {
-          scrollToMessage(firstUnreadMessage.id, 'instant');
-          setTimeout(() => {
-            scrollToMessage(firstUnreadMessage.id, 'instant');
-          }, 100);
-          setTimeout(() => {
-            scrollToMessage(firstUnreadMessage.id, 'instant');
-          }, 200);
-        } else {
-          scrollToBottom('instant');
-          setTimeout(() => {
-            scrollToBottom('instant');
-          }, 100);
-          setTimeout(() => {
-            scrollToBottom('instant');
-          }, 200);
-        }
-      }, 50);
     } catch (error) {
       toast.error('Failed to load messages');
     }
@@ -4265,77 +4271,58 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   }, []);
 
   // Smart auto-scroll logic - scrolls the visible container (desktop or mobile)
-  const scrollToBottom = (behavior: 'smooth' | 'instant' = 'smooth') => {
-    // Try desktop container first
+  const scrollToBottom = useCallback((behavior: 'smooth' | 'instant' = 'smooth') => {
+    // Try to find the active container
     let container: HTMLDivElement | null = null;
 
-    if (desktopMessagesContainerRef.current) {
-      const desktopContainer = desktopMessagesContainerRef.current;
-      // Check if desktop container is visible (has dimensions)
-      if (desktopContainer.offsetWidth > 0 && desktopContainer.offsetHeight > 0) {
-        container = desktopContainer;
-      }
+    if (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetParent) {
+      container = desktopMessagesContainerRef.current;
+    } else if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetParent) {
+      container = mobileMessagesContainerRef.current;
+    } else if (messagesContainerRef.current && messagesContainerRef.current.offsetParent) {
+      container = messagesContainerRef.current;
     }
 
-    // If desktop not visible, try mobile container
-    if (!container && mobileMessagesContainerRef.current) {
-      const mobileContainer = mobileMessagesContainerRef.current;
-      // Check if mobile container is visible (has dimensions)
-      if (mobileContainer.offsetWidth > 0 && mobileContainer.offsetHeight > 0) {
-        container = mobileContainer;
-      }
-    }
+    if (!container) return;
 
-    // Fallback to original ref if separate refs don't work
-    if (!container && messagesContainerRef.current) {
-      const fallbackContainer = messagesContainerRef.current;
-      if (fallbackContainer.offsetWidth > 0 && fallbackContainer.offsetHeight > 0) {
-        container = fallbackContainer;
-      }
-    }
+    if (behavior === 'instant') {
+      // Force immediate scroll to bottom
+      container.scrollTop = container.scrollHeight;
 
-    // Scroll the visible container
-    if (container) {
-      const targetScroll = container.scrollHeight;
-
-      if (behavior === 'instant') {
-        container.scrollTop = targetScroll;
-      } else {
-        container.scrollTo({
-          top: targetScroll,
-          behavior: 'smooth'
-        });
-      }
-    }
-
-    // Method 2: Use scrollIntoView on the end ref (backup)
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({
-        behavior: behavior === 'instant' ? 'auto' : behavior,
-        block: 'end',
-        inline: 'nearest'
+      // Double check in next frame to ensure it stuck (sometimes content layout shifts)
+      requestAnimationFrame(() => {
+        if (container) {
+          container.scrollTop = container.scrollHeight;
+        }
+      });
+    } else {
+      // Smooth scroll
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: 'smooth'
       });
     }
-  };
+  }, []);
 
   // Check if user is near bottom of messages
-  const isNearBottom = () => {
+  const isNearBottom = useCallback(() => {
     // Check desktop container first
     let container: HTMLDivElement | null = null;
 
-    if (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetWidth > 0) {
+    if (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetParent) {
       container = desktopMessagesContainerRef.current;
-    } else if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetWidth > 0) {
+    } else if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetParent) {
       container = mobileMessagesContainerRef.current;
-    } else if (messagesContainerRef.current && messagesContainerRef.current.offsetWidth > 0) {
+    } else if (messagesContainerRef.current && messagesContainerRef.current.offsetParent) {
       container = messagesContainerRef.current;
     }
 
     if (!container) return true;
+
     const { scrollTop, scrollHeight, clientHeight } = container;
-    const threshold = 100; // 100px from bottom
-    return scrollHeight - scrollTop - clientHeight < threshold;
-  };
+    // Tolerance of 100px
+    return scrollHeight - scrollTop - clientHeight < 100;
+  }, []);
 
   // Handle scroll events to detect user scrolling
   const handleScroll = useCallback(() => {
@@ -4343,11 +4330,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
     // Get current scroll position to detect if scrolling has actually stopped
     let container: HTMLDivElement | null = null;
-    if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetWidth > 0) {
+    if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetParent) {
       container = mobileMessagesContainerRef.current;
-    } else if (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetWidth > 0) {
+    } else if (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetParent) {
       container = desktopMessagesContainerRef.current;
-    } else if (messagesContainerRef.current && messagesContainerRef.current.offsetWidth > 0) {
+    } else if (messagesContainerRef.current && messagesContainerRef.current.offsetParent) {
       container = messagesContainerRef.current;
     }
 
@@ -4434,11 +4421,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       // Calculate which date is visible at the top when scrolling
       let container: HTMLDivElement | null = null;
-      if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetWidth > 0) {
+      if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetParent) {
         container = mobileMessagesContainerRef.current;
-      } else if (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetWidth > 0) {
+      } else if (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetParent) {
         container = desktopMessagesContainerRef.current;
-      } else if (messagesContainerRef.current && messagesContainerRef.current.offsetWidth > 0) {
+      } else if (messagesContainerRef.current && messagesContainerRef.current.offsetParent) {
         container = messagesContainerRef.current;
       }
 
@@ -4454,6 +4441,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           const element = messageElements[i] as HTMLElement;
           const elementRect = element.getBoundingClientRect();
 
+          // Check if element is roughly at the top of the container
           const isVisible = elementRect.top < containerRect.bottom && elementRect.bottom > containerTop;
 
           if (isVisible) {
@@ -4488,6 +4476,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             setFloatingDateOpacity(1);
           }
         } else if (messageElements.length > 0) {
+          // Fallback: mostly for scrolling up where exact top element might be tricky
           for (let i = 0; i < messageElements.length; i++) {
             const element = messageElements[i] as HTMLElement;
             const elementRect = element.getBoundingClientRect();
@@ -4522,9 +4511,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
     floatingDateTimeoutRef.current = setTimeout(() => {
       const checkContainer: HTMLDivElement | null =
-        (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetWidth > 0) ? mobileMessagesContainerRef.current :
-          (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetWidth > 0) ? desktopMessagesContainerRef.current :
-            (messagesContainerRef.current && messagesContainerRef.current.offsetWidth > 0) ? messagesContainerRef.current : null;
+        (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetParent) ? mobileMessagesContainerRef.current :
+          (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetParent) ? desktopMessagesContainerRef.current :
+            (messagesContainerRef.current && messagesContainerRef.current.offsetParent) ? messagesContainerRef.current : null;
 
       const checkScrollPosition = checkContainer ? checkContainer.scrollTop : 0;
       const positionStillSame = Math.abs(checkScrollPosition - lastScrollPositionRef.current) <= 1;
@@ -4568,7 +4557,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const prevMessageCountRef = useRef(0);
   const isScrollingRef = useRef(false);
 
-  // Auto-scroll to newest unread message or bottom when new messages arrive (only if should auto-scroll)
+  // Auto-scroll to newest unread message or bottom when new messages arrive (only if should auto-scroll AND user is near bottom)
   useEffect(() => {
     // Clear any pending scroll attempts
     if (scrollTimeoutRef.current) {
@@ -4576,33 +4565,52 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       scrollTimeoutRef.current = null;
     }
 
-    if (shouldAutoScroll && messages.length > 0 && selectedConversation && !isScrollingRef.current) {
+    // Check if this is the initial load of the conversation
+    const isInitialLoad = selectedConversation && initialLoadRef.current !== selectedConversation.id;
+
+    // Skip this useEffect for initial load - useLayoutEffect handles initial scroll
+    if (isInitialLoad) {
+      prevMessageCountRef.current = messages.length;
+      return;
+    }
+
+    // Checking strictly if user wanted to stay at bottom OR if it is a self-sent message
+    const userIsNearBottom = isNearBottom();
+    const isNewMessageFromMe = messages.length > 0 && messages[messages.length - 1].sender_id === currentUser?.id;
+
+    // For subsequent message updates, scroll if user is near bottom OR if the new message is from current user
+    const shouldScroll = (shouldAutoScroll && userIsNearBottom) || isNewMessageFromMe;
+
+    if (shouldScroll && messages.length > 0 && selectedConversation && !isScrollingRef.current) {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:4623', message: 'Auto-scroll triggered - conditions met', data: { shouldAutoScroll, userIsNearBottom, messagesLength: messages.length, selectedConversationId: selectedConversation.id }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
+      // #endregion
+
       // Reset new messages count when auto-scrolling
       setNewMessagesCount(0);
 
-      // Find newest unread message first
-      const newestUnreadMessage = findNewestUnreadMessage();
-
-      // Use a single controlled scroll attempt after DOM updates
+      // Delayed scroll for subsequent message updates to allow rendering
       isScrollingRef.current = true;
-      scrollTimeoutRef.current = setTimeout(() => {
-        if (newestUnreadMessage) {
-          // Scroll to newest unread message (instant, no animation)
-          // This will position the user at the newest unread message
-          scrollToMessage(newestUnreadMessage.id, 'instant');
-          setTimeout(() => {
-            scrollToMessage(newestUnreadMessage.id, 'instant');
+
+      // Use efficient double-RAF for rendering updates
+      requestAnimationFrame(() => {
+        if (messages.length > 0) {
+          scrollToBottom('smooth');
+          requestAnimationFrame(() => {
             isScrollingRef.current = false;
-          }, 50);
-        } else {
-          // No unread messages, scroll to bottom
-          scrollToBottom('instant');
-          setTimeout(() => {
-            scrollToBottom('instant');
-            isScrollingRef.current = false;
-          }, 50);
+          });
         }
-      }, 100);
+      });
+
+    } else if (shouldAutoScroll && !userIsNearBottom && messages.length > prevMessageCountRef.current && selectedConversation) {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:4606', message: 'Auto-scroll prevented - user not near bottom', data: { shouldAutoScroll, userIsNearBottom, messagesLength: messages.length, prevMessageCount: prevMessageCountRef.current }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
+      // #endregion
+
+      // User is scrolled up and new messages arrived - disable auto-scroll and increment count
+      setShouldAutoScroll(false);
+      const newCount = messages.length - prevMessageCountRef.current;
+      setNewMessagesCount(prev => prev + newCount);
     } else if (!shouldAutoScroll && messages.length > prevMessageCountRef.current && selectedConversation) {
       // User is scrolled up and new messages arrived - increment count
       const newCount = messages.length - prevMessageCountRef.current;
@@ -4618,43 +4626,100 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         clearTimeout(scrollTimeoutRef.current);
       }
     };
-  }, [messages.length, shouldAutoScroll, selectedConversation?.id, findNewestUnreadMessage, scrollToMessage]);
+  }, [messages.length, shouldAutoScroll, selectedConversation?.id, currentUser?.id, scrollToBottom, isNearBottom]);
 
-  // Scroll to newest unread message or bottom when conversation is first selected or changes
-  useEffect(() => {
-    if (selectedConversation && messages.length > 0) {
-      // Reset auto-scroll state when conversation changes
+  // Track if we've scrolled for this conversation to prevent duplicate scrolls
+  const hasScrolledForConversationRef = useRef<number | null>(null);
+
+  // SINGLE RELIABLE SCROLL on initial load - use useLayoutEffect for synchronous execution
+  useLayoutEffect(() => {
+    // Check if this is initial load (conversation changed or messages just loaded)
+    const isInitialLoad = selectedConversation && initialLoadRef.current !== selectedConversation.id;
+    const hasMessages = messages.length > 0;
+
+    // Use ResizeObserver to keep scrolling to bottom as content loads (images, etc)
+    let resizeObserver: ResizeObserver | null = null;
+
+    // Find the active container
+    const container = desktopMessagesContainerRef.current?.offsetParent ? desktopMessagesContainerRef.current :
+      mobileMessagesContainerRef.current?.offsetParent ? mobileMessagesContainerRef.current :
+        messagesContainerRef.current;
+
+    if (container) {
+      // Create observer to watch for height changes
+      resizeObserver = new ResizeObserver(() => {
+        // Only force scroll if we should auto-scroll (user is at bottom)
+        // We only rely on shouldAutoScroll here, not initialLoadRef, because 
+        // initialLoadRef stays true for the whole session causing aggressive scrolling
+        if (shouldAutoScroll) {
+          requestAnimationFrame(() => {
+            scrollToBottom('instant');
+          });
+        }
+      });
+
+      // Start observing
+      resizeObserver.observe(container);
+
+      // Also observe the first child (message list wrapper) if it exists, as container size might not change
+      if (container.firstElementChild) {
+        resizeObserver.observe(container.firstElementChild);
+      }
+    }
+
+    // Only scroll if:
+    // 1. It's an initial load (conversation changed)
+    // 2. We have messages
+    if (isInitialLoad && hasMessages && selectedConversation) {
+
+      // Mark as loaded and scrolled IMMEDIATELY to prevent duplicate attempts
+      initialLoadRef.current = selectedConversation.id;
+      hasScrolledForConversationRef.current = selectedConversation.id;
+
+      // FORCE INSTANT SCROLL TO BOTTOM
+      // We use requestAnimationFrame to wait for paint, then force scroll
+      requestAnimationFrame(() => {
+        scrollToBottom('instant');
+      });
+
+      // Set state
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
       setNewMessagesCount(0);
-      prevMessageCountRef.current = messages.length;
-
-      // Find newest unread message first
-      const newestUnreadMessage = findNewestUnreadMessage();
-
-      // Wait for messages to load and DOM to render, then scroll
-      if (!isScrollingRef.current) {
-        isScrollingRef.current = true;
-        setTimeout(() => {
-          if (newestUnreadMessage) {
-            // Scroll to newest unread message (instant, no animation)
-            scrollToMessage(newestUnreadMessage.id, 'instant');
-            setTimeout(() => {
-              scrollToMessage(newestUnreadMessage.id, 'instant');
-              isScrollingRef.current = false;
-            }, 50);
-          } else {
-            // No unread messages, scroll to bottom
-            scrollToBottom('instant');
-            setTimeout(() => {
-              scrollToBottom('instant');
-              isScrollingRef.current = false;
-            }, 50);
-          }
-        }, 100);
-      }
     }
-  }, [selectedConversation?.id, messages.length, findNewestUnreadMessage, scrollToMessage]);
+
+    // Cleanup observer on effect re-run or unmount
+    return () => {
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      }
+    };
+  }, [messages.length, selectedConversation?.id, scrollToBottom, shouldAutoScroll]);
+
+  // Reset scroll tracking when conversation changes (so new conversation gets initial scroll)
+  useEffect(() => {
+    if (selectedConversation) {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:conversationChange', message: 'Conversation changed', data: { newConversationId: selectedConversation.id, currentInitialLoadRef: initialLoadRef.current, currentHasScrolled: hasScrolledForConversationRef.current }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'F' }) }).catch(() => { });
+      // #endregion
+
+      // ALWAYS reset flags when conversation changes - this ensures scroll happens for new conversation
+      initialLoadRef.current = null;
+      hasScrolledForConversationRef.current = null;
+
+      // Clear messages immediately when conversation changes to ensure clean state
+      setMessages([]);
+
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:conversationChange', message: 'Flags reset and messages cleared', data: { newConversationId: selectedConversation.id }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'F' }) }).catch(() => { });
+      // #endregion
+    } else {
+      // No conversation selected, reset the flags and clear messages
+      initialLoadRef.current = null;
+      hasScrolledForConversationRef.current = null;
+      setMessages([]);
+    }
+  }, [selectedConversation?.id]);
 
   useEffect(() => {
     resetInputHeights();
@@ -4784,26 +4849,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         // Scroll to newest unread message if it exists, otherwise scroll to bottom
         // Works for both direct chats (1-on-1) and group chats (multiple participants)
         // Use instant scroll - no visible animation, appears automatically
+        // Use requestAnimationFrame for immediate execution
         requestAnimationFrame(() => {
-          setTimeout(() => {
-            if (newestUnreadMessage) {
-              // Scroll to newest unread message (instant, no animation)
+          if (newestUnreadMessage) {
+            // Scroll to newest unread message (instant, no animation)
+            scrollToMessage(newestUnreadMessage.id, 'instant');
+            // Backup scroll attempt
+            requestAnimationFrame(() => {
               scrollToMessage(newestUnreadMessage.id, 'instant');
-              requestAnimationFrame(() => {
-                setTimeout(() => {
-                  scrollToMessage(newestUnreadMessage.id, 'instant');
-                }, 100);
-              });
-            } else {
-              // No unread messages, scroll to bottom
+            });
+          } else {
+            // No unread messages, scroll to bottom
+            scrollToBottom('instant');
+            // Backup scroll attempt
+            requestAnimationFrame(() => {
               scrollToBottom('instant');
-              requestAnimationFrame(() => {
-                setTimeout(() => {
-                  scrollToBottom('instant');
-                }, 100);
-              });
-            }
-          }, 50);
+            });
+          }
         });
       }
     }
@@ -6301,6 +6363,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 src={message.attachment_url}
                                 alt={message.attachment_name}
                                 className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
+                                loading={index >= messages.length - 10 ? "eager" : "lazy"}
+                                decoding="async"
                               />
                               <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                                 <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">

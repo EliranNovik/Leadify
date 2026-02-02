@@ -7,7 +7,7 @@ import TimelineHistoryButtons from './TimelineHistoryButtons';
 // Helper function to decode HTML entities
 const decodeHtmlEntities = (text: string): string => {
   if (!text) return '';
-  
+
   // Create a temporary DOM element to decode HTML entities
   const textarea = document.createElement('textarea');
   textarea.innerHTML = text;
@@ -17,13 +17,13 @@ const decodeHtmlEntities = (text: string): string => {
 // Helper function to strip HTML tags from text
 const stripHtmlTags = (text: string): string => {
   if (!text) return '';
-  
+
   // First decode HTML entities
   let decoded = decodeHtmlEntities(text);
-  
+
   // Decode HTML entities again in case there were double-encoded entities
   decoded = decodeHtmlEntities(decoded);
-  
+
   // Convert common HTML line breaks and block elements to newlines before stripping tags
   // Order matters: process block-level elements first, then inline breaks
   decoded = decoded.replace(/<\/p>/gi, '\n\n'); // Paragraphs get double newline
@@ -35,16 +35,16 @@ const stripHtmlTags = (text: string): string => {
   decoded = decoded.replace(/<\/h[1-6]>/gi, '\n\n'); // Headings get double newline
   decoded = decoded.replace(/<br\s*\/?>/gi, '\n'); // Line breaks get newline
   decoded = decoded.replace(/<\/blockquote>/gi, '\n\n'); // Blockquotes get double newline
-  
+
   // Remove HTML tags using regex (non-greedy match)
   const withoutTags = decoded.replace(/<[^>]*>/g, '');
-  
+
   // Decode HTML entities one more time to catch any remaining entities
   let finalDecoded = decodeHtmlEntities(withoutTags);
-  
+
   // Convert underscores to spaces for better readability
   finalDecoded = finalDecoded.replace(/_/g, ' ');
-  
+
   // Clean up whitespace while preserving line breaks
   // Replace multiple spaces/tabs with single space (but not newlines)
   finalDecoded = finalDecoded.replace(/[ \t]+/g, ' '); // Collapse horizontal whitespace to single space
@@ -54,14 +54,14 @@ const stripHtmlTags = (text: string): string => {
   finalDecoded = finalDecoded.replace(/[ \t]+$/gm, '');
   // Collapse 3+ consecutive newlines to max 2 newlines
   finalDecoded = finalDecoded.replace(/\n{3,}/g, '\n\n');
-  
+
   return finalDecoded.trim();
 };
 
 // Helper function to clean up text formatting
 const formatNoteText = (text: string): string => {
   if (!text) return '';
-  
+
   // Replace \r\n with \n, then \r with \n for proper line breaks
   // Also handle escaped \r characters (\\r)
   return text
@@ -75,7 +75,7 @@ const formatNoteText = (text: string): string => {
 // Helper function to detect Hebrew text and apply RTL alignment
 const getTextAlignment = (text: string): string => {
   if (!text) return 'text-left';
-  
+
   // Check if text contains Hebrew characters (Unicode range 0590-05FF)
   const hebrewRegex = /[\u0590-\u05FF]/;
   return hebrewRegex.test(text) ? 'text-right' : 'text-left';
@@ -141,15 +141,15 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const getFacts = () => {
     // For legacy leads, use 'description' field instead of 'facts'
     const facts = isLegacy ? getFieldValue(client, 'description') : getFieldValue(client, 'facts');
-    
+
     if (!facts) {
       return [];
     }
-    
+
     try {
       // Try to parse as JSON first
       const parsedFacts = JSON.parse(facts);
-      
+
       // If it's an object, extract non-null values
       if (typeof parsedFacts === 'object' && parsedFacts !== null) {
         const nonNullFacts = Object.entries(parsedFacts)
@@ -161,10 +161,10 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             processedValue = stripHtmlTags(processedValue);
             return { key, value: processedValue };
           });
-        
+
         return nonNullFacts;
       }
-      
+
       // If it's not an object, treat as plain text
       // Convert "n/" to line break and strip HTML tags
       let processedFacts = typeof facts === 'string' ? facts.replace(/n\//g, '\n') : String(facts || '');
@@ -188,7 +188,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Function to fetch eligibility data for legacy leads
   const fetchLegacyEligibilityData = async () => {
     if (!isLegacy || !client?.id) return;
-    
+
     try {
       const legacyId = client.id.toString().replace('legacy_', '');
       const { data, error } = await supabase
@@ -196,16 +196,16 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         .select('expert_examination, section_eligibility, eligibilty_date, eligibility_status, eligibility_status_timestamp')
         .eq('id', legacyId)
         .single();
-      
+
       if (error) {
         console.error('Error fetching legacy eligibility data:', error);
         return;
       }
-      
+
       if (data) {
         // Priority: Use eligibility_status if it exists, otherwise map from expert_examination
         let eligibilityValue = '';
-        
+
         if (data.eligibility_status) {
           eligibilityValue = data.eligibility_status;
         } else {
@@ -219,10 +219,10 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             eligibilityValue = 'feasible_check';
           }
         }
-        
+
         setEligibilityStatus(eligibilityValue);
         setSectionEligibility(data.section_eligibility || '');
-        
+
         console.log('✅ InfoTab - Legacy eligibility data loaded:', {
           eligibility_status: data.eligibility_status,
           expert_examination: data.expert_examination,
@@ -286,7 +286,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [isAddingFollowup, setIsAddingFollowup] = useState(false);
   const [isEditingFollowup, setIsEditingFollowup] = useState(false);
   const [followupDate, setFollowupDate] = useState('');
-  
+
   const [specialNotes, setSpecialNotes] = useState(getSpecialNotes());
   const [generalNotes, setGeneralNotes] = useState(getGeneralNotes());
   const [tags, setTags] = useState(getTags());
@@ -318,7 +318,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .select('id, name, order')
           .eq('active', true)
           .order('order', { ascending: true });
-        
+
         if (!tagsError && tagsData) {
           setAllTags(tagsData);
           const tagNames = tagsData.map(tag => tag.name);
@@ -328,7 +328,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         console.error('Error fetching tags:', error);
       }
     };
-    
+
     fetchTags();
   }, []);
 
@@ -336,7 +336,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const fetchCurrentLeadTags = async (leadId: string) => {
     try {
       const isLegacy = leadId.toString().startsWith('legacy_');
-      
+
       if (isLegacy) {
         const legacyId = parseInt(leadId.replace('legacy_', ''));
         const { data, error } = await supabase
@@ -350,7 +350,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             )
           `)
           .eq('lead_id', legacyId);
-        
+
         if (!error && data) {
           const tags = data
             .filter(item => item.misc_leadtag && typeof item.misc_leadtag === 'object')
@@ -369,7 +369,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             )
           `)
           .eq('newlead_id', leadId);
-        
+
         if (!error && data) {
           const tags = data
             .filter(item => item.misc_leadtag && typeof item.misc_leadtag === 'object')
@@ -388,20 +388,20 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const saveLeadTags = async (leadId: string, tagsString: string) => {
     try {
       const isLegacy = leadId.toString().startsWith('legacy_');
-      
+
       if (isLegacy) {
         const legacyId = parseInt(leadId.replace('legacy_', ''));
         await supabase
           .from('leads_lead_tags')
           .delete()
           .eq('lead_id', legacyId);
-        
+
         if (tagsString.trim()) {
           const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(tag => tag);
           const tagIds = tagNames
             .map(tagName => allTags.find(tag => tag.name === tagName)?.id)
             .filter(id => id !== undefined);
-          
+
           if (tagIds.length > 0) {
             const tagInserts = tagIds.map(tagId => ({
               lead_id: legacyId,
@@ -415,13 +415,13 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .from('leads_lead_tags')
           .delete()
           .eq('newlead_id', leadId);
-        
+
         if (tagsString.trim()) {
           const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(tag => tag);
           const tagIds = tagNames
             .map(tagName => allTags.find(tag => tag.name === tagName)?.id)
             .filter(id => id !== undefined);
-          
+
           if (tagIds.length > 0) {
             const tagInserts = tagIds.map(tagId => ({
               newlead_id: leadId,
@@ -443,7 +443,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       setTags(tagsString);
       setEditedTags(tagsString);
     };
-    
+
     if (client?.id) {
       loadTags();
     }
@@ -458,7 +458,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Update eligible status when client changes
   // Only update if we're not currently toggling (to prevent race condition)
   const [isTogglingEligible, setIsTogglingEligible] = useState(false);
-  
+
   useEffect(() => {
     if (!isTogglingEligible) {
       setEligible(getEligibleStatus());
@@ -555,20 +555,20 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const handleProbabilityChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const newProbability = Number(event.target.value);
     setProbability(newProbability);
-    
+
     try {
       // Determine which table to update based on lead type
       const tableName = isLegacy ? 'leads_lead' : 'leads';
       const idField = isLegacy ? 'id' : 'id';
       const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
-      
+
       const { error } = await supabase
         .from(tableName)
         .update({ probability: newProbability })
         .eq(idField, clientId);
-      
+
       if (error) throw error;
-      
+
       // Refresh client data in parent component
       if (onClientUpdate) {
         await onClientUpdate();
@@ -581,7 +581,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   const handleEligibleToggle = async (newEligible: boolean) => {
     setIsTogglingEligible(true);
-    
+
     try {
       console.log('🔍 handleEligibleToggle - Starting:', {
         isLegacy,
@@ -595,20 +595,20 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       const tableName = isLegacy ? 'leads_lead' : 'leads';
       const idField = isLegacy ? 'id' : 'id';
-      
+
       // Extract legacy ID - use string format like handleProbabilityChange does
       const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
-      
+
       console.log('🔍 handleEligibleToggle - Extracted ID:', {
         original: client.id,
         extracted: clientId,
         type: typeof clientId
       });
-      
+
       // For legacy leads, convert boolean to 'true'/'false' strings (TEXT column)
       // For new leads, use boolean
-      const updateData = isLegacy 
-        ? { eligibile: (newEligible ? 'true' : 'false') } 
+      const updateData = isLegacy
+        ? { eligibile: (newEligible ? 'true' : 'false') }
         : { eligible: newEligible };
 
       console.log('🔍 handleEligibleToggle - Update query:', {
@@ -624,7 +624,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         .update(updateData)
         .eq(idField, clientId)
         .select();
-      
+
       // If that fails and it's a legacy lead, try with number format
       if (result.error && isLegacy) {
         console.log('⚠️ handleEligibleToggle - String ID failed, trying number format');
@@ -635,9 +635,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .eq(idField, numericId)
           .select();
       }
-      
+
       console.log('🔍 handleEligibleToggle - Update result:', { data: result.data, error: result.error });
-      
+
       if (result.error) {
         console.error('❌ Error updating eligible status:', result.error);
         // Revert optimistic update on error
@@ -645,7 +645,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         alert(`Failed to update eligible status: ${result.error.message || result.error.code || 'Unknown error'}`);
         return;
       }
-      
+
       if (!result.data || result.data.length === 0) {
         console.warn('⚠️ handleEligibleToggle - No rows updated');
         // Revert optimistic update
@@ -653,9 +653,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         alert('No rows were updated. Please check the lead ID.');
         return;
       }
-      
+
       console.log('✅ handleEligibleToggle - Successfully updated:', result.data);
-      
+
       // Refresh client data in parent component
       if (onClientUpdate) {
         await onClientUpdate();
@@ -713,11 +713,11 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         setFollowupId(data.id);
         setCurrentUserFollowup(followupDate);
       }
-      
+
       setIsAddingFollowup(false);
       setIsEditingFollowup(false);
       setFollowupDate('');
-      
+
       // Refresh client data in parent component
       if (onClientUpdate) {
         await onClientUpdate();
@@ -742,19 +742,19 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     try {
       const { error } = await supabase
         .from('follow_ups')
-        .update({ 
+        .update({
           date: followupDate + 'T00:00:00Z' // Convert to timestamp format
         })
         .eq('id', followupId)
         .eq('user_id', currentUserId);
-      
+
       if (error) throw error;
-      
+
       // Update local state
       setCurrentUserFollowup(followupDate);
       setIsEditingFollowup(false);
       setFollowupDate('');
-      
+
       // Refresh client data in parent component
       if (onClientUpdate) {
         await onClientUpdate();
@@ -781,15 +781,15 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         .delete()
         .eq('id', followupId)
         .eq('user_id', currentUserId);
-      
+
       if (error) throw error;
-      
+
       // Update local state
       setFollowupId(null);
       setCurrentUserFollowup(null);
       setIsEditingFollowup(false);
       setFollowupDate('');
-      
+
       // Refresh client data in parent component
       if (onClientUpdate) {
         await onClientUpdate();
@@ -800,10 +800,10 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
-  const EditButtons = ({ isEditing, onEdit, onSave, onCancel, editButtonClassName, editIconClassName }: { 
-    isEditing: boolean; 
-    onEdit: () => void; 
-    onSave: () => void; 
+  const EditButtons = ({ isEditing, onEdit, onSave, onCancel, editButtonClassName, editIconClassName }: {
+    isEditing: boolean;
+    onEdit: () => void;
+    onSave: () => void;
     onCancel: () => void;
     editButtonClassName?: string;
     editIconClassName?: string;
@@ -811,13 +811,13 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     <div className="flex gap-2">
       {isEditing ? (
         <>
-          <button 
+          <button
             className="btn btn-circle btn-ghost btn-sm"
             onClick={onSave}
           >
             <CheckIcon className="w-4 h-4 text-success" />
           </button>
-          <button 
+          <button
             className="btn btn-circle btn-ghost btn-sm"
             onClick={onCancel}
           >
@@ -826,7 +826,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </>
       ) : (
         <>
-          <button 
+          <button
             className={`${editButtonClassName} btn btn-sm`}
             onClick={onEdit}
           >
@@ -901,9 +901,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             <div className="pl-6 pt-2 pb-2 w-2/5">
               <div className="flex items-center justify-between">
                 <h4 className="text-lg font-semibold text-black">Case Probability</h4>
-                <div className="tooltip" data-tip="Likelihood of successful case">
-                  <InformationCircleIcon className="w-5 h-5 text-gray-400 cursor-help" />
-                </div>
               </div>
               <div className="border-b border-gray-200 mt-2"></div>
             </div>
@@ -1081,17 +1078,17 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     try {
                       const userName = currentUserName;
                       const tableName = isLegacy ? 'leads_lead' : 'leads';
-                      
+
                       if (isLegacy) {
                         // For legacy leads, convert ID to integer
                         const legacyIdStr = client.id.toString().replace('legacy_', '');
                         const legacyId = parseInt(legacyIdStr, 10);
-                        
+
                         if (isNaN(legacyId)) {
                           console.error('Invalid legacy ID:', legacyIdStr);
                           throw new Error('Invalid legacy ID');
                         }
-                        
+
                         const { data, error } = await supabase
                           .from(tableName)
                           .update({
@@ -1102,9 +1099,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           .eq('id', legacyId)
                           .select('special_notes')
                           .single();
-                        
+
                         if (error) throw error;
-                        
+
                         setSpecialNotes(formatNoteText(editedSpecialNotes).split('\n').filter(note => note.trim() !== ''));
                         setIsEditingSpecialNotes(false);
                       } else {
@@ -1119,13 +1116,13 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           .eq('id', client.id)
                           .select('special_notes')
                           .single();
-                        
+
                         if (error) throw error;
-                        
+
                         setSpecialNotes(formatNoteText(editedSpecialNotes).split('\n').filter(note => note.trim() !== ''));
                         setIsEditingSpecialNotes(false);
                       }
-                      
+
                       // Refresh client data in parent component
                       if (onClientUpdate) {
                         await onClientUpdate();
@@ -1187,17 +1184,17 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     try {
                       const userName = currentUserName;
                       const tableName = isLegacy ? 'leads_lead' : 'leads';
-                      
+
                       if (isLegacy) {
                         // For legacy leads, convert ID to integer
                         const legacyIdStr = client.id.toString().replace('legacy_', '');
                         const legacyId = parseInt(legacyIdStr, 10);
-                        
+
                         if (isNaN(legacyId)) {
                           console.error('Invalid legacy ID:', legacyIdStr);
                           throw new Error('Invalid legacy ID');
                         }
-                        
+
                         const { data, error } = await supabase
                           .from(tableName)
                           .update({
@@ -1208,9 +1205,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           .eq('id', legacyId)
                           .select('notes')
                           .single();
-                        
+
                         if (error) throw error;
-                        
+
                         setGeneralNotes(formatNoteText(editedGeneralNotes));
                         setIsEditingGeneralNotes(false);
                       } else {
@@ -1225,13 +1222,13 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           .eq('id', client.id)
                           .select('general_notes')
                           .single();
-                        
+
                         if (error) throw error;
-                        
+
                         setGeneralNotes(formatNoteText(editedGeneralNotes));
                         setIsEditingGeneralNotes(false);
                       }
-                      
+
                       // Refresh client data in parent component
                       if (onClientUpdate) {
                         await onClientUpdate();
@@ -1306,17 +1303,17 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       const userName = currentUserName;
                       const tableName = isLegacy ? 'leads_lead' : 'leads';
                       const formattedFacts = formatNoteText(editedFacts);
-                      
+
                       if (isLegacy) {
                         // For legacy leads, convert ID to integer
                         const legacyIdStr = client.id.toString().replace('legacy_', '');
                         const legacyId = parseInt(legacyIdStr, 10);
-                        
+
                         if (isNaN(legacyId)) {
                           console.error('Invalid legacy ID:', legacyIdStr);
                           throw new Error('Invalid legacy ID');
                         }
-                        
+
                         const { data, error } = await supabase
                           .from(tableName)
                           .update({
@@ -1327,7 +1324,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           .eq('id', legacyId)
                           .select('description')
                           .single();
-                        
+
                         if (error) {
                           throw error;
                         }
@@ -1343,10 +1340,10 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           .eq('id', client.id)
                           .select('facts')
                           .single();
-                        
+
                         if (error) throw error;
                       }
-                      
+
                       // Process edited facts: convert "n/" to line breaks, then parse
                       const processedFacts = formattedFacts.replace(/n\//g, '\n');
                       const factsArray = processedFacts.split('\n').filter(fact => fact.trim() !== '').map(line => {
@@ -1360,10 +1357,10 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           return { key: 'facts', value: trimmedLine };
                         }
                       });
-                      
+
                       setFactsOfCase(factsArray);
                       setIsEditingFacts(false);
-                      
+
                       // Refresh client data in parent component
                       if (onClientUpdate) {
                         await onClientUpdate();
@@ -1405,7 +1402,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                             return displayValue;
                           }
                         }).join('\n');
-                        
+
                         return (
                           <p className={`text-gray-900 whitespace-pre-wrap break-words ${getTextAlignment(factsOfCase.map(fact => fact.value).join('\n'))}`}>
                             {processedFacts}
@@ -1442,13 +1439,13 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     try {
                       const userName = currentUserName;
                       const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
-                      
+
                       // Use saveLeadTags function for proper tag management
                       await saveLeadTags(client.id, editedTags);
-                      
+
                       setTags(editedTags);
                       setIsEditingTags(false);
-                      
+
                       // Refresh client data in parent component
                       if (onClientUpdate) {
                         await onClientUpdate();
@@ -1580,7 +1577,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div> */}
       </div>
-      
+
       <TimelineHistoryButtons client={client} />
     </div>
   );
