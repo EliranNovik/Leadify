@@ -1446,6 +1446,10 @@ const formatEmailBody = async (
             
             const paramDefinitions = await getTemplateParamDefinitions(selectedTemplate.id, selectedTemplate.name);
             
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1447',message:'Template param definitions check',data:{templateId:selectedTemplate.id,templateName:selectedTemplate.name,paramCount,paramDefinitionsLength:paramDefinitions.length,paramDefinitions},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+            // #endregion
+            
             // Create a client object with meeting data for parameter generation
             const currentMeeting = meeting;
             const formatDate = (dateStr: string): string => {
@@ -1467,9 +1471,15 @@ const formatEmailBody = async (
             if (paramDefinitions.length > 0) {
               console.log('✅ Using template-specific param definitions');
               templateParameters = await generateParamsFromDefinitions(paramDefinitions, clientForParams, contact?.id || null);
+              // #region agent log
+              fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1469',message:'Generated params from definitions',data:{templateParametersLength:templateParameters.length,templateParameters},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+              // #endregion
             } else {
               console.log('⚠️ No specific param definitions, using generic generation');
               templateParameters = await generateTemplateParameters(paramCount, clientForParams, contact?.id || null);
+              // #region agent log
+              fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1472',message:'Generated params from generic function',data:{templateParametersLength:templateParameters.length,templateParameters,paramCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+              // #endregion
             }
             
             // Override with meeting-specific data
@@ -1492,6 +1502,9 @@ const formatEmailBody = async (
                       break;
                     case 'meeting_link':
                       paramValue = meetingLink || '';
+                      // #region agent log
+                      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1494',message:'Setting meeting_link param',data:{index,paramValue,meetingLink},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+                      // #endregion
                       break;
                     // mobile_number, phone_number, and email are handled by helper functions
                     // which correctly fetch the logged-in user's data from tenants_employee table
@@ -1503,6 +1516,18 @@ const formatEmailBody = async (
                   templateParameters[index].text = paramValue.trim();
                 }
               });
+            } else {
+              // #region agent log
+              fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1506',message:'No param definitions - checking if param 4 needs meeting link',data:{paramCount,templateParametersLength:templateParameters.length,meetingLink},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+              // #endregion
+              // If no param definitions, we still need to set param 4 (meeting link) if paramCount >= 4
+              // This handles the case where generateTemplateParameters fills params 3+ with empty strings
+              if (paramCount >= 4 && templateParameters.length >= 4) {
+                templateParameters[3].text = meetingLink || '';
+                // #region agent log
+                fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1510',message:'Manually setting param 4 to meeting link',data:{meetingLink,param4Value:templateParameters[3].text},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+                // #endregion
+              }
             }
             
             // Ensure we have exactly the right number of parameters
@@ -1516,6 +1541,10 @@ const formatEmailBody = async (
               type: 'text',
               text: (param.text || '').trim()
             }));
+            
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1518',message:'Final template parameters before sending',data:{paramCount,templateParametersLength:templateParameters.length,templateParameters},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+            // #endregion
             
             if (templateParameters && templateParameters.length > 0) {
               console.log(`✅ Template with ${paramCount} param(s) - auto-filled parameters:`, templateParameters);
@@ -1898,10 +1927,18 @@ const formatEmailBody = async (
       }
       
       // Check if meeting already has a Teams URL
-      if (meeting.link) {
+      const existingLink = getValidTeamsLink(meeting.link);
+      if (existingLink && existingLink.trim() !== '') {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1930',message:'handleCreateTeamsMeeting - link already exists',data:{meetingId:meeting.id,meetingLink:meeting.link,existingLink},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+        // #endregion
         toast.success('Teams meeting already exists for this meeting');
         return;
       }
+      
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1937',message:'handleCreateTeamsMeeting - creating new link',data:{meetingId:meeting.id,meetingLink:meeting.link,existingLink},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+      // #endregion
       
       const startDateTime = new Date(`${meeting.date}T${meeting.time || '09:00'}`).toISOString();
       const endDateTime = new Date(new Date(startDateTime).getTime() + 60 * 60 * 1000).toISOString();
@@ -1946,17 +1983,32 @@ const formatEmailBody = async (
   };
 
   const getValidTeamsLink = (link: string | undefined) => {
-    if (!link) return '';
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1977',message:'getValidTeamsLink called',data:{link,linkType:typeof link,linkLength:link?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+    // #endregion
+    
+    if (!link || link.trim() === '') return '';
     try {
       // If it's a plain URL, return as is
-      if (link.startsWith('http')) return link;
+      if (link.startsWith('http')) {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1981',message:'getValidTeamsLink returning http link',data:{link},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
+        return link;
+      }
       // If it's a stringified object, parse and extract joinUrl
       const obj = JSON.parse(link);
       if (obj && typeof obj === 'object' && obj.joinUrl && typeof obj.joinUrl === 'string') {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1985',message:'getValidTeamsLink returning joinUrl',data:{joinUrl:obj.joinUrl},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
         return obj.joinUrl;
       }
       // Some Graph API responses use joinWebUrl
       if (obj && typeof obj === 'object' && obj.joinWebUrl && typeof obj.joinWebUrl === 'string') {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1989',message:'getValidTeamsLink returning joinWebUrl',data:{joinWebUrl:obj.joinWebUrl},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
         return obj.joinWebUrl;
       }
     } catch (e) {
@@ -3847,31 +3899,52 @@ const formatEmailBody = async (
                   </div>
                 </>
               )}
-              {!past && getMeetingLocationName(meeting.location) === 'Teams' && !meeting.link && (
-                <button
-                  className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
-                  onClick={() => handleCreateTeamsMeeting(meeting)}
-                  disabled={creatingTeamsMeetingId === meeting.id}
-                >
-                  {creatingTeamsMeetingId === meeting.id ? (
-                    <span className="loading loading-spinner loading-xs"></span>
-                  ) : (
-                    <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4 sm:hidden" />
-                  )}
-                  <span className="hidden sm:inline">Teams</span>
-                </button>
-              )}
-              {!past && getMeetingLocationName(meeting.location) === 'Teams' && meeting.link && getValidTeamsLink(meeting.link) && (
-                <a
-                  href={getValidTeamsLink(meeting.link)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
-                  title="Join Teams Meeting"
-                >
-                  <LinkIcon className="w-3 h-3 sm:w-4 sm:h-4" />
-                </a>
-              )}
+              {(() => {
+                // #region agent log
+                const meetingLinkValue = meeting.link;
+                const validLink = getValidTeamsLink(meeting.link);
+                const hasLink = meetingLinkValue && meetingLinkValue.trim() !== '';
+                const hasValidLink = validLink && validLink.trim() !== '';
+                const locationName = getMeetingLocationName(meeting.location);
+                const isTeams = locationName === 'Teams';
+                fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:3879',message:'Teams button rendering check',data:{meetingId:meeting.id,isTeams,hasLink,hasValidLink,meetingLinkValue,validLink,locationName},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                // #endregion
+                
+                if (!past && isTeams) {
+                  // Show "Open Link" button if we have a valid link
+                  if (hasValidLink) {
+                    return (
+                      <a
+                        href={validLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
+                        title="Join Teams Meeting"
+                      >
+                        <LinkIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                      </a>
+                    );
+                  }
+                  // Show "Create Teams" button only if there's NO link at all (not even an empty string)
+                  if (!hasLink) {
+                    return (
+                      <button
+                        className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
+                        onClick={() => handleCreateTeamsMeeting(meeting)}
+                        disabled={creatingTeamsMeetingId === meeting.id}
+                      >
+                        {creatingTeamsMeetingId === meeting.id ? (
+                          <span className="loading loading-spinner loading-xs"></span>
+                        ) : (
+                          <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4 sm:hidden" />
+                        )}
+                        <span className="hidden sm:inline">Teams</span>
+                      </button>
+                    );
+                  }
+                }
+                return null;
+              })()}
               {/* Legacy meeting URL link */}
               {meeting.link && !getValidTeamsLink(meeting.link) && (
                 <a

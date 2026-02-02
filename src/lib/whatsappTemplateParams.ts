@@ -648,13 +648,42 @@ export async function generateTemplateParameters(
     }
   }
   
-  // For any additional params beyond 2, fill with empty strings
+  // For any additional params beyond 2, fill with appropriate values
   for (let i = 3; i <= paramCount; i++) {
+    let paramValue = '';
+    
+    // Param 3: Meeting location (if available)
+    if (i === 3 && client?.meeting_location) {
+      paramValue = client.meeting_location;
+    }
+    // Param 4: Meeting link (if available)
+    else if (i === 4) {
+      // Try to get meeting link from client object first (set by MeetingTab)
+      if (client?.meeting_link) {
+        paramValue = client.meeting_link;
+      } else {
+        // Fallback: fetch from database
+        const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+        const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
+        if (clientIdForMeeting) {
+          paramValue = await getMeetingLink(clientIdForMeeting, isLegacyLead);
+        }
+      }
+    }
+    // Param 5+: Empty strings (can be extended later)
+    else {
+      paramValue = '';
+    }
+    
     parameters.push({
       type: 'text',
-      text: ''
+      text: paramValue
     });
   }
+  
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'whatsappTemplateParams.ts:652',message:'generateTemplateParameters result',data:{paramCount,parametersLength:parameters.length,parameters},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'G'})}).catch(()=>{});
+  // #endregion
   
   return parameters;
 }

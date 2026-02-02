@@ -1062,7 +1062,7 @@ const Clients: React.FC<ClientsProps> = ({
   const fullLeadNumber = (subleadSuffix && lead_number)
     ? `${lead_number}/${subleadSuffix}`
     : (requestedLeadNumber || lead_number || fullLeadNumberFromPath);
-  
+
 
   const buildClientRoute = useCallback((manualId?: string | null, leadNumberValue?: string | null) => {
     const manualString = manualId?.toString().trim() || '';
@@ -1098,14 +1098,14 @@ const Clients: React.FC<ClientsProps> = ({
 
     return '/clients';
   }, []);
-  
+
   // Helper function to persist client data to sessionStorage
   const persistClientData = useCallback((client: any, leadNumber?: string) => {
     try {
       // For legacy leads, use numeric ID (without "legacy_" prefix) as key
       // For new leads, use lead_number or manual_id
       let keyToUse: string | undefined;
-      
+
       if (leadNumber) {
         // If leadNumber is provided, use it directly (it's already normalized from URL)
         keyToUse = leadNumber;
@@ -1120,7 +1120,7 @@ const Clients: React.FC<ClientsProps> = ({
           keyToUse = client?.lead_number || client?.manual_id || client?.id?.toString();
         }
       }
-      
+
       if (keyToUse) {
         const persistedKey = `clientsPage_clientData_${keyToUse}`;
         sessionStorage.setItem(persistedKey, JSON.stringify(client));
@@ -1130,7 +1130,7 @@ const Clients: React.FC<ClientsProps> = ({
       console.error('Error persisting client data:', error);
     }
   }, []);
-  
+
   // Persist UI state so it's restored when navigating back (same as LeadSearchPage.tsx)
   const [activeTab, setActiveTab] = usePersistedState('clientsPage_activeTab', 'info', {
     storage: 'sessionStorage',
@@ -3053,14 +3053,14 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Essential data loading for initial page display
   useEffect(() => {
-    
+
     // Prevent duplicate fetches - check this FIRST
     // Check if we're already fetching the same route
     const currentRoute = location.pathname;
     if (isFetchingRef.current && fetchingRouteRef.current === currentRoute) {
       return;
     }
-    
+
     // Check persisted client data before fetching (same pattern as MasterLeadPage)
     const effectiveLeadNumber = lead_number || fullLeadNumber || requestedLeadNumber;
     if (effectiveLeadNumber) {
@@ -3075,7 +3075,7 @@ const Clients: React.FC<ClientsProps> = ({
             ? parsedData.id?.toString().replace('legacy_', '')
             : parsedData.id?.toString();
           const persistedLeadNumber = parsedData.lead_number;
-          
+
           // For legacy leads, compare by numeric ID; for new leads, compare by lead_number or manual_id
           let matches = false;
           if (isLegacy) {
@@ -3083,11 +3083,11 @@ const Clients: React.FC<ClientsProps> = ({
             matches = persistedClientId === effectiveLeadNumber || persistedClientId === String(effectiveLeadNumber);
           } else {
             // New: compare by lead_number or manual_id
-            matches = persistedLeadNumber === effectiveLeadNumber || 
-                     persistedClientId === effectiveLeadNumber ||
-                     parsedData.manual_id === effectiveLeadNumber;
+            matches = persistedLeadNumber === effectiveLeadNumber ||
+              persistedClientId === effectiveLeadNumber ||
+              parsedData.manual_id === effectiveLeadNumber;
           }
-          
+
           if (matches) {
             // Check if selectedClient already matches - if so, skip
             if (selectedClient) {
@@ -3096,16 +3096,16 @@ const Clients: React.FC<ClientsProps> = ({
                 ? selectedClient.id?.toString().replace('legacy_', '')
                 : selectedClient.id?.toString();
               const currentLeadNumber = selectedClient.lead_number;
-              
+
               let currentMatches = false;
               if (currentIsLegacy) {
                 currentMatches = currentClientId === effectiveLeadNumber || currentClientId === String(effectiveLeadNumber);
               } else {
-                currentMatches = currentLeadNumber === effectiveLeadNumber || 
-                                currentClientId === effectiveLeadNumber ||
-                                (selectedClient as any).manual_id === effectiveLeadNumber;
+                currentMatches = currentLeadNumber === effectiveLeadNumber ||
+                  currentClientId === effectiveLeadNumber ||
+                  (selectedClient as any).manual_id === effectiveLeadNumber;
               }
-              
+
               if (currentMatches) {
                 // Already have the correct client loaded
                 console.log('🔍 Clients: Already have correct client loaded, skipping fetch');
@@ -3114,7 +3114,7 @@ const Clients: React.FC<ClientsProps> = ({
                 return; // Skip fetch - already have correct client
               }
             }
-            
+
             // Use persisted data - this will prevent the fetch
             console.log('🔍 Clients: Using persisted client data, skipping fetch', {
               effectiveLeadNumber,
@@ -3149,10 +3149,10 @@ const Clients: React.FC<ClientsProps> = ({
         // Continue to fetch if persisted data read fails
       }
     }
-    
+
     // Check if route has changed
     const routeChanged = lastRouteRef.current !== currentRoute;
-    
+
     // Prevent running if we're currently setting up a client to avoid race conditions
     // If isSettingUpClient is true AND isFetching is true, we're in the middle of a setup - return early
     // If isSettingUpClient is true BUT isFetching is false, the previous setup completed - clear flag and proceed
@@ -3212,7 +3212,7 @@ const Clients: React.FC<ClientsProps> = ({
       lastRouteRef.current = currentRoute;
     } else {
     }
-    
+
     if (!routeChanged && selectedClient && lead_number && !location.pathname.includes('/master')) {
       // Only skip fetch if we have the same client AND we're not on the master route
       const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
@@ -3542,10 +3542,10 @@ const Clients: React.FC<ClientsProps> = ({
           // Normalize and set the client immediately for faster rendering
           const normalizedClient = normalizeClientStage(clientData);
           setSelectedClient(normalizedClient);
-          
+
           // Persist client data to sessionStorage (same pattern as MasterLeadPage)
           persistClientData(normalizedClient, effectiveLeadNumber);
-          
+
           setLocalLoading(false); // Stop loading immediately - don't wait for anything else
 
           // Clear flag immediately since fetch completed and client is set
@@ -4739,6 +4739,23 @@ const Clients: React.FC<ClientsProps> = ({
     const joinUrl = data.onlineMeeting?.joinUrl || data.webLink;
     console.log('Final join URL:', joinUrl);
 
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:4739', message: 'createCalendarEvent result', data: { hasOnlineMeeting: !!data.onlineMeeting, joinUrlFromOnlineMeeting: data.onlineMeeting?.joinUrl, webLink: data.webLink, finalJoinUrl: joinUrl, hasJoinUrl: !!joinUrl }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'F' }) }).catch(() => { });
+    // #endregion
+
+    // If joinUrl is missing, log a warning but still return it (might be undefined/null)
+    if (!joinUrl) {
+      console.warn('⚠️ WARNING: Calendar event created but no joinUrl found!', {
+        hasOnlineMeeting: !!data.onlineMeeting,
+        onlineMeetingKeys: data.onlineMeeting ? Object.keys(data.onlineMeeting) : [],
+        webLink: data.webLink,
+        dataKeys: Object.keys(data)
+      });
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:4747', message: 'WARNING: No joinUrl in calendar event response', data: { data, onlineMeeting: data.onlineMeeting, webLink: data.webLink }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'G' }) }).catch(() => { });
+      // #endregion
+    }
+
     return {
       joinUrl: joinUrl,
       id: data.id,
@@ -4963,6 +4980,10 @@ const Clients: React.FC<ClientsProps> = ({
         console.log('Creating meeting in calendar:', meetingFormData.calendar);
 
         try {
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:4966', message: 'Creating calendar event for Teams meeting', data: { meetingSubject, calendar: meetingFormData.calendar, location: meetingFormData.location }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
+          // #endregion
+
           const calendarEventData = await createCalendarEvent(accessToken, {
             subject: meetingSubject,
             startDateTime: start.toISOString(),
@@ -4979,11 +5000,25 @@ const Clients: React.FC<ClientsProps> = ({
             amount: 0, // Default amount for new meetings
             currency: '₪',
           });
+
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:4982', message: 'Calendar event created successfully', data: { calendarEventData, joinUrl: calendarEventData.joinUrl }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
+          // #endregion
+
           teamsMeetingUrl = calendarEventData.joinUrl;
           console.log('✅ Teams meeting URL set to:', teamsMeetingUrl);
+
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:4984', message: 'Teams meeting URL assigned', data: { teamsMeetingUrl }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
+          // #endregion
         } catch (calendarError) {
           console.error('❌ Calendar creation failed:', calendarError);
           const errorMessage = calendarError instanceof Error ? calendarError.message : String(calendarError);
+
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:4986', message: 'Calendar creation failed', data: { errorMessage, calendarError: calendarError instanceof Error ? { message: calendarError.message, stack: calendarError.stack } : String(calendarError) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
+          // #endregion
+
           // Show warning but continue with meeting creation
           toast.error(`Calendar sync failed: ${errorMessage}. Meeting will still be created.`, {
             duration: 5000,
@@ -4997,11 +5032,23 @@ const Clients: React.FC<ClientsProps> = ({
           });
           // Continue without calendar event - meeting will be created without Teams URL
           teamsMeetingUrl = '';
+
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:4999', message: 'Teams meeting URL set to empty after calendar error', data: { teamsMeetingUrl }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
+          // #endregion
         }
       } else if (selectedLocation?.default_link) {
         // For non-Teams online locations, use the default_link from tenants_meetinglocation
         teamsMeetingUrl = selectedLocation.default_link;
+
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:5002', message: 'Using default_link for non-Teams location', data: { location: meetingFormData.location, teamsMeetingUrl }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
+        // #endregion
       }
+
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:5005', message: 'Final teamsMeetingUrl before database insert', data: { teamsMeetingUrl, location: meetingFormData.location, hasDefaultLink: !!selectedLocation?.default_link }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'D' }) }).catch(() => { });
+      // #endregion
 
       // Check if this is a legacy lead
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
@@ -5139,12 +5186,20 @@ const Clients: React.FC<ClientsProps> = ({
 
       console.log('Attempting to insert meeting data:', meetingData);
 
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:5142', message: 'Inserting meeting to database', data: { meetingData, teams_meeting_url: meetingData.teams_meeting_url }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'E' }) }).catch(() => { });
+      // #endregion
+
       const { data: insertedData, error: meetingError } = await supabase
         .from('meetings')
         .insert([meetingData])
         .select();
 
       console.log('Database insert result:', { insertedData, meetingError });
+
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:5147', message: 'Database insert result', data: { insertedData, meetingError, insertedTeamsUrl: insertedData?.[0]?.teams_meeting_url }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'E' }) }).catch(() => { });
+      // #endregion
 
       if (meetingError) {
         console.error('Meeting creation error:', meetingError);
@@ -8277,7 +8332,81 @@ const Clients: React.FC<ClientsProps> = ({
       if (selectedLocation?.default_link && rescheduleFormData.location !== 'Teams') {
         teamsMeetingUrl = selectedLocation.default_link;
       }
-      // For Teams meetings, the URL will be generated by createCalendarEventWithAttendee later
+      // For Teams meetings, create the Teams URL BEFORE inserting the meeting
+      // This ensures the URL is available for all Teams meetings, not just Microsoft email addresses
+      if (rescheduleFormData.location === 'Teams' && !teamsMeetingUrl) {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:8332', message: 'Reschedule: Creating Teams meeting URL before insert', data: { location: rescheduleFormData.location, hasTeamsMeetingUrl: !!teamsMeetingUrl }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'H' }) }).catch(() => { });
+        // #endregion
+
+        try {
+          const account = instance.getAllAccounts()[0];
+          if (!account) {
+            console.warn('⚠️ No Microsoft account found for Teams meeting creation');
+          } else {
+            let accessToken;
+            try {
+              const response = await instance.acquireTokenSilent({ ...loginRequest, account });
+              accessToken = response.accessToken;
+            } catch (error) {
+              if (error instanceof InteractionRequiredAuthError) {
+                const response = await instance.loginPopup(loginRequest);
+                accessToken = response.accessToken;
+              } else {
+                throw error;
+              }
+            }
+
+            // Convert date and time to start/end times
+            const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
+            const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
+            const start = new Date(year, month - 1, day, hours, minutes);
+            const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
+
+            const categoryName = selectedClient.category || 'No Category';
+            const meetingSubject = `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - Meeting`;
+
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:8360', message: 'Reschedule: Calling createCalendarEvent for Teams', data: { meetingSubject, calendar: rescheduleFormData.calendar }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'H' }) }).catch(() => { });
+            // #endregion
+
+            const calendarEventData = await createCalendarEvent(accessToken, {
+              subject: meetingSubject,
+              startDateTime: start.toISOString(),
+              endDateTime: end.toISOString(),
+              location: rescheduleFormData.location,
+              calendar: rescheduleFormData.calendar,
+              manager: rescheduleFormData.manager,
+              helper: rescheduleFormData.helper,
+              brief: '',
+              attendance_probability: rescheduleFormData.attendance_probability,
+              complexity: rescheduleFormData.complexity,
+              car_number: rescheduleFormData.car_number,
+              expert: selectedClient.expert || '---',
+              amount: 0,
+              currency: '₪',
+            });
+
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:8385', message: 'Reschedule: Calendar event created', data: { calendarEventData, joinUrl: calendarEventData.joinUrl }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'H' }) }).catch(() => { });
+            // #endregion
+
+            teamsMeetingUrl = calendarEventData.joinUrl;
+            console.log('✅ Reschedule: Teams meeting URL created before insert:', teamsMeetingUrl);
+
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:8390', message: 'Reschedule: Teams meeting URL assigned', data: { teamsMeetingUrl }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'H' }) }).catch(() => { });
+            // #endregion
+          }
+        } catch (teamsError) {
+          console.error('❌ Reschedule: Failed to create Teams meeting URL before insert:', teamsError);
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:8395', message: 'Reschedule: Teams meeting URL creation failed', data: { teamsError: teamsError instanceof Error ? { message: teamsError.message, stack: teamsError.stack } : String(teamsError) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'I' }) }).catch(() => { });
+          // #endregion
+          // Continue without Teams URL - meeting will be created but without link
+          teamsMeetingUrl = '';
+        }
+      }
 
       // Check if this is a legacy lead
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
@@ -8309,10 +8438,18 @@ const Clients: React.FC<ClientsProps> = ({
         calendar_type: rescheduleFormData.calendar === 'active_client' ? 'active_client' : 'potential_client',
       };
 
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:8367', message: 'Reschedule: Inserting meeting to database', data: { meetingData, teams_meeting_url: meetingData.teams_meeting_url, location: rescheduleFormData.location }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'J' }) }).catch(() => { });
+      // #endregion
+
       const { data: insertedData, error: meetingError } = await supabase
         .from('meetings')
         .insert([meetingData])
         .select();
+
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:8372', message: 'Reschedule: Database insert result', data: { insertedData, meetingError, insertedTeamsUrl: insertedData?.[0]?.teams_meeting_url }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'J' }) }).catch(() => { });
+      // #endregion
 
       if (meetingError) {
         console.error('Meeting creation error:', meetingError);
