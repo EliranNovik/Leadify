@@ -7598,5 +7598,5 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   );
 };
 
-export default Header;
+export default React.memo(Header);
 

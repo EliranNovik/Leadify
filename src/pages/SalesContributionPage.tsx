@@ -16,6 +16,8 @@ import {
   buildCurrencyMeta,
   calculateNewLeadAmount,
   calculateLegacyLeadAmount,
+  calculateNewLeadFullAmount,
+  calculateLegacyLeadFullAmount,
   type EmployeeCalculationInput,
   type EmployeeCalculationResult
 } from '../utils/salesContributionCalculator';
@@ -69,6 +71,29 @@ interface DepartmentData {
     normalized: number;
   };
 }
+
+// Helper functions for date range filtering (same as SignedSalesReportPage.tsx)
+const toStartOfDayIso = (dateStr: string) => {
+  // Use explicit UTC time to avoid timezone shifts
+  // Format: YYYY-MM-DDTHH:mm:ss.sssZ
+  return `${dateStr}T00:00:00.000Z`;
+};
+
+const toEndOfDayIso = (dateStr: string) => {
+  // Use explicit UTC time for end of day (23:59:59.999)
+  // Format: YYYY-MM-DDTHH:mm:ss.sssZ
+  return `${dateStr}T23:59:59.999Z`;
+};
+
+const computeDateBounds = (fromDate?: string, toDate?: string) => {
+  const startIso = fromDate ? toStartOfDayIso(fromDate) : null;
+  const endIso = (() => {
+    if (toDate) return toEndOfDayIso(toDate);
+    if (fromDate) return toEndOfDayIso(fromDate);
+    return null;
+  })();
+  return { startIso, endIso };
+};
 
 const SalesContributionPage = () => {
   const navigate = useNavigate();
@@ -648,8 +673,9 @@ const SalesContributionPage = () => {
     try {
       // Use explicit UTC timestamps to include full day: from 00:00:00.000 to 23:59:59.999
       // IMPORTANT: Filter by sign date (when stage 60 was set), NOT creation date
-      const fromDateTime = `${filters.fromDate}T00:00:00.000Z`;
-      const toDateTime = `${filters.toDate}T23:59:59.999Z`;
+      const { startIso, endIso } = computeDateBounds(filters.fromDate, filters.toDate);
+      const fromDateTime = startIso;
+      const toDateTime = endIso;
 
       // Fetch legacy leads stage records (stage 60) - same as Dashboard
       const { data: legacyStageRecords, error: legacyStageError } = await supabase
@@ -751,19 +777,20 @@ const SalesContributionPage = () => {
 
       // Helper functions are now imported from salesContributionCalculator
 
-      // Calculate total signed value in NIS - using same logic as Dashboard
+      // Calculate total signed value in NIS - using full amounts (without subtracting fee)
+      // This matches the calculation for individual employees and the modal
       let totalNIS = 0;
 
-      // Process legacy leads - using utility functions
+      // Process legacy leads - using full amount (same as modal and calculation)
       legacyLeadsData.forEach(lead => {
-        const amountAfterFee = calculateLegacyLeadAmount(lead);
-        totalNIS += amountAfterFee;
+        const fullAmount = calculateLegacyLeadFullAmount(lead);
+        totalNIS += fullAmount;
       });
 
-      // Process new leads - using utility functions
+      // Process new leads - using full amount (same as modal and calculation)
       newLeadsData.forEach(lead => {
-        const amountAfterFee = calculateNewLeadAmount(lead);
-        totalNIS += amountAfterFee;
+        const fullAmount = calculateNewLeadFullAmount(lead);
+        totalNIS += fullAmount;
       });
 
       // Round up to match Dashboard behavior (Math.ceil)
@@ -942,8 +969,9 @@ const SalesContributionPage = () => {
       // IMPORTANT: Filter by sign date (when stage 60 was set), NOT creation date
       // Use 'date' field from leads_leadstage table (not 'cdate') to match fetchTotalSignedValue logic
       // Use explicit UTC timestamps to include full day: from 00:00:00.000 to 23:59:59.999
-      const fromDateTime = filters.fromDate ? `${filters.fromDate}T00:00:00.000Z` : null;
-      const toDateTime = filters.toDate ? `${filters.toDate}T23:59:59.999Z` : null;
+      const { startIso, endIso } = computeDateBounds(filters.fromDate, filters.toDate);
+      const fromDateTime = startIso;
+      const toDateTime = endIso;
 
       let stageHistoryQuery = supabase
         .from('leads_leadstage')
@@ -985,6 +1013,8 @@ const SalesContributionPage = () => {
           .from('leads')
           .select(`
             id,
+            lead_number,
+            name,
             balance,
             balance_currency,
             proposal_total,
@@ -996,6 +1026,7 @@ const SalesContributionPage = () => {
             helper,
             expert,
             case_handler_id,
+            manager,
             meeting_manager_id,
             subcontractor_fee,
             category_id,
@@ -1164,9 +1195,8 @@ const SalesContributionPage = () => {
       if (employeeDataForPayments) {
         const employeeDisplayNameForPayments = employeeDataForPayments.display_name;
 
-        // For payment plans, use format without .000Z (same as fetchDueAmounts)
-        const fromDateTimeForPayments = filters.fromDate ? `${filters.fromDate}T00:00:00` : null;
-        const toDateTimeForPayments = filters.toDate ? `${filters.toDate}T23:59:59` : null;
+        // For payment plans, use explicit UTC timestamps to include full day: from 00:00:00.000 to 23:59:59.999
+        const { startIso: fromDateTimeForPayments, endIso: toDateTimeForPayments } = computeDateBounds(filters.fromDate, filters.toDate);
 
         // Find ALL new leads where this employee is handler (not just signed ones)
         const { data: allHandlerNewLeads } = await supabase
@@ -1288,8 +1318,28 @@ const SalesContributionPage = () => {
             : Number(helperValue) === employeeId;
         } else if (roleField === 'expert' && lead.expert) {
           return Number(lead.expert) === employeeId;
-        } else if (roleField === 'meeting_manager_id' && lead.meeting_manager_id) {
-          return Number(lead.meeting_manager_id) === employeeId;
+        } else if (roleField === 'meeting_manager_id') {
+          // For new leads, check 'manager' field (not 'meeting_manager_id')
+          if (lead.manager) {
+            const managerValue = lead.manager;
+            // Check if it's a numeric string (ID) or a number
+            if (typeof managerValue === 'string') {
+              const numericValue = Number(managerValue);
+              // If it's a valid number, treat it as an ID
+              if (!isNaN(numericValue) && numericValue.toString() === managerValue.trim()) {
+                return numericValue === employeeId;
+              }
+              // Otherwise, treat it as a name
+              return managerValue.toLowerCase() === employeeName.toLowerCase();
+            }
+            // If it's already a number, compare directly
+            return Number(managerValue) === employeeId;
+          }
+          // Fallback to meeting_manager_id if manager is not set
+          if (lead.meeting_manager_id) {
+            return Number(lead.meeting_manager_id) === employeeId;
+          }
+          return false;
         }
         return false;
       };
@@ -1788,8 +1838,8 @@ const SalesContributionPage = () => {
   // Fetch due amounts for employees who are handlers
   const fetchDueAmounts = useCallback(async (employeeId: number, employeeName: string) => {
     try {
-      const fromDateTime = filters.fromDate ? `${filters.fromDate}T00:00:00` : null;
-      const toDateTime = filters.toDate ? `${filters.toDate}T23:59:59` : null;
+      // Use explicit UTC timestamps to include full day: from 00:00:00.000 to 23:59:59.999
+      const { startIso: fromDateTime, endIso: toDateTime } = computeDateBounds(filters.fromDate, filters.toDate);
 
       let totalDue = 0;
 
@@ -1978,8 +2028,8 @@ const SalesContributionPage = () => {
 
     try {
       // Step 1: Find signed leads (stage 60) in date range
-      const fromDateTime = filters.fromDate ? `${filters.fromDate}T00:00:00.000Z` : null;
-      const toDateTime = filters.toDate ? `${filters.toDate}T23:59:59.999Z` : null;
+      // Use explicit UTC timestamps to include full day: from 00:00:00.000 to 23:59:59.999
+      const { startIso: fromDateTime, endIso: toDateTime } = computeDateBounds(filters.fromDate, filters.toDate);
 
       let stageHistoryQuery = supabase
         .from('leads_leadstage')
@@ -2662,46 +2712,330 @@ const SalesContributionPage = () => {
 
         // Fetch all data first, then calculate everything, then update state once
         try {
-          const fromDateTime = filters.fromDate ? `${filters.fromDate}T00:00:00.000Z` : null;
-          const toDateTime = filters.toDate ? `${filters.toDate}T23:59:59.999Z` : null;
+          // Use explicit UTC timestamps to include full day: from 00:00:00.000 to 23:59:59.999
+          const { startIso: fromDateTime, endIso: toDateTime } = computeDateBounds(filters.fromDate, filters.toDate);
 
-            // Step 1: Fetch all signed leads (stage 60) - ONCE for all employees
-            let stageHistoryQuery = supabase
+          // Step 1: Fetch all signed leads (stage 60) - ONCE for all employees
+          let stageHistoryQuery = supabase
+            .from('leads_leadstage')
+            .select('id, stage, date, cdate, lead_id, newlead_id')
+            .eq('stage', 60);
+
+          if (fromDateTime) {
+            stageHistoryQuery = stageHistoryQuery.gte('date', fromDateTime);
+          }
+          if (toDateTime) {
+            stageHistoryQuery = stageHistoryQuery.lte('date', toDateTime);
+          }
+
+          const { data: stageHistoryData, error: stageHistoryError } = await stageHistoryQuery;
+          if (stageHistoryError) throw stageHistoryError;
+
+          // DEBUG: Check for lead L210675 in stage 60 records
+          const debugLeadL210675 = stageHistoryData?.find((entry: any) => {
+            // Check if this entry might be for L210675
+            return entry.newlead_id?.toString().includes('210675') ||
+              entry.lead_id?.toString().includes('210675');
+          });
+
+          // DEBUG: Also check all records to see date range
+          const sampleDates = stageHistoryData?.slice(0, 5).map((entry: any) => ({
+            newlead_id: entry.newlead_id,
+            lead_id: entry.lead_id,
+            date: entry.date,
+            cdate: entry.cdate,
+            dateISO: entry.date ? new Date(entry.date).toISOString() : null,
+            dateInRange: fromDateTime && toDateTime ?
+              (entry.date >= fromDateTime && entry.date <= toDateTime) : null
+          }));
+
+          if (debugLeadL210675) {
+            console.log('🔍 DEBUG L210675: Found in stage 60 records:', {
+              entry: debugLeadL210675,
+              newlead_id: debugLeadL210675.newlead_id,
+              lead_id: debugLeadL210675.lead_id,
+              date: debugLeadL210675.date,
+              cdate: debugLeadL210675.cdate,
+              stage: debugLeadL210675.stage,
+              dateISO: debugLeadL210675.date ? new Date(debugLeadL210675.date).toISOString() : null,
+              dateInRange: fromDateTime && toDateTime ?
+                (debugLeadL210675.date >= fromDateTime && debugLeadL210675.date <= toDateTime) : 'N/A',
+              dateComparison: fromDateTime && debugLeadL210675.date ? {
+                date: debugLeadL210675.date,
+                fromDateTime,
+                isGTE: debugLeadL210675.date >= fromDateTime,
+                toDateTime,
+                isLTE: debugLeadL210675.date <= toDateTime,
+                willPass: debugLeadL210675.date >= fromDateTime && debugLeadL210675.date <= toDateTime
+              } : null
+            });
+          } else {
+            console.log('🔍 DEBUG L210675: NOT found in stage 60 records for date range:', {
+              fromDate: filters.fromDate,
+              toDate: filters.toDate,
+              fromDateTime,
+              toDateTime,
+              totalRecords: stageHistoryData?.length || 0,
+              sampleDates,
+              queryString: stageHistoryQuery.toString ? stageHistoryQuery.toString() : 'N/A'
+            });
+          }
+
+          // Separate new and legacy lead IDs
+          const allNewLeadIds = new Set<string>();
+          const allLegacyLeadIds = new Set<number>();
+
+          // DEBUG: Find the entry for L210675 before processing
+          const l210675Entry = stageHistoryData?.find((entry: any) =>
+            entry.newlead_id === '801a6928-574d-4ee7-b54d-bf2e169051bc' ||
+            entry.newlead_id?.toString() === '801a6928-574d-4ee7-b54d-bf2e169051bc'
+          );
+
+          stageHistoryData?.forEach((entry: any) => {
+            // DEBUG: Log details for L210675 entry
+            const isL210675 = entry.newlead_id === '801a6928-574d-4ee7-b54d-bf2e169051bc' ||
+              entry.newlead_id?.toString() === '801a6928-574d-4ee7-b54d-bf2e169051bc';
+
+            if (isL210675) {
+              console.log('🔍 DEBUG L210675: Processing entry in forEach:', {
+                entry,
+                newlead_id: entry.newlead_id,
+                newlead_idType: typeof entry.newlead_id,
+                newlead_idTruthy: !!entry.newlead_id,
+                lead_id: entry.lead_id,
+                lead_idType: typeof entry.lead_id,
+                willAddToNew: !!entry.newlead_id,
+                willAddToLegacy: entry.lead_id !== null && entry.lead_id !== undefined
+              });
+            }
+
+            if (entry.newlead_id) {
+              allNewLeadIds.add(entry.newlead_id.toString());
+            }
+            if (entry.lead_id !== null && entry.lead_id !== undefined) {
+              allLegacyLeadIds.add(Number(entry.lead_id));
+            }
+          });
+
+          // DEBUG: Check the entry we found
+          if (l210675Entry) {
+            console.log('🔍 DEBUG L210675: Found entry before forEach:', {
+              entry: l210675Entry,
+              newlead_id: l210675Entry.newlead_id,
+              newlead_idType: typeof l210675Entry.newlead_id,
+              newlead_idTruthy: !!l210675Entry.newlead_id,
+              lead_id: l210675Entry.lead_id,
+              inNewLeadIdsAfter: allNewLeadIds.has(l210675Entry.newlead_id?.toString() || ''),
+              inNewLeadIdsAfterCheck: Array.from(allNewLeadIds).includes(l210675Entry.newlead_id?.toString() || '')
+            });
+          }
+
+          // DEBUG: Check if L210675 is in the ID sets
+          const l210675LeadId = '801a6928-574d-4ee7-b54d-bf2e169051bc';
+          const l210675InNewIds = allNewLeadIds.has(l210675LeadId);
+          const l210675InLegacyIds = Array.from(allLegacyLeadIds).some(id => id.toString() === l210675LeadId);
+
+          console.log('🔍 DEBUG L210675: Checking ID sets:', {
+            l210675LeadId,
+            inNewLeadIds: l210675InNewIds,
+            inLegacyLeadIds: l210675InLegacyIds,
+            newLeadIdsCount: allNewLeadIds.size,
+            legacyLeadIdsCount: allLegacyLeadIds.size,
+            newLeadIdsSample: Array.from(allNewLeadIds).slice(0, 10),
+            hasL210675InSet: allNewLeadIds.has(l210675LeadId),
+            allNewLeadIdsArray: Array.from(allNewLeadIds)
+          });
+
+          // DEBUG: Test the main query directly with L210675's lead ID to see if it should be included
+          // First, get the lead ID for L210675
+          const { data: debugL210675Direct, error: debugL210675Error } = await supabase
+            .from('leads')
+            .select('id, lead_number, name, closer, scheduler, handler, expert, case_handler_id, meeting_manager_id, balance, proposal_total, date_signed')
+            .or('lead_number.ilike.%210675%,manual_id.ilike.%210675%')
+            .limit(5);
+
+          // If we found L210675, test if the main query would find it
+          if (debugL210675Direct && debugL210675Direct.length > 0) {
+            const testLeadId = debugL210675Direct[0].id;
+
+            // Replicate the exact main query but filter for this specific lead ID
+            let testMainQuery = supabase
               .from('leads_leadstage')
               .select('id, stage, date, cdate, lead_id, newlead_id')
-              .eq('stage', 60);
+              .eq('stage', 60)
+              .eq('newlead_id', testLeadId);
 
             if (fromDateTime) {
-              stageHistoryQuery = stageHistoryQuery.gte('date', fromDateTime);
+              testMainQuery = testMainQuery.gte('date', fromDateTime);
             }
             if (toDateTime) {
-              stageHistoryQuery = stageHistoryQuery.lte('date', toDateTime);
+              testMainQuery = testMainQuery.lte('date', toDateTime);
             }
 
-            const { data: stageHistoryData, error: stageHistoryError } = await stageHistoryQuery;
-            if (stageHistoryError) throw stageHistoryError;
+            const { data: testMainQueryResult } = await testMainQuery;
 
-            // Separate new and legacy lead IDs
-            const allNewLeadIds = new Set<string>();
-            const allLegacyLeadIds = new Set<number>();
+            console.log('🔍 DEBUG L210675: Testing main query directly:', {
+              testLeadId,
+              fromDateTime,
+              toDateTime,
+              testMainQueryResult,
+              foundInTest: testMainQueryResult && testMainQueryResult.length > 0,
+              testResultCount: testMainQueryResult?.length || 0
+            });
+          }
 
-            stageHistoryData?.forEach((entry: any) => {
-              if (entry.newlead_id) {
-                allNewLeadIds.add(entry.newlead_id.toString());
-              }
-              if (entry.lead_id !== null && entry.lead_id !== undefined) {
-                allLegacyLeadIds.add(Number(entry.lead_id));
-              }
+          if (debugL210675Direct && debugL210675Direct.length > 0) {
+            console.log('🔍 DEBUG L210675: Direct query result:', {
+              found: debugL210675Direct.length,
+              leads: debugL210675Direct.map(l => ({
+                id: l.id,
+                lead_number: l.lead_number,
+                name: l.name,
+                closer: l.closer,
+                scheduler: l.scheduler,
+                handler: l.handler,
+                expert: l.expert,
+                case_handler_id: l.case_handler_id,
+                meeting_manager_id: l.meeting_manager_id,
+                balance: l.balance,
+                proposal_total: l.proposal_total,
+                date_signed: l.date_signed
+              }))
             });
 
-            // Step 2: Fetch all new leads - ONCE
-            const newLeadsMap = new Map();
-            if (allNewLeadIds.size > 0) {
-              const newLeadIdsArray = Array.from(allNewLeadIds);
-              const { data: newLeads, error: newLeadsError } = await supabase
-                .from('leads')
-                .select(`
+            // Check if this lead has stage 60 in the date range
+            if (debugL210675Direct.length > 0) {
+              const leadId = debugL210675Direct[0].id;
+
+              // Query stage 60 with the same filters as the main query to see if it matches
+              let debugStage60Query = supabase
+                .from('leads_leadstage')
+                .select('id, date, cdate, stage, newlead_id, lead_id')
+                .eq('stage', 60)
+                .eq('newlead_id', leadId);
+
+              if (fromDateTime) {
+                debugStage60Query = debugStage60Query.gte('date', fromDateTime);
+              }
+              if (toDateTime) {
+                debugStage60Query = debugStage60Query.lte('date', toDateTime);
+              }
+
+              const { data: stage60ForL210675Filtered } = await debugStage60Query;
+
+              // Also get all stage 60 records for this lead (no date filter)
+              const { data: stage60ForL210675 } = await supabase
+                .from('leads_leadstage')
+                .select('id, date, cdate, stage, newlead_id, lead_id')
+                .eq('stage', 60)
+                .eq('newlead_id', leadId)
+                .order('date', { ascending: false })
+                .limit(5);
+
+              const inDateRangeRecords = stage60ForL210675?.filter(s =>
+                fromDateTime && toDateTime &&
+                s.date >= fromDateTime &&
+                s.date <= toDateTime
+              ) || [];
+
+              // Get the actual date value from the stage 60 record
+              const actualStage60Record = stage60ForL210675?.[0];
+              const actualDate = actualStage60Record?.date;
+              const actualCdate = actualStage60Record?.cdate;
+
+              console.log('🔍 DEBUG L210675: Stage 60 records - DETAILED:', {
+                leadId,
+                leadNumber: debugL210675Direct[0].lead_number,
+                fromDateTime,
+                toDateTime,
+                fromDate: filters.fromDate,
+                toDate: filters.toDate,
+                // Actual date values from the stage 60 record
+                actualDateValue: actualDate,
+                actualCdateValue: actualCdate,
+                actualDateISO: actualDate ? new Date(actualDate).toISOString() : null,
+                actualCdateISO: actualCdate ? new Date(actualCdate).toISOString() : null,
+                // Date comparison
+                datePassesFilter: actualDate && fromDateTime && toDateTime ?
+                  (actualDate >= fromDateTime && actualDate <= toDateTime) : null,
+                cdatePassesFilter: actualCdate && fromDateTime && toDateTime ?
+                  (actualCdate >= fromDateTime && actualCdate <= toDateTime) : null,
+                dateComparison: actualDate && fromDateTime && toDateTime ? {
+                  actualDate,
+                  fromDateTime,
+                  isGTE: actualDate >= fromDateTime,
+                  toDateTime,
+                  isLTE: actualDate <= toDateTime,
+                  willPass: actualDate >= fromDateTime && actualDate <= toDateTime,
+                  difference: actualDate ? new Date(actualDate).getTime() - new Date(fromDateTime).getTime() : null
+                } : null,
+                // All stage 60 records (no date filter)
+                allStage60Records: stage60ForL210675?.map(s => ({
+                  id: s.id,
+                  date: s.date,
+                  cdate: s.cdate,
+                  stage: s.stage,
+                  newlead_id: s.newlead_id,
+                  lead_id: s.lead_id,
+                  dateISO: s.date ? new Date(s.date).toISOString() : null,
+                  cdateISO: s.cdate ? new Date(s.cdate).toISOString() : null,
+                  dateInRange: fromDateTime && toDateTime ?
+                    (s.date >= fromDateTime && s.date <= toDateTime) : null,
+                  cdateInRange: fromDateTime && toDateTime ?
+                    (s.cdate >= fromDateTime && s.cdate <= toDateTime) : null
+                })),
+                // Stage 60 records WITH date filter (what the main query should return)
+                filteredStage60Records: stage60ForL210675Filtered?.map(s => ({
+                  id: s.id,
+                  date: s.date,
+                  cdate: s.cdate,
+                  stage: s.stage,
+                  newlead_id: s.newlead_id,
+                  lead_id: s.lead_id,
+                  dateISO: s.date ? new Date(s.date).toISOString() : null,
+                  cdateISO: s.cdate ? new Date(s.cdate).toISOString() : null
+                })),
+                filteredCount: stage60ForL210675Filtered?.length || 0,
+                inDateRange: inDateRangeRecords,
+                inDateRangeCount: inDateRangeRecords.length,
+                // Check if this lead ID is in the main query results
+                inMainQueryResults: stageHistoryData?.some((entry: any) =>
+                  entry.newlead_id === leadId || entry.lead_id === leadId
+                ) || false,
+                // Check what the main query actually returned for this lead ID
+                mainQueryEntriesForThisLead: stageHistoryData?.filter((entry: any) =>
+                  entry.newlead_id === leadId || entry.lead_id === leadId
+                ) || []
+              });
+            }
+          } else {
+            console.log('🔍 DEBUG L210675: Direct query found nothing:', {
+              error: debugL210675Error
+            });
+          }
+
+          // Step 2: Fetch all new leads - ONCE
+          const newLeadsMap = new Map();
+          if (allNewLeadIds.size > 0) {
+            const newLeadIdsArray = Array.from(allNewLeadIds);
+
+            // DEBUG: Check if L210675 is in the array being passed to the query
+            const l210675InArray = newLeadIdsArray.includes(l210675LeadId);
+            console.log('🔍 DEBUG L210675: Before fetching new leads:', {
+              l210675LeadId,
+              l210675InArray,
+              newLeadIdsArrayLength: newLeadIdsArray.length,
+              newLeadIdsArraySample: newLeadIdsArray.slice(0, 10),
+              allNewLeadIdsSize: allNewLeadIds.size,
+              hasInSet: allNewLeadIds.has(l210675LeadId)
+            });
+
+            const { data: newLeads, error: newLeadsError } = await supabase
+              .from('leads')
+              .select(`
                   id,
+                  lead_number,
+                  name,
                   balance,
                   balance_currency,
                   proposal_total,
@@ -2713,6 +3047,7 @@ const SalesContributionPage = () => {
                   helper,
                   expert,
                   case_handler_id,
+                  manager,
                   meeting_manager_id,
                   subcontractor_fee,
                   category_id,
@@ -2728,24 +3063,147 @@ const SalesContributionPage = () => {
                     )
                   )
                 `)
-                .in('id', newLeadIdsArray);
+              .in('id', newLeadIdsArray);
 
-              if (!newLeadsError && newLeads) {
-                // Pre-process leads to ensure categories are correctly mapped
-                const processedLeads = preprocessLeadsCategories(newLeads, false);
-                processedLeads.forEach(lead => {
-                  newLeadsMap.set(lead.id, lead);
+            // DEBUG: Log query details
+            console.log('🔍 DEBUG L210675: Query details:', {
+              queryArrayLength: newLeadIdsArray.length,
+              l210675InQueryArray: newLeadIdsArray.includes(l210675LeadId),
+              queryArraySample: newLeadIdsArray.slice(0, 10),
+              queryArrayLast: newLeadIdsArray.slice(-10),
+              l210675IndexInArray: newLeadIdsArray.indexOf(l210675LeadId)
+            });
+
+            // DEBUG: Test if we can query L210675 directly
+            const { data: testL210675Direct, error: testL210675Error } = await supabase
+              .from('leads')
+              .select('id, lead_number, name')
+              .eq('id', l210675LeadId)
+              .single();
+
+            console.log('🔍 DEBUG L210675: Direct query test:', {
+              found: !!testL210675Direct,
+              error: testL210675Error,
+              data: testL210675Direct
+            });
+
+            if (newLeadsError) {
+              console.error('🔍 DEBUG L210675: Error fetching new leads:', newLeadsError);
+            }
+
+            if (!newLeadsError && newLeads) {
+              // DEBUG: Check what IDs were actually returned
+              const returnedIds = newLeads.map((l: any) => l.id);
+              console.log('🔍 DEBUG L210675: After fetching new leads:', {
+                totalReturned: newLeads.length,
+                l210675InReturned: returnedIds.includes(l210675LeadId),
+                returnedIdsSample: returnedIds.slice(0, 10),
+                queryArrayLength: newLeadIdsArray.length,
+                l210675InQueryArray: newLeadIdsArray.includes(l210675LeadId)
+              });
+
+              // Pre-process leads to ensure categories are correctly mapped
+              const processedLeads = preprocessLeadsCategories(newLeads, false);
+              processedLeads.forEach(lead => {
+                newLeadsMap.set(lead.id, lead);
+              });
+
+              // DEBUG: If L210675 is in the query array but not in results, fetch it separately
+              if (newLeadIdsArray.includes(l210675LeadId) && !newLeadsMap.has(l210675LeadId)) {
+                console.log('🔍 DEBUG L210675: Missing from .in() query, fetching separately...');
+                const { data: missingLead, error: missingLeadError } = await supabase
+                  .from('leads')
+                  .select(`
+                      id,
+                      balance,
+                      balance_currency,
+                      proposal_total,
+                      proposal_currency,
+                      currency_id,
+                      closer,
+                      scheduler,
+                      handler,
+                      helper,
+                      expert,
+                      case_handler_id,
+                      meeting_manager_id,
+                      subcontractor_fee,
+                      category_id,
+                      category,
+                      accounting_currencies!leads_currency_id_fkey(name, iso_code),
+                      misc_category!category_id(
+                        id,
+                        name,
+                        parent_id,
+                        misc_maincategory!parent_id(
+                          id,
+                          name
+                        )
+                      )
+                    `)
+                  .eq('id', l210675LeadId)
+                  .single();
+
+                if (!missingLeadError && missingLead) {
+                  console.log('🔍 DEBUG L210675: Successfully fetched separately:', {
+                    id: missingLead.id,
+                    lead_number: missingLead.lead_number,
+                    name: missingLead.name
+                  });
+                  // Pre-process and add to map
+                  const processedMissing = preprocessLeadsCategories([missingLead], false);
+                  processedMissing.forEach(lead => {
+                    newLeadsMap.set(lead.id, lead);
+                  });
+                } else {
+                  console.error('🔍 DEBUG L210675: Failed to fetch separately:', missingLeadError);
+                }
+              }
+
+              // DEBUG: Check if L210675 is in the fetched new leads
+              const debugLeadL210675InNewLeads = newLeads.find((lead: any) => {
+                // Check by lead_number or id
+                return lead.lead_number?.toString().includes('210675') ||
+                  lead.id?.toString().includes('210675') ||
+                  lead.id === l210675LeadId;
+              });
+              if (debugLeadL210675InNewLeads) {
+                console.log('🔍 DEBUG L210675: Found in new leads fetch:', {
+                  id: debugLeadL210675InNewLeads.id,
+                  lead_number: debugLeadL210675InNewLeads.lead_number,
+                  name: debugLeadL210675InNewLeads.name,
+                  closer: debugLeadL210675InNewLeads.closer,
+                  scheduler: debugLeadL210675InNewLeads.scheduler,
+                  handler: debugLeadL210675InNewLeads.handler,
+                  helper: debugLeadL210675InNewLeads.helper,
+                  expert: debugLeadL210675InNewLeads.expert,
+                  case_handler_id: debugLeadL210675InNewLeads.case_handler_id,
+                  manager: debugLeadL210675InNewLeads.manager,
+                  meeting_manager_id: debugLeadL210675InNewLeads.meeting_manager_id,
+                  balance: debugLeadL210675InNewLeads.balance,
+                  proposal_total: debugLeadL210675InNewLeads.proposal_total
+                });
+              } else {
+                console.log('🔍 DEBUG L210675: NOT found in new leads fetch. Details:', {
+                  l210675LeadId,
+                  inNewLeadIdsSet: allNewLeadIds.has(l210675LeadId),
+                  inQueryArray: newLeadIdsArray.includes(l210675LeadId),
+                  queryArrayLength: newLeadIdsArray.length,
+                  totalNewLeads: newLeads.length,
+                  returnedIds: returnedIds.slice(0, 20),
+                  error: newLeadsError
                 });
               }
             }
+          }
 
-            // Step 3: Fetch all legacy leads - ONCE
-            const legacyLeadsMap = new Map();
-            if (allLegacyLeadIds.size > 0) {
-              const legacyLeadIdsArray = Array.from(allLegacyLeadIds);
-              const { data: legacyLeads, error: legacyLeadsError } = await supabase
-                .from('leads_lead')
-                .select(`
+          // Step 3: Fetch all legacy leads - ONCE
+          const legacyLeadsMap = new Map();
+          if (allLegacyLeadIds.size > 0) {
+            const legacyLeadIdsArray = Array.from(allLegacyLeadIds);
+            const { data: legacyLeads, error: legacyLeadsError } = await supabase
+              .from('leads_lead')
+              .select(`
             id,
             total,
             total_base,
@@ -2771,400 +3229,121 @@ const SalesContributionPage = () => {
               )
             )
           `)
-                .in('id', legacyLeadIdsArray);
+              .in('id', legacyLeadIdsArray);
 
-              if (!legacyLeadsError && legacyLeads) {
-                // Pre-process leads to ensure categories are correctly mapped
-                const processedLeads = preprocessLeadsCategories(legacyLeads, true);
-                processedLeads.forEach(lead => {
-                  legacyLeadsMap.set(Number(lead.id), lead);
-                });
-              }
-            }
-
-            // Step 4: Fetch all payment plans - ONCE
-            const newPaymentsMap = new Map<string, number>();
-            const legacyPaymentsMap = new Map<number, number>();
-
-            if (allNewLeadIds.size > 0) {
-              const newLeadIdsArray = Array.from(allNewLeadIds);
-              let newPaymentsQuery = supabase
-                .from('payment_plans')
-                .select('lead_id, value, currency, due_date')
-                .eq('ready_to_pay', true)
-                .eq('paid', false)
-                .not('due_date', 'is', null)
-                .is('cancel_date', null)
-                .in('lead_id', newLeadIdsArray);
-
-              if (fromDateTime) {
-                newPaymentsQuery = newPaymentsQuery.gte('due_date', fromDateTime);
-              }
-              if (toDateTime) {
-                newPaymentsQuery = newPaymentsQuery.lte('due_date', toDateTime);
-              }
-
-              const { data: newPayments } = await newPaymentsQuery;
-              if (newPayments) {
-                // Use utility function to process payments
-                const processedPayments = processNewPayments(newPayments);
-                processedPayments.forEach((amount, leadId) => {
-                  const current = newPaymentsMap.get(leadId) || 0;
-                  newPaymentsMap.set(leadId, current + amount);
-                });
-              }
-            }
-
-            if (allLegacyLeadIds.size > 0) {
-              const legacyLeadIdsArray = Array.from(allLegacyLeadIds);
-              let legacyPaymentsQuery = supabase
-                .from('finances_paymentplanrow')
-                .select('lead_id, value, value_base, currency_id, due_date, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)')
-                .is('actual_date', null)
-                .eq('ready_to_pay', true)
-                .not('due_date', 'is', null)
-                .in('lead_id', legacyLeadIdsArray);
-
-              if (fromDateTime) {
-                legacyPaymentsQuery = legacyPaymentsQuery.gte('due_date', fromDateTime);
-              }
-              if (toDateTime) {
-                legacyPaymentsQuery = legacyPaymentsQuery.lte('due_date', toDateTime);
-              }
-
-              const { data: legacyPayments } = await legacyPaymentsQuery;
-              if (legacyPayments) {
-                // Use utility function to process payments
-                const processedPayments = processLegacyPayments(legacyPayments, legacyLeadsMap);
-                processedPayments.forEach((amount, leadId) => {
-                  const current = legacyPaymentsMap.get(leadId) || 0;
-                  legacyPaymentsMap.set(leadId, current + amount);
-                });
-              }
-            }
-
-            // Step 5: Process field view data (grouped by main category) - do this once for all employees
-            await processFieldViewData(newLeadsMap, legacyLeadsMap, newPaymentsMap, legacyPaymentsMap);
-
-            // Step 6: Fetch due amounts for all handlers in parallel
-            const dueAmountsMap = new Map<number, number>();
-            await Promise.all(
-              employeesToFetch.map(async ({ id, name }) => {
-                const dueAmount = await fetchDueAmounts(id, name);
-                if (dueAmount > 0) {
-                  dueAmountsMap.set(id, dueAmount);
-                }
-              })
-            );
-
-            // Step 6.5: Fetch salary data for ALL employees (not just those being fetched)
-            // This ensures salary data is always available even when employees are cached
-            const salaryDataMap = new Map<number, { salaryBrutto: number; totalSalaryCost: number }>();
-            // Only fetch salary if filter is set and we have employees
-            // This is optional - calculation should work even without salary data
-            if (salaryFilter?.month && salaryFilter?.year && allEmployeeIds.length > 0) {
-              try {
-                const salaryMonth = salaryFilter.month; // 1-12
-                const salaryYear = salaryFilter.year;
-                const employeeIdsForSalary = allEmployeeIds; // Fetch for ALL employees, not just those being recalculated
-
-                console.log('🔍 Fetching salary data:', {
-                  salaryMonth,
-                  salaryYear,
-                  employeeCount: employeeIdsForSalary.length
-                });
-
-                // Fetch salary data for all employees
-                const { data: salaryData, error: salaryError } = await supabase
-                  .from('employee_salary')
-                  .select('employee_id, net_salary, gross_salary')
-                  .eq('salary_month', salaryMonth)
-                  .eq('salary_year', salaryYear)
-                  .in('employee_id', employeeIdsForSalary);
-
-                console.log('✅ Salary data fetched:', {
-                  count: salaryData?.length || 0,
-                  error: salaryError?.message
-                });
-
-                if (!salaryError && salaryData) {
-                  salaryData.forEach((salary: any) => {
-                    const employeeId = Number(salary.employee_id);
-                    salaryDataMap.set(employeeId, {
-                      salaryBrutto: Number(salary.net_salary || 0),
-                      totalSalaryCost: Number(salary.gross_salary || 0),
-                    });
-                  });
-                } else if (salaryError) {
-                  console.error('Error fetching salary data:', salaryError);
-                  // Don't throw - salary data is optional
-                }
-              } catch (error) {
-                console.error('Error in salary data fetch:', error);
-                // Don't throw - salary data is optional, calculation should continue
-              }
-            } else {
-              console.log('ℹ️ Skipping salary fetch:', {
-                hasFilter: !!salaryFilter,
-                hasMonth: !!salaryFilter?.month,
-                hasYear: !!salaryFilter?.year,
-                employeesCount: employeesToFetch.length
+            if (!legacyLeadsError && legacyLeads) {
+              // Pre-process leads to ensure categories are correctly mapped
+              const processedLeads = preprocessLeadsCategories(legacyLeads, true);
+              processedLeads.forEach(lead => {
+                legacyLeadsMap.set(Number(lead.id), lead);
               });
             }
-
-            // Step 7: Filter leads for each employee and prepare calculation inputs
-            const calculationInputs: EmployeeCalculationInput[] = [];
-            const totalSignedOverall = totalSignedValueRef.current || 0;
-
-            employeesToFetch.forEach(({ id: employeeId, name: employeeName }) => {
-              // Helper to check if employee is in a role for a new lead
-              const checkEmployeeInRole = (lead: any, roleField: string): boolean => {
-                if (roleField === 'closer' && lead.closer) {
-                  const closerValue = lead.closer;
-                  return typeof closerValue === 'string'
-                    ? closerValue.toLowerCase() === employeeName.toLowerCase()
-                    : Number(closerValue) === employeeId;
-                } else if (roleField === 'scheduler' && lead.scheduler) {
-                  const schedulerValue = lead.scheduler;
-                  return typeof schedulerValue === 'string'
-                    ? schedulerValue.toLowerCase() === employeeName.toLowerCase()
-                    : Number(schedulerValue) === employeeId;
-                } else if (roleField === 'handler') {
-                  if (lead.handler) {
-                    const handlerValue = lead.handler;
-                    if (typeof handlerValue === 'string' && handlerValue.toLowerCase() === employeeName.toLowerCase()) {
-                      return true;
-                    }
-                    if (Number(handlerValue) === employeeId) {
-                      return true;
-                    }
-                  }
-                  if (lead.case_handler_id && Number(lead.case_handler_id) === employeeId) {
-                    return true;
-                  }
-                  return false;
-                } else if (roleField === 'helper' && lead.helper) {
-                  const helperValue = lead.helper;
-                  return typeof helperValue === 'string'
-                    ? helperValue.toLowerCase() === employeeName.toLowerCase()
-                    : Number(helperValue) === employeeId;
-                } else if (roleField === 'expert' && lead.expert) {
-                  return Number(lead.expert) === employeeId;
-                } else if (roleField === 'meeting_manager_id' && lead.meeting_manager_id) {
-                  return Number(lead.meeting_manager_id) === employeeId;
-                }
-                return false;
-              };
-
-              // Filter new leads for this employee
-              const employeeNewLeads = Array.from(newLeadsMap.values()).filter(lead => {
-                return (
-                  checkEmployeeInRole(lead, 'closer') ||
-                  checkEmployeeInRole(lead, 'scheduler') ||
-                  checkEmployeeInRole(lead, 'handler') ||
-                  checkEmployeeInRole(lead, 'helper') ||
-                  checkEmployeeInRole(lead, 'expert') ||
-                  checkEmployeeInRole(lead, 'meeting_manager_id')
-                );
-              });
-
-              // Filter legacy leads for this employee
-              const employeeLegacyLeads = Array.from(legacyLeadsMap.values()).filter(lead => {
-                return (
-                  (lead.closer_id && Number(lead.closer_id) === employeeId) ||
-                  (lead.meeting_scheduler_id && Number(lead.meeting_scheduler_id) === employeeId) ||
-                  (lead.meeting_lawyer_id && Number(lead.meeting_lawyer_id) === employeeId) ||
-                  (lead.case_handler_id && Number(lead.case_handler_id) === employeeId) ||
-                  (lead.expert_id && Number(lead.expert_id) === employeeId) ||
-                  (lead.meeting_manager_id && Number(lead.meeting_manager_id) === employeeId)
-                );
-              });
-
-              calculationInputs.push({
-                employeeId,
-                employeeName,
-                leads: {
-                  newLeads: employeeNewLeads,
-                  legacyLeads: employeeLegacyLeads,
-                },
-                payments: {
-                  newPayments: newPaymentsMap,
-                  legacyPayments: legacyPaymentsMap,
-                },
-                totalDueAmount: dueAmountsMap.get(employeeId) || 0,
-                totalSignedOverall,
-                totalIncome,
-                dueNormalizedPercentage,
-                rolePercentages,
-              });
-            });
-
-            // Step 8: Calculate ALL employee metrics in one batch (PURE calculation, no async)
-            console.log('🔍 Starting batch calculation:', {
-              inputCount: calculationInputs.length,
-              employeesToFetch: employeesToFetch.length,
-              totalSignedOverall,
-              totalIncome,
-              dueNormalizedPercentage,
-              salaryFilter: salaryFilter
-            });
-
-            const calculationResults = batchCalculateEmployeeMetrics(calculationInputs);
-
-            // Debug: Log calculation results to identify why contribution might be 0
-            console.log('🔍 Calculation Results Debug:', {
-              totalInputs: calculationInputs.length,
-              totalResults: calculationResults.size,
-              sampleResult: calculationResults.size > 0 ? Array.from(calculationResults.values())[0] : null,
-              rolePercentagesSize: rolePercentages?.size || 0,
-              rolePercentagesEntries: rolePercentages ? Array.from(rolePercentages.entries()) : [],
-              totalSignedOverall,
-              totalIncome,
-              dueNormalizedPercentage,
-              hasSalaryData: salaryDataMap.size > 0
-            });
-
-            if (calculationResults.size === 0 && calculationInputs.length > 0) {
-              console.error('❌ Calculation returned empty results but had inputs!', {
-                inputCount: calculationInputs.length,
-                sampleInput: calculationInputs[0]
-              });
-            }
-
-            // Step 9: Update state ONCE with all results
-            const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
-            const incomeKey = totalIncome || 0;
-            const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
-            const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
-
-            // Update role data cache
-            setRoleDataCache(prev => {
-              const newCache = new Map(prev);
-              calculationResults.forEach((result, employeeId) => {
-                const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
-                newCache.set(cacheKey, result.roleBreakdown.map(r => ({
-                  role: r.role,
-                  signedTotal: r.signedTotal,
-                  dueTotal: r.dueTotal,
-                  roles: r.roles,
-                  action: '',
-                })));
-              });
-              return newCache;
-            });
-
-            // Update department data ONCE - start with finalDepartmentData since we didn't set it initially
-            setDepartmentData(() => {
-              const updated = new Map(finalDepartmentData);
-
-              updated.forEach((deptData, deptName) => {
-                const updatedEmployees = deptData.employees.map(emp => {
-                  const result = calculationResults.get(emp.employeeId);
-                  const salaryData = salaryDataMap.get(emp.employeeId);
-
-                  // Always update salary data if available
-                  const updatedEmp: EmployeeData = {
-                    ...emp,
-                    salaryBrutto: salaryData?.salaryBrutto || emp.salaryBrutto || 0,
-                    totalSalaryCost: salaryData?.totalSalaryCost || emp.totalSalaryCost || 0,
-                  };
-
-                  // Update calculation results if available
-                  if (result) {
-                    updatedEmp.signed = result.signed;
-                    updatedEmp.due = result.due;
-                    updatedEmp.signedNormalized = result.signedNormalized;
-                    updatedEmp.dueNormalized = result.dueNormalized;
-                    updatedEmp.signedPortion = result.contribution || 0; // Ensure contribution is set, default to 0 if undefined
-                    updatedEmp.salaryBudget = result.salaryBudget || 0;
-                    // Calculate maxIncentives: salaryBudget - totalSalaryCost
-                    // If either value is null/undefined, set to 0
-                    const salaryBudget = updatedEmp.salaryBudget ?? 0;
-                    const totalSalaryCost = updatedEmp.totalSalaryCost ?? 0;
-                    updatedEmp.maxIncentives = salaryBudget - totalSalaryCost;
-
-                    // Debug log if contribution is 0 but there should be data
-                    if (result.contribution === 0 && (result.signed > 0 || result.due > 0)) {
-                      console.warn(`⚠️ Zero contribution for employee ${emp.employeeId} (${emp.employeeName}):`, {
-                        signed: result.signed,
-                        due: result.due,
-                        signedNormalized: result.signedNormalized,
-                        dueNormalized: result.dueNormalized,
-                        signedPortion: result.signedPortion,
-                        duePortion: result.duePortion,
-                        contribution: result.contribution,
-                        baseContribution: (result.signedPortion || 0) + (result.duePortion || 0)
-                      });
-                    }
-                  } else {
-                    console.warn(`⚠️ No calculation result found for employee ${emp.employeeId} (${emp.employeeName})`);
-                  }
-
-                  return updatedEmp;
-                });
-
-                // Recalculate department totals
-                const deptSigned = updatedEmployees.reduce((sum, emp) => sum + (emp.signed || 0), 0);
-                const deptDue = updatedEmployees.reduce((sum, emp) => sum + (emp.due || 0), 0);
-                const deptSignedNormalized = updatedEmployees.reduce((sum, emp) => sum + (emp.signedNormalized || 0), 0);
-                const deptDueNormalized = updatedEmployees.reduce((sum, emp) => sum + (emp.dueNormalized || 0), 0);
-                const deptSignedPortion = updatedEmployees.reduce((sum, emp) => sum + (emp.signedPortion || 0), 0);
-                const deptSalaryBudget = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBudget || 0), 0);
-                const deptSalaryBrutto = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBrutto || 0), 0);
-                const deptTotalSalaryCost = updatedEmployees.reduce((sum, emp) => sum + (emp.totalSalaryCost || 0), 0);
-                const deptMaxIncentives = updatedEmployees.reduce((sum, emp) => sum + (emp.maxIncentives ?? 0), 0);
-
-                updated.set(deptName, {
-                  ...deptData,
-                  employees: updatedEmployees,
-                  totals: {
-                    ...deptData.totals,
-                    signed: deptSigned,
-                    due: deptDue,
-                    signedNormalized: deptSignedNormalized,
-                    dueNormalized: deptDueNormalized,
-                    signedPortion: deptSignedPortion,
-                    salaryBudget: deptSalaryBudget,
-                    salaryBrutto: deptSalaryBrutto,
-                    totalSalaryCost: deptTotalSalaryCost,
-                    maxIncentives: deptMaxIncentives,
-                  },
-                });
-              });
-
-              return updated;
-            });
-
-            // Set loading to false ONLY after all calculations are complete
-            setLoading(false);
-            setIsCalculating(false);
-          } catch (error) {
-            console.error('Error in batch calculation:', error);
-            toast.error('Failed to calculate employee metrics');
-            setLoading(false);
-            setIsCalculating(false);
           }
-        } else {
-          // No employees to fetch (all cached), but we still need to fetch and apply salary data
-          // Fetch salary data for all employees based on salary filter
+
+          // Step 4: Fetch all payment plans - ONCE
+          const newPaymentsMap = new Map<string, number>();
+          const legacyPaymentsMap = new Map<number, number>();
+
+          if (allNewLeadIds.size > 0) {
+            const newLeadIdsArray = Array.from(allNewLeadIds);
+            let newPaymentsQuery = supabase
+              .from('payment_plans')
+              .select('lead_id, value, currency, due_date')
+              .eq('ready_to_pay', true)
+              .eq('paid', false)
+              .not('due_date', 'is', null)
+              .is('cancel_date', null)
+              .in('lead_id', newLeadIdsArray);
+
+            if (fromDateTime) {
+              newPaymentsQuery = newPaymentsQuery.gte('due_date', fromDateTime);
+            }
+            if (toDateTime) {
+              newPaymentsQuery = newPaymentsQuery.lte('due_date', toDateTime);
+            }
+
+            const { data: newPayments } = await newPaymentsQuery;
+            if (newPayments) {
+              // Use utility function to process payments
+              const processedPayments = processNewPayments(newPayments);
+              processedPayments.forEach((amount, leadId) => {
+                const current = newPaymentsMap.get(leadId) || 0;
+                newPaymentsMap.set(leadId, current + amount);
+              });
+            }
+          }
+
+          if (allLegacyLeadIds.size > 0) {
+            const legacyLeadIdsArray = Array.from(allLegacyLeadIds);
+            let legacyPaymentsQuery = supabase
+              .from('finances_paymentplanrow')
+              .select('lead_id, value, value_base, currency_id, due_date, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)')
+              .is('actual_date', null)
+              .eq('ready_to_pay', true)
+              .not('due_date', 'is', null)
+              .in('lead_id', legacyLeadIdsArray);
+
+            if (fromDateTime) {
+              legacyPaymentsQuery = legacyPaymentsQuery.gte('due_date', fromDateTime);
+            }
+            if (toDateTime) {
+              legacyPaymentsQuery = legacyPaymentsQuery.lte('due_date', toDateTime);
+            }
+
+            const { data: legacyPayments } = await legacyPaymentsQuery;
+            if (legacyPayments) {
+              // Use utility function to process payments
+              const processedPayments = processLegacyPayments(legacyPayments, legacyLeadsMap);
+              processedPayments.forEach((amount, leadId) => {
+                const current = legacyPaymentsMap.get(leadId) || 0;
+                legacyPaymentsMap.set(leadId, current + amount);
+              });
+            }
+          }
+
+          // Step 5: Process field view data (grouped by main category) - do this once for all employees
+          await processFieldViewData(newLeadsMap, legacyLeadsMap, newPaymentsMap, legacyPaymentsMap);
+
+          // Step 6: Fetch due amounts for all handlers in parallel
+          const dueAmountsMap = new Map<number, number>();
+          await Promise.all(
+            employeesToFetch.map(async ({ id, name }) => {
+              const dueAmount = await fetchDueAmounts(id, name);
+              if (dueAmount > 0) {
+                dueAmountsMap.set(id, dueAmount);
+              }
+            })
+          );
+
+          // Step 6.5: Fetch salary data for ALL employees (not just those being fetched)
+          // This ensures salary data is always available even when employees are cached
           const salaryDataMap = new Map<number, { salaryBrutto: number; totalSalaryCost: number }>();
+          // Only fetch salary if filter is set and we have employees
+          // This is optional - calculation should work even without salary data
           if (salaryFilter?.month && salaryFilter?.year && allEmployeeIds.length > 0) {
             try {
-              const salaryMonth = salaryFilter.month;
+              const salaryMonth = salaryFilter.month; // 1-12
               const salaryYear = salaryFilter.year;
+              const employeeIdsForSalary = allEmployeeIds; // Fetch for ALL employees, not just those being recalculated
 
-              console.log('🔍 Fetching salary data for cached employees:', {
+              console.log('🔍 Fetching salary data:', {
                 salaryMonth,
                 salaryYear,
-                employeeCount: allEmployeeIds.length
+                employeeCount: employeeIdsForSalary.length
               });
 
+              // Fetch salary data for all employees
               const { data: salaryData, error: salaryError } = await supabase
                 .from('employee_salary')
                 .select('employee_id, net_salary, gross_salary')
                 .eq('salary_month', salaryMonth)
                 .eq('salary_year', salaryYear)
-                .in('employee_id', allEmployeeIds);
+                .in('employee_id', employeeIdsForSalary);
+
+              console.log('✅ Salary data fetched:', {
+                count: salaryData?.length || 0,
+                error: salaryError?.message
+              });
 
               if (!salaryError && salaryData) {
                 salaryData.forEach((salary: any) => {
@@ -3174,60 +3353,549 @@ const SalesContributionPage = () => {
                     totalSalaryCost: Number(salary.gross_salary || 0),
                   });
                 });
+              } else if (salaryError) {
+                console.error('Error fetching salary data:', salaryError);
+                // Don't throw - salary data is optional
               }
             } catch (error) {
-              console.error('Error fetching salary data for cached employees:', error);
+              console.error('Error in salary data fetch:', error);
+              // Don't throw - salary data is optional, calculation should continue
             }
-          }
-
-          // Apply salary data to cached employees
-          // IMPORTANT: Use prev (existing data) to preserve all calculated values (signed, due, contribution, etc.)
-          // Only update salary-related fields
-          if (salaryDataMap.size > 0) {
-            setDepartmentData(prev => {
-              const updated = new Map(prev); // Use prev to preserve existing calculations
-              updated.forEach((deptData, deptName) => {
-                const updatedEmployees = deptData.employees.map(emp => {
-                  const salaryData = salaryDataMap.get(emp.employeeId);
-                  if (salaryData) {
-                    return {
-                      ...emp, // Preserve all existing fields (signed, due, contribution, etc.)
-                      salaryBrutto: salaryData.salaryBrutto,
-                      totalSalaryCost: salaryData.totalSalaryCost,
-                      // Recalculate maxIncentives with new salary data
-                      maxIncentives: (emp.salaryBudget ?? 0) - salaryData.totalSalaryCost,
-                    };
-                  }
-                  return emp;
-                });
-
-                // Recalculate department totals (preserve existing totals, only update salary-related)
-                const deptSalaryBrutto = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBrutto || 0), 0);
-                const deptTotalSalaryCost = updatedEmployees.reduce((sum, emp) => sum + (emp.totalSalaryCost || 0), 0);
-                const deptMaxIncentives = updatedEmployees.reduce((sum, emp) => sum + (emp.maxIncentives ?? 0), 0);
-
-                updated.set(deptName, {
-                  ...deptData,
-                  employees: updatedEmployees,
-                  totals: {
-                    ...deptData.totals, // Preserve all existing totals (signed, due, contribution, etc.)
-                    salaryBrutto: deptSalaryBrutto,
-                    totalSalaryCost: deptTotalSalaryCost,
-                    maxIncentives: deptMaxIncentives,
-                  },
-                });
-              });
-              return updated;
+          } else {
+            console.log('ℹ️ Skipping salary fetch:', {
+              hasFilter: !!salaryFilter,
+              hasMonth: !!salaryFilter?.month,
+              hasYear: !!salaryFilter?.year,
+              employeesCount: employeesToFetch.length
             });
           }
-          // If no salary data, don't update - keep existing data with all calculations intact
+
+          // Step 7: Filter leads for each employee and prepare calculation inputs
+          const calculationInputs: EmployeeCalculationInput[] = [];
+          const totalSignedOverall = totalSignedValueRef.current || 0;
+
+          // DEBUG: Check if "Adi" is in the employees list and what their ID is
+          const adiEmployee = employeesToFetch.find(e =>
+            e.name?.toLowerCase().includes('adi') ||
+            e.name?.toLowerCase() === 'adi'
+          );
+          if (adiEmployee) {
+            console.log('🔍 DEBUG: Found "Adi" employee:', {
+              id: adiEmployee.id,
+              name: adiEmployee.name,
+              isHava: adiEmployee.id === 108
+            });
+          }
+
+          employeesToFetch.forEach(({ id: employeeId, name: employeeName }) => {
+            // DEBUG: Check for Hava specifically
+            const isHava = employeeName?.toLowerCase().includes('hava') ||
+              employeeName?.toLowerCase().includes('חוה') ||
+              employeeId === 108;
+
+            // Helper to check if employee is in a role for a new lead
+            const checkEmployeeInRole = (lead: any, roleField: string): boolean => {
+              if (roleField === 'closer' && lead.closer) {
+                const closerValue = lead.closer;
+                return typeof closerValue === 'string'
+                  ? closerValue.toLowerCase() === employeeName.toLowerCase()
+                  : Number(closerValue) === employeeId;
+              } else if (roleField === 'scheduler' && lead.scheduler) {
+                const schedulerValue = lead.scheduler;
+                return typeof schedulerValue === 'string'
+                  ? schedulerValue.toLowerCase() === employeeName.toLowerCase()
+                  : Number(schedulerValue) === employeeId;
+              } else if (roleField === 'handler') {
+                if (lead.handler) {
+                  const handlerValue = lead.handler;
+                  if (typeof handlerValue === 'string' && handlerValue.toLowerCase() === employeeName.toLowerCase()) {
+                    return true;
+                  }
+                  if (Number(handlerValue) === employeeId) {
+                    return true;
+                  }
+                }
+                if (lead.case_handler_id && Number(lead.case_handler_id) === employeeId) {
+                  return true;
+                }
+                return false;
+              } else if (roleField === 'helper' && lead.helper) {
+                const helperValue = lead.helper;
+                return typeof helperValue === 'string'
+                  ? helperValue.toLowerCase() === employeeName.toLowerCase()
+                  : Number(helperValue) === employeeId;
+              } else if (roleField === 'expert' && lead.expert) {
+                return Number(lead.expert) === employeeId;
+              } else if (roleField === 'meeting_manager_id') {
+                // For new leads, check 'manager' field (not 'meeting_manager_id')
+                if (lead.manager) {
+                  const managerValue = lead.manager;
+                  // Check if it's a numeric string (ID) or a number
+                  if (typeof managerValue === 'string') {
+                    const numericValue = Number(managerValue);
+                    // If it's a valid number, treat it as an ID
+                    if (!isNaN(numericValue) && numericValue.toString() === managerValue.trim()) {
+                      return numericValue === employeeId;
+                    }
+                    // Otherwise, treat it as a name
+                    return managerValue.toLowerCase() === employeeName.toLowerCase();
+                  }
+                  // If it's already a number, compare directly
+                  return Number(managerValue) === employeeId;
+                }
+                // Fallback to meeting_manager_id if manager is not set
+                if (lead.meeting_manager_id) {
+                  return Number(lead.meeting_manager_id) === employeeId;
+                }
+                return false;
+              }
+              return false;
+            };
+
+            // Filter new leads for this employee
+            const employeeNewLeads = Array.from(newLeadsMap.values()).filter(lead => {
+              const isL210675 = lead.lead_number?.toString().includes('210675') ||
+                lead.id?.toString().includes('210675');
+
+              const matchesCloser = checkEmployeeInRole(lead, 'closer');
+              const matchesScheduler = checkEmployeeInRole(lead, 'scheduler');
+              const matchesHandler = checkEmployeeInRole(lead, 'handler');
+              const matchesHelper = checkEmployeeInRole(lead, 'helper');
+              const matchesExpert = checkEmployeeInRole(lead, 'expert');
+              const matchesManager = checkEmployeeInRole(lead, 'meeting_manager_id');
+
+              const matches = matchesCloser || matchesScheduler || matchesHandler ||
+                matchesHelper || matchesExpert || matchesManager;
+
+              // DEBUG: Log details for L210675 when processing Hava
+              if (isHava && isL210675) {
+                // Check if "Adi" might be Hava by checking employee names
+                const allEmployeeNames = employeesToFetch.map(e => e.name?.toLowerCase() || '');
+                const adiInEmployees = allEmployeeNames.some(name => name.includes('adi'));
+                const havaNameVariations = ['hava', 'חוה', 'חבה'];
+                const adiIsHava = lead.closer?.toLowerCase() === 'adi' &&
+                  (employeeName?.toLowerCase().includes('adi') ||
+                    havaNameVariations.some(v => employeeName?.toLowerCase().includes(v)));
+
+                // Check manager matching details
+                const managerValue = lead.manager;
+                const managerNumeric = typeof managerValue === 'string' ? Number(managerValue) : managerValue;
+                const managerIsNumericString = typeof managerValue === 'string' && !isNaN(managerNumeric) && managerNumeric.toString() === managerValue.trim();
+                const managerMatchesById = managerIsNumericString ? managerNumeric === employeeId : false;
+                const managerMatchesByName = typeof managerValue === 'string' && !managerIsNumericString ? managerValue.toLowerCase() === employeeName.toLowerCase() : false;
+
+                console.log('🔍 DEBUG L210675 for Hava: Role matching check:', {
+                  employeeId,
+                  employeeName,
+                  leadId: lead.id,
+                  leadNumber: lead.lead_number,
+                  leadName: lead.name,
+                  closer: lead.closer,
+                  scheduler: lead.scheduler,
+                  handler: lead.handler,
+                  helper: lead.helper,
+                  expert: lead.expert,
+                  case_handler_id: lead.case_handler_id,
+                  manager: lead.manager,
+                  meeting_manager_id: lead.meeting_manager_id,
+                  matchesCloser,
+                  matchesScheduler,
+                  matchesHandler,
+                  matchesHelper,
+                  matchesExpert,
+                  matchesManager,
+                  overallMatch: matches,
+                  balance: lead.balance,
+                  proposal_total: lead.proposal_total,
+                  // Manager matching details
+                  managerValue,
+                  managerType: typeof managerValue,
+                  managerIsNumericString,
+                  managerNumeric,
+                  managerMatchesById,
+                  managerMatchesByName,
+                  // Check ID comparisons
+                  expertMatchesHavaId: Number(lead.expert) === employeeId,
+                  caseHandlerMatchesHavaId: Number(lead.case_handler_id) === employeeId,
+                  meetingManagerIdMatchesHavaId: Number(lead.meeting_manager_id) === employeeId
+                });
+              }
+
+              return matches;
+            });
+
+            // Filter legacy leads for this employee
+            const employeeLegacyLeads = Array.from(legacyLeadsMap.values()).filter(lead => {
+              const isL210675 = lead.lead_number?.toString().includes('210675') ||
+                lead.id?.toString().includes('210675');
+
+              const matchesCloser = lead.closer_id && Number(lead.closer_id) === employeeId;
+              const matchesScheduler = lead.meeting_scheduler_id && Number(lead.meeting_scheduler_id) === employeeId;
+              const matchesLawyer = lead.meeting_lawyer_id && Number(lead.meeting_lawyer_id) === employeeId;
+              const matchesHandler = lead.case_handler_id && Number(lead.case_handler_id) === employeeId;
+              const matchesExpert = lead.expert_id && Number(lead.expert_id) === employeeId;
+              const matchesManager = lead.meeting_manager_id && Number(lead.meeting_manager_id) === employeeId;
+
+              const matches = matchesCloser || matchesScheduler || matchesLawyer ||
+                matchesHandler || matchesExpert || matchesManager;
+
+              // DEBUG: Log details for L210675 when processing Hava
+              if (isHava && isL210675) {
+                console.log('🔍 DEBUG L210675 for Hava (Legacy): Role matching check:', {
+                  employeeId,
+                  employeeName,
+                  leadId: lead.id,
+                  leadNumber: lead.lead_number,
+                  leadName: lead.name,
+                  closer_id: lead.closer_id,
+                  meeting_scheduler_id: lead.meeting_scheduler_id,
+                  meeting_lawyer_id: lead.meeting_lawyer_id,
+                  case_handler_id: lead.case_handler_id,
+                  expert_id: lead.expert_id,
+                  meeting_manager_id: lead.meeting_manager_id,
+                  matchesCloser,
+                  matchesScheduler,
+                  matchesLawyer,
+                  matchesHandler,
+                  matchesExpert,
+                  matchesManager,
+                  overallMatch: matches,
+                  total: lead.total,
+                  total_base: lead.total_base
+                });
+              }
+
+              return matches;
+            });
+
+            // DEBUG: Summary for Hava
+            if (isHava) {
+              console.log('🔍 DEBUG Hava Summary:', {
+                employeeId,
+                employeeName,
+                newLeadsCount: employeeNewLeads.length,
+                legacyLeadsCount: employeeLegacyLeads.length,
+                hasL210675InNew: employeeNewLeads.some(l =>
+                  l.lead_number?.toString().includes('210675') ||
+                  l.id?.toString().includes('210675')
+                ),
+                hasL210675InLegacy: employeeLegacyLeads.some(l =>
+                  l.lead_number?.toString().includes('210675') ||
+                  l.id?.toString().includes('210675')
+                ),
+                newLeadsSample: employeeNewLeads.slice(0, 5).map(l => ({
+                  id: l.id,
+                  lead_number: l.lead_number,
+                  name: l.name
+                }))
+              });
+            }
+
+            // DEBUG: Log Hava's leads before calculation
+            if (isHava) {
+              console.log('🔍 DEBUG Hava: Leads before calculation:', {
+                employeeId,
+                employeeName,
+                newLeadsCount: employeeNewLeads.length,
+                legacyLeadsCount: employeeLegacyLeads.length,
+                newLeads: employeeNewLeads.map(l => ({
+                  id: l.id,
+                  lead_number: l.lead_number,
+                  name: l.name,
+                  balance: l.balance,
+                  proposal_total: l.proposal_total,
+                  manager: l.manager
+                })),
+                legacyLeads: employeeLegacyLeads.map(l => ({
+                  id: l.id,
+                  lead_number: l.lead_number,
+                  name: l.name,
+                  total: l.total,
+                  total_base: l.total_base
+                }))
+              });
+            }
+
+            calculationInputs.push({
+              employeeId,
+              employeeName,
+              leads: {
+                newLeads: employeeNewLeads,
+                legacyLeads: employeeLegacyLeads,
+              },
+              payments: {
+                newPayments: newPaymentsMap,
+                legacyPayments: legacyPaymentsMap,
+              },
+              totalDueAmount: dueAmountsMap.get(employeeId) || 0,
+              totalSignedOverall,
+              totalIncome,
+              dueNormalizedPercentage,
+              rolePercentages,
+            });
+          });
+
+          // Step 8: Calculate ALL employee metrics in one batch (PURE calculation, no async)
+          console.log('🔍 Starting batch calculation:', {
+            inputCount: calculationInputs.length,
+            employeesToFetch: employeesToFetch.length,
+            totalSignedOverall,
+            totalIncome,
+            dueNormalizedPercentage,
+            salaryFilter: salaryFilter
+          });
+
+          const calculationResults = batchCalculateEmployeeMetrics(calculationInputs);
+
+          // DEBUG: Log Hava's calculation result
+          const havaResult = calculationResults.get(108);
+          if (havaResult) {
+            console.log('🔍 DEBUG Hava: Calculation result:', {
+              employeeId: 108,
+              signed: havaResult.signed,
+              due: havaResult.due,
+              signedNormalized: havaResult.signedNormalized,
+              dueNormalized: havaResult.dueNormalized,
+              contribution: havaResult.contribution,
+              roleBreakdown: havaResult.roleBreakdown.map(r => ({
+                role: r.role,
+                signedTotal: r.signedTotal,
+                dueTotal: r.dueTotal
+              }))
+            });
+          }
+
+          // Debug: Log calculation results to identify why contribution might be 0
+          console.log('🔍 Calculation Results Debug:', {
+            totalInputs: calculationInputs.length,
+            totalResults: calculationResults.size,
+            sampleResult: calculationResults.size > 0 ? Array.from(calculationResults.values())[0] : null,
+            rolePercentagesSize: rolePercentages?.size || 0,
+            rolePercentagesEntries: rolePercentages ? Array.from(rolePercentages.entries()) : [],
+            totalSignedOverall,
+            totalIncome,
+            dueNormalizedPercentage,
+            hasSalaryData: salaryDataMap.size > 0
+          });
+
+          if (calculationResults.size === 0 && calculationInputs.length > 0) {
+            console.error('❌ Calculation returned empty results but had inputs!', {
+              inputCount: calculationInputs.length,
+              sampleInput: calculationInputs[0]
+            });
+          }
+
+          // Step 9: Update state ONCE with all results
+          const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
+          const incomeKey = totalIncome || 0;
+          const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
+          const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
+
+          // Update role data cache
+          setRoleDataCache(prev => {
+            const newCache = new Map(prev);
+            calculationResults.forEach((result, employeeId) => {
+              const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
+              newCache.set(cacheKey, result.roleBreakdown.map(r => ({
+                role: r.role,
+                signedTotal: r.signedTotal,
+                dueTotal: r.dueTotal,
+                roles: r.roles,
+                action: '',
+              })));
+            });
+            return newCache;
+          });
+
+          // Update department data ONCE - start with finalDepartmentData since we didn't set it initially
+          setDepartmentData(() => {
+            const updated = new Map(finalDepartmentData);
+
+            updated.forEach((deptData, deptName) => {
+              const updatedEmployees = deptData.employees.map(emp => {
+                const result = calculationResults.get(emp.employeeId);
+                const salaryData = salaryDataMap.get(emp.employeeId);
+
+                // Always update salary data if available
+                const updatedEmp: EmployeeData = {
+                  ...emp,
+                  salaryBrutto: salaryData?.salaryBrutto || emp.salaryBrutto || 0,
+                  totalSalaryCost: salaryData?.totalSalaryCost || emp.totalSalaryCost || 0,
+                };
+
+                // Update calculation results if available
+                if (result) {
+                  updatedEmp.signed = result.signed;
+                  updatedEmp.due = result.due;
+                  updatedEmp.signedNormalized = result.signedNormalized;
+                  updatedEmp.dueNormalized = result.dueNormalized;
+                  updatedEmp.signedPortion = result.contribution || 0; // Ensure contribution is set, default to 0 if undefined
+                  updatedEmp.salaryBudget = result.salaryBudget || 0;
+
+                  // DEBUG: Log Hava's state update
+                  if (emp.employeeId === 108) {
+                    console.log('🔍 DEBUG Hava: State update:', {
+                      employeeId: emp.employeeId,
+                      employeeName: emp.employeeName,
+                      resultSigned: result.signed,
+                      updatedEmpSigned: updatedEmp.signed,
+                      resultRoleBreakdown: result.roleBreakdown.map(r => ({
+                        role: r.role,
+                        signedTotal: r.signedTotal
+                      }))
+                    });
+                  }
+                  // Calculate maxIncentives: salaryBudget - totalSalaryCost
+                  // If either value is null/undefined, set to 0
+                  const salaryBudget = updatedEmp.salaryBudget ?? 0;
+                  const totalSalaryCost = updatedEmp.totalSalaryCost ?? 0;
+                  updatedEmp.maxIncentives = salaryBudget - totalSalaryCost;
+
+                  // Debug log if contribution is 0 but there should be data
+                  if (result.contribution === 0 && (result.signed > 0 || result.due > 0)) {
+                    console.warn(`⚠️ Zero contribution for employee ${emp.employeeId} (${emp.employeeName}):`, {
+                      signed: result.signed,
+                      due: result.due,
+                      signedNormalized: result.signedNormalized,
+                      dueNormalized: result.dueNormalized,
+                      signedPortion: result.signedPortion,
+                      duePortion: result.duePortion,
+                      contribution: result.contribution,
+                      baseContribution: (result.signedPortion || 0) + (result.duePortion || 0)
+                    });
+                  }
+                } else {
+                  console.warn(`⚠️ No calculation result found for employee ${emp.employeeId} (${emp.employeeName})`);
+                }
+
+                return updatedEmp;
+              });
+
+              // Recalculate department totals
+              const deptSigned = updatedEmployees.reduce((sum, emp) => sum + (emp.signed || 0), 0);
+              const deptDue = updatedEmployees.reduce((sum, emp) => sum + (emp.due || 0), 0);
+              const deptSignedNormalized = updatedEmployees.reduce((sum, emp) => sum + (emp.signedNormalized || 0), 0);
+              const deptDueNormalized = updatedEmployees.reduce((sum, emp) => sum + (emp.dueNormalized || 0), 0);
+              const deptSignedPortion = updatedEmployees.reduce((sum, emp) => sum + (emp.signedPortion || 0), 0);
+              const deptSalaryBudget = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBudget || 0), 0);
+              const deptSalaryBrutto = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBrutto || 0), 0);
+              const deptTotalSalaryCost = updatedEmployees.reduce((sum, emp) => sum + (emp.totalSalaryCost || 0), 0);
+              const deptMaxIncentives = updatedEmployees.reduce((sum, emp) => sum + (emp.maxIncentives ?? 0), 0);
+
+              updated.set(deptName, {
+                ...deptData,
+                employees: updatedEmployees,
+                totals: {
+                  ...deptData.totals,
+                  signed: deptSigned,
+                  due: deptDue,
+                  signedNormalized: deptSignedNormalized,
+                  dueNormalized: deptDueNormalized,
+                  signedPortion: deptSignedPortion,
+                  salaryBudget: deptSalaryBudget,
+                  salaryBrutto: deptSalaryBrutto,
+                  totalSalaryCost: deptTotalSalaryCost,
+                  maxIncentives: deptMaxIncentives,
+                },
+              });
+            });
+
+            return updated;
+          });
+
+          // Set loading to false ONLY after all calculations are complete
           setLoading(false);
+          setIsCalculating(false);
+        } catch (error) {
+          console.error('Error in batch calculation:', error);
+          toast.error('Failed to calculate employee metrics');
+          setLoading(false);
+          setIsCalculating(false);
         }
-      } catch (error) {
-        console.error('❌ Sales Contribution Report - Error:', error);
-        toast.error('Failed to fetch sales contribution data');
+      } else {
+        // No employees to fetch (all cached), but we still need to fetch and apply salary data
+        // Fetch salary data for all employees based on salary filter
+        const salaryDataMap = new Map<number, { salaryBrutto: number; totalSalaryCost: number }>();
+        if (salaryFilter?.month && salaryFilter?.year && allEmployeeIds.length > 0) {
+          try {
+            const salaryMonth = salaryFilter.month;
+            const salaryYear = salaryFilter.year;
+
+            console.log('🔍 Fetching salary data for cached employees:', {
+              salaryMonth,
+              salaryYear,
+              employeeCount: allEmployeeIds.length
+            });
+
+            const { data: salaryData, error: salaryError } = await supabase
+              .from('employee_salary')
+              .select('employee_id, net_salary, gross_salary')
+              .eq('salary_month', salaryMonth)
+              .eq('salary_year', salaryYear)
+              .in('employee_id', allEmployeeIds);
+
+            if (!salaryError && salaryData) {
+              salaryData.forEach((salary: any) => {
+                const employeeId = Number(salary.employee_id);
+                salaryDataMap.set(employeeId, {
+                  salaryBrutto: Number(salary.net_salary || 0),
+                  totalSalaryCost: Number(salary.gross_salary || 0),
+                });
+              });
+            }
+          } catch (error) {
+            console.error('Error fetching salary data for cached employees:', error);
+          }
+        }
+
+        // Apply salary data to cached employees
+        // IMPORTANT: Use prev (existing data) to preserve all calculated values (signed, due, contribution, etc.)
+        // Only update salary-related fields
+        if (salaryDataMap.size > 0) {
+          setDepartmentData(prev => {
+            const updated = new Map(prev); // Use prev to preserve existing calculations
+            updated.forEach((deptData, deptName) => {
+              const updatedEmployees = deptData.employees.map(emp => {
+                const salaryData = salaryDataMap.get(emp.employeeId);
+                if (salaryData) {
+                  return {
+                    ...emp, // Preserve all existing fields (signed, due, contribution, etc.)
+                    salaryBrutto: salaryData.salaryBrutto,
+                    totalSalaryCost: salaryData.totalSalaryCost,
+                    // Recalculate maxIncentives with new salary data
+                    maxIncentives: (emp.salaryBudget ?? 0) - salaryData.totalSalaryCost,
+                  };
+                }
+                return emp;
+              });
+
+              // Recalculate department totals (preserve existing totals, only update salary-related)
+              const deptSalaryBrutto = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBrutto || 0), 0);
+              const deptTotalSalaryCost = updatedEmployees.reduce((sum, emp) => sum + (emp.totalSalaryCost || 0), 0);
+              const deptMaxIncentives = updatedEmployees.reduce((sum, emp) => sum + (emp.maxIncentives ?? 0), 0);
+
+              updated.set(deptName, {
+                ...deptData,
+                employees: updatedEmployees,
+                totals: {
+                  ...deptData.totals, // Preserve all existing totals (signed, due, contribution, etc.)
+                  salaryBrutto: deptSalaryBrutto,
+                  totalSalaryCost: deptTotalSalaryCost,
+                  maxIncentives: deptMaxIncentives,
+                },
+              });
+            });
+            return updated;
+          });
+        }
+        // If no salary data, don't update - keep existing data with all calculations intact
         setLoading(false);
       }
+    } catch (error) {
+      console.error('❌ Sales Contribution Report - Error:', error);
+      toast.error('Failed to fetch sales contribution data');
+      setLoading(false);
+    }
   };
 
   // Helper function to normalize category text for matching - now uses utility
@@ -3424,8 +4092,8 @@ const SalesContributionPage = () => {
 
         // Calculate due amounts from ALL handler leads (not just signed ones)
         // This matches the logic in fetchDueAmounts - query all leads with handlers
-        const fromDateTime = filters.fromDate ? `${filters.fromDate}T00:00:00` : null;
-        const toDateTime = filters.toDate ? `${filters.toDate}T23:59:59` : null;
+        // Use explicit UTC timestamps to include full day: from 00:00:00.000 to 23:59:59.999
+        const { startIso: fromDateTime, endIso: toDateTime } = computeDateBounds(filters.fromDate, filters.toDate);
 
         try {
           // Step 1: Fetch all payment plans for new leads with handlers, filtered by due_date

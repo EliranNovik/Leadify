@@ -749,4 +749,4 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
   );
 };
 
-export default Sidebar; 
+export default React.memo(Sidebar); 

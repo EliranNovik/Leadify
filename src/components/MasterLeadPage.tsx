@@ -84,46 +84,55 @@ const executeCommand = (command: string, value?: string) => {
 const MasterLeadPage: React.FC = () => {
   const { lead_number } = useParams<{ lead_number: string }>();
   const navigate = useNavigate();
-  
+
   // Persisted state - convert Map to/from array for serialization
   const [contractsDataArray, setContractsDataArray] = usePersistedState<Array<[string, ContractData]>>(
     'masterLeadPage_contractsData',
     [],
     { storage: 'sessionStorage' }
   );
-  
+
   // Convert array to Map and vice versa
   const contractsDataMap = useMemo(() => {
     return new Map<string, ContractData>(contractsDataArray);
   }, [contractsDataArray]);
-  
+
   const setContractsDataMap = (updater: (prev: Map<string, ContractData>) => Map<string, ContractData>) => {
     const newMap = updater(contractsDataMap);
     setContractsDataArray(Array.from(newMap.entries()));
   };
-  
+
   const [subLeads, setSubLeads] = usePersistedState<SubLead[]>(
     'masterLeadPage_subLeads',
     [],
     { storage: 'sessionStorage' }
   );
-  
+
   const [masterLeadInfo, setMasterLeadInfo] = usePersistedState<any>(
     'masterLeadPage_masterLeadInfo',
     null,
     { storage: 'sessionStorage' }
   );
-  
-  const [loading, setLoading] = useState(true);
-  
+
+  // Initialize loading based on whether we have persisted data
+  // If we have persisted data that matches, start with loading=false
+  const [loading, setLoading] = useState(() => {
+    // We can't check lead_number here since it comes from useParams
+    // So we start with true and check in useEffect
+    return true;
+  });
+
   // Check persisted data on mount and set loading accordingly
   useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:120', message: 'Mount check persisted data', data: { lead_number, hasMasterLeadInfo: !!masterLeadInfo, subLeadsCount: subLeads.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
+    // #endregion
     if (lead_number && masterLeadInfo && subLeads.length > 0) {
       const decodedLeadNumber = decodeURIComponent(lead_number);
       const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
       const persistedLeadNumber = String(masterLeadInfo.lead_number || masterLeadInfo.id || '');
       const persistedBaseNumber = persistedLeadNumber.includes('/') ? persistedLeadNumber.split('/')[0] : persistedLeadNumber;
-      
+
       // Check if persisted data matches current lead
       if (persistedBaseNumber === baseLeadNumber || subLeads.some(subLead => {
         const subLeadNumber = String(subLead.lead_number || subLead.id || '');
@@ -131,9 +140,20 @@ const MasterLeadPage: React.FC = () => {
         return subLeadBase === baseLeadNumber || subLeadNumber === baseLeadNumber;
       })) {
         // We have matching persisted data, set loading to false immediately
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:135', message: 'Setting loading false from persisted data', data: { baseLeadNumber, persistedBaseNumber }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
+        // #endregion
         setLoading(false);
         setSubLeadsLoading(false);
+      } else {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:139', message: 'Persisted data does not match', data: { baseLeadNumber, persistedBaseNumber }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
+        // #endregion
       }
+    } else {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:143', message: 'No persisted data on mount', data: { hasLeadNumber: !!lead_number, hasMasterLeadInfo: !!masterLeadInfo, subLeadsCount: subLeads.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
+      // #endregion
     }
   }, []); // Only run on mount
   const [subLeadsLoading, setSubLeadsLoading] = useState(false);
@@ -213,10 +233,10 @@ const MasterLeadPage: React.FC = () => {
     // For new leads, use the lead ID directly (UUID string)
     // For legacy leads, extract the numeric ID from the lead ID (format: legacy_123)
     // The contracts map uses the numeric lead ID as the key for legacy leads
-    const lookupKey = isLegacy 
+    const lookupKey = isLegacy
       ? lead.id.replace('legacy_', '')
       : lead.id;
-    
+
     const contractData = contractsDataMap.get(lookupKey);
     if (contractData) {
       return (
@@ -240,14 +260,32 @@ const MasterLeadPage: React.FC = () => {
     const decodedLeadNumber = decodeURIComponent(lead_number);
     const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
 
+    // #region agent log
+    const fetchStartTime = Date.now();
+    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:237', message: 'fetchSubLeads START', data: { baseLeadNumber, currentLoading: loading, currentSubLeadsLoading: subLeadsLoading }, timestamp: fetchStartTime, sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
+    // #endregion
+
     try {
-      setLoading(true);
+      // Only set loading to true if we're not already loading (prevents redundant state updates)
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:244', message: 'Setting loading states', data: { currentLoading: loading, hasMasterLeadInfo: !!masterLeadInfo, subLeadsCount: subLeads.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
+      // #endregion
+      // Only show main loading screen if we don't have any data yet
+      // subLeadsLoading will show a smaller loading indicator in the table when refreshing existing data
+      const hasExistingData = masterLeadInfo && subLeads.length > 0;
+      if (!hasExistingData) {
+        setLoading(true);
+        // Don't show subLeadsLoading if we're showing the full loading screen
+        setSubLeadsLoading(false);
+      } else {
+        // We have existing data, so only show the table loading indicator
+        setSubLeadsLoading(true);
+      }
       setError(null);
-      setSubLeadsLoading(true);
 
       // Try new leads first
       const newLeadResult = await fetchNewMasterLead(baseLeadNumber, setContractsDataMap);
-      
+
       if (newLeadResult.success && newLeadResult.masterLead) {
         setMasterLeadInfo(newLeadResult.masterLead);
         // Add agreement buttons to sub-leads
@@ -256,6 +294,9 @@ const MasterLeadPage: React.FC = () => {
           agreement: createAgreementButton(lead, false)
         }));
         setSubLeads(subLeadsWithAgreements);
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:260', message: 'New lead fetch success - setting loading false', data: { duration: Date.now() - fetchStartTime, subLeadsCount: subLeadsWithAgreements.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
+        // #endregion
         setSubLeadsLoading(false);
         setLoading(false);
         return;
@@ -271,7 +312,7 @@ const MasterLeadPage: React.FC = () => {
       }
 
       const legacyResult = await fetchLegacyMasterLead(baseLeadNumber, normalizedId, setContractsDataMap);
-      
+
       if (legacyResult.success && legacyResult.masterLead) {
         setMasterLeadInfo(legacyResult.masterLead);
         // Add agreement buttons to sub-leads
@@ -280,13 +321,22 @@ const MasterLeadPage: React.FC = () => {
           agreement: createAgreementButton(lead, true)
         }));
         setSubLeads(subLeadsWithAgreements);
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:283', message: 'Legacy lead fetch success - setting loading false', data: { duration: Date.now() - fetchStartTime, subLeadsCount: subLeadsWithAgreements.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
+        // #endregion
       } else {
         setError(legacyResult.error || 'Failed to fetch master lead');
       }
     } catch (error) {
       console.error('Error fetching sub-leads:', error);
       setError('An unexpected error occurred while fetching data');
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:289', message: 'fetchSubLeads ERROR', data: { duration: Date.now() - fetchStartTime, error: error instanceof Error ? error.message : String(error) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
+      // #endregion
     } finally {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:293', message: 'fetchSubLeads FINALLY - setting loading false', data: { totalDuration: Date.now() - fetchStartTime }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
+      // #endregion
       setLoading(false);
       setSubLeadsLoading(false);
     }
@@ -295,26 +345,36 @@ const MasterLeadPage: React.FC = () => {
   // Track previous lead_number to detect changes
   const prevLeadNumberRef = useRef<string | undefined>(undefined);
   const hasCheckedPersistedDataRef = useRef<string | undefined>(undefined);
-  
+
   // Initialize stage names cache on mount to ensure badges display correctly
   useEffect(() => {
     fetchStageNames().catch(error => {
       console.error('Error initializing stage names:', error);
     });
   }, []);
-  
+
   useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:306', message: 'Main useEffect triggered', data: { lead_number, currentLoading: loading, hasMasterLeadInfo: !!masterLeadInfo, subLeadsCount: subLeads.length, prevLeadNumber: prevLeadNumberRef.current, hasChecked: hasCheckedPersistedDataRef.current }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
+    // #endregion
+
     if (!lead_number) {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:310', message: 'No lead_number - setting loading false', data: {}, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
+      // #endregion
       setLoading(false);
       return;
     }
-    
+
     const decodedLeadNumber = decodeURIComponent(lead_number);
     const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
     const prevBaseLeadNumber = prevLeadNumberRef.current ? (prevLeadNumberRef.current.includes('/') ? prevLeadNumberRef.current.split('/')[0] : prevLeadNumberRef.current) : undefined;
-    
+
     // Clear persisted state when lead_number changes to a different lead
     if (prevLeadNumberRef.current && baseLeadNumber !== prevBaseLeadNumber) {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:319', message: 'Lead number changed - clearing persisted data and fetching', data: { baseLeadNumber, prevBaseLeadNumber }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
+      // #endregion
       setSubLeads([]);
       setMasterLeadInfo(null);
       setContractsDataArray([]);
@@ -324,53 +384,63 @@ const MasterLeadPage: React.FC = () => {
       fetchSubLeads();
       return;
     }
-    
+
     // Check if we've already checked persisted data for this lead_number
     const alreadyChecked = hasCheckedPersistedDataRef.current === baseLeadNumber;
-    
+
     // If already checked, don't do anything (prevent loops)
     if (alreadyChecked) {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:333', message: 'Already checked - early return', data: { baseLeadNumber }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
+      // #endregion
       return;
     }
-    
-    // Check if we have persisted data for the current lead (only check once per lead_number)
+
+    // CRITICAL: Check persisted data FIRST before doing anything else
+    // This prevents showing loading screen when we have cached data
     const currentMasterLeadInfo = masterLeadInfo;
     const currentSubLeads = subLeads;
     const hasPersistedData = currentMasterLeadInfo && currentSubLeads.length > 0;
     let currentLeadMatches = false;
-    
+
     if (hasPersistedData) {
       // Check if persisted data matches current lead_number
       // Convert to string to handle both string and number IDs
       const persistedLeadNumber = String(currentMasterLeadInfo.lead_number || currentMasterLeadInfo.id || '');
       const persistedBaseNumber = persistedLeadNumber.includes('/') ? persistedLeadNumber.split('/')[0] : persistedLeadNumber;
-      
+
       // Also check if any sub-lead matches
       const subLeadMatches = currentSubLeads.some(subLead => {
         const subLeadNumber = String(subLead.lead_number || subLead.id || '');
         const subLeadBase = subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber;
         return subLeadBase === baseLeadNumber || subLeadNumber === baseLeadNumber;
       });
-      
+
       currentLeadMatches = persistedBaseNumber === baseLeadNumber || subLeadMatches;
     }
-    
+
     // Mark as checked BEFORE deciding what to do (prevents loops)
     hasCheckedPersistedDataRef.current = baseLeadNumber;
     prevLeadNumberRef.current = decodedLeadNumber;
-    
-    // If we have persisted data for the current lead, skip fetching
+
+    // If we have persisted data for the current lead, skip fetching and set loading to false IMMEDIATELY
     if (hasPersistedData && currentLeadMatches) {
       console.log('🔍 MasterLeadPage: Using persisted data, skipping fetch');
-      // Set loading to false immediately to prevent loading screen
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:365', message: 'Using persisted data - setting loading false IMMEDIATELY', data: { baseLeadNumber, persistedBaseNumber, hasPersistedData, currentLeadMatches }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
+      // #endregion
+      // Set loading to false IMMEDIATELY to prevent loading screen
       setLoading(false);
       setSubLeadsLoading(false);
       return;
     }
-    
+
     // Only fetch if we don't have matching persisted data
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:373', message: 'No persisted data or mismatch - calling fetchSubLeads', data: { baseLeadNumber, hasPersistedData, currentLeadMatches }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
+    // #endregion
     fetchSubLeads();
-  }, [lead_number, fetchSubLeads]); // Include fetchSubLeads since it's wrapped in useCallback
+  }, [lead_number, fetchSubLeads]); // Removed masterLeadInfo and subLeads from dependencies to prevent unnecessary re-runs
 
   // Handle view contract - for legacy contracts opens modal, for new contracts navigates
   const handleViewContract = async (contractId: string, isLegacyContract: boolean = false) => {
@@ -497,48 +567,8 @@ const MasterLeadPage: React.FC = () => {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-white flex items-center justify-center">
-        <div className="text-center">
-          <div className="loading loading-spinner loading-lg text-primary"></div>
-          <p className="mt-4 text-gray-600">Loading master lead data...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="min-h-screen bg-white flex items-center justify-center">
-        <div className="text-center max-w-md">
-          <div className="alert alert-error mb-4">
-            <ExclamationTriangleIcon className="w-6 h-6" />
-            <div>
-              <h3 className="font-bold">Error Loading Data</h3>
-              <div className="text-xs">{error}</div>
-            </div>
-          </div>
-          <button
-            onClick={() => {
-              setError(null);
-              fetchSubLeads();
-            }}
-            className="btn btn-primary"
-          >
-            Try Again
-          </button>
-          <button
-            onClick={() => navigate(-1)}
-            className="btn btn-ghost ml-2"
-          >
-            Go Back
-          </button>
-        </div>
-      </div>
-    );
-  }
-
+  // Don't return early - always render the page structure so header/sidebar are visible
+  // Show loading/error states within the content area instead
   return (
     <div className="min-h-screen bg-white">
       <style>{compactTableStyles}</style>
@@ -600,246 +630,287 @@ const MasterLeadPage: React.FC = () => {
 
       {/* Content */}
       <div className="max-w-full mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-8">
-
-        {/* Sub-leads Section */}
-        <div>
-          {subLeads.length === 0 ? (
-            <div className="px-4 sm:px-6 py-8 sm:py-12 text-center">
-              <UserIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-              <p className="text-sm sm:text-base text-gray-500">No sub-leads found for this master lead.</p>
+        {/* Loading State - only show if we don't have any data yet */}
+        {loading && !masterLeadInfo && subLeads.length === 0 && (
+          <div className="flex items-center justify-center py-12">
+            <div className="text-center">
+              <div className="loading loading-spinner loading-lg text-primary"></div>
+              <p className="mt-4 text-gray-600">Loading master lead data...</p>
             </div>
-          ) : (
-            <>
-              {/* Mobile Card View */}
-              <div className="md:hidden space-y-4 p-4">
-                {subLeads.map((subLead) => {
-                  const cardClasses = [
-                    'card',
-                    'shadow-lg',
-                    'hover:shadow-2xl',
-                    'transition-all',
-                    'duration-300',
-                    'ease-in-out',
-                    'transform',
-                    'hover:-translate-y-1',
-                    'cursor-pointer',
-                    'group',
-                    'border',
-                    'bg-base-100',
-                    'border-base-200',
-                  ].join(' ');
+          </div>
+        )}
 
-                  return (
-                    <div
-                      key={subLead.id}
-                      className={cardClasses}
-                      onClick={(e) => handleSubLeadClick(subLead, e)}
-                    >
-                      <div className="card-body p-5">
-                        <div className="flex justify-between items-start mb-2">
-                          <div className="flex items-center gap-2 flex-1 min-w-0">
-                            <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors truncate">
-                              {subLead.name || 'Unknown'}
-                            </h2>
-                            {subLead.isMaster && (
-                              <span
-                                className="badge badge-xs border-2"
-                                style={{
-                                  backgroundColor: '#4218cc',
-                                  color: '#ffffff',
-                                  borderColor: '#4218cc'
-                                }}
-                              >
-                                Master
-                              </span>
-                            )}
-                          </div>
-                          {getStageBadge(subLead.stage)}
-                        </div>
-
-                        <p className="text-sm text-base-content/60 font-mono mb-4">
-                          #{subLead.lead_number}
-                        </p>
-
-                        <div className="divider my-0"></div>
-
-                        <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
-                          <div className="flex items-center gap-2" title="Total">
-                            <CurrencyDollarIcon className="h-4 w-4 text-base-content/50" />
-                            <span className="font-medium">
-                              {subLead.currency_symbol}{subLead.total?.toLocaleString() || '0.0'}
-                            </span>
-                          </div>
-                          {subLead.category && subLead.category !== 'Unknown' && (
-                            <div className="flex items-start gap-2" title="Category">
-                              <TagIcon className="h-4 w-4 text-base-content/50 mt-0.5 flex-shrink-0" />
-                              <span className="line-clamp-2 break-words">{subLead.category}</span>
-                            </div>
-                          )}
-                          {subLead.topic && (
-                            <div className="flex items-start gap-2" title="Topic">
-                              <DocumentTextIcon className="h-4 w-4 text-base-content/50 mt-0.5 flex-shrink-0" />
-                              <span className="line-clamp-2 break-words">{subLead.topic}</span>
-                            </div>
-                          )}
-                          {subLead.contact && subLead.contact !== '---' && (
-                            <div className="flex items-center gap-2" title="Contact">
-                              <UserIcon className="h-4 w-4 text-base-content/50" />
-                              <span className="truncate">{subLead.contact}</span>
-                            </div>
-                          )}
-                          {(subLead.applicants ?? 0) > 0 && (
-                            <div className="flex items-center gap-2" title="Applicants">
-                              <UserIcon className="h-4 w-4 text-base-content/50" />
-                              <span>{subLead.applicants} applicant{(subLead.applicants ?? 0) !== 1 ? 's' : ''}</span>
-                            </div>
-                          )}
-                        </div>
-
-                        {subLead.agreement && subLead.agreement !== '---' && (
-                          <div
-                            className="mt-4 pt-4 border-t border-base-200/50"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <div className="flex items-center gap-2 text-sm">
-                              <LinkIcon className="h-4 w-4 text-base-content/50" />
-                              {subLead.agreement}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-                {subLeadsLoading && (
-                  <div className="card bg-base-100 border border-base-200">
-                    <div className="card-body p-5 text-center">
-                      <div className="flex items-center justify-center">
-                        <div className="loading loading-spinner loading-sm mr-2"></div>
-                        <span className="text-base-content/60 text-sm">Loading sub-leads...</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
+        {/* Error State */}
+        {error && (
+          <div className="flex items-center justify-center py-12">
+            <div className="text-center max-w-md">
+              <div className="alert alert-error mb-4">
+                <ExclamationTriangleIcon className="w-6 h-6" />
+                <div>
+                  <h3 className="font-bold">Error Loading Data</h3>
+                  <div className="text-xs">{error}</div>
+                </div>
               </div>
+              <button
+                onClick={() => {
+                  setError(null);
+                  fetchSubLeads();
+                }}
+                className="btn btn-primary"
+              >
+                Try Again
+              </button>
+              <button
+                onClick={() => navigate(-1)}
+                className="btn btn-ghost ml-2"
+              >
+                Go Back
+              </button>
+            </div>
+          </div>
+        )}
 
-              {/* Desktop Table View */}
-              <div className="hidden md:block overflow-x-auto">
-                <table className="table w-full compact-table">
-                  <thead>
-                    <tr>
-                      <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
-                        Lead
-                      </th>
-                      <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
-                        Total
-                      </th>
-                      <th className="hidden md:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
-                        Category
-                      </th>
-                      <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
-                        Topic
-                      </th>
-                      <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
-                        Stage
-                      </th>
-                      <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
-                        Contact
-                      </th>
-                      <th className="hidden sm:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
-                        Applicants
-                      </th>
-                      <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
-                        Agreement
-                      </th>
-                      <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
-                        Scheduler
-                      </th>
-                      <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
-                        Closer
-                      </th>
-                      <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
-                        Handler
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {subLeads.map((subLead) => (
-                      <tr
+        {/* Sub-leads Section - show if we have data or if not in error state */}
+        {!error && (subLeads.length > 0 || masterLeadInfo) && (
+          <div>
+            {subLeads.length === 0 ? (
+              <div className="px-4 sm:px-6 py-8 sm:py-12 text-center">
+                <UserIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                <p className="text-sm sm:text-base text-gray-500">No sub-leads found for this master lead.</p>
+              </div>
+            ) : (
+              <>
+                {/* Mobile Card View */}
+                <div className="md:hidden space-y-4 p-4">
+                  {subLeads.map((subLead) => {
+                    const cardClasses = [
+                      'card',
+                      'shadow-lg',
+                      'hover:shadow-2xl',
+                      'transition-all',
+                      'duration-300',
+                      'ease-in-out',
+                      'transform',
+                      'hover:-translate-y-1',
+                      'cursor-pointer',
+                      'group',
+                      'border',
+                      'bg-base-100',
+                      'border-base-200',
+                    ].join(' ');
+
+                    return (
+                      <div
                         key={subLead.id}
-                        className="hover:bg-gray-50 cursor-pointer"
+                        className={cardClasses}
                         onClick={(e) => handleSubLeadClick(subLead, e)}
                       >
-                        <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
-                          <div className="flex items-center">
+                        <div className="card-body p-5">
+                          <div className="flex justify-between items-start mb-2">
+                            <div className="flex items-center gap-2 flex-1 min-w-0">
+                              <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors truncate">
+                                {subLead.name || 'Unknown'}
+                              </h2>
+                              {subLead.isMaster && (
+                                <span
+                                  className="badge badge-xs border-2"
+                                  style={{
+                                    backgroundColor: '#4218cc',
+                                    color: '#ffffff',
+                                    borderColor: '#4218cc'
+                                  }}
+                                >
+                                  Master
+                                </span>
+                              )}
+                            </div>
+                            {getStageBadge(subLead.stage)}
+                          </div>
 
-                            <span className={`hover:text-blue-800 font-medium ${subLead.isMaster ? 'text-blue-700 font-bold' : 'text-blue-600'}`}>
-                              {subLead.lead_number}
-                            </span>
+                          <p className="text-sm text-base-content/60 font-mono mb-4">
+                            #{subLead.lead_number}
+                          </p>
+
+                          <div className="divider my-0"></div>
+
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
+                            <div className="flex items-center gap-2" title="Total">
+                              <CurrencyDollarIcon className="h-4 w-4 text-base-content/50" />
+                              <span className="font-medium">
+                                {subLead.currency_symbol}{subLead.total?.toLocaleString() || '0.0'}
+                              </span>
+                            </div>
+                            {subLead.category && subLead.category !== 'Unknown' && (
+                              <div className="flex items-start gap-2" title="Category">
+                                <TagIcon className="h-4 w-4 text-base-content/50 mt-0.5 flex-shrink-0" />
+                                <span className="line-clamp-2 break-words">{subLead.category}</span>
+                              </div>
+                            )}
+                            {subLead.topic && (
+                              <div className="flex items-start gap-2" title="Topic">
+                                <DocumentTextIcon className="h-4 w-4 text-base-content/50 mt-0.5 flex-shrink-0" />
+                                <span className="line-clamp-2 break-words">{subLead.topic}</span>
+                              </div>
+                            )}
+                            {subLead.contact && subLead.contact !== '---' && (
+                              <div className="flex items-center gap-2" title="Contact">
+                                <UserIcon className="h-4 w-4 text-base-content/50" />
+                                <span className="truncate">{subLead.contact}</span>
+                              </div>
+                            )}
+                            {(subLead.applicants ?? 0) > 0 && (
+                              <div className="flex items-center gap-2" title="Applicants">
+                                <UserIcon className="h-4 w-4 text-base-content/50" />
+                                <span>{subLead.applicants} applicant{(subLead.applicants ?? 0) !== 1 ? 's' : ''}</span>
+                              </div>
+                            )}
                           </div>
-                        </td>
-                        <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
-                          <div className="flex items-center">
-                            <span className="text-gray-900">
-                              {subLead.currency_symbol}{subLead.total?.toLocaleString() || '0.0'}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="hidden md:table-cell px-3 sm:px-6 py-4">
-                          <div className="flex items-center">
-                            <span className="text-gray-900 line-clamp-2 break-words">{subLead.category}</span>
-                          </div>
-                        </td>
-                        <td className="hidden lg:table-cell px-3 sm:px-6 py-4">
-                          <div className="flex items-center">
-                            <span className="text-gray-900 line-clamp-2 break-words">{subLead.topic || '---'}</span>
-                          </div>
-                        </td>
-                        <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
-                          {getStageBadge(subLead.stage)}
-                        </td>
-                        <td className="hidden lg:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                          <div className="text-sm">
-                            {subLead.contact}
-                          </div>
-                        </td>
-                        <td className="hidden sm:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                          <div className="flex items-center">
-                            <span className="text-sm font-medium">
-                              {subLead.applicants || 0}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                          {subLead.agreement}
-                        </td>
-                        <td className="hidden lg:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                          {subLead.scheduler}
-                        </td>
-                        <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                          {subLead.closer}
-                        </td>
-                        <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                          {subLead.handler}
-                        </td>
-                      </tr>
-                    ))}
-                    {subLeadsLoading && (
+
+                          {subLead.agreement && subLead.agreement !== '---' && (
+                            <div
+                              className="mt-4 pt-4 border-t border-base-200/50"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <div className="flex items-center gap-2 text-sm">
+                                <LinkIcon className="h-4 w-4 text-base-content/50" />
+                                {subLead.agreement}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {subLeadsLoading && (
+                    <div className="card bg-base-100 border border-base-200">
+                      <div className="card-body p-5 text-center">
+                        <div className="flex items-center justify-center">
+                          <div className="loading loading-spinner loading-sm mr-2"></div>
+                          <span className="text-base-content/60 text-sm">Loading sub-leads...</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Desktop Table View */}
+                <div className="hidden md:block overflow-x-auto">
+                  <table className="table w-full compact-table">
+                    <thead>
                       <tr>
-                        <td colSpan={10} className="px-6 py-4 text-center">
-                          <div className="flex items-center justify-center">
-                            <div className="loading loading-spinner loading-sm mr-2"></div>
-                            <span className="text-gray-500">Loading sub-leads...</span>
-                          </div>
-                        </td>
+                        <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                          Lead
+                        </th>
+                        <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                          Total
+                        </th>
+                        <th className="hidden md:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                          Category
+                        </th>
+                        <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                          Topic
+                        </th>
+                        <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                          Stage
+                        </th>
+                        <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                          Contact
+                        </th>
+                        <th className="hidden sm:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                          Applicants
+                        </th>
+                        <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                          Agreement
+                        </th>
+                        <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                          Scheduler
+                        </th>
+                        <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                          Closer
+                        </th>
+                        <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                          Handler
+                        </th>
                       </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-        </div>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {subLeads.map((subLead) => (
+                        <tr
+                          key={subLead.id}
+                          className="hover:bg-gray-50 cursor-pointer"
+                          onClick={(e) => handleSubLeadClick(subLead, e)}
+                        >
+                          <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
+                            <div className="flex items-center">
+
+                              <span className={`hover:text-blue-800 font-medium ${subLead.isMaster ? 'text-blue-700 font-bold' : 'text-blue-600'}`}>
+                                {subLead.lead_number}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
+                            <div className="flex items-center">
+                              <span className="text-gray-900">
+                                {subLead.currency_symbol}{subLead.total?.toLocaleString() || '0.0'}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="hidden md:table-cell px-3 sm:px-6 py-4">
+                            <div className="flex items-center">
+                              <span className="text-gray-900 line-clamp-2 break-words">{subLead.category}</span>
+                            </div>
+                          </td>
+                          <td className="hidden lg:table-cell px-3 sm:px-6 py-4">
+                            <div className="flex items-center">
+                              <span className="text-gray-900 line-clamp-2 break-words">{subLead.topic || '---'}</span>
+                            </div>
+                          </td>
+                          <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
+                            {getStageBadge(subLead.stage)}
+                          </td>
+                          <td className="hidden lg:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
+                            <div className="text-sm">
+                              {subLead.contact}
+                            </div>
+                          </td>
+                          <td className="hidden sm:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
+                            <div className="flex items-center">
+                              <span className="text-sm font-medium">
+                                {subLead.applicants || 0}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
+                            {subLead.agreement}
+                          </td>
+                          <td className="hidden lg:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
+                            {subLead.scheduler}
+                          </td>
+                          <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
+                            {subLead.closer}
+                          </td>
+                          <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
+                            {subLead.handler}
+                          </td>
+                        </tr>
+                      ))}
+                      {subLeadsLoading && (
+                        <tr>
+                          <td colSpan={10} className="px-6 py-4 text-center">
+                            <div className="flex items-center justify-center">
+                              <div className="loading loading-spinner loading-sm mr-2"></div>
+                              <span className="text-gray-500">Loading sub-leads...</span>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Legacy Contract Viewing Modal */}

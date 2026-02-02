@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { BrowserRouter as Router } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './lib/queryClient';
@@ -84,14 +84,20 @@ import { AuthProvider, useAuthContext } from './contexts/AuthContext';
 const AppContentInner: React.FC = () => {
   const { accounts, instance } = useMsal();
   const location = useLocation();
-  const isAdminPage = location.pathname === '/admin';
-  const isReportsPage = location.pathname.startsWith('/reports');
-  const isSignedSalesPage = location.pathname === '/sales/signed';
+
+  // Memoize page flags to prevent unnecessary re-renders of Header/Sidebar
+  const isAdminPage = useMemo(() => location.pathname === '/admin', [location.pathname]);
+  const isReportsPage = useMemo(() => location.pathname.startsWith('/reports'), [location.pathname]);
+  const isSignedSalesPage = useMemo(() => location.pathname === '/sales/signed', [location.pathname]);
   const msalAccount = instance.getActiveAccount() || accounts[0];
   const userName = accounts.length > 0 ? accounts[0].name : undefined;
-  
+
   // Get auth state from context
   const { user, userFullName, userInitials, isLoading, isInitialized } = useAuthContext();
+
+  // Memoize computed props for Header/Sidebar to prevent unnecessary re-renders
+  const sidebarUserName = useMemo(() => userFullName || userName, [userFullName, userName]);
+  const sidebarMobileOnly = useMemo(() => isReportsPage || isAdminPage, [isReportsPage, isAdminPage]);
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -101,7 +107,7 @@ const AppContentInner: React.FC = () => {
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
   const [isMessagingOpen, setIsMessagingOpen] = useState(false);
   const [selectedClient, setSelectedClient] = useState<any>(null);
-  
+
   // Contact selection state for email/WhatsApp
   const [showContactSelector, setShowContactSelector] = useState(false);
   const [contactSelectorMode, setContactSelectorMode] = useState<'email' | 'whatsapp'>('email');
@@ -121,10 +127,10 @@ const AppContentInner: React.FC = () => {
         if (event.data && event.data.type === 'NOTIFICATION_CLICK') {
           const url = event.data.url || '/';
           console.log('📱 Notification clicked, navigating to:', url);
-          
+
           // Navigate to the URL
           navigate(url);
-          
+
           // If the app was in background, focus the window
           if (window.document.hidden) {
             window.focus();
@@ -133,7 +139,7 @@ const AppContentInner: React.FC = () => {
       };
 
       navigator.serviceWorker.addEventListener('message', handleMessage);
-      
+
       return () => {
         navigator.serviceWorker.removeEventListener('message', handleMessage);
       };
@@ -147,7 +153,7 @@ const AppContentInner: React.FC = () => {
       if (clientId.toString().startsWith('legacy_')) {
         const legacyId = parseInt(clientId.toString().replace('legacy_', ''));
         console.log('🔄 Refreshing legacy client data for ID:', legacyId);
-        
+
         // Fetch legacy lead data with currency information
         const { data: legacyLead, error: legacyError } = await supabase
           .from('leads_lead')
@@ -160,9 +166,9 @@ const AppContentInner: React.FC = () => {
           `)
           .eq('id', legacyId)
           .single();
-          
+
         if (legacyError) throw legacyError;
-        
+
         // Calculate sub-lead suffix if this is a sub-lead (has master_id)
         let subLeadSuffix: number | undefined;
         if (legacyLead.master_id) {
@@ -172,14 +178,14 @@ const AppContentInner: React.FC = () => {
             .eq('master_id', legacyLead.master_id)
             .not('master_id', 'is', null)
             .order('id', { ascending: true });
-          
+
           if (existingSubLeads) {
             const currentLeadIndex = existingSubLeads.findIndex(sub => sub.id === legacyLead.id);
             // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
             subLeadSuffix = currentLeadIndex >= 0 ? currentLeadIndex + 2 : existingSubLeads.length + 2;
           }
         }
-        
+
         // Format lead number for legacy leads (same logic as Clients.tsx)
         const formatLegacyLeadNumber = (legacyLeadData: any, suffix?: number): string => {
           const masterId = legacyLeadData.master_id;
@@ -199,18 +205,18 @@ const AppContentInner: React.FC = () => {
           // If suffix not provided, return a placeholder
           return `${masterId}/?`;
         };
-        
+
         // Fetch emails for legacy lead
         const { data: legacyEmails, error: emailsError } = await supabase
           .from('emails')
           .select('*')
           .eq('legacy_id', legacyId)
           .order('sent_at', { ascending: false });
-          
+
         if (emailsError) {
           console.error('Error fetching legacy emails:', emailsError);
         }
-        
+
         // Fetch language name if language_id exists
         let languageName = '';
         if (legacyLead.language_id) {
@@ -220,7 +226,7 @@ const AppContentInner: React.FC = () => {
               .select('name')
               .eq('id', legacyLead.language_id)
               .maybeSingle();
-            
+
             if (!languageError && languageData?.name) {
               languageName = languageData.name;
               console.log('✅ App.tsx - Fetched language name:', { language_id: legacyLead.language_id, languageName });
@@ -233,12 +239,12 @@ const AppContentInner: React.FC = () => {
         } else {
           console.log('⚠️ App.tsx - No language_id in legacy lead, language_id:', legacyLead.language_id);
         }
-        
+
         // Preserve existing selectedClient properties that might be computed/derived
         const existingClient = selectedClient;
         // Use fetched language name if available, otherwise preserve existing if it's valid (not empty string), otherwise empty
         const finalLanguage = languageName || (existingClient?.language && existingClient.language.trim() !== '' && existingClient.language !== String(legacyLead.language_id || '') ? existingClient.language : '');
-        
+
         const preservedProperties = {
           // Use fetched language name, or preserve existing if it exists and is valid, otherwise use empty string
           language: finalLanguage,
@@ -250,7 +256,7 @@ const AppContentInner: React.FC = () => {
           subcontractor_fee: legacyLead.subcontractor_fee !== null && legacyLead.subcontractor_fee !== undefined ? legacyLead.subcontractor_fee : existingClient?.subcontractor_fee,
           master_id: legacyLead.master_id !== null && legacyLead.master_id !== undefined ? legacyLead.master_id : existingClient?.master_id,
         };
-        
+
         console.log('🔍 App.tsx - Preserving properties during refresh:', {
           legacyLeadLanguageId: legacyLead.language_id,
           fetchedLanguageName: languageName,
@@ -267,7 +273,7 @@ const AppContentInner: React.FC = () => {
           legacyMasterId: legacyLead.master_id,
           preservedProperties
         });
-        
+
         // Transform legacy lead to match new lead structure
         const clientData = {
           ...legacyLead,
@@ -305,8 +311,8 @@ const AppContentInner: React.FC = () => {
           unactivation_reason: legacyLead.unactivation_reason || null,
           deactivate_note: legacyLead.deactivate_note || null,
         };
-        
-        console.log('✅ Legacy client data refreshed:', { 
+
+        console.log('✅ Legacy client data refreshed:', {
           emailsFound: legacyEmails?.length || 0,
           clientId: clientData.id,
           language: clientData.language,
@@ -316,14 +322,14 @@ const AppContentInner: React.FC = () => {
           subcontractor_fee: clientData.subcontractor_fee,
           master_id: clientData.master_id
         });
-        
+
         // Check if this should be shown as unactivated view
         const isLegacy = clientData.lead_type === 'legacy' || clientData.id?.toString().startsWith('legacy_');
         const unactivationReason = isLegacy ? clientData.deactivate_note : clientData.unactivation_reason;
-        const isUnactivated = isLegacy ? 
+        const isUnactivated = isLegacy ?
           (String(clientData.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
           ((unactivationReason && unactivationReason.trim() !== '') || false);
-        
+
         console.log('🔍 App.tsx - Legacy unactivation check:', {
           isLegacy,
           stage: clientData.stage,
@@ -331,7 +337,7 @@ const AppContentInner: React.FC = () => {
           unactivation_reason: clientData.unactivation_reason,
           isUnactivated
         });
-        
+
         setSelectedClient(clientData);
       } else {
         // Handle new leads
@@ -359,12 +365,12 @@ const AppContentInner: React.FC = () => {
           .single();
         if (error) throw error;
         // Extract currency data from joined table
-        const currencyData = data.accounting_currencies 
+        const currencyData = data.accounting_currencies
           ? (Array.isArray(data.accounting_currencies) ? data.accounting_currencies[0] : data.accounting_currencies)
           : null;
-        
-        console.log('✅ New lead data refreshed:', { 
-          id: data.id, 
+
+        console.log('✅ New lead data refreshed:', {
+          id: data.id,
           currency_id: data.currency_id,
           currency_iso_code: currencyData?.iso_code,
           balance: data.balance,
@@ -390,7 +396,7 @@ const AppContentInner: React.FC = () => {
           }
           return '₪'; // Default fallback
         })();
-        
+
         // Create a completely new object reference to ensure React detects the change
         // Spread all properties to create a new object reference
         // CRITICAL: Preserve ALL financial columns exactly as they come from the database
@@ -423,6 +429,35 @@ const AppContentInner: React.FC = () => {
     } catch (error) {
       console.error('Error refreshing client data:', error);
     }
+  }, []);
+
+  // Memoized callbacks for Header and Sidebar to prevent unnecessary re-renders
+  const handleMenuClick = useCallback(() => {
+    setIsSidebarOpen(prev => !prev);
+  }, []);
+
+  const handleSearchClick = useCallback(() => {
+    setIsSearchOpen(prev => !prev);
+  }, []);
+
+  const handleOpenAIChat = useCallback(() => {
+    setIsAiChatOpen(true);
+  }, []);
+
+  const handleCloseSidebar = useCallback(() => {
+    setIsSidebarOpen(false);
+  }, []);
+
+  const handleOpenEmailThread = useCallback(() => {
+    setIsEmailThreadOpen(true);
+  }, []);
+
+  const handleOpenWhatsApp = useCallback(() => {
+    setIsWhatsAppOpen(true);
+  }, []);
+
+  const handleOpenMessaging = useCallback(() => {
+    setIsMessagingOpen(true);
   }, []);
 
   const navItems = [
@@ -467,9 +502,9 @@ const AppContentInner: React.FC = () => {
               {/* Desktop Layout */}
               <div className="hidden md:flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                     <div className="p-2 rounded-lg" style={{ background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 50%, #1e3a8a 100%)' }}>
-                       <DocumentArrowUpIcon className="w-6 h-6 text-white" />
-                     </div>
+                  <div className="p-2 rounded-lg" style={{ background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 50%, #1e3a8a 100%)' }}>
+                    <DocumentArrowUpIcon className="w-6 h-6 text-white" />
+                  </div>
                   <div>
                     <h1 className="text-2xl font-bold text-gray-900">Documents</h1>
                     <p className="text-sm text-gray-500">Upload and manage documents in OneDrive</p>
@@ -493,7 +528,7 @@ const AppContentInner: React.FC = () => {
                       style={{ backgroundColor: '#1e40af', borderColor: '#1e40af' }}
                     >
                       <svg className="w-5 h-5 mr-2" viewBox="0 0 24 24">
-                        <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
+                        <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
                       </svg>
                       Microsoft Login
                     </button>
@@ -505,7 +540,7 @@ const AppContentInner: React.FC = () => {
                         className="btn btn-outline btn-sm flex items-center gap-1"
                       >
                         <svg className="w-4 h-4" viewBox="0 0 24 24">
-                          <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
+                          <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
                         </svg>
                         Logout
                       </button>
@@ -541,7 +576,7 @@ const AppContentInner: React.FC = () => {
                         style={{ backgroundColor: '#1e40af', borderColor: '#1e40af' }}
                       >
                         <svg className="w-4 h-4 mr-1" viewBox="0 0 24 24">
-                          <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
+                          <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
                         </svg>
                         <span className="text-sm">Login</span>
                       </button>
@@ -553,7 +588,7 @@ const AppContentInner: React.FC = () => {
                           className="btn btn-outline btn-sm flex items-center gap-1"
                         >
                           <svg className="w-4 h-4" viewBox="0 0 24 24">
-                            <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
+                            <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
                           </svg>
                           Logout
                         </button>
@@ -561,7 +596,7 @@ const AppContentInner: React.FC = () => {
                     )}
                   </div>
                 </div>
-                
+
                 {/* Bottom row - Law firm name */}
                 <div className="text-center">
                   <h2 className="text-lg font-bold" style={{ color: '#1e3a8a' }}>Decker, Pex, Levi Law Offices</h2>
@@ -578,7 +613,7 @@ const AppContentInner: React.FC = () => {
       <Route path="/calls-ledger" element={
         <ProtectedRoute user={authUser}>
           <div className="flex h-screen bg-white">
-            <Sidebar 
+            <Sidebar
               userName={userFullName || userName}
               userInitials={userInitials}
               isOpen={isSidebarOpen}
@@ -587,8 +622,8 @@ const AppContentInner: React.FC = () => {
               mobileOnly={true}
             />
             <div className="flex-1 flex flex-col overflow-hidden">
-              <Header 
-                onMenuClick={() => setIsSidebarOpen(prev => !prev)} 
+              <Header
+                onMenuClick={() => setIsSidebarOpen(prev => !prev)}
                 onSearchClick={() => setIsSearchOpen(prev => !prev)}
                 isSearchOpen={isSearchOpen}
                 setIsSearchOpen={setIsSearchOpen}
@@ -623,9 +658,9 @@ const AppContentInner: React.FC = () => {
                 <CallsLedgerPage />
               </main>
             </div>
-            <RMQMessagesPage 
-              isOpen={isMessagingOpen} 
-              onClose={() => setIsMessagingOpen(false)} 
+            <RMQMessagesPage
+              isOpen={isMessagingOpen}
+              onClose={() => setIsMessagingOpen(false)}
             />
           </div>
         </ProtectedRoute>
@@ -636,26 +671,26 @@ const AppContentInner: React.FC = () => {
           <ProtectedRoute user={authUser}>
             <div className={`flex h-screen bg-base-100 ${appJustLoggedIn ? 'fade-in' : ''}`}>
               {!isSignedSalesPage && (
-                <Sidebar 
-                  userName={userFullName || userName}
+                <Sidebar
+                  userName={sidebarUserName}
                   userInitials={userInitials}
                   isOpen={isSidebarOpen}
-                  onClose={() => setIsSidebarOpen(false)}
-                  onOpenAIChat={() => setIsAiChatOpen(true)}
-                  mobileOnly={isReportsPage || isAdminPage}
+                  onClose={handleCloseSidebar}
+                  onOpenAIChat={handleOpenAIChat}
+                  mobileOnly={sidebarMobileOnly}
                 />
               )}
               <div className={`flex-1 flex flex-col overflow-hidden ${!isAdminPage && !isReportsPage && !isSignedSalesPage ? 'md:pl-24' : ''}`}>
-                <Header 
-                  onMenuClick={() => setIsSidebarOpen(prev => !prev)} 
-                  onSearchClick={() => setIsSearchOpen(prev => !prev)}
+                <Header
+                  onMenuClick={handleMenuClick}
+                  onSearchClick={handleSearchClick}
                   isSearchOpen={isSearchOpen}
                   setIsSearchOpen={setIsSearchOpen}
                   appJustLoggedIn={appJustLoggedIn}
-                  onOpenAIChat={() => setIsAiChatOpen(true)}
-                  onOpenEmailThread={() => setIsEmailThreadOpen(true)}
-                  onOpenWhatsApp={() => setIsWhatsAppOpen(true)}
-                  onOpenMessaging={() => setIsMessagingOpen(true)}
+                  onOpenAIChat={handleOpenAIChat}
+                  onOpenEmailThread={handleOpenEmailThread}
+                  onOpenWhatsApp={handleOpenWhatsApp}
+                  onOpenMessaging={handleOpenMessaging}
                   isMenuOpen={isSidebarOpen}
                 />
                 <main className={`flex-1 overflow-x-hidden overflow-y-auto ${isReportsPage ? 'w-full' : ''}`}>
@@ -711,9 +746,9 @@ const AppContentInner: React.FC = () => {
                   </Routes>
                 </main>
               </div>
-              <AIChatWindow 
-                isOpen={isAiChatOpen} 
-                onClose={() => setIsAiChatOpen(false)} 
+              <AIChatWindow
+                isOpen={isAiChatOpen}
+                onClose={() => setIsAiChatOpen(false)}
                 onClientUpdate={selectedClient ? () => refreshClientData(selectedClient.id) : undefined}
                 userName={userFullName || userName}
                 isFullPage={isAiChatFullPage}
@@ -745,25 +780,25 @@ const AppContentInner: React.FC = () => {
                   }}
                 />
               )}
-              <EmailThreadModal 
-                isOpen={isEmailThreadOpen} 
+              <EmailThreadModal
+                isOpen={isEmailThreadOpen}
                 onClose={() => {
                   setIsEmailThreadOpen(false);
                   setSelectedContactForThread(null);
                 }}
                 selectedContact={selectedContactForThread}
               />
-              <WhatsAppModal 
-                isOpen={isWhatsAppOpen} 
+              <WhatsAppModal
+                isOpen={isWhatsAppOpen}
                 onClose={() => {
                   setIsWhatsAppOpen(false);
                   setSelectedContactForThread(null);
                 }}
                 selectedContact={selectedContactForThread}
               />
-              <RMQMessagesPage 
-                isOpen={isMessagingOpen} 
-                onClose={() => setIsMessagingOpen(false)} 
+              <RMQMessagesPage
+                isOpen={isMessagingOpen}
+                onClose={() => setIsMessagingOpen(false)}
               />
               {/* CTI Popup Modal - shows on any authenticated page when phone parameter is present */}
               <CTIPopupModal />
@@ -786,7 +821,7 @@ const AppContent: React.FC = () => {
             <MoneyRainCelebration />
             <PWAInstallPrompt />
             <PWAUpdateNotification />
-            <Toaster 
+            <Toaster
               position="top-center"
               reverseOrder={false}
             />

@@ -6,6 +6,7 @@ import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo,
 import { fetchAllLeads, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
 import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
 import { saveFollowUp } from '../lib/followUpsManager';
+import { usePersistedState } from '../hooks/usePersistedState';
 import BalanceEditModal from './BalanceEditModal';
 import {
   PencilIcon,
@@ -1061,6 +1062,7 @@ const Clients: React.FC<ClientsProps> = ({
   const fullLeadNumber = (subleadSuffix && lead_number)
     ? `${lead_number}/${subleadSuffix}`
     : (requestedLeadNumber || lead_number || fullLeadNumberFromPath);
+  
 
   const buildClientRoute = useCallback((manualId?: string | null, leadNumberValue?: string | null) => {
     const manualString = manualId?.toString().trim() || '';
@@ -1096,15 +1098,55 @@ const Clients: React.FC<ClientsProps> = ({
 
     return '/clients';
   }, []);
-  const [activeTab, setActiveTab] = useState('info');
+  
+  // Helper function to persist client data to sessionStorage
+  const persistClientData = useCallback((client: any, leadNumber?: string) => {
+    try {
+      // For legacy leads, use numeric ID (without "legacy_" prefix) as key
+      // For new leads, use lead_number or manual_id
+      let keyToUse: string | undefined;
+      
+      if (leadNumber) {
+        // If leadNumber is provided, use it directly (it's already normalized from URL)
+        keyToUse = leadNumber;
+      } else {
+        const isLegacy = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+        if (isLegacy) {
+          // Legacy: extract numeric ID (remove "legacy_" prefix if present)
+          const clientId = client?.id?.toString().replace('legacy_', '') || client?.id?.toString();
+          keyToUse = clientId;
+        } else {
+          // New: use lead_number, manual_id, or id
+          keyToUse = client?.lead_number || client?.manual_id || client?.id?.toString();
+        }
+      }
+      
+      if (keyToUse) {
+        const persistedKey = `clientsPage_clientData_${keyToUse}`;
+        sessionStorage.setItem(persistedKey, JSON.stringify(client));
+        console.log('💾 Clients: Persisted client data with key:', persistedKey);
+      }
+    } catch (error) {
+      console.error('Error persisting client data:', error);
+    }
+  }, []);
+  
+  // Persist UI state so it's restored when navigating back (same as LeadSearchPage.tsx)
+  const [activeTab, setActiveTab] = usePersistedState('clientsPage_activeTab', 'info', {
+    storage: 'sessionStorage',
+  });
   const [isStagesOpen, setIsStagesOpen] = useState(false);
   const [isActionsOpen, setIsActionsOpen] = useState(false);
   const [isBalanceModalOpen, setIsBalanceModalOpen] = useState(false);
   // Track the last route to detect route changes and force refetch
   const lastRouteRef = useRef<string>('');
   // Default to collapsed on mobile, expanded on desktop
-  const [isClientInfoCollapsed, setIsClientInfoCollapsed] = useState(false);
-  const [isProgressCollapsed, setIsProgressCollapsed] = useState(false);
+  const [isClientInfoCollapsed, setIsClientInfoCollapsed] = usePersistedState('clientsPage_isClientInfoCollapsed', false, {
+    storage: 'sessionStorage',
+  });
+  const [isProgressCollapsed, setIsProgressCollapsed] = usePersistedState('clientsPage_isProgressCollapsed', false, {
+    storage: 'sessionStorage',
+  });
 
   // Set default collapsed state for mobile on mount
   useEffect(() => {
@@ -1986,6 +2028,8 @@ const Clients: React.FC<ClientsProps> = ({
   // Consolidated into a single useEffect to prevent conflicts
   const prevClientIdRef = useRef<string | undefined>();
   const isSettingUpClientRef = useRef(false); // Flag to prevent useEffect from interfering during setup
+  const isFetchingRef = useRef(false); // Flag to prevent duplicate fetches
+  const fetchingRouteRef = useRef<string | null>(null); // Track which route is currently being fetched
 
   useEffect(() => {
     // Skip if we're in the middle of setting up a client
@@ -2845,7 +2889,9 @@ const Clients: React.FC<ClientsProps> = ({
           };
           console.log('onClientUpdate: Setting transformed legacy data:', transformedData);
           console.log('onClientUpdate: Currency mapping - currency_id:', data.currency_id, 'balance_currency:', transformedData.balance_currency);
-          setSelectedClient(normalizeClientStage(transformedData));
+          const normalizedTransformedData = normalizeClientStage(transformedData);
+          setSelectedClient(normalizedTransformedData);
+          persistClientData(normalizedTransformedData);
         }
       } else {
         // For new leads, fetch from leads table - join with accounting_currencies (like legacy leads)
@@ -2950,7 +2996,9 @@ const Clients: React.FC<ClientsProps> = ({
             proposal_total: transformedData.proposal_total
           });
           console.log('onClientUpdate: Currency values - balance_currency:', data.balance_currency, 'proposal_currency:', data.proposal_currency);
-          setSelectedClient(normalizeClientStage(transformedData));
+          const normalizedTransformedData = normalizeClientStage(transformedData);
+          setSelectedClient(normalizedTransformedData);
+          persistClientData(normalizedTransformedData);
         }
       }
 
@@ -3005,14 +3053,119 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Essential data loading for initial page display
   useEffect(() => {
-    // Prevent running if we're currently setting up a client to avoid race conditions
-    if (isSettingUpClientRef.current) {
+    
+    // Prevent duplicate fetches - check this FIRST
+    // Check if we're already fetching the same route
+    const currentRoute = location.pathname;
+    if (isFetchingRef.current && fetchingRouteRef.current === currentRoute) {
       return;
     }
-
+    
+    // Check persisted client data before fetching (same pattern as MasterLeadPage)
+    const effectiveLeadNumber = lead_number || fullLeadNumber || requestedLeadNumber;
+    if (effectiveLeadNumber) {
+      try {
+        const persistedKey = `clientsPage_clientData_${effectiveLeadNumber}`;
+        const persistedData = sessionStorage.getItem(persistedKey);
+        if (persistedData) {
+          const parsedData = JSON.parse(persistedData);
+          // Check if persisted data matches current route
+          const isLegacy = parsedData.lead_type === 'legacy' || parsedData.id?.toString().startsWith('legacy_');
+          const persistedClientId = isLegacy
+            ? parsedData.id?.toString().replace('legacy_', '')
+            : parsedData.id?.toString();
+          const persistedLeadNumber = parsedData.lead_number;
+          
+          // For legacy leads, compare by numeric ID; for new leads, compare by lead_number or manual_id
+          let matches = false;
+          if (isLegacy) {
+            // Legacy: compare numeric ID (effectiveLeadNumber should be the numeric ID from URL)
+            matches = persistedClientId === effectiveLeadNumber || persistedClientId === String(effectiveLeadNumber);
+          } else {
+            // New: compare by lead_number or manual_id
+            matches = persistedLeadNumber === effectiveLeadNumber || 
+                     persistedClientId === effectiveLeadNumber ||
+                     parsedData.manual_id === effectiveLeadNumber;
+          }
+          
+          if (matches) {
+            // Check if selectedClient already matches - if so, skip
+            if (selectedClient) {
+              const currentIsLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+              const currentClientId = currentIsLegacy
+                ? selectedClient.id?.toString().replace('legacy_', '')
+                : selectedClient.id?.toString();
+              const currentLeadNumber = selectedClient.lead_number;
+              
+              let currentMatches = false;
+              if (currentIsLegacy) {
+                currentMatches = currentClientId === effectiveLeadNumber || currentClientId === String(effectiveLeadNumber);
+              } else {
+                currentMatches = currentLeadNumber === effectiveLeadNumber || 
+                                currentClientId === effectiveLeadNumber ||
+                                (selectedClient as any).manual_id === effectiveLeadNumber;
+              }
+              
+              if (currentMatches) {
+                // Already have the correct client loaded
+                console.log('🔍 Clients: Already have correct client loaded, skipping fetch');
+                setLocalLoading(false);
+                lastRouteRef.current = currentRoute;
+                return; // Skip fetch - already have correct client
+              }
+            }
+            
+            // Use persisted data - this will prevent the fetch
+            console.log('🔍 Clients: Using persisted client data, skipping fetch', {
+              effectiveLeadNumber,
+              persistedClientId,
+              persistedLeadNumber,
+              isLegacy,
+              currentRoute
+            });
+            const normalizedPersistedData = normalizeClientStage(parsedData);
+            // Update route ref first to prevent duplicate checks
+            lastRouteRef.current = currentRoute;
+            // Update fetching refs to prevent any subsequent fetches
+            isFetchingRef.current = false;
+            fetchingRouteRef.current = null;
+            // Set loading to false and client data
+            setLocalLoading(false);
+            setSelectedClient(normalizedPersistedData);
+            return; // Skip fetch - use persisted data
+          } else {
+            console.log('🔍 Clients: Persisted data found but does not match', {
+              effectiveLeadNumber,
+              persistedClientId,
+              persistedLeadNumber,
+              isLegacy
+            });
+          }
+        } else {
+          console.log('🔍 Clients: No persisted data found for', effectiveLeadNumber);
+        }
+      } catch (error) {
+        console.error('Error reading persisted client data:', error);
+        // Continue to fetch if persisted data read fails
+      }
+    }
+    
     // Check if route has changed
-    const currentRoute = location.pathname;
     const routeChanged = lastRouteRef.current !== currentRoute;
+    
+    // Prevent running if we're currently setting up a client to avoid race conditions
+    // If isSettingUpClient is true AND isFetching is true, we're in the middle of a setup - return early
+    // If isSettingUpClient is true BUT isFetching is false, the previous setup completed - clear flag and proceed
+    if (isSettingUpClientRef.current) {
+      if (isFetchingRef.current) {
+        // We're in the middle of setting up a client - return early to prevent duplicate fetch
+        return;
+      } else {
+        // Previous setup completed but flag wasn't cleared yet (setTimeout pending) - clear it now and proceed
+        isSettingUpClientRef.current = false;
+        // Continue - don't return
+      }
+    }
 
     // If this is a back/forward navigation (POP) and we already have the client loaded, skip the fetch
     // Note: routeChanged can be true on POP navigation, so we check navType first
@@ -3044,6 +3197,12 @@ const Clients: React.FC<ClientsProps> = ({
     // Always refetch if route changed (including coming back from /master)
     // But skip if it's a POP navigation and we already handled it above
     if (routeChanged && navType !== 'POP') {
+      // Set BOTH flags IMMEDIATELY and ATOMICALLY to prevent race conditions
+      // This must happen before ANY other operations to ensure the second useEffect sees both flags
+      isFetchingRef.current = true;
+      isSettingUpClientRef.current = true;
+      fetchingRouteRef.current = currentRoute; // Track which route we're fetching
+      // Update route ref to prevent duplicate fetches on re-render
       lastRouteRef.current = currentRoute;
       // Clear selectedClient immediately to reset all child components
       setSelectedClient(null);
@@ -3051,7 +3210,10 @@ const Clients: React.FC<ClientsProps> = ({
     } else if (routeChanged && navType === 'POP') {
       // POP navigation but client doesn't match - update route ref and continue
       lastRouteRef.current = currentRoute;
-    } else if (selectedClient && lead_number && !location.pathname.includes('/master')) {
+    } else {
+    }
+    
+    if (!routeChanged && selectedClient && lead_number && !location.pathname.includes('/master')) {
       // Only skip fetch if we have the same client AND we're not on the master route
       const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
       const currentClientId = isLegacy
@@ -3377,13 +3539,20 @@ const Clients: React.FC<ClientsProps> = ({
           // Set flag to prevent useEffect from interfering
           isSettingUpClientRef.current = true;
 
-          // Set the client immediately for faster rendering
-          setSelectedClient(normalizeClientStage(clientData));
+          // Normalize and set the client immediately for faster rendering
+          const normalizedClient = normalizeClientStage(clientData);
+          setSelectedClient(normalizedClient);
+          
+          // Persist client data to sessionStorage (same pattern as MasterLeadPage)
+          persistClientData(normalizedClient, effectiveLeadNumber);
+          
           setLocalLoading(false); // Stop loading immediately - don't wait for anything else
 
-          // Clear flag after a brief delay
+          // Clear flag immediately since fetch completed and client is set
+          // Also set a timeout as backup in case of race conditions
+          isSettingUpClientRef.current = false;
           setTimeout(() => {
-            isSettingUpClientRef.current = false;
+            isSettingUpClientRef.current = false; // Backup clear
           }, 100);
         } else if (!clientData) {
           // If still no client found, try to get latest lead
@@ -3409,7 +3578,9 @@ const Clients: React.FC<ClientsProps> = ({
               setIsUnactivatedView(!!(latestLead && isUnactivated && !userManuallyExpanded));
 
               // Set the client
-              setSelectedClient(normalizeClientStage(latestLead));
+              const normalizedLatestLead = normalizeClientStage(latestLead);
+              setSelectedClient(normalizedLatestLead);
+              persistClientData(normalizedLatestLead);
               setLocalLoading(false); // Stop loading immediately
 
               // Clear flag after a brief delay
@@ -3418,9 +3589,18 @@ const Clients: React.FC<ClientsProps> = ({
               }, 100);
             } else {
               setLocalLoading(false);
+              // Clear flag immediately and as backup
+              isSettingUpClientRef.current = false;
+              setTimeout(() => {
+                isSettingUpClientRef.current = false; // Backup clear
+              }, 100);
             }
           } else {
             setLocalLoading(false);
+            // Clear flag since we're done
+            setTimeout(() => {
+              isSettingUpClientRef.current = false;
+            }, 100);
           }
         }
       } else {
@@ -3454,23 +3634,41 @@ const Clients: React.FC<ClientsProps> = ({
           setIsUnactivatedView(!!(latestLead && isUnactivated && !userManuallyExpanded));
 
           // Now set the client
-          setSelectedClient(normalizeClientStage(latestLead));
+          const normalizedLatestLead = normalizeClientStage(latestLead);
+          setSelectedClient(normalizedLatestLead);
+          persistClientData(normalizedLatestLead);
           setLocalLoading(false); // Stop loading immediately
 
-          // Clear flag after a brief delay
+          // Clear flag immediately and as backup
+          isSettingUpClientRef.current = false;
           setTimeout(() => {
-            isSettingUpClientRef.current = false;
+            isSettingUpClientRef.current = false; // Backup clear
           }, 100);
         } else {
           setLocalLoading(false);
+          // Clear flag since we're done
+          setTimeout(() => {
+            isSettingUpClientRef.current = false;
+          }, 100);
         }
       }
+      // Clear fetching flag and route
+      isFetchingRef.current = false;
+      fetchingRouteRef.current = null;
     };
 
+    // Only set fetching flag here if not already set (for cases where route didn't change)
+    if (!isFetchingRef.current) {
+      isFetchingRef.current = true;
+      fetchingRouteRef.current = currentRoute; // Track which route we're fetching
+    }
     fetchEssentialData();
 
     return () => {
       isMounted = false;
+      // Clear fetching flag and route on cleanup
+      isFetchingRef.current = false;
+      fetchingRouteRef.current = null;
       // Don't set loading to false here - it should only be set in the async function
     };
   }, [lead_number, fullLeadNumber, requestedLeadNumber, buildClientRoute, droppedStageId, userManuallyExpanded, location.pathname]); // Added location.pathname to ensure refetch on route change

@@ -113,6 +113,24 @@ export const getContactInfo = (lead: any, contactMap: Map<string, any>): string 
   return '---';
 };
 
+// Helper function to calculate total for legacy leads (same logic as Clients.tsx)
+export const getLegacyLeadTotal = (lead: any): number => {
+  // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
+  const currencyId = lead.currency_id;
+  let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+  if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+    numericCurrencyId = 1; // Default to NIS
+  }
+  
+  if (numericCurrencyId === 1) {
+    // For currency_id 1, use total_base (only, no fallback)
+    return Number(lead.total_base ?? 0);
+  } else {
+    // For other currencies, use total column (only, no fallback)
+    return Number(lead.total ?? 0);
+  }
+};
+
 // Helper function to build client route
 export const buildClientRoute = (manualId?: string | null, leadNumberValue?: string | null): string => {
   const manualString = manualId?.toString().trim() || '';
@@ -305,8 +323,9 @@ export const fetchNewMasterLead = async (
         leadNumberValue = `${leadNumberValue}/1`;
       }
       const manualValue = lead.manual_id ? String(lead.manual_id) : undefined;
-      const totalRaw = lead.balance ?? lead.total ?? lead.meeting_total ?? 0;
-      const totalValue = typeof totalRaw === 'number' ? totalRaw : parseFloat(totalRaw) || 0;
+      // For new leads: use balance first, then proposal_total (same logic as Clients.tsx)
+      const totalRaw = lead.balance ?? lead.proposal_total ?? 0;
+      const totalValue = typeof totalRaw === 'number' ? totalRaw : parseFloat(String(totalRaw)) || 0;
       const currencyCode = (lead.balance_currency || lead.currency || 'NIS') as string;
       const categoryName = getCategoryName(lead.category_id, categories || []) || lead.category || 'Unknown';
       const applicantsValue = lead.number_of_applicants_meeting ?? lead.number_of_applicants ?? lead.applicants ?? 0;
@@ -433,7 +452,7 @@ export const fetchLegacyMasterLead = async (
     const { data: masterLead, error: masterError } = await supabase
       .from('leads_lead')
       .select(`
-          id, name, total, stage, manual_id, master_id,
+          id, name, total, total_base, stage, manual_id, master_id,
           category_id,
           topic,
           meeting_scheduler_id,
@@ -467,7 +486,7 @@ export const fetchLegacyMasterLead = async (
     const subLeadsQuery = supabase
       .from('leads_lead')
       .select(`
-          id, name, total, stage, manual_id, master_id,
+          id, name, total, total_base, stage, manual_id, master_id,
           category_id,
           topic,
           meeting_scheduler_id,
@@ -644,7 +663,7 @@ export const fetchLegacyMasterLead = async (
         actual_lead_id: String(masterLead.id),
         manual_id: masterLead.manual_id,
         name: masterLead.name || 'Unknown',
-        total: parseFloat(masterLead.total) || 0,
+        total: getLegacyLeadTotal(masterLead),
         currency: currencyInfo.currency,
         currency_symbol: currencyInfo.symbol,
         category: getCategoryName(masterLead.category_id, categories || []),
@@ -694,7 +713,7 @@ export const fetchLegacyMasterLead = async (
           actual_lead_id: String(lead.id),
           manual_id: lead.manual_id,
           name: lead.name || 'Unknown',
-          total: parseFloat(lead.total) || 0,
+          total: getLegacyLeadTotal(lead),
           currency: currencyInfo.currency,
           currency_symbol: currencyInfo.symbol,
           category: getCategoryName(lead.category_id, categories || []),

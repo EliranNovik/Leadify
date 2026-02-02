@@ -3,6 +3,7 @@ import { XMarkIcon, EyeIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { convertToNIS } from '../lib/currencyConversion';
 import { useNavigate } from 'react-router-dom';
+import { buildCurrencyMeta, parseNumericAmount } from '../utils/salesContributionCalculator';
 
 interface LeadRow {
   role: string;
@@ -614,7 +615,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
   const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string; conversionValue: string | number } => {
     for (const candidate of candidates) {
       if (!candidate) continue;
-      
+
       if (typeof candidate === 'object') {
         if (Array.isArray(candidate) && candidate.length > 0) {
           const first = candidate[0];
@@ -630,11 +631,11 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
           return { displaySymbol: candidate.name, conversionValue: candidate.name };
         }
       }
-      
+
       if (typeof candidate === 'string' && candidate.trim()) {
         return { displaySymbol: candidate, conversionValue: candidate };
       }
-      
+
       if (typeof candidate === 'number') {
         const currencyMap: { [key: number]: string } = {
           1: 'NIS',
@@ -646,7 +647,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
         return { displaySymbol: currency, conversionValue: currency };
       }
     }
-    
+
     return { displaySymbol: 'NIS', conversionValue: 'NIS' };
   };
 
@@ -700,12 +701,14 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
             proposal_total,
             proposal_currency,
             currency_id,
+            subcontractor_fee,
             closer,
             scheduler,
             handler,
             helper,
             expert,
             case_handler_id,
+            manager,
             meeting_manager_id,
             category_id,
             category,
@@ -788,6 +791,31 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
               }
             }
 
+            // For new leads, check 'manager' field (not 'meeting_manager_id')
+            if (lead.manager) {
+              const managerValue = lead.manager;
+              // Check if it's a numeric string (ID) or a number
+              if (typeof managerValue === 'string') {
+                const numericValue = Number(managerValue);
+                // If it's a valid number, treat it as an ID
+                if (!isNaN(numericValue) && numericValue.toString() === managerValue.trim()) {
+                  if (numericValue === employeeId) {
+                    roles.push('Meeting Manager');
+                  }
+                } else {
+                  // Otherwise, treat it as a name
+                  if (managerValue.toLowerCase() === employeeName.toLowerCase()) {
+                    roles.push('Meeting Manager');
+                  }
+                }
+              } else {
+                // If it's already a number, compare directly
+                if (Number(managerValue) === employeeId) {
+                  roles.push('Meeting Manager');
+                }
+              }
+            }
+            // Fallback to meeting_manager_id if manager is not set
             if (lead.meeting_manager_id && Number(lead.meeting_manager_id) === employeeId) {
               roles.push('Meeting Manager');
             }
@@ -803,10 +831,12 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
               const balanceAmount = parseFloat(lead.balance || 0);
               const proposalAmount = parseFloat(lead.proposal_total || 0);
               const rawAmount = balanceAmount || proposalAmount || 0;
-              const currencyCode = lead.accounting_currencies?.iso_code || lead.balance_currency || lead.proposal_currency || 'NIS';
+              const accountingCurrencies = Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies;
+              const currencyCode = accountingCurrencies?.iso_code || lead.balance_currency || lead.proposal_currency || 'NIS';
               const amountNIS = convertToNIS(rawAmount, currencyCode);
 
               // For signed total logic: exclude handler-only leads (set to 0)
+              // Use full amount (without subtracting fee) - modal is correct
               const totalForSigned = isHandlerOnly ? 0 : amountNIS;
 
               let leadNumberDisplay = lead.lead_number || lead.manual_id || lead.id?.toString() || '';
@@ -816,8 +846,10 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                 leadNumberDisplay = `${masterLeadNumber}/2`;
               }
 
-              const categoryName = lead.misc_category?.name || lead.category || '—';
-              const mainCategoryName = lead.misc_category?.misc_maincategory?.name;
+              const miscCategory = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
+              const categoryName = miscCategory?.name || lead.category || '—';
+              const mainCategory = Array.isArray(miscCategory?.misc_maincategory) ? miscCategory.misc_maincategory[0] : miscCategory?.misc_maincategory;
+              const mainCategoryName = mainCategory?.name;
               const categoryDisplay = mainCategoryName
                 ? `${categoryName} (${mainCategoryName})`
                 : categoryName;
@@ -915,29 +947,25 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                 resolvedAmount = parseNumericAmount(lead.total) || 0;
               }
 
-              // Build currency meta same way as SalesContributionPage
+              // Build currency meta - prioritize accounting_currencies.iso_code (actual currency) over currency_id
               const currencyMeta = buildCurrencyMeta(
-                lead.currency_id,
+                lead.accounting_currencies,
                 lead.meeting_total_currency_id,
-                lead.accounting_currencies
+                lead.currency_id
               );
 
               // Convert to NIS using currencyMeta.conversionValue
               const amountNIS = convertToNIS(resolvedAmount, currencyMeta.conversionValue);
 
-              // Get subcontractor_fee and convert to NIS
-              const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-              const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
-
-              // Store amount after fee (same as main report)
-              const amountAfterFee = amountNIS - subcontractorFeeNIS;
-
               // For signed total logic: exclude handler-only leads (set to 0)
-              const totalForSigned = isHandlerOnly ? 0 : amountAfterFee;
+              // Use full amount (without subtracting fee) - modal is correct
+              const totalForSigned = isHandlerOnly ? 0 : amountNIS;
 
               const leadNumberDisplay = lead.id?.toString() || '';
-              const categoryName = lead.misc_category?.name || '—';
-              const mainCategoryName = lead.misc_category?.misc_maincategory?.name;
+              const miscCategory = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
+              const categoryName = miscCategory?.name || '—';
+              const mainCategory = Array.isArray(miscCategory?.misc_maincategory) ? miscCategory.misc_maincategory[0] : miscCategory?.misc_maincategory;
+              const mainCategoryName = mainCategory?.name;
               const categoryDisplay = mainCategoryName
                 ? `${categoryName} (${mainCategoryName})`
                 : categoryName;

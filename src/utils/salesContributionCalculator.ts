@@ -54,6 +54,32 @@ export const parseNumericAmount = (val: any): number => {
  * Build currency metadata from various sources
  */
 export const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string; conversionValue: string | number } => {
+    // First, check if any candidate is an accounting_currencies object with iso_code (most accurate)
+    // This should be checked first to get the actual currency of the amount
+    for (const candidate of candidates) {
+        if (candidate === null || candidate === undefined) continue;
+        const rawValue = Array.isArray(candidate) ? candidate[0] : candidate;
+        if (rawValue === null || rawValue === undefined) continue;
+
+        // Check if it's an object with iso_code (accounting_currencies)
+        if (typeof rawValue === 'object' && rawValue.iso_code) {
+            const isoCode = String(rawValue.iso_code).toUpperCase();
+            if (isoCode === 'NIS' || isoCode === 'ILS') {
+                return { displaySymbol: '₪', conversionValue: 'NIS' };
+            }
+            if (isoCode === 'USD') {
+                return { displaySymbol: '$', conversionValue: 'USD' };
+            }
+            if (isoCode === 'EUR') {
+                return { displaySymbol: '€', conversionValue: 'EUR' };
+            }
+            if (isoCode === 'GBP') {
+                return { displaySymbol: '£', conversionValue: 'GBP' };
+            }
+        }
+    }
+
+    // Then check numeric currency IDs
     for (const candidate of candidates) {
         if (candidate === null || candidate === undefined) continue;
         const rawValue = Array.isArray(candidate) ? candidate[0] : candidate;
@@ -97,14 +123,28 @@ export const calculateNewLeadAmount = (lead: any): number => {
     const balanceAmount = parseFloat(lead.balance || 0);
     const proposalAmount = parseFloat(lead.proposal_total || 0);
     const rawAmount = balanceAmount || proposalAmount || 0;
-    const currencyCode = lead.accounting_currencies?.iso_code || lead.balance_currency || lead.proposal_currency || 'NIS';
+    // Use accounting_currencies.iso_code directly (same as modal) - most accurate currency
+    const accountingCurrencies = Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies;
+    const currencyCode = accountingCurrencies?.iso_code || lead.balance_currency || lead.proposal_currency || 'NIS';
     const amountInNIS = convertToNIS(rawAmount, currencyCode);
 
     const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-    const currencyMeta = buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency);
-    const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
+    // Use same currency code for fee conversion
+    const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyCode);
 
     return amountInNIS - subcontractorFeeNIS;
+};
+
+/**
+ * Calculate full amount (without subtracting fee) for a new lead - used for signed totals
+ */
+export const calculateNewLeadFullAmount = (lead: any): number => {
+    const balanceAmount = parseFloat(lead.balance || 0);
+    const proposalAmount = parseFloat(lead.proposal_total || 0);
+    const rawAmount = balanceAmount || proposalAmount || 0;
+    const currencyCode = lead.accounting_currencies?.iso_code || lead.balance_currency || lead.proposal_currency || 'NIS';
+    const amountInNIS = convertToNIS(rawAmount, currencyCode);
+    return amountInNIS;
 };
 
 /**
@@ -120,10 +160,11 @@ export const calculateLegacyLeadAmount = (lead: any): number => {
         resolvedAmount = parseNumericAmount(lead.total) || 0;
     }
 
+    // Prioritize accounting_currencies.iso_code (actual currency) over currency_id
     const currencyMeta = buildCurrencyMeta(
-        lead.currency_id,
+        lead.accounting_currencies,
         lead.meeting_total_currency_id,
-        lead.accounting_currencies
+        lead.currency_id
     );
 
     const amountNIS = convertToNIS(resolvedAmount, currencyMeta.conversionValue);
@@ -131,6 +172,32 @@ export const calculateLegacyLeadAmount = (lead: any): number => {
     const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
 
     return amountNIS - subcontractorFeeNIS;
+};
+
+/**
+ * Calculate full amount (without subtracting fee) for a legacy lead - used for signed totals
+ * This matches the modal logic exactly - uses full amount without subtracting fee
+ */
+export const calculateLegacyLeadFullAmount = (lead: any): number => {
+    const currencyId = lead.currency_id;
+    const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+    let resolvedAmount = 0;
+    if (numericCurrencyId === 1) {
+        resolvedAmount = parseNumericAmount(lead.total_base) || 0;
+    } else {
+        resolvedAmount = parseNumericAmount(lead.total) || 0;
+    }
+
+    // Prioritize accounting_currencies.iso_code (actual currency) over currency_id
+    const currencyMeta = buildCurrencyMeta(
+        lead.accounting_currencies,
+        lead.meeting_total_currency_id,
+        lead.currency_id
+    );
+
+    const amountNIS = convertToNIS(resolvedAmount, currencyMeta.conversionValue);
+    // Return full amount without subtracting fee - matches modal
+    return amountNIS;
 };
 
 /**
@@ -178,8 +245,28 @@ const checkEmployeeInRole = (
             : Number(helperValue) === employeeId;
     } else if (roleField === 'expert' && lead.expert) {
         return Number(lead.expert) === employeeId;
-    } else if (roleField === 'meeting_manager_id' && lead.meeting_manager_id) {
-        return Number(lead.meeting_manager_id) === employeeId;
+    } else if (roleField === 'manager' || roleField === 'meeting_manager_id') {
+        // For new leads, check 'manager' field (not 'meeting_manager_id')
+        if (lead.manager) {
+            const managerValue = lead.manager;
+            // Check if it's a numeric string (ID) or a number
+            if (typeof managerValue === 'string') {
+                const numericValue = Number(managerValue);
+                // If it's a valid number, treat it as an ID
+                if (!isNaN(numericValue) && numericValue.toString() === managerValue.trim()) {
+                    return numericValue === employeeId;
+                }
+                // Otherwise, treat it as a name
+                return managerValue.toLowerCase() === employeeName.toLowerCase();
+            }
+            // If it's already a number, compare directly
+            return Number(managerValue) === employeeId;
+        }
+        // Fallback to meeting_manager_id if manager is not set
+        if (lead.meeting_manager_id) {
+            return Number(lead.meeting_manager_id) === employeeId;
+        }
+        return false;
     }
     return false;
 };
@@ -236,7 +323,7 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
         { name: 'Scheduler', legacyField: 'meeting_scheduler_id', newField: 'scheduler' },
         { name: 'Helper Closer', legacyField: 'meeting_lawyer_id', newField: 'helper' },
         { name: 'Handler', legacyField: 'case_handler_id', newField: 'handler' },
-        { name: 'Meeting Manager', legacyField: 'meeting_manager_id', newField: 'meeting_manager_id' },
+        { name: 'Meeting Manager', legacyField: 'meeting_manager_id', newField: 'manager' }, // For new leads, use 'manager' field
         { name: 'Helper Handler', legacyField: null, newField: null },
         { name: 'Expert', legacyField: 'expert_id', newField: 'expert' },
     ];
@@ -247,6 +334,8 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
     // Process new leads
     leads.newLeads.forEach((lead: any) => {
         const employeeRoles: string[] = [];
+        const isL210675 = lead.lead_number?.toString().includes('210675') || lead.id?.toString().includes('210675');
+        const isHava = employeeId === 108;
 
         roles.forEach(role => {
             if (role.newField && checkEmployeeInRole(lead, role.newField, role.name, employeeId, employeeName)) {
@@ -259,27 +348,81 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
             employeeRoles.push('Handler');
         }
 
+        // DEBUG: Log L210675 for Hava
+        if (isHava && isL210675) {
+            console.log('🔍 DEBUG L210675 in Step 1 (roleCombinationMap):', {
+                employeeId,
+                employeeName,
+                leadId: lead.id,
+                leadNumber: lead.lead_number,
+                manager: lead.manager,
+                meeting_manager_id: lead.meeting_manager_id,
+                employeeRoles,
+                isHandler,
+                fullAmount: calculateNewLeadFullAmount(lead),
+                amountAfterFee: calculateNewLeadAmount(lead)
+            });
+        }
+
         if (employeeRoles.length > 0) {
             const sortedRoles = [...employeeRoles].sort();
             const combinationKey = sortedRoles.join(', ');
             const isHandlerOnly = employeeRoles.length === 1 && employeeRoles[0] === 'Handler';
 
+            // Use full amount (without subtracting fee) - same as modal
+            // This ensures consistency across modal, role breakdown, and total signed
+            const fullAmount = calculateNewLeadFullAmount(lead);
+            // For signed portion calculation, use amount after fee
             const amountAfterFee = calculateNewLeadAmount(lead);
             const dueAmount = isHandler ? (payments.newPayments.get(lead.id) || 0) : 0;
+
+            // DEBUG: Log L210675 for Hava
+            if (isHava && isL210675) {
+                console.log('🔍 DEBUG L210675 in Step 1 (adding to map):', {
+                    combinationKey,
+                    isHandlerOnly,
+                    fullAmount,
+                    amountAfterFee,
+                    willAddToSignedTotal: !isHandlerOnly,
+                    dueAmount
+                });
+            }
+
+            // DEBUG: Log for "Closer, Meeting Manager" combination for Hava (new leads)
+            if (isHava && combinationKey === 'Closer, Meeting Manager') {
+                console.log('🔍 DEBUG Hava: Adding NEW lead to "Closer, Meeting Manager":', {
+                    leadId: lead.id,
+                    leadNumber: lead.lead_number,
+                    fullAmount,
+                    amountAfterFee,
+                    willAdd: !isHandlerOnly,
+                    currentSignedTotal: roleCombinationMap.get(combinationKey)?.signedTotal || 0,
+                    currency: lead.accounting_currencies?.iso_code || lead.balance_currency || lead.proposal_currency
+                });
+            }
 
             const existing = roleCombinationMap.get(combinationKey);
             if (existing) {
                 if (!isHandlerOnly) {
-                    existing.signedTotal += amountAfterFee;
+                    existing.signedTotal += fullAmount;
                 }
                 existing.dueTotal += dueAmount;
             } else {
                 roleCombinationMap.set(combinationKey, {
                     roles: sortedRoles,
-                    signedTotal: isHandlerOnly ? 0 : amountAfterFee,
+                    signedTotal: isHandlerOnly ? 0 : fullAmount,
                     dueTotal: dueAmount,
                 });
             }
+        } else if (isHava && isL210675) {
+            console.warn('⚠️ DEBUG L210675: No roles matched in Step 1!', {
+                employeeId,
+                employeeName,
+                leadId: lead.id,
+                leadNumber: lead.lead_number,
+                manager: lead.manager,
+                meeting_manager_id: lead.meeting_manager_id
+            });
         }
     });
 
@@ -303,19 +446,38 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
             const combinationKey = sortedRoles.join(', ');
             const isHandlerOnly = employeeRoles.length === 1 && employeeRoles[0] === 'Handler';
 
+            // Use full amount (without subtracting fee) - same as modal
+            // This ensures consistency across modal, role breakdown, and total signed
+            const fullAmount = calculateLegacyLeadFullAmount(lead);
+            // For signed portion calculation, use amount after fee
             const amountAfterFee = calculateLegacyLeadAmount(lead);
             const dueAmount = isHandler ? (payments.legacyPayments.get(Number(lead.id)) || 0) : 0;
+
+            // DEBUG: Log for "Closer, Meeting Manager" combination for Hava (legacy leads)
+            if (employeeId === 108 && combinationKey === 'Closer, Meeting Manager') {
+                console.log('🔍 DEBUG Hava: Adding LEGACY lead to "Closer, Meeting Manager":', {
+                    leadId: lead.id,
+                    leadNumber: lead.lead_number || lead.manual_id,
+                    fullAmount,
+                    amountAfterFee,
+                    willAdd: !isHandlerOnly,
+                    currentSignedTotal: roleCombinationMap.get(combinationKey)?.signedTotal || 0,
+                    total: lead.total,
+                    total_base: lead.total_base,
+                    currency_id: lead.currency_id
+                });
+            }
 
             const existing = roleCombinationMap.get(combinationKey);
             if (existing) {
                 if (!isHandlerOnly) {
-                    existing.signedTotal += amountAfterFee;
+                    existing.signedTotal += fullAmount;
                 }
                 existing.dueTotal += dueAmount;
             } else {
                 roleCombinationMap.set(combinationKey, {
                     roles: sortedRoles,
-                    signedTotal: isHandlerOnly ? 0 : amountAfterFee,
+                    signedTotal: isHandlerOnly ? 0 : fullAmount,
                     dueTotal: dueAmount,
                 });
             }
@@ -344,7 +506,7 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
             const leadRoles = {
                 closer: lead.closer,
                 scheduler: lead.scheduler,
-                manager: lead.meeting_manager_id,
+                manager: lead.manager || lead.meeting_manager_id, // For new leads, use 'manager' field, fallback to 'meeting_manager_id'
                 expert: lead.expert,
                 handler: lead.handler,
                 helperCloser: lead.helper,
@@ -435,6 +597,77 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
             totalSigned += data.signedTotal;
         }
     });
+
+    // DEBUG: Log totalSigned calculation for Hava
+    if (employeeId === 108) {
+        // Collect all leads that were processed
+        const allProcessedLeads: any[] = [];
+        leads.newLeads.forEach((lead: any) => {
+            const employeeRoles: string[] = [];
+            roles.forEach(role => {
+                if (role.newField && checkEmployeeInRole(lead, role.newField, role.name, employeeId, employeeName)) {
+                    employeeRoles.push(role.name);
+                }
+            });
+            const isHandler = checkEmployeeInRole(lead, 'handler', 'Handler', employeeId, employeeName);
+            if (employeeRoles.length === 0 && isHandler) {
+                employeeRoles.push('Handler');
+            }
+            if (employeeRoles.length > 0) {
+                const fullAmount = calculateNewLeadFullAmount(lead);
+                allProcessedLeads.push({
+                    leadId: lead.id,
+                    leadNumber: lead.lead_number,
+                    roles: employeeRoles,
+                    fullAmount,
+                    balance: lead.balance,
+                    proposal_total: lead.proposal_total,
+                    currency: lead.accounting_currencies?.iso_code || lead.balance_currency || lead.proposal_currency
+                });
+            }
+        });
+        leads.legacyLeads.forEach((lead: any) => {
+            const employeeRoles: string[] = [];
+            roles.forEach(role => {
+                if (role.legacyField && checkEmployeeInRoleLegacy(lead, role.legacyField, employeeId)) {
+                    employeeRoles.push(role.name);
+                }
+            });
+            const isHandler = checkEmployeeInRoleLegacy(lead, 'case_handler_id', employeeId);
+            if (employeeRoles.length === 0 && isHandler) {
+                employeeRoles.push('Handler');
+            }
+            if (employeeRoles.length > 0) {
+                const fullAmount = calculateLegacyLeadFullAmount(lead);
+                allProcessedLeads.push({
+                    leadId: lead.id,
+                    leadNumber: lead.lead_number || lead.manual_id,
+                    roles: employeeRoles,
+                    fullAmount,
+                    total: lead.total,
+                    total_base: lead.total_base,
+                    currency_id: lead.currency_id
+                });
+            }
+        });
+
+        console.log('🔍 DEBUG Hava: totalSigned calculation:', {
+            employeeId,
+            employeeName,
+            totalSigned,
+            roleCombinationMapSize: roleCombinationMap.size,
+            roleCombinationMapEntries: Array.from(roleCombinationMap.entries()).map(([key, data]) => ({
+                key,
+                roles: data.roles,
+                signedTotal: data.signedTotal,
+                dueTotal: data.dueTotal
+            })),
+            allProcessedLeads: allProcessedLeads,
+            sumOfAllLeads: allProcessedLeads.reduce((sum, lead) => sum + lead.fullAmount, 0),
+            newLeadsCount: leads.newLeads.length,
+            legacyLeadsCount: leads.legacyLeads.length
+        });
+    }
 
     // Use totalDueAmount from fetchDueAmounts (includes all handler leads, not just signed ones)
     const totalDue = totalDueAmount;

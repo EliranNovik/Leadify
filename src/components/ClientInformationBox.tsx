@@ -91,6 +91,28 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
 
       try {
         const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+        const clientId = isLegacyLead
+          ? selectedClient.id.toString().replace('legacy_', '')
+          : selectedClient.id?.toString();
+
+        // Check for persisted subleads count first
+        if (clientId) {
+          try {
+            const persistedSubLeadsKey = `clientsPage_subLeadsCount_${clientId}`;
+            const persistedSubLeadsData = sessionStorage.getItem(persistedSubLeadsKey);
+            if (persistedSubLeadsData) {
+              const parsedData = JSON.parse(persistedSubLeadsData);
+              console.log('🔍 ClientInformationBox: Using persisted subleads count, skipping fetch');
+              setIsMasterLead(parsedData.count > 0);
+              setSubLeadsCount(parsedData.count);
+              return; // Skip fetch - use persisted data
+            }
+          } catch (error) {
+            console.error('Error reading persisted subleads count:', error);
+            // Continue to fetch if persisted data read fails
+          }
+        }
+
         let count = 0;
 
         if (isLegacyLead) {
@@ -114,6 +136,16 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
 
         setIsMasterLead(count > 0);
         setSubLeadsCount(count);
+
+        // Persist subleads count to sessionStorage
+        if (clientId) {
+          try {
+            const persistedSubLeadsKey = `clientsPage_subLeadsCount_${clientId}`;
+            sessionStorage.setItem(persistedSubLeadsKey, JSON.stringify({ count, isMaster: count > 0 }));
+          } catch (error) {
+            console.error('Error persisting subleads count:', error);
+          }
+        }
       } catch (error) {
         console.error('Error checking if master lead:', error);
         setIsMasterLead(false);
@@ -295,6 +327,21 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
       if (isLegacyLead) {
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
 
+        // Check for persisted contact data first (same pattern as Clients.tsx)
+        try {
+          const persistedContactKey = `clientsPage_contactData_${legacyId}`;
+          const persistedContactData = sessionStorage.getItem(persistedContactKey);
+          if (persistedContactData) {
+            const parsedContactData = JSON.parse(persistedContactData);
+            console.log('🔍 ClientInformationBox: Using persisted contact data, skipping fetch');
+            setLegacyContactInfo(parsedContactData);
+            return; // Skip fetch - use persisted data
+          }
+        } catch (error) {
+          console.error('Error reading persisted contact data:', error);
+          // Continue to fetch if persisted data read fails
+        }
+
         try {
           // For legacy leads, we need to get the main contact from leads_contact table
           // via the lead_leadcontact relationship
@@ -328,10 +375,18 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
 
             if (!contactError && contactData) {
               console.log('🔍 ClientInformationBox - Setting legacy contact info:', contactData);
-              setLegacyContactInfo({
+              const contactInfo = {
                 email: contactData.email,
                 phone: contactData.phone
-              });
+              };
+              setLegacyContactInfo(contactInfo);
+              // Persist contact data to sessionStorage
+              try {
+                const persistedContactKey = `clientsPage_contactData_${legacyId}`;
+                sessionStorage.setItem(persistedContactKey, JSON.stringify(contactInfo));
+              } catch (error) {
+                console.error('Error persisting contact data:', error);
+              }
             } else {
               console.log('🔍 ClientInformationBox - No contact data found:', { contactError, contactData });
             }
@@ -360,10 +415,18 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
 
               if (!contactError && contactData) {
                 console.log('🔍 ClientInformationBox - Setting any contact info:', contactData);
-                setLegacyContactInfo({
+                const contactInfo = {
                   email: contactData.email,
                   phone: contactData.phone
-                });
+                };
+                setLegacyContactInfo(contactInfo);
+                // Persist contact data to sessionStorage
+                try {
+                  const persistedContactKey = `clientsPage_contactData_${legacyId}`;
+                  sessionStorage.setItem(persistedContactKey, JSON.stringify(contactInfo));
+                } catch (error) {
+                  console.error('Error persisting contact data:', error);
+                }
               } else {
                 console.log('🔍 ClientInformationBox - No contact data found for any contact:', { contactError, contactData });
               }
@@ -377,10 +440,18 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
 
               if (!error && legacyData) {
                 console.log('🔍 ClientInformationBox - Setting final fallback legacy contact info:', legacyData);
-                setLegacyContactInfo({
+                const contactInfo = {
                   email: legacyData.email,
                   phone: legacyData.phone
-                });
+                };
+                setLegacyContactInfo(contactInfo);
+                // Persist contact data to sessionStorage
+                try {
+                  const persistedContactKey = `clientsPage_contactData_${legacyId}`;
+                  sessionStorage.setItem(persistedContactKey, JSON.stringify(contactInfo));
+                } catch (error) {
+                  console.error('Error persisting contact data:', error);
+                }
               } else {
                 console.log('🔍 ClientInformationBox - No final fallback data found:', { error, legacyData });
               }
