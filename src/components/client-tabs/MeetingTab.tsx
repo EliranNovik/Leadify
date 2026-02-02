@@ -160,7 +160,13 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [contacts, setContacts] = useState<ContactInfo[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [selectedEmailLanguage, setSelectedEmailLanguage] = useState<'en' | 'he'>('en');
-  const [emailTemplates, setEmailTemplates] = useState<{ en: string | null; he: string | null }>({ en: null, he: null });
+  const [emailTemplates, setEmailTemplates] = useState<{ 
+    en: { content: string | null; name: string | null } | null; 
+    he: { content: string | null; name: string | null } | null 
+  }>({ en: null, he: null });
+  
+  // Store template IDs for fetching names later
+  const [emailTemplateIds, setEmailTemplateIds] = useState<{ en: number | null; he: number | null }>({ en: null, he: null });
   const [emailType, setEmailType] = useState<'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' | 'reminder' | 'cancellation' | 'rescheduled'>('invitation');
   
   // Notify dropdown state
@@ -1166,28 +1172,38 @@ const formatEmailBody = async (
         
         const { data: enTemplate, error: enError } = await supabase
           .from('misc_emailtemplate')
-          .select('content')
+          .select('content, name')
           .eq('id', enTemplateId)
           .single();
         
         const { data: heTemplate, error: heError } = await supabase
           .from('misc_emailtemplate')
-          .select('content')
+          .select('content, name')
           .eq('id', heTemplateId)
           .single();
         
         if (!enError && enTemplate) {
           const parsedContent = parseTemplateContent(enTemplate.content);
-          setEmailTemplates(prev => ({ ...prev, en: parsedContent }));
+          setEmailTemplates(prev => ({ 
+            ...prev, 
+            en: { content: parsedContent, name: enTemplate.name || null } 
+          }));
+          setEmailTemplateIds(prev => ({ ...prev, en: enTemplateId }));
         } else {
           setEmailTemplates(prev => ({ ...prev, en: null }));
+          setEmailTemplateIds(prev => ({ ...prev, en: null }));
         }
         
         if (!heError && heTemplate) {
           const parsedContent = parseTemplateContent(heTemplate.content);
-          setEmailTemplates(prev => ({ ...prev, he: parsedContent }));
+          setEmailTemplates(prev => ({ 
+            ...prev, 
+            he: { content: parsedContent, name: heTemplate.name || null } 
+          }));
+          setEmailTemplateIds(prev => ({ ...prev, he: heTemplateId }));
         } else {
           setEmailTemplates(prev => ({ ...prev, he: null }));
+          setEmailTemplateIds(prev => ({ ...prev, he: null }));
         }
       } catch (error) {
         console.error('Error fetching email templates:', error);
@@ -1682,18 +1698,6 @@ const formatEmailBody = async (
       // Use explicit email type if provided, otherwise use state
       const currentEmailType = explicitEmailType || emailType;
       
-      // Compose subject based on email type
-      let subject: string;
-      if (currentEmailType === 'cancellation') {
-        subject = `[${client.lead_number || client.id}] - ${client.name} - Meeting Canceled`;
-      } else if (currentEmailType === 'reminder') {
-        subject = `Meeting Reminder - ${formattedDate}`;
-      } else if (currentEmailType === 'rescheduled') {
-        subject = `[${client.lead_number || client.id}] - ${client.name} - Meeting Rescheduled`;
-      } else {
-        // All invitation types (invitation, invitation_jlm, invitation_tlv, invitation_tlv_parking)
-        subject = `Meeting with Decker, Pex, Levi Lawoffice - ${formattedDate}`;
-      }
       const joinLink = getValidTeamsLink(meeting.link);
       // Category and topic removed - not to be included in emails
       const locationName = getMeetingLocationName(meeting.location);
@@ -1753,12 +1757,30 @@ const formatEmailBody = async (
       // Get email template based on determined language
       const selectedTemplate = languageToUse === 'en' ? emailTemplates.en : emailTemplates.he;
       
+      // Get template name for subject (use template's name from database, or fallback to hardcoded)
+      let subject: string;
+      if (selectedTemplate?.name) {
+        subject = selectedTemplate.name;
+      } else {
+        // Fallback to hardcoded subjects if template name not available
+        if (currentEmailType === 'cancellation') {
+          subject = `[${client.lead_number || client.id}] - ${client.name} - Meeting Canceled`;
+        } else if (currentEmailType === 'reminder') {
+          subject = `Meeting Reminder - ${formattedDate}`;
+        } else if (currentEmailType === 'rescheduled') {
+          subject = `[${client.lead_number || client.id}] - ${client.name} - Meeting Rescheduled`;
+        } else {
+          // All invitation types (invitation, invitation_jlm, invitation_tlv, invitation_tlv_parking)
+          subject = `Meeting with Decker, Pex, Levi Lawoffice - ${formattedDate}`;
+        }
+      }
+      
       // Build HTML body for email - use template if available, otherwise fallback to default template
       let htmlBody: string;
-      if (selectedTemplate) {
+      if (selectedTemplate?.content) {
         // Use formatEmailBody to preserve line breaks and apply RTL formatting
         // Pass meeting context for template parameter replacement
-        htmlBody = await formatEmailBody(selectedTemplate, recipientName, {
+        htmlBody = await formatEmailBody(selectedTemplate.content, recipientName, {
           client,
           meeting,
           meetingDate: formattedDate,
@@ -1853,7 +1875,8 @@ const formatEmailBody = async (
             to: recipientEmail, 
             subject, 
             body: htmlBody,
-            attachments
+            attachments,
+            skipSignature: true // Don't include user signature in template emails
           });
         }
       } else {
@@ -1861,7 +1884,8 @@ const formatEmailBody = async (
         await sendEmail(tokenResponse.accessToken, { 
           to: recipientEmail, 
           subject, 
-          body: htmlBody
+          body: htmlBody,
+          skipSignature: true // Don't include user signature in template emails
         });
       }
       const emailTypeMessages: Record<'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' | 'reminder' | 'cancellation' | 'rescheduled', string> = {
@@ -2799,6 +2823,7 @@ const formatEmailBody = async (
         
         // Fetch email template by name ('cancellation') and language_id
         let templateContent: string | null = null;
+        let templateName: string | null = null;
         try {
           console.log('📧 Fetching cancellation email template:', { clientLanguageId, isLegacyLeadForCancel });
           
@@ -2807,7 +2832,7 @@ const formatEmailBody = async (
           } else {
             const { data: template, error: templateError } = await supabase
               .from('misc_emailtemplate')
-              .select('content')
+              .select('content, name')
               .eq('name', 'cancellation')
               .eq('language_id', clientLanguageId)
               .single();
@@ -2815,11 +2840,15 @@ const formatEmailBody = async (
             if (templateError) {
               console.error('❌ Error fetching cancellation email template:', templateError);
             } else if (template && template.content) {
+              // Store template name for subject
+              templateName = template.name || null;
+              
               // Try parsing, but if it returns empty, use raw content (might be HTML)
               const parsed = parseTemplateContent(template.content);
               templateContent = parsed && parsed.trim() ? parsed : template.content;
               console.log('✅ Cancellation email template fetched successfully', {
                 languageId: clientLanguageId,
+                templateName: template.name,
                 rawLength: template.content.length,
                 parsedLength: parsed?.length || 0,
                 finalLength: templateContent?.length || 0,
@@ -2844,6 +2873,7 @@ const formatEmailBody = async (
         let emailBody: string;
         if (templateContent && templateContent.trim()) {
           console.log('✅ Using cancellation email template');
+          
           // Use template with parameter replacement
           emailBody = await formatEmailBody(templateContent, client.name, {
             client,
@@ -2854,12 +2884,7 @@ const formatEmailBody = async (
           });
         } else {
           console.warn('⚠️ Using fallback hardcoded email template for cancellation');
-          // Fallback to hardcoded email
-          const userName = account?.name || 'Staff';
-          let signature = (account && (account as any).signature) ? (account as any).signature : null;
-          if (!signature) {
-            signature = `<br><br>${userName},<br>Decker Pex Levi Law Offices`;
-          }
+          // Fallback to hardcoded email (no signature - template emails should not include signatures)
           emailBody = `
             <div style='font-family:sans-serif;font-size:16px;color:#222;'>
               <p>Dear ${client.name},</p>
@@ -2871,16 +2896,17 @@ const formatEmailBody = async (
               </ul>
               <p>has been canceled.</p>
               <p>If you have any questions or would like to reschedule, please let us know.</p>
-              <div style='margin-top:32px;'>${signature}</div>
             </div>
           `;
         }
         
-        const subject = `[${client.lead_number || client.id}] - ${client.name} - Meeting Canceled`;
+        // Use template name as subject, or fallback to hardcoded
+        const subject = templateName || `[${client.lead_number || client.id}] - ${client.name} - Meeting Canceled`;
         await sendEmail(accessToken, {
           to: client.email,
           subject,
           body: emailBody,
+          skipSignature: true // Don't include user signature in template emails
         });
       }
 
@@ -3172,10 +3198,6 @@ const formatEmailBody = async (
         }
         
         const userName = account?.name || 'Staff';
-        let signature = (account && (account as any).signature) ? (account as any).signature : null;
-        if (!signature) {
-          signature = `<br><br>${userName},<br>Decker Pex Levi Law Offices`;
-        }
         
         const meetingLink = getValidTeamsLink(teamsMeetingUrl);
         const joinButton = meetingLink
@@ -3219,6 +3241,7 @@ const formatEmailBody = async (
         
         // Fetch email template by name ('rescheduled') and language_id
         let templateContent: string | null = null;
+        let templateName: string | null = null;
         try {
           console.log('📧 Fetching rescheduled email template:', { clientLanguageId, isLegacyLead });
           
@@ -3227,7 +3250,7 @@ const formatEmailBody = async (
           } else {
             const { data: template, error: templateError } = await supabase
               .from('misc_emailtemplate')
-              .select('content')
+              .select('content, name')
               .eq('name', 'rescheduled')
               .eq('language_id', clientLanguageId)
               .single();
@@ -3235,11 +3258,15 @@ const formatEmailBody = async (
             if (templateError) {
               console.error('❌ Error fetching rescheduled email template:', templateError);
             } else if (template && template.content) {
+              // Store template name for subject
+              templateName = template.name || null;
+              
               // Try parsing, but if it returns empty, use raw content (might be HTML)
               const parsed = parseTemplateContent(template.content);
               templateContent = parsed && parsed.trim() ? parsed : template.content;
               console.log('✅ Rescheduled email template fetched successfully', {
                 languageId: clientLanguageId,
+                templateName: template.name,
                 rawLength: template.content.length,
                 parsedLength: parsed?.length || 0,
                 finalLength: templateContent?.length || 0,
@@ -3284,13 +3311,7 @@ const formatEmailBody = async (
           });
         } else {
           console.warn('⚠️ Using fallback hardcoded email template for rescheduled meeting');
-          // Fallback to hardcoded email
-          const userName = account?.name || 'Staff';
-          let signature = (account && (account as any).signature) ? (account as any).signature : null;
-          if (!signature) {
-            signature = `<br><br>${userName},<br>Decker Pex Levi Law Offices`;
-          }
-          
+          // Fallback to hardcoded email (no signature - template emails should not include signatures)
           if (canceledMeeting) {
             emailBody = `
               <div style='font-family:sans-serif;font-size:16px;color:#222;'>
@@ -3310,7 +3331,6 @@ const formatEmailBody = async (
                 ${joinButton}
                 <p>Please check the calendar invitation attached for the exact meeting time.</p>
                 <p>If you have any questions or need to reschedule again, please let us know.</p>
-                <div style='margin-top:32px;'>${signature}</div>
               </div>
             `;
           } else {
@@ -3326,15 +3346,15 @@ const formatEmailBody = async (
                 ${joinButton}
                 <p>Please check the calendar invitation attached for the exact meeting time.</p>
                 <p>If you have any questions or need to reschedule, please let us know.</p>
-                <div style='margin-top:32px;'>${signature}</div>
               </div>
             `;
           }
         }
         
-        const emailSubject = canceledMeeting 
+        // Use template name as subject, or fallback to hardcoded
+        const emailSubject = templateName || (canceledMeeting 
           ? `[${client.lead_number || client.id}] - ${client.name} - Meeting Rescheduled`
-          : `[${client.lead_number || client.id}] - ${client.name} - New Meeting Scheduled`;
+          : `[${client.lead_number || client.id}] - ${client.name} - New Meeting Scheduled`);
         
         const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
         const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
@@ -3365,6 +3385,7 @@ const formatEmailBody = async (
             to: client.email,
             subject: emailSubject,
             body: emailBody,
+            skipSignature: true // Don't include user signature in template emails
           });
         } catch (calendarError) {
           console.error('Failed to create calendar invitation:', calendarError);
@@ -3372,6 +3393,7 @@ const formatEmailBody = async (
             to: client.email,
             subject: emailSubject,
             body: emailBody,
+            skipSignature: true // Don't include user signature in template emails
           });
         }
       }
