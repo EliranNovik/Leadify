@@ -80,6 +80,8 @@ import RMQMessagesPage from './pages/RMQMessagesPage';
 import CallsLedgerPage from './pages/CallsLedgerPage';
 import SchedulerToolPage from './pages/SchedulerToolPage';
 import SignedSalesReportPage from './pages/SignedSalesReportPage';
+import MyProfilePage from './pages/MyProfilePage';
+import PublicProfilePage from './pages/PublicProfilePage';
 import { AuthProvider, useAuthContext } from './contexts/AuthContext';
 const AppContentInner: React.FC = () => {
   const { accounts, instance } = useMsal();
@@ -495,6 +497,7 @@ const AppContentInner: React.FC = () => {
       <Route path="/public-legacy-contract/:contractId/:token" element={<PublicLegacyContractView />} />
       <Route path="/payment/:token" element={<PaymentPage />} />
       <Route path="/cti/pop" element={<CTIPopupPage />} />
+      <Route path="/my-profile/:employeeId" element={<PublicProfilePage />} />
       <Route path="/documents" element={
         <div className="flex h-screen bg-white">
           <div className="flex-1 flex flex-col overflow-hidden">
@@ -664,11 +667,90 @@ const AppContentInner: React.FC = () => {
             />
           </div>
         </ProtectedRoute>
+
       } />
-      <Route
+      <Route path="/my-profile" element={
+        <ProtectedRoute user={authUser}>
+          <div className="flex h-screen bg-base-100">
+            <div className="flex-1 flex flex-col overflow-hidden">
+              <Header
+                onMenuClick={() => setIsSidebarOpen(prev => !prev)}
+                onSearchClick={handleSearchClick}
+                isSearchOpen={isSearchOpen}
+                setIsSearchOpen={setIsSearchOpen}
+                appJustLoggedIn={appJustLoggedIn}
+                onOpenAIChat={handleOpenAIChat}
+                onOpenEmailThread={handleOpenEmailThread}
+                onOpenWhatsApp={handleOpenWhatsApp}
+                onOpenMessaging={handleOpenMessaging}
+                isMenuOpen={isSidebarOpen}
+              />
+              <main className="flex-1 overflow-x-hidden overflow-y-auto bg-white">
+                <MyProfilePage />
+              </main>
+            </div>
+            <AIChatWindow
+              isOpen={isAiChatOpen}
+              onClose={() => setIsAiChatOpen(false)}
+              onClientUpdate={selectedClient ? () => refreshClientData(selectedClient.id) : undefined}
+              userName={userFullName || userName}
+              isFullPage={isAiChatFullPage}
+              onToggleFullPage={() => setIsAiChatFullPage(!isAiChatFullPage)}
+            />
+            {/* Contact Selector Modal */}
+            {selectedClient && (selectedClient as any)._tempLeadId && (
+              <ContactSelectorModal
+                isOpen={showContactSelector}
+                onClose={() => {
+                  setShowContactSelector(false);
+                  setSelectedContactForThread(null);
+                }}
+                leadId={(selectedClient as any)._tempLeadId}
+                leadType={(selectedClient as any)._tempLeadType || 'new'}
+                leadName={selectedClient.name}
+                leadNumber={selectedClient.lead_number}
+                leadEmail={selectedClient.email}
+                leadPhone={selectedClient.phone}
+                leadMobile={selectedClient.mobile}
+                mode={contactSelectorMode}
+                onContactSelected={(contact, leadId, leadType) => {
+                  setSelectedContactForThread({ contact, leadId, leadType });
+                  if (contactSelectorMode === 'email') {
+                    setIsEmailThreadOpen(true);
+                  } else {
+                    setIsWhatsAppOpen(true);
+                  }
+                }}
+              />
+            )}
+            <EmailThreadModal
+              isOpen={isEmailThreadOpen}
+              onClose={() => {
+                setIsEmailThreadOpen(false);
+                setSelectedContactForThread(null);
+              }}
+              selectedContact={selectedContactForThread}
+            />
+            <WhatsAppModal
+              isOpen={isWhatsAppOpen}
+              onClose={() => {
+                setIsWhatsAppOpen(false);
+                setSelectedContactForThread(null);
+              }}
+              selectedContact={selectedContactForThread}
+            />
+            <RMQMessagesPage
+              isOpen={isMessagingOpen}
+              onClose={() => setIsMessagingOpen(false)}
+            />
+            <CTIPopupModal />
+          </div>
+        </ProtectedRoute >
+      } />
+      < Route
         path="/*"
         element={
-          <ProtectedRoute user={authUser}>
+          < ProtectedRoute user={authUser} >
             <div className={`flex h-screen bg-base-100 ${appJustLoggedIn ? 'fade-in' : ''}`}>
               {!isSignedSalesPage && (
                 <Sidebar
@@ -803,10 +885,10 @@ const AppContentInner: React.FC = () => {
               {/* CTI Popup Modal - shows on any authenticated page when phone parameter is present */}
               <CTIPopupModal />
             </div>
-          </ProtectedRoute>
+          </ProtectedRoute >
         }
       />
-    </Routes>
+    </Routes >
   );
 };
 

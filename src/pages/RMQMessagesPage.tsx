@@ -1944,6 +1944,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     return () => {
       if (!isOpen) {
         websocketService.disconnect();
+        // Reset conversation state when modal closes to ensure clean state on reopen
+        setSelectedConversation(null);
+        setMessages([]);
+        initialLoadRef.current = null;
       }
     };
   }, [isOpen, selectedConversation?.id]);
@@ -2417,6 +2421,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Fetch messages for selected conversation
   const fetchMessages = useCallback(async (conversationId: number) => {
     try {
+      setIsLoadingMessages(true);
       const { data: messagesData, error } = await supabase
         .from('messages')
         .select(`
@@ -2457,10 +2462,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       if (error) {
         toast.error('Failed to load messages');
+        setIsLoadingMessages(false);
         return;
       }
 
-      // Process messages - always fetch reply messages separately since Supabase relationship query doesn't work well for self-referential FKs
+      // Process messages - fetch reply messages and read receipts in parallel for faster loading
       let processedMessages = (messagesData || []).map((msg: any) => {
         // Remove any reply_to_message data from the initial query (we'll fetch it separately)
         msg.reply_to_message = null;
@@ -2471,120 +2477,77 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         return msg;
       });
 
-      // Fetch all reply messages in one query
+      // Fetch reply messages and read receipts in parallel
+      const messageIds = processedMessages.map(m => m.id).filter(id => id != null && id !== undefined);
       const messagesNeedingReplyFetch = processedMessages.filter((msg: any) => msg._needs_reply_fetch && msg.reply_to_message_id);
-      if (messagesNeedingReplyFetch.length > 0) {
-        const replyMessageIds = messagesNeedingReplyFetch.map((msg: any) => msg.reply_to_message_id);
-        const uniqueReplyIds = [...new Set(replyMessageIds.filter(id => id != null))];
+      const replyMessageIds = messagesNeedingReplyFetch.map((msg: any) => msg.reply_to_message_id);
+      const uniqueReplyIds = [...new Set(replyMessageIds.filter(id => id != null))];
 
-        if (uniqueReplyIds.length > 0) {
-          console.log('🔍 [Reply Debug] Fetching reply messages for IDs:', uniqueReplyIds);
-
-          const { data: fetchedReplies, error: replyFetchError } = await supabase
-            .from('messages')
-            .select(`
+      // Fetch replies and receipts in parallel
+      const [repliesResult, receiptsResult] = await Promise.all([
+        uniqueReplyIds.length > 0 ? supabase
+          .from('messages')
+          .select(`
+            id,
+            content,
+            message_type,
+            attachment_url,
+            attachment_name,
+            attachment_type,
+            sender:users!sender_id(
               id,
-              content,
-              message_type,
-              attachment_url,
-              attachment_name,
-              attachment_type,
-              sender:users!sender_id(
-                id,
-                full_name,
-                is_active,
-                tenants_employee!users_employee_id_fkey(display_name)
-              )
-            `)
-            .in('id', uniqueReplyIds);
-
-          if (!replyFetchError && fetchedReplies && fetchedReplies.length > 0) {
-            // Create a map of reply messages by ID
-            const replyMap = new Map(fetchedReplies.map((reply: any) => [reply.id, reply]));
-
-            console.log('🔍 [Reply Debug] Fetched reply messages:', {
-              count: fetchedReplies.length,
-              replyIds: fetchedReplies.map((r: any) => r.id),
-              replyMapSize: replyMap.size
-            });
-
-            // Attach fetched replies to messages
-            processedMessages = processedMessages.map((msg: any) => {
-              if (msg._needs_reply_fetch && msg.reply_to_message_id) {
-                const fetchedReply = replyMap.get(msg.reply_to_message_id);
-                if (fetchedReply) {
-                  msg.reply_to_message = fetchedReply;
-                  console.log('🔍 [Reply Debug] ✅ Attached reply to message:', {
-                    messageId: msg.id,
-                    replyId: fetchedReply.id,
-                    replyContent: fetchedReply.content?.substring(0, 50),
-                    replySender: fetchedReply.sender?.tenants_employee?.display_name || fetchedReply.sender?.full_name
-                  });
-                } else {
-                  console.warn('🔍 [Reply Debug] ⚠️ Reply not found in fetched data:', {
-                    messageId: msg.id,
-                    replyToMessageId: msg.reply_to_message_id,
-                    availableReplyIds: Array.from(replyMap.keys())
-                  });
-                }
-              }
-              // Remove the flag
-              delete msg._needs_reply_fetch;
-              return msg;
-            });
-          } else if (replyFetchError) {
-            console.error('🔍 [Reply Debug] ❌ Error fetching reply messages:', replyFetchError);
-          } else {
-            console.warn('🔍 [Reply Debug] ⚠️ No reply messages found for IDs:', uniqueReplyIds);
-          }
-        }
-      }
-
-      // Fetch read receipts for all messages
-      if (processedMessages && processedMessages.length > 0 && currentUser) {
-        const messageIds = processedMessages.map(m => m.id);
-        // Filter out undefined/null message IDs
-        const validMessageIds = messageIds.filter(id => id != null && id !== undefined);
-
-        if (validMessageIds.length === 0) {
-          setMessages(processedMessages as unknown as Message[]);
-          // Preload images for faster display
-          preloadImages(processedMessages || []);
-          return;
-        }
-
-        const { data: readReceiptsData } = await supabase
+              full_name,
+              is_active,
+              tenants_employee!users_employee_id_fkey(display_name)
+            )
+          `)
+          .in('id', uniqueReplyIds) : Promise.resolve({ data: [], error: null }),
+        messageIds.length > 0 && currentUser ? supabase
           .from('message_read_receipts')
           .select('message_id, user_id, read_at')
-          .in('message_id', validMessageIds);
+          .in('message_id', messageIds) : Promise.resolve({ data: [], error: null })
+      ]);
 
-        // Attach read receipts to messages and ensure reply_to_message is processed
-        const messagesWithReceipts = processedMessages.map((msg: any) => {
-          // Ensure reply_to_message is an object, not an array
-          let replyMessage = msg.reply_to_message;
-          if (replyMessage && Array.isArray(replyMessage)) {
-            replyMessage = replyMessage.length > 0 ? replyMessage[0] : null;
+      // Process reply messages
+      if (repliesResult.data && repliesResult.data.length > 0) {
+        const replyMap = new Map(repliesResult.data.map((reply: any) => [reply.id, reply]));
+        processedMessages = processedMessages.map((msg: any) => {
+          if (msg._needs_reply_fetch && msg.reply_to_message_id) {
+            const fetchedReply = replyMap.get(msg.reply_to_message_id);
+            if (fetchedReply) {
+              msg.reply_to_message = fetchedReply;
+            }
           }
-
-          return {
-            ...msg,
-            reply_to_message: replyMessage,
-            read_receipts: readReceiptsData?.filter(rr => rr.message_id === msg.id) || []
-          };
+          delete msg._needs_reply_fetch;
+          return msg;
         });
+      }
 
-        setMessages(messagesWithReceipts as unknown as Message[]);
+      // Attach read receipts to messages
+      const readReceiptsData = receiptsResult.data || [];
+      const finalMessages = processedMessages.map((msg: any) => {
+        // Ensure reply_to_message is an object, not an array
+        let replyMessage = msg.reply_to_message;
+        if (replyMessage && Array.isArray(replyMessage)) {
+          replyMessage = replyMessage.length > 0 ? replyMessage[0] : null;
+        }
 
-        // Preload images for faster display (async, don't wait)
-        preloadImages(messagesWithReceipts);
+        return {
+          ...msg,
+          reply_to_message: replyMessage,
+          read_receipts: readReceiptsData.filter((rr: any) => rr.message_id === msg.id) || []
+        };
+      });
 
-        // Mark messages as read for current user when viewing conversation (async, don't wait)
+      setMessages(finalMessages as unknown as Message[]);
+      setIsLoadingMessages(false);
+
+      // Preload images for faster display (async, don't wait)
+      preloadImages(finalMessages);
+
+      // Mark messages as read for current user when viewing conversation (async, don't wait)
+      if (messageIds.length > 0) {
         markMessagesAsRead(messageIds, conversationId).catch(console.error);
-      } else {
-        setMessages((processedMessages || []) as unknown as Message[]);
-
-        // Preload images for faster display (async, don't wait)
-        preloadImages(processedMessages || []);
       }
 
       // Mark conversation as read (async, don't wait)
@@ -2610,6 +2573,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       setNewMessagesCount(0);
     } catch (error) {
       toast.error('Failed to load messages');
+      setIsLoadingMessages(false);
     }
   }, [currentUser]);
 
@@ -3383,45 +3347,42 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       if (websocketService.isSocketConnected()) {
         console.log('🔍 [Reply Debug] Sending via WebSocket with reply_to_message_id:', messageToReply?.id);
 
-        // Add optimistic update even when WebSocket is connected so user sees their message immediately with reply preview
-        if (messageToReply) {
-          // Create optimistic message with reply data
-          const optimisticMessage: Message = {
-            id: Date.now(), // Temporary ID until real one arrives
-            conversation_id: selectedConversation.id,
-            sender_id: currentUser.id,
-            sender: currentUser,
-            content: newMessage.trim(),
-            message_type: 'text',
-            sent_at: new Date().toISOString(),
-            edited_at: undefined,
-            is_deleted: false,
-            delivery_status: 'sending',
-            read_receipts: [],
-            reactions: [],
-            reply_to_message_id: messageToReply.id,
-            reply_to_message: messageToReply, // Use the message being replied to directly
-            attachment_url: undefined,
-            attachment_name: undefined,
-            attachment_type: undefined,
-            attachment_size: undefined,
-            voice_duration: undefined,
-            voice_waveform: undefined,
-            is_voice_message: false,
-          };
+        // Add optimistic update for ALL messages when WebSocket is connected so user sees their message immediately
+        const optimisticMessage: Message = {
+          id: Date.now(), // Temporary ID until real one arrives
+          conversation_id: selectedConversation.id,
+          sender_id: currentUser.id,
+          sender: currentUser,
+          content: newMessage.trim(),
+          message_type: 'text',
+          sent_at: new Date().toISOString(),
+          edited_at: undefined,
+          is_deleted: false,
+          delivery_status: 'sending',
+          read_receipts: [],
+          reactions: [],
+          reply_to_message_id: messageToReply?.id,
+          reply_to_message: messageToReply || undefined, // Use the message being replied to directly
+          attachment_url: undefined,
+          attachment_name: undefined,
+          attachment_type: undefined,
+          attachment_size: undefined,
+          voice_duration: undefined,
+          voice_waveform: undefined,
+          is_voice_message: false,
+        };
 
-          console.log('🔍 [Reply Debug] Adding optimistic message with reply (WebSocket connected):', {
-            messageId: optimisticMessage.id,
-            replyToMessageId: optimisticMessage.reply_to_message_id,
-            hasReplyToMessage: !!optimisticMessage.reply_to_message,
-            replyContent: optimisticMessage.reply_to_message?.content?.substring(0, 50)
-          });
+        console.log('🔍 [Reply Debug] Adding optimistic message (WebSocket connected):', {
+          messageId: optimisticMessage.id,
+          replyToMessageId: optimisticMessage.reply_to_message_id,
+          hasReplyToMessage: !!optimisticMessage.reply_to_message,
+          replyContent: optimisticMessage.reply_to_message?.content?.substring(0, 50)
+        });
 
-          setMessages(prev => {
-            const updated = [...prev, optimisticMessage];
-            return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
-          });
-        }
+        setMessages(prev => {
+          const updated = [...prev, optimisticMessage];
+          return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+        });
 
         websocketService.sendMessage(
           selectedConversation.id,
@@ -3482,6 +3443,92 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         hasReplyToMessage: !!(messageData as any)?.reply_to_message,
         replyToMessageData: (messageData as any)?.reply_to_message
       });
+
+      // If WebSocket IS connected, update the optimistic message with the real database ID
+      if (websocketService.isSocketConnected()) {
+        // Fetch reply message if this is a reply
+        let processedReplyMessage: any = undefined;
+        if ((messageData as any)?.reply_to_message_id) {
+          const { data: replyData } = await supabase
+            .from('messages')
+            .select(`
+              id,
+              content,
+              message_type,
+              attachment_url,
+              attachment_name,
+              attachment_type,
+              sender:users!sender_id(
+                id,
+                full_name,
+                is_active,
+                tenants_employee!users_employee_id_fkey(display_name)
+              )
+            `)
+            .eq('id', (messageData as any)?.reply_to_message_id)
+            .single();
+          if (replyData) {
+            processedReplyMessage = replyData;
+          }
+        }
+
+        // Update the optimistic message with the real database message
+        setMessages(prev => {
+          // Find optimistic message by temporary ID or by content match
+          const optimisticIndex = prev.findIndex(m => 
+            (m.id && m.id > 1000000000000) || // Temporary ID (timestamp)
+            (m.conversation_id === selectedConversation.id &&
+             m.sender_id === currentUser.id &&
+             m.content === newMessage.trim() &&
+             m.delivery_status === 'sending')
+          );
+
+          if (optimisticIndex !== -1) {
+            // Replace optimistic message with real message from database
+            const enhancedMessage: Message = {
+              ...messageData as unknown as Message,
+              read_receipts: [],
+              delivery_status: 'sent',
+              is_deleted: false,
+              reactions: [],
+              edited_at: undefined,
+              reply_to_message_id: (messageData as any).reply_to_message_id || undefined,
+              reply_to_message: processedReplyMessage || undefined,
+              attachment_url: undefined,
+              attachment_name: undefined,
+              attachment_type: undefined,
+              attachment_size: undefined,
+              voice_duration: undefined,
+              voice_waveform: undefined,
+              is_voice_message: false,
+            };
+
+            const updated = [...prev];
+            updated[optimisticIndex] = enhancedMessage;
+            return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+          }
+          // If optimistic message not found, add the real message
+          const enhancedMessage: Message = {
+            ...messageData as unknown as Message,
+            read_receipts: [],
+            delivery_status: 'sent',
+            is_deleted: false,
+            reactions: [],
+            edited_at: undefined,
+            reply_to_message_id: (messageData as any).reply_to_message_id || undefined,
+            reply_to_message: processedReplyMessage || undefined,
+            attachment_url: undefined,
+            attachment_name: undefined,
+            attachment_type: undefined,
+            attachment_size: undefined,
+            voice_duration: undefined,
+            voice_waveform: undefined,
+            is_voice_message: false,
+          };
+          const updated = [...prev, enhancedMessage];
+          return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+        });
+      }
 
       // If WebSocket is not connected, trigger push notifications via backend API
       if (!websocketService.isSocketConnected()) {
@@ -3645,7 +3692,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       if (existingConv) {
         setSelectedConversation(existingConv);
-        fetchMessages(existingConv.id);
+        // fetchMessages will be called by useEffect when selectedConversation changes
         setShowMobileConversations(false);
         setActiveTab('chats');
         return;
@@ -3674,7 +3721,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
         if (newConv) {
           setSelectedConversation(newConv);
-          fetchMessages(newConv.id);
+          // fetchMessages will be called by useEffect when selectedConversation changes
           setShowMobileConversations(false);
           setActiveTab('chats');
           toast.success('Direct conversation started');
@@ -3685,7 +3732,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             const retryConv = retryConversations.find(c => c.id === conversationId);
             if (retryConv) {
               setSelectedConversation(retryConv);
-              fetchMessages(retryConv.id);
+              // fetchMessages will be called by useEffect when selectedConversation changes
               setShowMobileConversations(false);
               setActiveTab('chats');
               toast.success('Direct conversation started');
@@ -4404,8 +4451,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
 
     // If user scrolls up, disable auto-scroll temporarily
+    // Use a more aggressive check to prevent auto-scroll from interfering
     setShouldAutoScroll(false);
     setIsUserScrolling(true);
+    
+    // Clear any pending scroll operations
+    if (scrollTimeoutRef.current) {
+      clearTimeout(scrollTimeoutRef.current);
+      scrollTimeoutRef.current = null;
+    }
 
     // Cancel any pending RAF and schedule a new one to batch updates
     if (rafRef.current !== null) {
@@ -4579,7 +4633,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     const isNewMessageFromMe = messages.length > 0 && messages[messages.length - 1].sender_id === currentUser?.id;
 
     // For subsequent message updates, scroll if user is near bottom OR if the new message is from current user
-    const shouldScroll = (shouldAutoScroll && userIsNearBottom) || isNewMessageFromMe;
+    // Also check that user is not actively scrolling to prevent interference
+    const shouldScroll = (shouldAutoScroll && userIsNearBottom && !isUserScrolling) || isNewMessageFromMe;
 
     if (shouldScroll && messages.length > 0 && selectedConversation && !isScrollingRef.current) {
       // #region agent log
@@ -4592,13 +4647,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Delayed scroll for subsequent message updates to allow rendering
       isScrollingRef.current = true;
 
-      // Use efficient double-RAF for rendering updates
+      // Use efficient single RAF for rendering updates - no double RAF to prevent interference
       requestAnimationFrame(() => {
-        if (messages.length > 0) {
+        if (messages.length > 0 && !isUserScrolling) {
           scrollToBottom('smooth');
-          requestAnimationFrame(() => {
-            isScrollingRef.current = false;
-          });
+          isScrollingRef.current = false;
         }
       });
 
@@ -4648,13 +4701,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     if (container) {
       // Create observer to watch for height changes
       resizeObserver = new ResizeObserver(() => {
-        // Only force scroll if we should auto-scroll (user is at bottom)
-        // We only rely on shouldAutoScroll here, not initialLoadRef, because 
-        // initialLoadRef stays true for the whole session causing aggressive scrolling
-        if (shouldAutoScroll) {
-          requestAnimationFrame(() => {
-            scrollToBottom('instant');
-          });
+        // Only force scroll if we should auto-scroll AND user is not actively scrolling
+        // Check both shouldAutoScroll and isUserScrolling to prevent interference
+        if (shouldAutoScroll && !isUserScrolling) {
+          // Add a small delay to allow user scroll to complete
+          setTimeout(() => {
+            // Double-check user hasn't started scrolling in the meantime
+            if (shouldAutoScroll && !isUserScrolling) {
+              requestAnimationFrame(() => {
+                scrollToBottom('instant');
+              });
+            }
+          }, 50);
         }
       });
 
@@ -4696,11 +4754,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     };
   }, [messages.length, selectedConversation?.id, scrollToBottom, shouldAutoScroll]);
 
-  // Reset scroll tracking when conversation changes (so new conversation gets initial scroll)
+  // Loading state for messages
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+
+  // Reset scroll tracking and fetch messages when conversation changes
   useEffect(() => {
-    if (selectedConversation) {
+    if (selectedConversation && isOpen) {
       // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:conversationChange', message: 'Conversation changed', data: { newConversationId: selectedConversation.id, currentInitialLoadRef: initialLoadRef.current, currentHasScrolled: hasScrolledForConversationRef.current }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'F' }) }).catch(() => { });
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:conversationChange', message: 'Conversation changed', data: { newConversationId: selectedConversation.id, currentInitialLoadRef: initialLoadRef.current, currentHasScrolled: hasScrolledForConversationRef.current, isOpen }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'F' }) }).catch(() => { });
       // #endregion
 
       // ALWAYS reset flags when conversation changes - this ensures scroll happens for new conversation
@@ -4710,16 +4771,21 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Clear messages immediately when conversation changes to ensure clean state
       setMessages([]);
 
+      // Fetch messages immediately - no delay needed
+      // fetchMessages will handle loading state
+      fetchMessages(selectedConversation.id);
+
       // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:conversationChange', message: 'Flags reset and messages cleared', data: { newConversationId: selectedConversation.id }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'F' }) }).catch(() => { });
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:conversationChange', message: 'Flags reset and messages cleared, fetching messages', data: { newConversationId: selectedConversation.id, isOpen }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'F' }) }).catch(() => { });
       // #endregion
     } else {
       // No conversation selected, reset the flags and clear messages
       initialLoadRef.current = null;
       hasScrolledForConversationRef.current = null;
       setMessages([]);
+      setIsLoadingMessages(false);
     }
-  }, [selectedConversation?.id]);
+  }, [selectedConversation?.id, isOpen, fetchMessages]);
 
   useEffect(() => {
     resetInputHeights();
@@ -4804,7 +4870,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       const conversation = conversations.find(c => c.id === initialConversationId);
       if (conversation) {
         setSelectedConversation(conversation);
-        fetchMessages(conversation.id);
+        // fetchMessages will be called by useEffect when selectedConversation changes
         setShowMobileConversations(false);
         // Set the correct tab based on conversation type
         if (conversation.type === 'group' || conversation.type === 'announcement') {
@@ -4814,7 +4880,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         }
       }
     }
-  }, [isOpen, initialConversationId, conversations, fetchMessages]);
+  }, [isOpen, initialConversationId, conversations]);
 
   // Handle initialUserId - start direct conversation when modal opens
   useEffect(() => {
@@ -4849,22 +4915,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         // Scroll to newest unread message if it exists, otherwise scroll to bottom
         // Works for both direct chats (1-on-1) and group chats (multiple participants)
         // Use instant scroll - no visible animation, appears automatically
-        // Use requestAnimationFrame for immediate execution
+        // Single scroll attempt - no backup to prevent interference with user scrolling
         requestAnimationFrame(() => {
           if (newestUnreadMessage) {
             // Scroll to newest unread message (instant, no animation)
             scrollToMessage(newestUnreadMessage.id, 'instant');
-            // Backup scroll attempt
-            requestAnimationFrame(() => {
-              scrollToMessage(newestUnreadMessage.id, 'instant');
-            });
           } else {
             // No unread messages, scroll to bottom
             scrollToBottom('instant');
-            // Backup scroll attempt
-            requestAnimationFrame(() => {
-              scrollToBottom('instant');
-            });
           }
         });
       }
@@ -5991,7 +6049,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   key={conversation.id}
                   onClick={() => {
                     setSelectedConversation(conversation);
-                    fetchMessages(conversation.id);
+                    // fetchMessages will be called by useEffect when selectedConversation changes
                     setShowMobileConversations(false);
                   }}
                   className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 active:bg-gray-100 bg-white"
@@ -6308,7 +6366,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   </div>
                 )}
               </div>
-              {messages.length === 0 ? (
+              {isLoadingMessages ? (
+                <div className="text-center py-12">
+                  <div className="loading loading-spinner loading-lg mx-auto mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.9)' : '#3E28CD' }}></div>
+                  <p className="font-medium" style={{ color: chatBackgroundImageUrl ? 'white' : '#6b7280' }}>Loading messages...</p>
+                </div>
+              ) : messages.length === 0 ? (
                 <div className="text-center py-12">
                   <ChatBubbleLeftRightIcon className="w-16 h-16 mx-auto mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.7)' : '#d1d5db' }} />
                   <p className="font-medium" style={{ color: chatBackgroundImageUrl ? 'white' : '#6b7280' }}>No messages yet</p>

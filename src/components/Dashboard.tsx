@@ -6,6 +6,7 @@ import OverdueFollowups from './OverdueFollowups';
 import WaitingForPriceOfferMyLeadsWidget from './WaitingForPriceOfferMyLeadsWidget';
 import ClosedDealsWithoutPaymentPlanWidget from './ClosedDealsWithoutPaymentPlanWidget';
 import UnavailableEmployeesModal from './UnavailableEmployeesModal';
+import ClockInBox from './ClockInBox';
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
 import { supabase, isAuthError, sessionManager, handleSessionExpiration } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
@@ -1082,6 +1083,7 @@ const Dashboard: React.FC = () => {
 
           if (userData?.employee_id) {
             userEmployeeId = userData.employee_id;
+            setCurrentUserEmployeeId(userData.employee_id);
           }
 
           // Use email from userData if available, otherwise use auth email
@@ -1108,6 +1110,7 @@ const Dashboard: React.FC = () => {
         todayEnd.setHours(23, 59, 59, 999);
 
         // Fetch client meetings with proper joins to both leads and leads_lead tables
+        // Include extern1 and extern2 to show meetings where user is a guest
         const { data: meetings, error } = await supabase
           .from('meetings')
           .select(`
@@ -1123,6 +1126,8 @@ const Dashboard: React.FC = () => {
             teams_meeting_url,
             meeting_brief,
             legacy_lead_id,
+            extern1,
+            extern2,
             lead:leads!client_id(
               id, name, lead_number, manager, topic, expert, stage, scheduler, helper, closer, handler, balance, balance_currency
             ),
@@ -1243,6 +1248,8 @@ const Dashboard: React.FC = () => {
             addValidId(meeting.expert);
             addValidId(meeting.meeting_manager);
             addValidId(meeting.helper);
+            addValidId(meeting.extern1);
+            addValidId(meeting.extern2);
             // For new leads, expert might be an ID
             if (meeting.lead?.expert && !isNaN(Number(meeting.lead.expert))) {
               addValidId(meeting.lead.expert);
@@ -1288,6 +1295,12 @@ const Dashboard: React.FC = () => {
           // Helper function to check if user matches any role
           const userMatchesRole = (meeting: any): boolean => {
             if (!userEmployeeId) return true; // If no user employee_id, show all meetings
+
+            // Check if user is extern1 or extern2 (Guest 1 or Guest 2)
+            if (meeting.extern1?.toString() === userEmployeeId.toString() ||
+              meeting.extern2?.toString() === userEmployeeId.toString()) {
+              return true;
+            }
 
             // Check legacy lead roles
             if (meeting.legacy_lead) {
@@ -1477,6 +1490,16 @@ const Dashboard: React.FC = () => {
               helperName = employeeNameMap[meeting.helper.toString()] || meeting.helper;
             }
 
+            // Determine if user is a guest (extern1 or extern2)
+            let userRole = null;
+            if (userEmployeeId) {
+              if (meeting.extern1?.toString() === userEmployeeId.toString()) {
+                userRole = 'Guest 1';
+              } else if (meeting.extern2?.toString() === userEmployeeId.toString()) {
+                userRole = 'Guest 2';
+              }
+            }
+
             return {
               id: meeting.id,
               lead: meeting.lead?.lead_number || meeting.legacy_lead?.id?.toString() || 'N/A',
@@ -1489,6 +1512,7 @@ const Dashboard: React.FC = () => {
               time: meeting.meeting_time,
               location: meeting.meeting_location || 'Teams',
               manager: managerName,
+              userRole: userRole, // Add user role (Guest 1 or Guest 2)
               value: formatMeetingValue({
                 leadBalance: meeting.lead?.balance,
                 leadBalanceCurrency: meeting.lead?.balance_currency,
@@ -6182,6 +6206,13 @@ const Dashboard: React.FC = () => {
                           <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{meeting.name}</h3>
                         </div>
                         <div className="space-y-2 divide-y divide-gray-100">
+                          {/* User Role (Guest 1 or Guest 2) */}
+                          {meeting.userRole && (
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-xs font-semibold text-gray-500">Your Role</span>
+                              <span className="text-sm font-bold text-primary">{meeting.userRole}</span>
+                            </div>
+                          )}
                           {/* Time */}
                           <div className="flex justify-between items-center py-1">
                             <span className="text-xs font-semibold text-gray-500">Time</span>
@@ -7522,6 +7553,11 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Clock In/Out Box - Commented out */}
+      {/* <div className="w-full mt-12">
+        <ClockInBox employeeId={currentUserEmployeeId} />
+      </div> */}
 
       {/* Team Availability and Calendar Section */}
       <div className="w-full mt-12">

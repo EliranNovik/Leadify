@@ -6030,7 +6030,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   if (isLoadingExternal) {
     return null; // Show nothing while loading
   }
-  
+
   if (isExternalUser) {
     return (
       <>
@@ -6050,7 +6050,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               </button>
             </div>
           </div>
-          
+
           {/* Quick Actions Dropdown - Desktop */}
           <div className="hidden md:block relative ml-4" data-quick-actions-dropdown>
             <button
@@ -6101,7 +6101,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               document.body
             )}
           </div>
-          
+
           {/* Quick Actions Dropdown - Mobile */}
           <div className="md:hidden relative ml-2" data-quick-actions-dropdown>
             <button
@@ -6272,11 +6272,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   onClick={() => {
                     setShowMobileQuickActionsDropdown(false);
                     setShowQuickActionsDropdown(false);
-                    if (currentUserEmployee) {
-                      setIsEmployeeModalOpen(true);
-                    } else {
-                      toast.error('Unable to load your profile data');
-                    }
+                    navigate('/my-profile');
+                    setShowMobileQuickActionsDropdown(false);
+                    setShowQuickActionsDropdown(false);
                   }}
                   className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100"
                 >
@@ -6373,11 +6371,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   onClick={() => {
                     setShowQuickActionsDropdown(false);
                     setShowMobileQuickActionsDropdown(false);
-                    if (currentUserEmployee) {
-                      setIsEmployeeModalOpen(true);
-                    } else {
-                      toast.error('Unable to load your profile data');
-                    }
+                    navigate('/my-profile');
+                    setShowQuickActionsDropdown(false);
+                    setShowMobileQuickActionsDropdown(false);
                   }}
                   className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100"
                 >

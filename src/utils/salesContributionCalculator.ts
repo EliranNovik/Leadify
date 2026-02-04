@@ -17,6 +17,8 @@ export interface EmployeeCalculationInput {
     totalIncome: number;
     dueNormalizedPercentage: number;
     rolePercentages: Map<string, number>;
+    departmentSummaryAmount?: number; // For Marketing/Finance: use summary box amount instead of calculating from leads
+    departmentEmployeeCount?: number; // Number of employees in department (for distributing summary amount)
 }
 
 export interface EmployeeCalculationResult {
@@ -747,8 +749,18 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
     // Step 6: Calculate base contribution (signed + due portions)
     const baseContribution = signedPortionNormalized + duePortionNormalized;
 
-    // Step 7: Apply 35% to get final contribution amount
-    const contribution = baseContribution * 0.35;
+    // Step 7: Calculate final contribution amount
+    // For Marketing/Finance: use department summary amount if provided
+    let contribution: number;
+    if (input.departmentSummaryAmount !== undefined && input.departmentSummaryAmount !== null) {
+        // For Marketing/Finance: distribute summary amount among employees
+        // The summary amount is already the total for the department, so we divide by employee count
+        const employeeCount = input.departmentEmployeeCount || 1;
+        contribution = input.departmentSummaryAmount / employeeCount;
+    } else {
+        // For other departments: Apply 35% to get final contribution amount
+        contribution = baseContribution * 0.35;
+    }
 
     // Debug logging for employees with 0 contribution but should have data
     if (contribution === 0 && (totalSigned > 0 || totalDue > 0)) {

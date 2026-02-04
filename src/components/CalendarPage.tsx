@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { Link, useNavigate, useNavigationType, useLocation } from 'react-router-dom';
 import { useCachedFetch } from '../hooks/useCachedFetch';
 import { usePersistedState } from '../hooks/usePersistedState';
-import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon } from '@heroicons/react/24/outline';
+import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon, PlusIcon } from '@heroicons/react/24/outline';
 import DocumentModal from './DocumentModal';
 import { FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
@@ -70,7 +70,7 @@ async function sendClientEmail(token: string, subject: string, body: string, cli
   // Get the user's email signature from the database
   const { getCurrentUserEmailSignature } = await import('../lib/emailSignature');
   const userSignature = await getCurrentUserEmailSignature();
-  
+
   // Handle signature (HTML or plain text)
   let signatureHtml = '';
   if (userSignature) {
@@ -85,7 +85,7 @@ async function sendClientEmail(token: string, subject: string, body: string, cli
     // Fallback to default signature
     signatureHtml = `<br><br>Best regards,<br>${senderName}<br>Decker Pex Levi Law Offices`;
   }
-  
+
   const fullBody = body + signatureHtml;
 
   const messageAttachments = attachments.map(att => ({
@@ -133,14 +133,14 @@ async function syncClientEmails(token: string, client: any) {
   // Use $search for a more robust query. It searches across common fields.
   // The search term should be enclosed in quotes for Graph API.
   const searchQuery = `"${client.lead_number}" OR "${client.email}"`;
-  
+
   const url = `https://graph.microsoft.com/v1.0/me/messages?$search=${encodeURIComponent(searchQuery)}&$top=50&$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,conversationId,hasAttachments`;
-  
-  const res = await fetch(url, { 
-    headers: { 
+
+  const res = await fetch(url, {
+    headers: {
       Authorization: `Bearer ${token}`,
       ConsistencyLevel: 'eventual' // Required for $search
-    } 
+    }
   });
   if (!res.ok) {
     const errorText = await res.text();
@@ -151,7 +151,7 @@ async function syncClientEmails(token: string, client: any) {
       if (errorJson?.error?.message) {
         throw new Error(`Graph API Error: ${errorJson.error.message}`);
       }
-    } catch (e) {}
+    } catch (e) { }
     throw new Error('Failed to fetch from Microsoft Graph');
   }
 
@@ -159,7 +159,7 @@ async function syncClientEmails(token: string, client: any) {
   const messages = json.value || [];
 
   // With a broad search, the client-side safeguard is even more important.
-  const clientMessages = messages.filter((msg: any) => 
+  const clientMessages = messages.filter((msg: any) =>
     (msg.subject && msg.subject.includes(client.lead_number!)) ||
     (msg.from?.emailAddress?.address.toLowerCase() === client.email!.toLowerCase()) ||
     (msg.toRecipients || []).some((r: any) => r.emailAddress.address.toLowerCase() === client.email!.toLowerCase()) ||
@@ -217,35 +217,35 @@ async function syncClientEmails(token: string, client: any) {
 // Helper function to strip signatures and quoted text from emails
 const stripSignatureAndQuotedText = (html: string): string => {
   if (!html) return '';
-  
+
   // Remove HTML tags
   const text = html.replace(/<[^>]*>/g, '');
-  
+
   // Remove common email signatures and quoted text
   const lines = text.split('\n');
   const cleanedLines = [];
-  
+
   for (const line of lines) {
     const trimmed = line.trim();
-    
+
     // Skip signature lines
-    if (trimmed.startsWith('--') || 
-        trimmed.startsWith('Best regards') ||
-        trimmed.startsWith('Sincerely') ||
-        trimmed.startsWith('Thank you') ||
-        trimmed.includes('Decker Pex Levi Law Offices') ||
-        trimmed.includes('lawoffice.org.il')) {
+    if (trimmed.startsWith('--') ||
+      trimmed.startsWith('Best regards') ||
+      trimmed.startsWith('Sincerely') ||
+      trimmed.startsWith('Thank you') ||
+      trimmed.includes('Decker Pex Levi Law Offices') ||
+      trimmed.includes('lawoffice.org.il')) {
       break;
     }
-    
+
     // Skip quoted text (lines starting with >)
     if (trimmed.startsWith('>')) {
       continue;
     }
-    
+
     cleanedLines.push(line);
   }
-  
+
   return cleanedLines.join('\n').trim();
 };
 
@@ -269,7 +269,7 @@ const CalendarPage: React.FC = () => {
   });
   const [filteredMeetings, setFilteredMeetings] = useState<any[]>([]);
   const [staff, setStaff] = useState<string[]>([]);
-  
+
   // Persist date filters so they're preserved when navigating back
   const [fromDate, setFromDate] = usePersistedState('calendar-fromDate', new Date().toISOString().split('T')[0], {
     storage: 'sessionStorage',
@@ -340,10 +340,10 @@ const CalendarPage: React.FC = () => {
   // Helper function to convert any currency amount to NIS
   const convertToNIS = (amount: number, currency: string): number => {
     if (!amount || amount <= 0) return 0;
-    
+
     const normalizedCurrency = currency?.toUpperCase().trim();
     const rate = currencyRates[normalizedCurrency as keyof typeof currencyRates] || 1;
-    
+
     return amount * rate;
   };
 
@@ -440,18 +440,27 @@ const CalendarPage: React.FC = () => {
   const [modalSelectedDate, setModalSelectedDate] = useState<string>('');
   const [selectedStaffFilter, setSelectedStaffFilter] = useState<string>('');
   const [allLanguages, setAllLanguages] = useState<Array<{ id: number; name: string }>>([]);
-  
+
+  // Guest Selection Modal State
+  const [isGuestSelectionModalOpen, setIsGuestSelectionModalOpen] = useState(false);
+  const [selectedMeetingForGuest, setSelectedMeetingForGuest] = useState<any>(null);
+  const [guestSelectionType, setGuestSelectionType] = useState<'extern1' | 'extern2' | null>(null);
+
+  // Notes Modal State
+  const [isNotesModalOpen, setIsNotesModalOpen] = useState(false);
+  const [selectedMeetingForNotes, setSelectedMeetingForNotes] = useState<any>(null);
+
   // Employee Availability State
-  const [employeeAvailability, setEmployeeAvailability] = useState<{[key: string]: any[]}>({});
-  const [unavailableEmployees, setUnavailableEmployees] = useState<{[key: string]: any[]}>({});
+  const [employeeAvailability, setEmployeeAvailability] = useState<{ [key: string]: any[] }>({});
+  const [unavailableEmployees, setUnavailableEmployees] = useState<{ [key: string]: any[] }>({});
   const [showMoreUnavailableDropdown, setShowMoreUnavailableDropdown] = useState(false);
-  const [meetingCounts, setMeetingCounts] = useState<{[clientId: string]: number}>({});
-  const [previousManagers, setPreviousManagers] = useState<{[meetingId: number]: string}>({});
-  const [meetingLocations, setMeetingLocations] = useState<{[locationId: number]: string}>({});
+  const [meetingCounts, setMeetingCounts] = useState<{ [clientId: string]: number }>({});
+  const [previousManagers, setPreviousManagers] = useState<{ [meetingId: number]: string }>({});
+  const [meetingLocations, setMeetingLocations] = useState<{ [locationId: number]: string }>({});
   // Map of meeting location name -> default_link (from tenants_meetinglocation)
-  const [meetingLocationLinks, setMeetingLocationLinks] = useState<{[locationName: string]: string}>({});
+  const [meetingLocationLinks, setMeetingLocationLinks] = useState<{ [locationName: string]: string }>({});
   // Map of meeting location name -> location ID (for reverse lookup)
-  const [meetingLocationNameToId, setMeetingLocationNameToId] = useState<{[locationName: string]: number}>({});
+  const [meetingLocationNameToId, setMeetingLocationNameToId] = useState<{ [locationName: string]: number }>({});
   // Set of location IDs that should show a meeting link button (from tenants_meetinglocation with default_link)
   const meetingLocationIdsWithLink = new Set([3, 4, 15, 16, 17, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29]);
   const [dropdownPosition, setDropdownPosition] = useState<{ x: number; y: number; width: number } | null>(null);
@@ -472,19 +481,19 @@ const CalendarPage: React.FC = () => {
   const [currentEmployeeId, setCurrentEmployeeId] = useState<number | null>(null);
   const [currentEmployeeName, setCurrentEmployeeName] = useState<string>('');
   const [meetingConfirmationLoadingId, setMeetingConfirmationLoadingId] = useState<string | number | null>(null);
-  
+
   // State to track legacy loading failures
   const [legacyLoadingDisabled, setLegacyLoadingDisabled] = useState(false);
-  
+
   // Meeting type filter state
   const [selectedMeetingType, setSelectedMeetingType] = useState<
     'all' | 'potential' | 'active' | 'staff' | 'paid'
   >('all');
-  
+
   // Staff meetings state
   const [staffMeetings, setStaffMeetings] = useState<any[]>([]);
   const [isStaffMeetingsLoading, setIsStaffMeetingsLoading] = useState(false);
-  
+
   // Teams meeting modal state
   const [isTeamsMeetingModalOpen, setIsTeamsMeetingModalOpen] = useState(false);
   const [selectedDateForMeeting, setSelectedDateForMeeting] = useState<Date | null>(null);
@@ -494,13 +503,13 @@ const CalendarPage: React.FC = () => {
   const [isStaffMeetingEditModalOpen, setIsStaffMeetingEditModalOpen] = useState(false);
   const [selectedStaffMeeting, setSelectedStaffMeeting] = useState<any>(null);
   const [stageNamesLoaded, setStageNamesLoaded] = useState(false);
-  
+
   // Action menu dropdown state
   const [showActionMenuDropdown, setShowActionMenuDropdown] = useState(false);
-  
+
   // Unavailable staff section collapse state
   const [isUnavailableStaffExpanded, setIsUnavailableStaffExpanded] = useState(false);
-  
+
   // Handle clicking outside action menu dropdown
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -533,29 +542,29 @@ const CalendarPage: React.FC = () => {
       console.log('🔍 getEmployeeById - Invalid input:', employeeIdOrName);
       return null;
     }
-    
+
     console.log('🔍 getEmployeeById - Searching for:', employeeIdOrName, 'Type:', typeof employeeIdOrName, 'Total employees:', allEmployees.length);
-    
+
     // First, try to match by ID (for legacy leads and new leads with ID fields)
     const employeeById = allEmployees.find((emp: any) => {
       const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
       const searchId = typeof employeeIdOrName === 'string' ? parseInt(employeeIdOrName, 10) : employeeIdOrName;
-      
+
       // Skip if searchId is NaN (not a valid number)
       if (isNaN(Number(searchId))) return false;
-      
+
       // Try exact match
       if (empId.toString() === searchId.toString()) return true;
       if (Number(empId) === Number(searchId)) return true;
-      
+
       return false;
     });
-    
+
     if (employeeById) {
       console.log('✅ getEmployeeById - Found by ID:', employeeById.display_name, 'ID:', employeeById.id, 'photo_url:', employeeById.photo_url, 'photo:', employeeById.photo);
       return employeeById;
     }
-    
+
     // If not found by ID, try to match by display name (for new leads where display_name is saved)
     if (typeof employeeIdOrName === 'string') {
       const employeeByName = allEmployees.find((emp: any) => {
@@ -563,13 +572,13 @@ const CalendarPage: React.FC = () => {
         // Case-insensitive match, trim whitespace
         return emp.display_name.trim().toLowerCase() === employeeIdOrName.trim().toLowerCase();
       });
-      
+
       if (employeeByName) {
         console.log('✅ getEmployeeById - Found by name:', employeeByName.display_name, 'ID:', employeeByName.id, 'photo_url:', employeeByName.photo_url, 'photo:', employeeByName.photo);
         return employeeByName;
       }
     }
-    
+
     console.log('❌ getEmployeeById - Not found:', employeeIdOrName, 'Sample employee IDs:', allEmployees.slice(0, 5).map(e => ({ id: e.id, name: e.display_name })));
     return null;
   };
@@ -589,26 +598,33 @@ const CalendarPage: React.FC = () => {
   const imageErrorCache = useRef<Map<string | number, boolean>>(new Map());
 
   // Helper component for employee avatar with image error fallback (like CallsLedgerPage)
-  const EmployeeAvatar: React.FC<{ 
-    employeeId: string | number | null | undefined; 
-    size?: 'sm' | 'md';
+  const EmployeeAvatar: React.FC<{
+    employeeId: string | number | null | undefined;
+    size?: 'sm' | 'md' | 'lg' | 'md' | 'md';
     showPlaceholder?: boolean; // If false, return null when no employee (for unassigned roles)
   }> = ({ employeeId, size = 'md', showPlaceholder = false }) => {
     const [imageError, setImageError] = useState(false);
     const employee = getEmployeeById(employeeId);
-    
+
     // Check cache first to prevent flickering
     const cacheKey = employeeId?.toString() || '';
     const cachedError = imageErrorCache.current.get(cacheKey) || false;
-    
+
     if (!employee) {
       // Return null if no placeholder should be shown (for unassigned roles)
       if (!showPlaceholder) {
         return null;
       }
       // Return placeholder only if showPlaceholder is true
+      const sizeMap = {
+        'sm': 'w-8 h-8 text-xs',
+        'md': 'w-10 h-10 text-sm',
+        'lg': 'w-14 h-14 text-base',
+        'xl': 'w-20 h-20 text-lg',
+        '2xl': 'w-28 h-28 text-xl'
+      };
       return (
-        <div className={`${size === 'sm' ? 'w-8 h-8' : 'w-10 h-10'} rounded-full flex items-center justify-center bg-gray-200 text-gray-500 text-xs font-semibold`}>
+        <div className={`${sizeMap[size]} rounded-full flex items-center justify-center bg-gray-200 text-gray-500 font-semibold`}>
           --
         </div>
       );
@@ -616,7 +632,14 @@ const CalendarPage: React.FC = () => {
 
     const photoUrl = employee.photo_url || employee.photo;
     const initials = getEmployeeInitials(employee.display_name);
-    const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : 'w-10 h-10 text-sm';
+    const sizeMap = {
+      'sm': 'w-8 h-8 text-xs',
+      'md': 'w-10 h-10 text-sm',
+      'lg': 'w-14 h-14 text-base',
+      'xl': 'w-20 h-20 text-lg',
+      '2xl': 'w-28 h-28 text-xl'
+    };
+    const sizeClasses = sizeMap[size];
 
     // Use cached error if available, otherwise use state
     const hasError = cachedError || imageError;
@@ -648,14 +671,14 @@ const CalendarPage: React.FC = () => {
   };
 
   // Helper function to render employee avatar (wrapper for backward compatibility)
-  const renderEmployeeAvatar = (employeeId: string | number | null | undefined, size: 'sm' | 'md' = 'md', showPlaceholder: boolean = false) => {
+  const renderEmployeeAvatar = (employeeId: string | number | null | undefined, size: 'sm' | 'md' | 'lg' | 'xl' | '2xl' = 'md', showPlaceholder: boolean = false) => {
     return <EmployeeAvatar employeeId={employeeId} size={size} showPlaceholder={showPlaceholder} />;
   };
 
   // Helper function to get role display name
   const getRoleDisplayName = (roleCode: string | null | undefined): string => {
     if (!roleCode) return 'N/A';
-    
+
     const roleMap: { [key: string]: string } = {
       'c': 'Closer',
       's': 'Scheduler',
@@ -685,7 +708,7 @@ const CalendarPage: React.FC = () => {
       'col': 'Collection',
       'lawyer': 'Helper Closer'
     };
-    
+
     return roleMap[roleCode] || roleCode || 'N/A';
   };
 
@@ -730,6 +753,193 @@ const CalendarPage: React.FC = () => {
       if (directValue !== null) return directValue;
     }
     return false;
+  };
+
+  // Send notification message to employee when added as guest
+  const sendGuestNotification = async (employeeId: string | number, meeting: any, guestType: 'extern1' | 'extern2') => {
+    try {
+      // Get current user info
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user?.id) {
+        console.error('No current user found');
+        return;
+      }
+
+      // Get current user's user_id from users table
+      const { data: currentUserData } = await supabase
+        .from('users')
+        .select('id')
+        .eq('auth_id', user.id)
+        .single();
+
+      if (!currentUserData?.id) {
+        console.error('Current user not found in users table');
+        return;
+      }
+
+      // Get target employee's user_id from users table
+      const { data: targetUserData } = await supabase
+        .from('users')
+        .select('id')
+        .eq('employee_id', employeeId)
+        .single();
+
+      if (!targetUserData?.id) {
+        console.error('Target employee not found in users table');
+        return;
+      }
+
+      // Format meeting date as dd/mm/yyyy
+      const formatDate = (dateString: string): string => {
+        if (!dateString) return 'TBD';
+        try {
+          const date = new Date(dateString);
+          const day = String(date.getDate()).padStart(2, '0');
+          const month = String(date.getMonth() + 1).padStart(2, '0');
+          const year = date.getFullYear();
+          return `${day}/${month}/${year}`;
+        } catch (error) {
+          return dateString;
+        }
+      };
+
+      // Format meeting time without seconds
+      const formatTime = (timeString: string): string => {
+        if (!timeString) return 'TBD';
+        // If time includes seconds (HH:MM:SS), remove them
+        if (timeString.includes(':') && timeString.split(':').length === 3) {
+          return timeString.substring(0, 5); // Return HH:MM
+        }
+        return timeString;
+      };
+
+      // Get meeting details for the message
+      const meetingDate = formatDate(meeting.meeting_date || '');
+      const meetingTime = formatTime(meeting.meeting_time || '');
+      const clientName = meeting.lead?.name || meeting.legacy_lead?.name || 'Client';
+      const leadNumber = meeting.lead?.lead_number || meeting.legacy_lead?.lead_number || '';
+      const location = meeting.meeting_location || meeting.location || 'TBD';
+
+      // Create or find direct conversation
+      const { data: conversationId, error: convError } = await supabase.rpc(
+        'create_direct_conversation',
+        {
+          user1_uuid: currentUserData.id,
+          user2_uuid: targetUserData.id
+        }
+      );
+
+      if (convError) {
+        console.error('Error creating conversation:', convError);
+        return;
+      }
+
+      // Wait a bit for conversation to be created
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Create notification message with icons
+      const guestNumber = guestType === 'extern1' ? '1' : '2';
+      const messageContent = `You've been added as Guest ${guestNumber} to a meeting!\n\n` +
+        `📅 Date: ${meetingDate}\n` +
+        `🕐 Time: ${meetingTime}\n` +
+        `👥 Client: ${clientName}${leadNumber ? ` (${leadNumber})` : ''}\n` +
+        `📍 Location: ${location}\n\n` +
+        `Please check your calendar for more details.`;
+
+      // Insert message into database
+      const { error: messageError } = await supabase
+        .from('messages')
+        .insert({
+          conversation_id: conversationId,
+          sender_id: currentUserData.id,
+          content: messageContent,
+          message_type: 'text'
+        });
+
+      if (messageError) {
+        console.error('Error sending notification message:', messageError);
+      }
+    } catch (error) {
+      console.error('Error in sendGuestNotification:', error);
+      // Don't show error to user as this is a background notification
+    }
+  };
+
+  const handleSaveGuest = async (meetingId: string | number, guestType: 'extern1' | 'extern2', employeeId: string | number) => {
+    try {
+      const { error } = await supabase
+        .from('meetings')
+        .update({ [guestType]: employeeId.toString() })
+        .eq('id', meetingId);
+
+      if (error) {
+        console.error('Error saving guest:', error);
+        toast.error('Failed to save guest');
+        return;
+      }
+
+      // Get the meeting object for notification
+      const meeting = meetings.find(m => m.id === meetingId);
+
+      // Update local state
+      setMeetings(prev =>
+        prev.map(m => {
+          if (m.id === meetingId) {
+            return {
+              ...m,
+              [guestType]: employeeId.toString(),
+            };
+          }
+          return m;
+        })
+      );
+
+      // Send notification message
+      if (meeting) {
+        sendGuestNotification(employeeId, meeting, guestType);
+      }
+
+      toast.success(`Guest ${guestType === 'extern1' ? '1' : '2'} added successfully`);
+      setIsGuestSelectionModalOpen(false);
+      setSelectedMeetingForGuest(null);
+      setGuestSelectionType(null);
+    } catch (error) {
+      console.error('Error saving guest:', error);
+      toast.error('Failed to save guest');
+    }
+  };
+
+  const handleRemoveGuest = async (meetingId: string | number, guestType: 'extern1' | 'extern2') => {
+    try {
+      const { error } = await supabase
+        .from('meetings')
+        .update({ [guestType]: null })
+        .eq('id', meetingId);
+
+      if (error) {
+        console.error('Error removing guest:', error);
+        toast.error('Failed to remove guest');
+        return;
+      }
+
+      // Update local state
+      setMeetings(prev =>
+        prev.map(m => {
+          if (m.id === meetingId) {
+            return {
+              ...m,
+              [guestType]: null,
+            };
+          }
+          return m;
+        })
+      );
+
+      toast.success(`Guest ${guestType === 'extern1' ? '1' : '2'} removed successfully`);
+    } catch (error) {
+      console.error('Error removing guest:', error);
+      toast.error('Failed to remove guest');
+    }
   };
 
   const handleMeetingConfirmationToggle = async (meeting: any) => {
@@ -816,10 +1026,10 @@ const CalendarPage: React.FC = () => {
               meeting_confirmation: newValue,
               legacy_lead: m.legacy_lead
                 ? {
-                    ...m.legacy_lead,
-                    meeting_confirmation: newValue,
-                    meeting_confirmation_by: newValue ? employeeIdToUse : null,
-                  }
+                  ...m.legacy_lead,
+                  meeting_confirmation: newValue,
+                  meeting_confirmation_by: newValue ? employeeIdToUse : null,
+                }
                 : m.legacy_lead,
             };
           }
@@ -828,10 +1038,10 @@ const CalendarPage: React.FC = () => {
             meeting_confirmation: newValue,
             lead: m.lead
               ? {
-                  ...m.lead,
-                  meeting_confirmation: newValue,
-                  meeting_confirmation_by: newValue ? employeeIdToUse : null,
-                }
+                ...m.lead,
+                meeting_confirmation: newValue,
+                meeting_confirmation_by: newValue ? employeeIdToUse : null,
+              }
               : m.lead,
           };
         })
@@ -848,27 +1058,27 @@ const CalendarPage: React.FC = () => {
 
   // Helper function to get category name from ID or name with main category
   const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string | number) => {
-    
+
     if (!categoryId || categoryId === '---' || categoryId === '--') {
       // If no category_id but we have a fallback category, try to find it in the loaded categories
       if (fallbackCategory && String(fallbackCategory).trim() !== '') {
-        
+
         // Try to find the fallback category in the loaded categories
         // First try by ID if fallbackCategory is a number
         let foundCategory = null;
         if (typeof fallbackCategory === 'number') {
-          foundCategory = allCategories.find((cat: any) => 
+          foundCategory = allCategories.find((cat: any) =>
             cat.id.toString() === fallbackCategory.toString()
           );
         }
-        
+
         // If not found by ID, try by name
         if (!foundCategory) {
-          foundCategory = allCategories.find((cat: any) => 
+          foundCategory = allCategories.find((cat: any) =>
             cat.name.toLowerCase().trim() === String(fallbackCategory).toLowerCase().trim()
           );
         }
-        
+
         if (foundCategory) {
           // Return category name with main category in parentheses
           if (foundCategory.misc_maincategory?.name) {
@@ -882,17 +1092,17 @@ const CalendarPage: React.FC = () => {
       }
       return '--';
     }
-    
+
     // If allCategories is not loaded yet, return the original value
     if (!allCategories || allCategories.length === 0) {
       return String(categoryId);
     }
-    
-    
+
+
     // First try to find by ID
     const categoryById = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
     if (categoryById) {
-      
+
       // Return category name with main category in parentheses
       if (categoryById.misc_maincategory?.name) {
         return `${categoryById.name} (${categoryById.misc_maincategory.name})`;
@@ -900,11 +1110,11 @@ const CalendarPage: React.FC = () => {
         return categoryById.name; // Fallback if no main category
       }
     }
-    
+
     // If not found by ID, try to find by name (in case it's already a name)
     const categoryByName = allCategories.find((cat: any) => cat.name === categoryId);
     if (categoryByName) {
-      
+
       // Return category name with main category in parentheses
       if (categoryByName.misc_maincategory?.name) {
         return `${categoryByName.name} (${categoryByName.misc_maincategory.name})`;
@@ -912,7 +1122,7 @@ const CalendarPage: React.FC = () => {
         return categoryByName.name; // Fallback if no main category
       }
     }
-    
+
     return String(categoryId); // Fallback to original value if not found
   };
 
@@ -982,32 +1192,32 @@ const CalendarPage: React.FC = () => {
   // Helper function to fetch legacy meetings and return them (doesn't update state)
   const fetchLegacyMeetingsForDateRange = async (fromDate: string, toDate: string, employees: any[] = []): Promise<any[]> => {
     if (!fromDate || !toDate || legacyLoadingDisabled) return [];
-    
+
     try {
       // Limit date range to max 7 days to prevent timeouts on large tables
       const from = new Date(fromDate);
       const to = new Date(toDate);
       const daysDiff = Math.ceil((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
-      
+
       if (daysDiff > 7) {
         console.warn('Date range too large for legacy meetings, limiting to 7 days');
         const limitedTo = new Date(from);
         limitedTo.setDate(limitedTo.getDate() + 7);
         toDate = limitedTo.toISOString().split('T')[0];
       }
-      
+
       if (daysDiff > 14) {
         console.warn('Date range too large, skipping legacy meeting fetch');
         return [];
       }
-      
+
       // Fetch legacy leads with minimal fields
       const { data: legacyData, error: legacyError } = await supabase
         .from('leads_lead')
         .select(`
           id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, 
           meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, total, total_base, currency_id, meeting_total_currency_id, 
-          expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination, language_id,
+          expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination, language_id, case_handler_id,
           accounting_currencies!leads_lead_currency_id_fkey (
             id,
             name,
@@ -1023,7 +1233,7 @@ const CalendarPage: React.FC = () => {
         .not('name', 'is', null)
         .limit(1000)
         .order('meeting_date', { ascending: true });
-      
+
       if (legacyError) {
         console.error('Error fetching legacy leads:', legacyError);
         if (legacyError.code === '57014' || legacyError.message?.includes('timeout')) {
@@ -1031,16 +1241,16 @@ const CalendarPage: React.FC = () => {
         }
         return [];
       }
-      
+
       if (!legacyData || legacyData.length === 0) return [];
-      
+
       // Process legacy data and convert currency to symbols
       legacyData.forEach((legacyLead: any) => {
         // Extract currency data from joined table and convert to symbol
-        const currencyRecord = legacyLead.accounting_currencies 
+        const currencyRecord = legacyLead.accounting_currencies
           ? (Array.isArray(legacyLead.accounting_currencies) ? legacyLead.accounting_currencies[0] : legacyLead.accounting_currencies)
           : null;
-        
+
         if (currencyRecord) {
           // Convert iso_code to symbol
           const currencySymbol = (() => {
@@ -1081,14 +1291,14 @@ const CalendarPage: React.FC = () => {
           legacyLead.balance_currency = '₪';
         }
       });
-      
+
       // Process legacy meetings
       const processedLegacyMeetings = legacyData.map((legacyLead: any) => {
         // Extract language name from joined table (same as Clients.tsx)
         const legacyLanguageRecord = Array.isArray(legacyLead.misc_language)
           ? legacyLead.misc_language[0]
           : legacyLead.misc_language;
-        
+
         let languageName = '';
         if (legacyLanguageRecord?.name) {
           languageName = legacyLanguageRecord.name;
@@ -1096,7 +1306,7 @@ const CalendarPage: React.FC = () => {
           // If join failed, will be fetched later in assign staff modal
           languageName = '';
         }
-        
+
         const meeting = {
           id: `legacy_${legacyLead.id}`,
           created_at: legacyLead.meeting_date || new Date().toISOString(),
@@ -1131,6 +1341,10 @@ const CalendarPage: React.FC = () => {
             helper: getEmployeeDisplayNameLocal(legacyLead.meeting_lawyer_id, employees),
             scheduler: getEmployeeDisplayNameLocal(legacyLead.meeting_scheduler_id, employees),
             scheduler_id: legacyLead.meeting_scheduler_id,
+            handler_id: legacyLead.case_handler_id,
+            handler: legacyLead.case_handler_id
+              ? getEmployeeDisplayNameLocal(legacyLead.case_handler_id, employees)
+              : '--',
             balance: parseFloat(legacyLead.total || '0'),
             // balance_currency is already set to a symbol (₪, $, €, £, etc.) from the JOIN processing above
             // Use it directly (same as Clients.tsx balance badge which uses selectedClient.balance_currency)
@@ -1152,7 +1366,7 @@ const CalendarPage: React.FC = () => {
         };
         return meeting;
       });
-      
+
       return processedLegacyMeetings;
     } catch (error: any) {
       console.error('Error in fetchLegacyMeetingsForDateRange:', error);
@@ -1165,7 +1379,7 @@ const CalendarPage: React.FC = () => {
     // Build a Set of existing meeting IDs to prevent duplicates
     const existingMeetingIds = new Set<string | number>();
     const existingLegacyLeadIds = new Set<string>();
-    
+
     regularMeetings.forEach(meeting => {
       existingMeetingIds.add(meeting.id);
       if (meeting.legacy_lead_id) {
@@ -1176,14 +1390,14 @@ const CalendarPage: React.FC = () => {
         existingLegacyLeadIds.add(legacyLeadId);
       }
     });
-    
+
     // Filter out legacy meetings that already exist
     const newLegacyMeetings = legacyMeetings.filter((legacyMeeting: any) => {
       const legacyLeadId = legacyMeeting.id?.toString().replace('legacy_', '');
-      return !existingMeetingIds.has(legacyMeeting.id) && 
-             !existingLegacyLeadIds.has(legacyLeadId);
+      return !existingMeetingIds.has(legacyMeeting.id) &&
+        !existingLegacyLeadIds.has(legacyLeadId);
     });
-    
+
     // Combine all meetings
     return [...regularMeetings, ...newLegacyMeetings];
   };
@@ -1192,14 +1406,14 @@ const CalendarPage: React.FC = () => {
   // Fetch staff meetings from shared-staffcalendar@lawoffice.org.il
   const fetchStaffMeetings = async (fromDate: string, toDate: string) => {
     setIsStaffMeetingsLoading(true);
-    
+
     try {
       // Fetch staff meetings from database for date range
       const { data: allMeetings, error: allMeetingsError } = await supabase
         .from('outlook_teams_meetings')
         .select('*')
         .order('start_date_time');
-      
+
       // Filter by date range manually
       const staffMeetingsData = allMeetings?.filter(meeting => {
         const meetingDate = new Date(meeting.start_date_time).toISOString().split('T')[0];
@@ -1211,7 +1425,7 @@ const CalendarPage: React.FC = () => {
         return;
       }
 
-      
+
       if (staffMeetingsData && staffMeetingsData.length > 0) {
         // Fetch all employees and users to match emails with display names
         const [employeesResult, usersResult] = await Promise.all([
@@ -1242,13 +1456,13 @@ const CalendarPage: React.FC = () => {
         const emailToNameMap = new Map<string, string>();
         employeesResult.data?.forEach((emp: any) => {
           if (!emp.display_name) return;
-          
+
           // Method 1: Use email from users table (employee_id match)
           const emailFromUsers = employeeIdToEmail.get(emp.id);
           if (emailFromUsers) {
             emailToNameMap.set(emailFromUsers, emp.display_name);
           }
-          
+
           // Method 2: Use pattern matching (display_name.toLowerCase().replace(/\s+/g, '.') + '@lawoffice.org.il')
           const patternEmail = `${emp.display_name.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`;
           emailToNameMap.set(patternEmail, emp.display_name);
@@ -1257,14 +1471,14 @@ const CalendarPage: React.FC = () => {
         const formattedStaffMeetings = staffMeetingsData.map((meeting: any) => {
           // Extract attendees from JSONB
           const attendees = meeting.attendees || [];
-          
+
           // Convert attendee emails to display names
           const attendeeNames = attendees.map((email: string) => {
             // Normalize email to lowercase for matching
             const normalizedEmail = email.toLowerCase();
             return emailToNameMap.get(normalizedEmail) || email;
           }).filter(Boolean);
-          
+
           // Create display text for attendees
           let attendeesDisplay = '--';
           if (attendeeNames.length > 0) {
@@ -1328,13 +1542,13 @@ const CalendarPage: React.FC = () => {
 
   const loadLegacyForDateRange = async (fromDate: string, toDate: string) => {
     if (!fromDate || !toDate || legacyLoadingDisabled) return;
-    
+
     setIsLegacyLoading(true);
-    
+
     try {
       // Fetch legacy meetings using the helper function
       const legacyMeetings = await fetchLegacyMeetingsForDateRange(fromDate, toDate, allEmployees);
-      
+
       if (legacyMeetings.length > 0) {
         // Add legacy meetings to the current meetings (without duplicates)
         setMeetings(prevMeetings => {
@@ -1407,7 +1621,7 @@ const CalendarPage: React.FC = () => {
         .eq('is_active', true);
 
       let uniqueEmployees;
-      
+
       if (usersError) {
         console.error('❌ CalendarPage - Error fetching active users:', usersError);
         // Fallback: return all employees if user check fails
@@ -1444,7 +1658,7 @@ const CalendarPage: React.FC = () => {
         }
 
         const processedEmployees = activeEmployees.sort((a, b) => a.display_name.localeCompare(b.display_name));
-      
+
         console.log('🔍 CalendarPage - Processed employees:', processedEmployees.length, 'items');
         console.log('🔍 CalendarPage - Employees with photos:', processedEmployees.filter(e => e.photo_url || e.photo).length);
 
@@ -1471,7 +1685,7 @@ const CalendarPage: React.FC = () => {
           )
         `)
         .order('name', { ascending: true });
-      
+
       if (categoriesError) throw categoriesError;
 
       return {
@@ -1491,18 +1705,18 @@ const CalendarPage: React.FC = () => {
 
   useEffect(() => {
     console.log('🔍 CalendarPage useEffect: useEffect triggered', { navType, hasCachedMeetings: meetings.length > 0 });
-    
+
     // If this is a back/forward navigation (POP) and we have cached meetings, skip the fetch
     if (navType === 'POP' && meetings.length > 0) {
       console.log('🔍 CalendarPage: POP navigation with cached meetings, skipping fetch');
       setIsLoading(false);
       return;
     }
-    
+
     const fetchMeetingsAndStaff = async () => {
       console.log('🔍 CalendarPage useEffect: fetchMeetingsAndStaff started');
       setIsLoading(true);
-      
+
       try {
         // Employees and categories are now loaded via useCachedFetch hook above
         // They are automatically cached and won't refetch when navigating back
@@ -1511,35 +1725,35 @@ const CalendarPage: React.FC = () => {
         // Initialize stage names cache
         const stageNames = await fetchStageNames();
         console.log('🔍 Calendar - Stage names fetched:', stageNames);
-        
+
         // If no stage names were fetched, try to refresh the cache
         if (!stageNames || Object.keys(stageNames).length === 0) {
           console.log('🔍 Calendar - No stage names found, refreshing cache...');
           const refreshedStageNames = await refreshStageNames();
           console.log('🔍 Calendar - Refreshed stage names:', refreshedStageNames);
         }
-        
+
         // Mark stage names as loaded
         setStageNamesLoaded(true);
 
         // Create a helper function to get category name using the loaded data
         const getCategoryNameFromData = (categoryId: string | number | null | undefined) => {
           if (!categoryId || categoryId === '---') return '';
-          
+
           // Use the categories from state (populated by useCachedFetch)
           const categoryById = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
           if (categoryById) return categoryById.name;
-          
+
           const categoryByName = allCategories.find((cat: any) => cat.name === categoryId);
           if (categoryByName) return categoryByName.name;
-          
+
           return String(categoryId);
         };
 
         // Fetch ALL meetings in parallel - don't separate today's from background
         const today = new Date().toISOString().split('T')[0];
         console.log('🔍 CalendarPage: Starting fetchMeetingsAndStaff for date:', today);
-        
+
         // Fetch past stages data helper (needed before displaying)
         const fetchPastStagesData = async () => {
           try {
@@ -1583,33 +1797,33 @@ const CalendarPage: React.FC = () => {
             return new Set<string>();
           }
         };
-        
+
         // Determine date range for legacy meetings
         const dateRangeFrom = appliedFromDate && datesManuallySet ? appliedFromDate : today;
         const dateRangeTo = appliedToDate && datesManuallySet ? appliedToDate : today;
-        
+
         // Fetch ALL data in parallel: regular meetings + legacy meetings + past stages
         console.log('🔍 Fetching all meetings in parallel...', { dateRangeFrom, dateRangeTo, datesManuallySet });
         // Use allEmployees state if available, otherwise fallback to employeesAndCategoriesData
         const employeesForLegacy = allEmployees.length > 0 ? allEmployees : (employeesAndCategoriesData?.employees || []);
-        
+
         // Build regular meetings query with date filtering if dates are manually set
         let regularMeetingsQuery = supabase
           .from('meetings')
           .select(`
             id, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url,
             meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
-            attendance_probability, complexity, car_number, calendar_type
+            attendance_probability, complexity, car_number, calendar_type, extern1, extern2
           `)
           .or('status.is.null,status.neq.canceled');
-        
+
         // Apply date filtering if dates are manually set
         if (datesManuallySet && dateRangeFrom && dateRangeTo) {
           regularMeetingsQuery = regularMeetingsQuery
             .gte('meeting_date', dateRangeFrom)
             .lte('meeting_date', dateRangeTo);
         }
-        
+
         const [
           { data: allMeetingsData, error: allMeetingsError },
           legacyMeetings,
@@ -1622,19 +1836,19 @@ const CalendarPage: React.FC = () => {
           // Fetch past stages data
           fetchPastStagesData()
         ]);
-        
+
         // Set past stages data immediately
         setLeadsWithPastStages(pastStagesData);
-        
+
         // Now process all regular meetings (combining today's and background into one processing step)
         let allProcessedMeetings: any[] = [];
         let allMeetingsCurrencyMap: Record<number, { name?: string; iso_code?: string }> = {};
-        
+
         if (!allMeetingsError && allMeetingsData && allMeetingsData.length > 0) {
           // Collect unique client_ids and legacy_lead_ids from ALL meetings
           const clientIds = [...new Set(allMeetingsData.map(m => m.client_id).filter(Boolean))];
           const legacyLeadIds = [...new Set(allMeetingsData.map(m => m.legacy_lead_id).filter(Boolean))];
-          
+
           // Fetch new leads data
           let newLeadsMap = new Map();
           if (clientIds.length > 0) {
@@ -1645,7 +1859,7 @@ const CalendarPage: React.FC = () => {
                 balance, balance_currency, currency_id, expert_notes, expert, probability, phone, email, language, language_id,
                 meeting_confirmation, meeting_confirmation_by, eligibility_status,
                 manual_interactions, number_of_applicants_meeting, meeting_collection_id,
-                meeting_manager_id, meeting_lawyer_id,
+                meeting_manager_id, meeting_lawyer_id, handler, case_handler_id,
                 accounting_currencies!leads_currency_id_fkey (
                   id,
                   name,
@@ -1660,23 +1874,23 @@ const CalendarPage: React.FC = () => {
                 )
               `)
               .in('id', clientIds);
-            
+
             if (newLeadsData) {
               // Process each lead and extract currency data from the join
               newLeadsData.forEach((lead: any) => {
                 // Extract currency data from joined table (same as Clients.tsx)
-                const currencyRecord = lead.accounting_currencies 
+                const currencyRecord = lead.accounting_currencies
                   ? (Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies)
                   : null;
-                
+
                 // Convert currency_id to symbol (same logic as Clients.tsx)
                 if (currencyRecord) {
                   // Store in currency map for later use
-                  allMeetingsCurrencyMap[currencyRecord.id] = { 
-                    name: currencyRecord.name, 
-                    iso_code: currencyRecord.iso_code 
+                  allMeetingsCurrencyMap[currencyRecord.id] = {
+                    name: currencyRecord.name,
+                    iso_code: currencyRecord.iso_code
                   };
-                  
+
                   // Convert iso_code to symbol (same as Clients.tsx lines 2865-2889)
                   const currencySymbol = (() => {
                     if (currencyRecord.iso_code) {
@@ -1703,7 +1917,7 @@ const CalendarPage: React.FC = () => {
                     }
                     return '₪'; // Default fallback
                   })();
-                  
+
                   // Set balance_currency to the symbol (same as Clients.tsx line 2919)
                   lead.balance_currency = currencySymbol;
                 } else if (lead.currency_id) {
@@ -1720,23 +1934,23 @@ const CalendarPage: React.FC = () => {
                   // Default to NIS if no currency_id
                   lead.balance_currency = lead.balance_currency || '₪';
                 }
-                
+
                 newLeadsMap.set(lead.id, lead);
               });
             }
           }
-          
+
           // Fetch legacy leads data
           let legacyLeadsMap = new Map();
           if (legacyLeadIds.length > 0) {
             const numericLegacyLeadIds = legacyLeadIds.map(id => typeof id === 'string' ? parseInt(id, 10) : id).filter(id => !isNaN(id));
-            
+
             const { data: legacyLeadsData } = await supabase
               .from('leads_lead')
               .select(`
                 id, name, lead_number, master_id, stage, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, category, category_id,
                 total, total_base, currency_id, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
-                meeting_location_id, meeting_collection_id, meeting_confirmation, meeting_confirmation_by,
+                meeting_location_id, meeting_collection_id, meeting_confirmation, meeting_confirmation_by, case_handler_id,
                 accounting_currencies!leads_lead_currency_id_fkey (
                   id,
                   name,
@@ -1751,23 +1965,23 @@ const CalendarPage: React.FC = () => {
                 )
               `)
               .in('id', numericLegacyLeadIds);
-            
+
             if (legacyLeadsData && legacyLeadsData.length > 0) {
               // Process each legacy lead and extract currency data from the join
               legacyLeadsData.forEach((lead: any) => {
                 // Extract currency data from joined table (same as Clients.tsx)
-                const currencyRecord = lead.accounting_currencies 
+                const currencyRecord = lead.accounting_currencies
                   ? (Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies)
                   : null;
-                
+
                 // Convert currency_id to symbol (same logic as new leads and Clients.tsx)
                 if (currencyRecord) {
                   // Store in currency map for later use
-                  allMeetingsCurrencyMap[currencyRecord.id] = { 
-                    name: currencyRecord.name, 
-                    iso_code: currencyRecord.iso_code 
+                  allMeetingsCurrencyMap[currencyRecord.id] = {
+                    name: currencyRecord.name,
+                    iso_code: currencyRecord.iso_code
                   };
-                  
+
                   // Convert iso_code to symbol (same as Clients.tsx lines 2865-2889 and new leads above)
                   const currencySymbol = (() => {
                     if (currencyRecord.iso_code) {
@@ -1794,7 +2008,7 @@ const CalendarPage: React.FC = () => {
                     }
                     return '₪'; // Default fallback
                   })();
-                  
+
                   // Set balance_currency to the symbol (same as new leads and Clients.tsx)
                   lead.balance_currency = currencySymbol;
                 } else if (lead.currency_id) {
@@ -1811,26 +2025,26 @@ const CalendarPage: React.FC = () => {
                   // Default to NIS if no currency_id
                   lead.balance_currency = '₪';
                 }
-                
+
                 legacyLeadsMap.set(lead.id, lead);
                 legacyLeadsMap.set(String(lead.id), lead);
               });
             }
           }
-          
+
           // Combine ALL meetings with their lead data
           const allMeetingsWithLeads = allMeetingsData.map(meeting => {
-            const legacyLead = meeting.legacy_lead_id 
+            const legacyLead = meeting.legacy_lead_id
               ? (legacyLeadsMap.get(meeting.legacy_lead_id) || legacyLeadsMap.get(String(meeting.legacy_lead_id)) || legacyLeadsMap.get(Number(meeting.legacy_lead_id)) || null)
               : null;
-              
+
             return {
               ...meeting,
               lead: meeting.client_id ? newLeadsMap.get(meeting.client_id) : null,
               legacy_lead: legacyLead
             };
           });
-          
+
           // Process ALL meetings at once
           allProcessedMeetings = allMeetingsWithLeads
             .filter((meeting: any) => {
@@ -1841,7 +2055,7 @@ const CalendarPage: React.FC = () => {
             })
             .map((meeting: any) => {
               let leadData = null;
-              
+
               if (meeting.legacy_lead) {
                 // Format lead_number for legacy subleads (similar to CollectionDueReportPage)
                 const actualLegacyLeadNumber = meeting.legacy_lead.lead_number || meeting.legacy_lead.id?.toString() || '';
@@ -1858,7 +2072,7 @@ const CalendarPage: React.FC = () => {
                     displayLegacyLeadNumber = `${masterLegacyLeadNumber}/2`; // Default to /2
                   }
                 }
-                
+
                 leadData = {
                   ...meeting.legacy_lead,
                   lead_type: 'legacy',
@@ -1869,10 +2083,14 @@ const CalendarPage: React.FC = () => {
                   helper_id: meeting.legacy_lead.meeting_lawyer_id,
                   scheduler_id: meeting.legacy_lead.meeting_scheduler_id,
                   expert_id: meeting.legacy_lead.expert_id,
+                  handler_id: meeting.legacy_lead.case_handler_id,
                   // Convert IDs to display names for display
                   manager: getEmployeeDisplayName(meeting.legacy_lead.meeting_manager_id),
                   helper: getEmployeeDisplayName(meeting.legacy_lead.meeting_lawyer_id),
                   scheduler: getEmployeeDisplayName(meeting.legacy_lead.meeting_scheduler_id),
+                  handler: meeting.legacy_lead.case_handler_id
+                    ? getEmployeeDisplayName(meeting.legacy_lead.case_handler_id)
+                    : '--',
                   // Store total_base and total for balance logic
                   total_base: meeting.legacy_lead.total_base ?? null,
                   total: meeting.legacy_lead.total ?? null,
@@ -1918,7 +2136,7 @@ const CalendarPage: React.FC = () => {
                     displayLeadNumber = `${masterLeadNumber}/2`; // Default to /2
                   }
                 }
-                
+
                 leadData = {
                   ...meeting.lead,
                   lead_type: 'new',
@@ -1927,23 +2145,27 @@ const CalendarPage: React.FC = () => {
                   helper_id: meeting.lead.meeting_lawyer_id || meeting.lead.helper,
                   scheduler_id: meeting.lead.scheduler,
                   expert_id: meeting.lead.expert,
+                  handler_id: meeting.lead.case_handler_id,
                   // Convert IDs to display names for display
-                  manager: meeting.lead.meeting_manager_id 
-                    ? getEmployeeDisplayName(meeting.lead.meeting_manager_id) 
+                  manager: meeting.lead.meeting_manager_id
+                    ? getEmployeeDisplayName(meeting.lead.meeting_manager_id)
                     : (meeting.lead.manager || '--'),
-                  helper: meeting.lead.meeting_lawyer_id 
-                    ? getEmployeeDisplayName(meeting.lead.meeting_lawyer_id) 
+                  helper: meeting.lead.meeting_lawyer_id
+                    ? getEmployeeDisplayName(meeting.lead.meeting_lawyer_id)
                     : (meeting.lead.helper || '--'),
-                  scheduler: meeting.lead.scheduler 
+                  scheduler: meeting.lead.scheduler
                     ? (typeof meeting.lead.scheduler === 'number' || (typeof meeting.lead.scheduler === 'string' && !isNaN(Number(meeting.lead.scheduler))))
                       ? getEmployeeDisplayName(meeting.lead.scheduler)
                       : meeting.lead.scheduler
                     : '--',
-                  expert: meeting.lead.expert 
+                  expert: meeting.lead.expert
                     ? (typeof meeting.lead.expert === 'number' || (typeof meeting.lead.expert === 'string' && !isNaN(Number(meeting.lead.expert))))
                       ? getEmployeeDisplayName(meeting.lead.expert)
                       : meeting.lead.expert
                     : '--',
+                  handler: meeting.lead.case_handler_id
+                    ? getEmployeeDisplayName(meeting.lead.case_handler_id)
+                    : (meeting.lead.handler || '--'),
                   // Language: preserve from meeting.lead (spread above) and also store language_id if available
                   language: meeting.lead.language || null,
                   language_id: meeting.lead.language_id || null,
@@ -1959,7 +2181,7 @@ const CalendarPage: React.FC = () => {
                   department_id: meeting.lead.misc_category?.misc_maincategory?.department_id
                 };
               }
-              
+
               return {
                 ...meeting,
                 meeting_confirmation: getMeetingConfirmationState(meeting),
@@ -1968,10 +2190,10 @@ const CalendarPage: React.FC = () => {
               };
             });
         }
-        
+
         // Combine all meetings: regular + legacy (without duplicates)
         const allMeetingsCombined = combineMeetingsWithoutDuplicates(allProcessedMeetings, legacyMeetings);
-        
+
         // Set ALL meetings at once - this ensures everything appears together
         setMeetings(allMeetingsCombined);
         setIsLoading(false);
@@ -2008,7 +2230,7 @@ const CalendarPage: React.FC = () => {
 
     fetchMeetingsAndStaff();
     fetchMeetingLocations();
-    
+
     // DISABLED: Meeting counts query removed to prevent timeouts
     // fetchMeetingCountsAndPreviousManagers().catch(error => {
     // });
@@ -2030,21 +2252,25 @@ const CalendarPage: React.FC = () => {
       }));
       try {
         // Determine which table to query based on lead type
-        const tableName = meeting.lead.lead_type === 'legacy' ? 'leads_lead' : 'leads';
+        const tableName = meeting.lead?.lead_type === 'legacy' ? 'leads_lead' : 'leads';
         let leadId;
-        
-        if (meeting.lead.lead_type === 'legacy') {
+
+        if (meeting.lead?.lead_type === 'legacy') {
           // For legacy meetings, extract the original ID from the prefixed ID
           leadId = meeting.id.startsWith('legacy_') ? meeting.id.replace('legacy_', '') : meeting.legacy_lead_id;
         } else {
           leadId = meeting.client_id;
         }
-        
+
+        if (!leadId) {
+          throw new Error('Missing lead ID');
+        }
+
         // Fetch expert_notes, handler_notes, and facts/description
-        const fieldsToSelect = meeting.lead.lead_type === 'legacy' 
-          ? 'expert_notes,handler_notes,description' 
+        const fieldsToSelect = meeting.lead?.lead_type === 'legacy'
+          ? 'expert_notes,handler_notes,description'
           : 'expert_notes,handler_notes,facts';
-        
+
         const { data, error } = await supabase
           .from(tableName)
           .select(fieldsToSelect)
@@ -2053,11 +2279,11 @@ const CalendarPage: React.FC = () => {
         if (error) throw error;
         setExpandedMeetingData(prev => ({
           ...prev,
-          [meeting.id]: { 
-            loading: false, 
+          [meeting.id]: {
+            loading: false,
             expert_notes: data.expert_notes,
             handler_notes: data.handler_notes,
-            facts: meeting.lead.lead_type === 'legacy' ? (data as any).description : (data as any).facts
+            facts: meeting.lead?.lead_type === 'legacy' ? (data as any).description : (data as any).facts
           }
         }));
       } catch (error) {
@@ -2068,13 +2294,24 @@ const CalendarPage: React.FC = () => {
         console.error('Failed to load meeting details:', error);
       }
     };
+
+    // Fetch when meeting is expanded
     if (expandedMeetingId) {
       const meeting = meetings.find(m => m.id === expandedMeetingId);
       if (meeting && meeting.lead && meeting.lead.id) {
         fetchExpandedMeetingData(meeting);
       }
     }
-  }, [expandedMeetingId, meetings]);
+
+    // Fetch when notes modal opens if not already loaded
+    if (isNotesModalOpen && selectedMeetingForNotes) {
+      const meetingNotes = expandedMeetingData[selectedMeetingForNotes.id];
+      // If notes haven't been loaded yet, trigger the fetch
+      if (!meetingNotes || meetingNotes.loading === undefined) {
+        fetchExpandedMeetingData(selectedMeetingForNotes);
+      }
+    }
+  }, [expandedMeetingId, meetings, isNotesModalOpen, selectedMeetingForNotes]);
 
   // Load staff meetings and legacy meetings when applied date range changes
   useEffect(() => {
@@ -2090,19 +2327,19 @@ const CalendarPage: React.FC = () => {
   useEffect(() => {
     // Combine regular meetings and staff meetings, with deduplication by ID
     const meetingsMap = new Map<string | number, any>();
-    
+
     // Add regular meetings first
     meetings.forEach(meeting => {
       meetingsMap.set(meeting.id, meeting);
     });
-    
+
     // Add staff meetings (they should have different IDs, but deduplicate anyway)
     staffMeetings.forEach(meeting => {
       if (!meetingsMap.has(meeting.id)) {
         meetingsMap.set(meeting.id, meeting);
       }
     });
-    
+
     const allMeetings = Array.from(meetingsMap.values());
     let filtered = allMeetings;
 
@@ -2115,7 +2352,7 @@ const CalendarPage: React.FC = () => {
       const beforeFilter = filtered.length;
       // Normalize selectedStaff for comparison (trim and lowercase)
       const normalizedSelectedStaff = selectedStaff.trim().toLowerCase();
-      
+
       // Helper function to convert ID to display name if needed
       const getDisplayNameOrValue = (value: any): string => {
         if (!value || value === '---' || value === '--') return '';
@@ -2131,10 +2368,10 @@ const CalendarPage: React.FC = () => {
         // Return as-is (already a display name)
         return valueStr;
       };
-      
+
       filtered = filtered.filter(m => {
         const lead = m.lead || {};
-        
+
         // Get display names (convert IDs if needed)
         const managerDisplayName = getDisplayNameOrValue(lead.manager);
         const helperDisplayName = getDisplayNameOrValue(lead.helper);
@@ -2142,7 +2379,7 @@ const CalendarPage: React.FC = () => {
         const meetingManagerDisplayName = getDisplayNameOrValue(m.meeting_manager);
         const meetingHelperDisplayName = getDisplayNameOrValue(m.helper);
         const meetingExpertDisplayName = getDisplayNameOrValue(m.expert);
-        
+
         // Normalize all fields for comparison (trim and lowercase)
         const normalizedManager = managerDisplayName.toLowerCase();
         const normalizedHelper = helperDisplayName.toLowerCase();
@@ -2150,7 +2387,7 @@ const CalendarPage: React.FC = () => {
         const normalizedMeetingManager = meetingManagerDisplayName.toLowerCase();
         const normalizedMeetingHelper = meetingHelperDisplayName.toLowerCase();
         const normalizedMeetingExpert = meetingExpertDisplayName.toLowerCase();
-        
+
         const matches = (
           normalizedManager === normalizedSelectedStaff ||
           normalizedHelper === normalizedSelectedStaff ||
@@ -2159,7 +2396,7 @@ const CalendarPage: React.FC = () => {
           normalizedExpert === normalizedSelectedStaff ||
           normalizedMeetingExpert === normalizedSelectedStaff
         );
-        
+
         return matches;
       });
     }
@@ -2194,16 +2431,16 @@ const CalendarPage: React.FC = () => {
     filtered = filtered.sort((a, b) => {
       const timeA = a.meeting_time || '';
       const timeB = b.meeting_time || '';
-      
+
       // If both have times, compare them
       if (timeA && timeB) {
         return timeA.localeCompare(timeB);
       }
-      
+
       // If only one has time, prioritize the one with time
       if (timeA && !timeB) return -1;
       if (!timeA && timeB) return 1;
-      
+
       // If neither has time, keep original order
       return 0;
     });
@@ -2217,10 +2454,10 @@ const CalendarPage: React.FC = () => {
       let amount = 0;
       let currency = 'NIS'; // Default currency
       let source = 'none';
-      
+
       // Determine if this is a legacy lead
       const isLegacy = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
-      
+
       // Get balance value using same logic as balance badge
       if (isLegacy) {
         // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
@@ -2260,7 +2497,7 @@ const CalendarPage: React.FC = () => {
         currency = 'NIS';
         source = 'staff_meeting';
       }
-      
+
       // Normalize currency symbol to code for conversion
       let currencyCode = currency;
       if (currency === '₪') currencyCode = 'NIS';
@@ -2268,14 +2505,14 @@ const CalendarPage: React.FC = () => {
       else if (currency === '$') currencyCode = 'USD';
       else if (currency === '£') currencyCode = 'GBP';
       else if (currency === 'ILS') currencyCode = 'NIS';
-      
+
       // Convert to NIS and add to total
       const amountInNIS = convertToNIS(amount, currencyCode);
       return sum + amountInNIS;
     }, 0);
-    
+
     setTotalAmount(totalAmountInNIS);
-    
+
 
   }, [appliedFromDate, appliedToDate, selectedStaff, selectedMeetingType, meetings, staffMeetings]);
 
@@ -2375,7 +2612,7 @@ const CalendarPage: React.FC = () => {
   // Helper function to build client route (similar to SchedulerToolPage and Clients.tsx)
   const buildClientRoute = (lead: any): string => {
     if (!lead) return '/clients';
-    
+
     // For new leads
     if (lead.lead_type === 'new' && lead.lead_number) {
       const isSubLead = lead.lead_number.includes('/');
@@ -2387,12 +2624,12 @@ const CalendarPage: React.FC = () => {
         // Regular new lead: just use lead_number
         return `/clients/${encodeURIComponent(lead.lead_number)}`;
       }
-    } 
+    }
     // For legacy leads
     else if (lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_')) {
       const legacyId = lead.id?.toString().replace('legacy_', '') || lead.id;
       const isSubLead = lead.lead_number && lead.lead_number.includes('/');
-      
+
       if (isSubLead) {
         // Legacy sublead: use numeric ID in path, formatted lead_number in query
         return `/clients/${encodeURIComponent(legacyId)}?lead=${encodeURIComponent(lead.lead_number)}`;
@@ -2411,7 +2648,7 @@ const CalendarPage: React.FC = () => {
         return `/clients/${encodeURIComponent(lead.lead_number)}`;
       }
     }
-    
+
     return '/clients';
   };
 
@@ -2438,13 +2675,13 @@ const CalendarPage: React.FC = () => {
   const handleViewClient = (lead: any, event?: React.MouseEvent) => {
     const isNewTab = event?.metaKey || event?.ctrlKey;
     const navigationUrl = buildClientRoute(lead);
-    
+
     if (isNewTab) {
       // Open in new tab
       window.open(navigationUrl, '_blank');
       return;
     }
-    
+
     // Normal navigation in same tab
     navigate(navigationUrl);
   };
@@ -2480,10 +2717,10 @@ const CalendarPage: React.FC = () => {
   const handleEmailClick = (lead: any, meeting: any) => {
     // Format lead as client object for SchedulerEmailThreadModal
     // For new leads: id is UUID string, for legacy: id is number
-    const isLegacy = lead.lead_type === 'legacy' || 
-                     (typeof lead.id === 'string' && lead.id.startsWith('legacy_')) ||
-                     (meeting.legacy_lead_id && !meeting.client_id);
-    
+    const isLegacy = lead.lead_type === 'legacy' ||
+      (typeof lead.id === 'string' && lead.id.startsWith('legacy_')) ||
+      (meeting.legacy_lead_id && !meeting.client_id);
+
     let clientId: string;
     if (isLegacy) {
       // For legacy leads, use the numeric ID (remove 'legacy_' prefix if present)
@@ -2495,7 +2732,7 @@ const CalendarPage: React.FC = () => {
       // For new leads, use the UUID
       clientId = lead.id || meeting.client_id || '';
     }
-    
+
     const client = {
       id: clientId,
       name: lead.name || '',
@@ -2513,10 +2750,10 @@ const CalendarPage: React.FC = () => {
   const handleWhatsAppClick = (lead: any, meeting: any) => {
     // Format lead as client object for SchedulerWhatsAppModal
     // For new leads: id is UUID string, for legacy: id is number
-    const isLegacy = lead.lead_type === 'legacy' || 
-                     (typeof lead.id === 'string' && lead.id.startsWith('legacy_')) ||
-                     (meeting.legacy_lead_id && !meeting.client_id);
-    
+    const isLegacy = lead.lead_type === 'legacy' ||
+      (typeof lead.id === 'string' && lead.id.startsWith('legacy_')) ||
+      (meeting.legacy_lead_id && !meeting.client_id);
+
     let clientId: string;
     if (isLegacy) {
       // For legacy leads, use the numeric ID (remove 'legacy_' prefix if present)
@@ -2528,7 +2765,7 @@ const CalendarPage: React.FC = () => {
       // For new leads, use the UUID
       clientId = lead.id || meeting.client_id || '';
     }
-    
+
     const client = {
       id: clientId,
       name: lead.name || '',
@@ -2551,7 +2788,7 @@ const CalendarPage: React.FC = () => {
       const today = new Date().toISOString().split('T')[0];
       const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       const thirtyDaysFromNow = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-      
+
       // Initialize modal date to today if not set
       if (!modalSelectedDate) {
         setModalSelectedDate(today);
@@ -2615,10 +2852,10 @@ const CalendarPage: React.FC = () => {
         } else if (leadsData) {
           leadsData.forEach((lead: any) => {
             // Extract currency data from joined table and convert to symbol
-            const currencyRecord = lead.accounting_currencies 
+            const currencyRecord = lead.accounting_currencies
               ? (Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies)
               : null;
-            
+
             if (currencyRecord) {
               // Convert iso_code to symbol
               const currencySymbol = (() => {
@@ -2658,7 +2895,7 @@ const CalendarPage: React.FC = () => {
             } else {
               lead.balance_currency = lead.balance_currency || '₪';
             }
-            
+
             leadsMap[lead.id] = lead;
           });
         }
@@ -2679,16 +2916,16 @@ const CalendarPage: React.FC = () => {
           `)
           .in('id', uniqueLegacyLeadIds)
           .limit(500);
-        
+
         if (legacyLeadsError) {
           console.error('Error fetching legacy leads:', legacyLeadsError);
         } else if (legacyLeadsData) {
           legacyLeadsData.forEach((legacyLead: any) => {
             // Extract currency data from joined table and convert to symbol
-            const currencyRecord = legacyLead.accounting_currencies 
+            const currencyRecord = legacyLead.accounting_currencies
               ? (Array.isArray(legacyLead.accounting_currencies) ? legacyLead.accounting_currencies[0] : legacyLead.accounting_currencies)
               : null;
-            
+
             if (currencyRecord) {
               // Convert iso_code to symbol
               const currencySymbol = (() => {
@@ -2728,7 +2965,7 @@ const CalendarPage: React.FC = () => {
             } else {
               legacyLead.balance_currency = '₪';
             }
-            
+
             legacyLeadsMap[String(legacyLead.id)] = legacyLead;
           });
         }
@@ -2737,7 +2974,7 @@ const CalendarPage: React.FC = () => {
       // Step 2.5: Fetch legacy leads that have meetings directly in leads_lead table (not in meetings table)
       // Get IDs of legacy leads that are already in meetings table to exclude them
       const existingLegacyLeadIds = new Set(uniqueLegacyLeadIds.map(id => String(id)));
-      
+
       let directLegacyMeetings: any[] = [];
       const { data: directLegacyMeetingsData, error: directLegacyError } = await supabase
         .from('leads_lead')
@@ -2756,15 +2993,15 @@ const CalendarPage: React.FC = () => {
         .not('meeting_date', 'is', null)
         .not('name', 'is', null)
         .limit(500);
-      
+
       // Process direct legacy meetings and convert currency to symbols
       if (directLegacyMeetingsData && directLegacyMeetingsData.length > 0) {
         directLegacyMeetingsData.forEach((legacyLead: any) => {
           // Extract currency data from joined table and convert to symbol
-          const currencyRecord = legacyLead.accounting_currencies 
+          const currencyRecord = legacyLead.accounting_currencies
             ? (Array.isArray(legacyLead.accounting_currencies) ? legacyLead.accounting_currencies[0] : legacyLead.accounting_currencies)
             : null;
-          
+
           if (currencyRecord) {
             // Convert iso_code to symbol
             const currencySymbol = (() => {
@@ -2886,19 +3123,19 @@ const CalendarPage: React.FC = () => {
           if (!meeting.meeting_date) {
             return false;
           }
-          
+
           // Validate date format
           const date = new Date(meeting.meeting_date);
           if (isNaN(date.getTime())) {
             return false;
           }
-          
+
           return true;
         })
         .map(meeting => {
           // Get lead data from the separately fetched map
           let leadData = null;
-          
+
           if (meeting.client_id && leadsMap[meeting.client_id]) {
             // Use new lead data from the map
             const lead = leadsMap[meeting.client_id];
@@ -2920,7 +3157,7 @@ const CalendarPage: React.FC = () => {
               lead_number: legacyLead.lead_number || legacyLead.id?.toString()
             };
           }
-          
+
           return {
             ...meeting,
             lead: leadData
@@ -2950,7 +3187,7 @@ const CalendarPage: React.FC = () => {
       setAvailableStaff(uniqueStaffNames);
     } catch (error: any) {
       console.error('Error fetching assign staff data:', error);
-      
+
       // Handle timeout errors specifically
       if (error?.code === '57014' || error?.message?.includes('timeout')) {
         toast.error('Request timed out. Please try again.');
@@ -2971,9 +3208,9 @@ const CalendarPage: React.FC = () => {
 
       if (error) throw error;
 
-      const locationsMap: {[locationId: number]: string} = {};
-      const linksMap: {[locationName: string]: string} = {};
-      const nameToIdMap: {[locationName: string]: number} = {};
+      const locationsMap: { [locationId: number]: string } = {};
+      const linksMap: { [locationName: string]: string } = {};
+      const nameToIdMap: { [locationName: string]: number } = {};
       locationsData?.forEach(location => {
         locationsMap[location.id] = location.name;
         if (location.name) {
@@ -2999,7 +3236,7 @@ const CalendarPage: React.FC = () => {
       const thirtyDaysFromNow = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
       // Add timeout to prevent hanging
-      const timeoutPromise = new Promise((_, reject) => 
+      const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Meeting counts query timeout')), 5000)
       );
 
@@ -3057,20 +3294,20 @@ const CalendarPage: React.FC = () => {
       });
 
       // Calculate meeting counts per client
-      const counts: {[clientId: string]: number} = {};
-      const prevManagers: {[meetingId: number]: string} = {};
+      const counts: { [clientId: string]: number } = {};
+      const prevManagers: { [meetingId: number]: string } = {};
 
       allMeetingsCombined.forEach((meeting, index) => {
         const clientId = meeting.client_id;
         if (clientId) {
           counts[clientId] = (counts[clientId] || 0) + 1;
-          
+
           // Find previous meeting for the same client
           const previousMeeting = allMeetingsCombined
             .slice(0, index)
             .reverse()
             .find(m => m.client_id === clientId);
-          
+
           if (previousMeeting && previousMeeting.meeting_manager) {
             prevManagers[meeting.id] = previousMeeting.meeting_manager;
           }
@@ -3104,13 +3341,13 @@ const CalendarPage: React.FC = () => {
 
       if (error) throw error;
 
-      const availabilityMap: {[key: string]: any[]} = {};
-      const unavailableMap: {[key: string]: any[]} = {};
+      const availabilityMap: { [key: string]: any[] } = {};
+      const unavailableMap: { [key: string]: any[] } = {};
 
       employeesData?.forEach(employee => {
         const departmentName = (employee.tenant_departement as any)?.name || 'N/A';
         const role = getRoleDisplayName(employee.bonuses_role);
-        
+
         // Process unavailable times (existing functionality)
         if (employee.unavailable_times && Array.isArray(employee.unavailable_times)) {
           employee.unavailable_times.forEach((unavailableTime: any) => {
@@ -3121,7 +3358,7 @@ const CalendarPage: React.FC = () => {
             if (!unavailableMap[date]) {
               unavailableMap[date] = [];
             }
-            
+
             const timeEntry = {
               employeeId: employee.id,
               employeeName: employee.display_name,
@@ -3132,7 +3369,7 @@ const CalendarPage: React.FC = () => {
               time: `${unavailableTime.startTime} - ${unavailableTime.endTime}`,
               ...unavailableTime
             };
-            
+
             availabilityMap[date].push(timeEntry);
             unavailableMap[date].push(timeEntry);
           });
@@ -3143,19 +3380,19 @@ const CalendarPage: React.FC = () => {
           employee.unavailable_ranges.forEach((range: any) => {
             const startDate = new Date(range.startDate);
             const endDate = new Date(range.endDate);
-            
+
             // Generate all dates in the range
             const currentDate = new Date(startDate);
             while (currentDate <= endDate) {
               const dateString = currentDate.toISOString().split('T')[0];
-              
+
               if (!availabilityMap[dateString]) {
                 availabilityMap[dateString] = [];
               }
               if (!unavailableMap[dateString]) {
                 unavailableMap[dateString] = [];
               }
-              
+
               const startDateFormatted = new Date(range.startDate).toLocaleDateString('en-GB', {
                 day: '2-digit',
                 month: '2-digit'
@@ -3164,7 +3401,7 @@ const CalendarPage: React.FC = () => {
                 day: '2-digit',
                 month: '2-digit'
               });
-              
+
               // Add range as all-day unavailable
               const rangeUnavailable = {
                 employeeId: employee.id,
@@ -3181,10 +3418,10 @@ const CalendarPage: React.FC = () => {
                 isRange: true,
                 rangeId: range.id
               };
-              
+
               availabilityMap[dateString].push(rangeUnavailable);
               unavailableMap[dateString].push(rangeUnavailable);
-              
+
               // Move to next day
               currentDate.setDate(currentDate.getDate() + 1);
             }
@@ -3194,7 +3431,7 @@ const CalendarPage: React.FC = () => {
 
       setEmployeeAvailability(availabilityMap);
       setUnavailableEmployees(unavailableMap);
-      
+
     } catch (error) {
       console.error('Error fetching employee availability:', error);
     }
@@ -3204,7 +3441,7 @@ const CalendarPage: React.FC = () => {
   const getAvailableStaffForDateTime = (date: string, time: string) => {
     const unavailableForDate = unavailableEmployees[date] || [];
     const meetingTime = time;
-    
+
     return availableStaff.filter(staff => {
       // Check if staff is unavailable at this time
       const isUnavailable = unavailableForDate.some(unavailable => {
@@ -3215,7 +3452,7 @@ const CalendarPage: React.FC = () => {
         }
         return false;
       });
-      
+
       return !isUnavailable;
     });
   };
@@ -3229,20 +3466,20 @@ const CalendarPage: React.FC = () => {
         if (unavailable.isRange || unavailable.startTime === 'All Day') {
           return true;
         }
-        
+
         // For specific time slots, check time overlap
         const unavailableStart = unavailable.startTime;
         const unavailableEnd = unavailable.endTime;
         const isTimeConflict = time >= unavailableStart && time <= unavailableEnd;
-        
+
         if (isTimeConflict) {
         }
-        
+
         return isTimeConflict;
       }
       return false;
     });
-    
+
     return result;
   };
 
@@ -3251,28 +3488,28 @@ const CalendarPage: React.FC = () => {
     // For legacy meetings, check if stage is 55
     if (typeof meeting.id === 'string' && meeting.id.startsWith('legacy_')) {
       const isLegacyStage55 = meeting.lead?.stage === 55;
-      
-      
+
+
       return isLegacyStage55;
     }
-    
+
     // For regular meetings, use the meeting count logic if available
     const clientId = meeting.client_id || (meeting.legacy_lead as any)?.id || (meeting.lead as any)?.id;
-    
+
     // If meeting counts are loaded, use them
     if (Object.keys(meetingCounts).length > 0) {
       const isNotFirst = clientId && meetingCounts[clientId] > 1;
-      
-      
+
+
       return isNotFirst;
     }
-    
+
     // Fallback: If meeting counts are not loaded, use a simple heuristic
     // Show flame icon for meetings that are not today (likely past meetings)
     const today = new Date().toISOString().split('T')[0];
     const isPastMeeting = meeting.meeting_date && meeting.meeting_date < today;
-    
-    
+
+
     return isPastMeeting;
   };
 
@@ -3284,7 +3521,7 @@ const CalendarPage: React.FC = () => {
         if (unavailable.isRange || unavailable.startTime === 'All Day') {
           return true;
         }
-        
+
         // For specific time slots, check time overlap
         const unavailableStart = unavailable.startTime;
         const unavailableEnd = unavailable.endTime;
@@ -3292,7 +3529,7 @@ const CalendarPage: React.FC = () => {
       }
       return false;
     });
-    
+
     return unavailable || null;
   };
 
@@ -3316,10 +3553,10 @@ const CalendarPage: React.FC = () => {
     // Convert to number if it's a string
     const numericId = typeof locationId === 'string' ? parseInt(locationId, 10) : locationId;
     const location = meetingLocations[numericId];
-    
+
     // Fallback mapping for common location IDs if meetingLocations is not loaded yet
     if (!location && numericId) {
-      const fallbackMap: {[key: number]: string} = {
+      const fallbackMap: { [key: number]: string } = {
         1: 'TLV',
         2: 'JRSLM',
         3: 'Office Zoom 4',
@@ -3349,7 +3586,7 @@ const CalendarPage: React.FC = () => {
       };
       return fallbackMap[numericId] || `Location ${numericId}`;
     }
-    
+
     return location || 'N/A';
   };
 
@@ -3358,23 +3595,23 @@ const CalendarPage: React.FC = () => {
     if (!location) {
       return 'N/A';
     }
-    
+
     // If it's already a string name (like "Teams"), return it as is
     if (typeof location === 'string' && !location.match(/^\d+$/)) {
       return location;
     }
-    
+
     // If it's a numeric ID (number or string that's all digits), map it
     const numericId = typeof location === 'string' ? parseInt(location, 10) : location;
-    
+
     // First try the meetingLocations state
     const locationFromState = meetingLocations[numericId];
     if (locationFromState) {
       return locationFromState;
     }
-    
+
     // Fallback mapping for common location IDs
-    const fallbackMap: {[key: number]: string} = {
+    const fallbackMap: { [key: number]: string } = {
       1: 'TLV',
       2: 'JRSLM',
       3: 'Office Zoom 4',
@@ -3402,7 +3639,7 @@ const CalendarPage: React.FC = () => {
       28: 'Room Meeting 102',
       29: 'Room Meeting 103'
     };
-    
+
     return fallbackMap[numericId] || `Location ${numericId}`;
   };
 
@@ -3489,12 +3726,12 @@ const CalendarPage: React.FC = () => {
         const unavailableInfo = getStaffUnavailableInfo(value, meeting.meeting_date, meeting.meeting_time);
         const reason = unavailableInfo?.reason ? ` (${unavailableInfo.reason})` : '';
         const type = (unavailableInfo?.isRange || unavailableInfo?.startTime === 'All Day') ? 'all day' : `at ${meeting.meeting_time}`;
-        
+
         // Show confirmation dialog instead of blocking
         const confirmed = window.confirm(
           `${value} is unavailable ${type} on ${new Date(meeting.meeting_date).toLocaleDateString('en-GB')}${reason}.\n\nThis employee is unavailable for this time. Are you sure to pick him anyway?`
         );
-        
+
         if (!confirmed) {
           return;
         }
@@ -3502,7 +3739,7 @@ const CalendarPage: React.FC = () => {
 
       // Determine if this is a legacy meeting stored in leads_lead (not in meetings table)
       const isLegacyMeetingInLeadsLead = typeof meetingId === 'string' && meetingId.startsWith('legacy_') && !meeting.client_id && meeting.legacy_lead_id;
-      
+
       // Only update meetings table if the meeting exists in the meetings table (not legacy-only in leads_lead)
       if (!isLegacyMeetingInLeadsLead && typeof meetingId === 'number') {
         const { error: meetingError } = await supabase
@@ -3529,7 +3766,7 @@ const CalendarPage: React.FC = () => {
         } else {
           throw new Error('No legacy lead ID found for legacy meeting');
         }
-        
+
         // Get employee ID from display name (required for legacy leads)
         // If value is empty string, set to null to clear the assignment
         let employeeId: number | null = null;
@@ -3544,7 +3781,7 @@ const CalendarPage: React.FC = () => {
               .select('id')
               .eq('display_name', value)
               .maybeSingle();
-            
+
             if (!empError && employeeData) {
               employeeId = employeeData.id;
             } else {
@@ -3553,9 +3790,9 @@ const CalendarPage: React.FC = () => {
           }
         }
         // If value is empty, employeeId remains null which will clear the assignment
-        
+
         const updateField = field === 'meeting_manager' ? 'meeting_manager_id' : 'meeting_lawyer_id';
-        
+
         const { error: leadError } = await supabase
           .from('leads_lead')
           .update({ [updateField]: employeeId })
@@ -3566,7 +3803,7 @@ const CalendarPage: React.FC = () => {
         // For new leads, update leads table
         const leadId = meeting.client_id;
         const updateField = field === 'meeting_manager' ? 'manager' : 'helper';
-        
+
         const { error: leadError } = await supabase
           .from('leads')
           .update({ [updateField]: value })
@@ -3576,17 +3813,17 @@ const CalendarPage: React.FC = () => {
       }
 
       // Update local state
-      setAssignStaffMeetings(prev => 
-        prev.map(m => 
-          m.id === meetingId 
-            ? { 
-                ...m, 
-                [field]: value,
-                lead: {
-                  ...m.lead,
-                  [field === 'meeting_manager' ? 'manager' : 'helper']: value
-                }
+      setAssignStaffMeetings(prev =>
+        prev.map(m =>
+          m.id === meetingId
+            ? {
+              ...m,
+              [field]: value,
+              lead: {
+                ...m.lead,
+                [field === 'meeting_manager' ? 'manager' : 'helper']: value
               }
+            }
             : m
         )
       );
@@ -3605,12 +3842,12 @@ const CalendarPage: React.FC = () => {
     const today = new Date().toISOString().split('T')[0];
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const thirtyDaysFromNow = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    
+
     // Initialize modal date to today if not set
     if (!modalSelectedDate) {
       setModalSelectedDate(today);
     }
-    
+
     // Fetch languages if not already loaded (must be done before processing meetings)
     let languagesToUse = allLanguages;
     if (languagesToUse.length === 0) {
@@ -3619,7 +3856,7 @@ const CalendarPage: React.FC = () => {
           .from('misc_language')
           .select('id, name')
           .order('name', { ascending: true });
-        
+
         if (!languagesError && languagesData) {
           setAllLanguages(languagesData);
           languagesToUse = languagesData;
@@ -3633,7 +3870,7 @@ const CalendarPage: React.FC = () => {
     } else {
       console.log('✅ Assign Staff Modal - Using cached languages:', languagesToUse.length);
     }
-    
+
     // Process existing meetings to match assign staff modal format
     // Use the same logic as calendar page for manager, scheduler, helper
     const processedMeetings = meetings
@@ -3644,13 +3881,13 @@ const CalendarPage: React.FC = () => {
       .map((meeting: any) => {
         const lead = meeting.lead || {};
         const isLegacyLead = lead.lead_type === 'legacy' || meeting.legacy_lead_id;
-        
+
         // Get manager, helper, scheduler, expert - convert IDs to display names if needed
         let manager = '--';
         let helper = '--';
         let scheduler = '--';
         let expert = '--';
-        
+
         // Manager: check if it's already a display name or needs conversion
         const managerValue = lead.manager || meeting.meeting_manager;
         if (managerValue && managerValue !== '--') {
@@ -3661,7 +3898,7 @@ const CalendarPage: React.FC = () => {
             manager = managerValue;
           }
         }
-        
+
         // Helper: check if it's already a display name or needs conversion
         const helperValue = lead.helper || meeting.helper;
         if (helperValue && helperValue !== '--') {
@@ -3672,7 +3909,7 @@ const CalendarPage: React.FC = () => {
             helper = helperValue;
           }
         }
-        
+
         // Scheduler: check if it's already a display name or needs conversion
         const schedulerValue = lead.scheduler || meeting.scheduler;
         if (schedulerValue && schedulerValue !== '--') {
@@ -3683,7 +3920,7 @@ const CalendarPage: React.FC = () => {
             scheduler = schedulerValue;
           }
         }
-        
+
         // Expert: check if it's already a display name or needs conversion
         const expertValue = lead.expert || meeting.expert;
         if (expertValue && expertValue !== '--') {
@@ -3694,13 +3931,13 @@ const CalendarPage: React.FC = () => {
             expert = expertValue;
           }
         }
-        
+
         // Get IDs for reference (for saving changes)
         let managerId = lead.manager_id || lead.meeting_manager_id || null;
         let helperId = lead.helper_id || lead.meeting_lawyer_id || null;
         let schedulerId = lead.scheduler_id || null;
         let expertId = lead.expert_id || null;
-        
+
         // If we don't have IDs but have display names, try to find the ID
         if (!managerId && manager && manager !== '--') {
           const emp = allEmployees.find((e: any) => e.display_name === manager);
@@ -3718,18 +3955,18 @@ const CalendarPage: React.FC = () => {
           const emp = allEmployees.find((e: any) => e.display_name === expert);
           if (emp) expertId = emp.id;
         }
-        
+
         // Get language - same logic as Clients.tsx
         // For new leads: use language field directly (text value like "HE", "EN", "Hebrew", etc.)
         // For legacy leads: use language field (which should be name from JOIN) or convert language_id
         let language = 'N/A';
-        
+
         // Check all possible sources for language (in priority order)
         // For new leads: language is stored as text in lead.language
         // For legacy leads: language is stored as name in lead.language (from JOIN) or we need to convert language_id
         const languageText = lead.language;
         const languageId = lead.language_id;
-        
+
         // First priority: if we have a language text value (for new leads or legacy with JOIN)
         if (languageText && typeof languageText === 'string' && languageText.trim() !== '' && languageText !== 'N/A' && languageText !== 'null') {
           // Check if it's a numeric string (ID) or actual text
@@ -3756,7 +3993,7 @@ const CalendarPage: React.FC = () => {
             language = languageObj.name;
           }
         }
-        
+
         return {
           ...meeting,
           // Use manager, scheduler, helper, expert (converted to display names)
@@ -3773,9 +4010,9 @@ const CalendarPage: React.FC = () => {
           language_id: lead.language_id || null,
         };
       });
-    
+
     setAssignStaffMeetings(processedMeetings);
-    
+
     // Extract unique staff names for filter dropdown from allEmployees
     const allStaffNames = new Set<string>();
     allEmployees.forEach((emp: any) => {
@@ -3784,7 +4021,7 @@ const CalendarPage: React.FC = () => {
       }
     });
     setAvailableStaff(Array.from(allStaffNames).sort());
-    
+
     fetchEmployeeAvailability();
     // DISABLED: fetchMeetingCountsAndPreviousManagers(); // causing timeouts
   };
@@ -3798,10 +4035,10 @@ const CalendarPage: React.FC = () => {
 
   // Helper function to filter meetings by date and staff (for assign staff modal)
   const getFilteredMeetings = () => {
-    
+
     let filtered = assignStaffMeetings.filter(m => m.meeting_date === modalSelectedDate);
-    
-    
+
+
     if (selectedStaffFilter) {
       const beforeCount = filtered.length;
       filtered = filtered.filter(m => {
@@ -3816,27 +4053,27 @@ const CalendarPage: React.FC = () => {
         );
         return matches;
       });
-      
+
     }
-    
+
     // Sort by meeting time (earliest first)
     filtered = filtered.sort((a, b) => {
       const timeA = a.meeting_time || '';
       const timeB = b.meeting_time || '';
-      
+
       // If both have times, compare them
       if (timeA && timeB) {
         return timeA.localeCompare(timeB);
       }
-      
+
       // If only one has time, prioritize the one with time
       if (timeA && !timeB) return -1;
       if (!timeA && timeB) return 1;
-      
+
       // If neither has time, keep original order
       return 0;
     });
-    
+
     return filtered;
   };
 
@@ -3863,11 +4100,11 @@ const CalendarPage: React.FC = () => {
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Element;
-      
+
       if (showMoreUnavailableDropdown && !target.closest('.more-unavailable-dropdown')) {
         setShowMoreUnavailableDropdown(false);
       }
-      
+
       // Only close dropdown if clicking outside both the input and the portal dropdown
       if (activeDropdown && !target.closest('.staff-dropdown-input') && !target.closest('[data-portal-dropdown]')) {
         handleDropdownClose();
@@ -3934,8 +4171,8 @@ const CalendarPage: React.FC = () => {
       return null;
     }
 
-    const sizeClasses = size === 'small' 
-      ? 'w-5 h-5 rounded-full text-white inline-flex items-center justify-center font-semibold shadow-sm' 
+    const sizeClasses = size === 'small'
+      ? 'w-5 h-5 rounded-full text-white inline-flex items-center justify-center font-semibold shadow-sm'
       : 'w-10 h-10 rounded-full text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md';
     const iconSize = size === 'small' ? 'w-3 h-3' : 'w-6 h-6';
 
@@ -3943,7 +4180,7 @@ const CalendarPage: React.FC = () => {
     // For LEGACY leads: use expert_examination field (numeric values)
     if (lead.lead_type !== 'legacy') {
       const eligibilityStatus = lead.eligibility_status;
-      
+
       if (!eligibilityStatus || eligibilityStatus === '') {
         return (
           <span className={`${sizeClasses} bg-gray-400`} title="Expert opinion not checked">
@@ -4026,7 +4263,7 @@ const CalendarPage: React.FC = () => {
     const probability = lead.probability ?? meeting.probability;
     // Convert probability to number if it's a string
     const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
-    
+
     // For legacy leads, convert numeric probability to L/M/H/VH format
     const getLegacyProbabilityLetter = (prob: number) => {
       if (prob >= 80) return 'VH';
@@ -4034,7 +4271,7 @@ const CalendarPage: React.FC = () => {
       if (prob >= 40) return 'M';
       return 'L';
     };
-    
+
     let probabilityColor = 'text-red-600';
     if (probabilityNumber >= 80) probabilityColor = 'text-green-600';
     else if (probabilityNumber >= 60) probabilityColor = 'text-yellow-600';
@@ -4049,11 +4286,11 @@ const CalendarPage: React.FC = () => {
         const leadStage = lead.stage ? Number(lead.stage) : null;
         const meetingStage = meeting.stage ? Number(meeting.stage) : null;
         const currentStage = leadStage || meetingStage;
-        
+
         // Stage must be > 20 AND not equal to 55
         return currentStage !== null && currentStage > 20 && currentStage !== 55;
       }
-      
+
       // For active_client meetings: check if 2 hours have passed after meeting time
       if (meeting.calendar_type === 'active_client' && meeting.meeting_date && meeting.meeting_time) {
         try {
@@ -4066,13 +4303,13 @@ const CalendarPage: React.FC = () => {
           return false;
         }
       }
-      
+
       return false;
     })();
 
     return (
       <div key={meeting.id} className={`rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 md:text-lg md:leading-relaxed bg-white ${selectedRowId === meeting.id ? 'ring-2 ring-primary ring-offset-2' : ''} ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}>
-        <div 
+        <div
           onClick={(e) => {
             if (meeting.calendar_type !== 'staff' && meeting.lead) {
               e.stopPropagation();
@@ -4080,7 +4317,7 @@ const CalendarPage: React.FC = () => {
             } else {
               setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id);
             }
-          }} 
+          }}
           className="flex-1 cursor-pointer flex flex-col"
         >
           {/* Header with Name, Badge, and Action Buttons */}
@@ -4138,8 +4375,8 @@ const CalendarPage: React.FC = () => {
                 // Get location ID - try meeting_location_id first (for legacy leads), then look up by name
                 let locationIdNum: number | null = null;
                 if (meeting.meeting_location_id) {
-                  locationIdNum = typeof meeting.meeting_location_id === 'string' 
-                    ? parseInt(meeting.meeting_location_id, 10) 
+                  locationIdNum = typeof meeting.meeting_location_id === 'string'
+                    ? parseInt(meeting.meeting_location_id, 10)
                     : (typeof meeting.meeting_location_id === 'number' ? meeting.meeting_location_id : null);
                 }
                 // If no ID, try to look up by location name
@@ -4147,37 +4384,37 @@ const CalendarPage: React.FC = () => {
                 if (locationIdNum === null && locationName && locationName !== 'N/A') {
                   locationIdNum = meetingLocationNameToId[locationName] || null;
                 }
-                
+
                 // Check if location ID is in the allowed list
                 const hasAllowedLocationId = locationIdNum !== null && meetingLocationIdsWithLink.has(locationIdNum);
-                
+
                 // Also show for Teams meetings that have a teams_meeting_url
                 const isTeamsWithUrl = locationName && locationName.toLowerCase() === 'teams' && !!meeting.teams_meeting_url;
-                
+
                 // Also show for staff meetings (they have teams_meeting_url)
                 const isStaffMeeting = meeting.calendar_type === 'staff';
-                
+
                 return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting;
               })() && (
-                <button
-                  className="btn btn-outline btn-primary btn-sm"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    // Use teams_meeting_url if available, otherwise use default_link from location
-                    const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
-                    const defaultLink = meetingLocationLinks[locationName] || '';
-                    const url = getValidTeamsLink(meeting.teams_meeting_url || defaultLink);
-                    if (url) {
-                      window.open(url, '_blank');
-                    } else {
-                      alert('No meeting URL available');
-                    }
-                  }}
-                  title="Teams Meeting"
-                >
-                  <VideoCameraIcon className="w-4 h-4" />
-                </button>
-              )}
+                  <button
+                    className="btn btn-outline btn-primary btn-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      // Use teams_meeting_url if available, otherwise use default_link from location
+                      const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
+                      const defaultLink = meetingLocationLinks[locationName] || '';
+                      const url = getValidTeamsLink(meeting.teams_meeting_url || defaultLink);
+                      if (url) {
+                        window.open(url, '_blank');
+                      } else {
+                        alert('No meeting URL available');
+                      }
+                    }}
+                    title="Teams Meeting"
+                  >
+                    <VideoCameraIcon className="w-4 h-4" />
+                  </button>
+                )}
             </div>
           </div>
 
@@ -4186,10 +4423,10 @@ const CalendarPage: React.FC = () => {
             // Get the color for "Meeting scheduled" stage (stage 20) to match the stage badge
             const meetingScheduledColor = resolveStageColour('20') || getStageColour('20') || '#10b981';
             const textColor = getContrastingTextColor(meetingScheduledColor);
-            
+
             return (
               <div className="mt-4 mb-3 flex items-center justify-between">
-                <div 
+                <div
                   className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full"
                   style={{
                     backgroundColor: meetingScheduledColor,
@@ -4198,7 +4435,7 @@ const CalendarPage: React.FC = () => {
                 >
                   <ClockIcon className="w-4 h-4" />
                   <span className="text-sm font-semibold">
-                    {meeting.meeting_time.slice(0,5)}
+                    {meeting.meeting_time.slice(0, 5)}
                   </span>
                 </div>
                 <div className="ml-auto">
@@ -4210,43 +4447,66 @@ const CalendarPage: React.FC = () => {
 
           <div className="space-y-2 divide-y divide-gray-100">
 
-            {/* Manager */}
-            {meeting.calendar_type !== 'staff' && (
+            {/* Handler - only show for active_client meetings */}
+            {meeting.calendar_type === 'active_client' && (
               <div className="flex justify-between items-center py-1">
-                <span className="text-xs md:text-base font-semibold text-gray-500">Manager</span>
+                <span className="text-xs md:text-base font-semibold text-gray-500">Handler</span>
                 <div className="flex items-center gap-2">
-                  {renderEmployeeAvatar(lead.manager_id || lead.manager || meeting.meeting_manager_id || meeting.meeting_manager, 'md', false)}
-                  <span className="text-sm md:text-lg font-bold text-gray-800">
-                    {getEmployeeDisplayName(lead.manager || meeting.meeting_manager) || '---'}
+                  {renderEmployeeAvatar(lead.handler_id || lead.handler, 'lg', false)}
+                  <span className="text-xs md:text-sm font-bold text-gray-800">
+                    {(() => {
+                      // lead.handler should already be the display name from leadData processing
+                      // But if it looks like an ID (numeric), try to map it using handler_id
+                      if (lead.handler && lead.handler !== '--') {
+                        const isNumeric = typeof lead.handler === 'number' || (typeof lead.handler === 'string' && !isNaN(Number(lead.handler)) && lead.handler.trim() !== '');
+                        // If handler is numeric (likely an ID), use handler_id to get display name
+                        if (isNumeric && lead.handler_id) {
+                          const displayName = getEmployeeDisplayName(lead.handler_id);
+                          // Only use the mapped name if it's different from the ID
+                          if (displayName !== lead.handler_id.toString()) {
+                            return displayName;
+                          }
+                        }
+                        // Otherwise use handler directly (should be display name)
+                        return lead.handler;
+                      }
+                      // Fallback: try handler_id if handler is not available
+                      if (lead.handler_id) {
+                        return getEmployeeDisplayName(lead.handler_id);
+                      }
+                      return '--';
+                    })() || '---'}
                   </span>
                 </div>
               </div>
             )}
 
-            {/* Helper */}
-            {meeting.calendar_type !== 'staff' && (
-              <div className="flex justify-between items-center py-1">
-                <span className="text-xs md:text-base font-semibold text-gray-500">Helper</span>
-                <div className="flex items-center gap-2">
-                  {renderEmployeeAvatar(lead.helper_id || lead.helper || meeting.helper, 'md', false)}
-                  <span className="text-sm md:text-lg font-bold text-gray-800">
-                    {getEmployeeDisplayName(lead.helper || meeting.helper) || '---'}
-                  </span>
+            {/* Manager, Helper, Scheduler - show for potential_client and other non-active_client meetings */}
+            {meeting.calendar_type !== 'active_client' && meeting.calendar_type !== 'staff' && (
+              <>
+                {/* Manager */}
+                <div className="flex justify-between items-center py-1">
+                  <span className="text-xs md:text-base font-semibold text-gray-500">Manager</span>
+                  <div className="flex items-center gap-2">
+                    {renderEmployeeAvatar(lead.manager_id || lead.manager || meeting.meeting_manager_id || meeting.meeting_manager, 'lg', false)}
+                    <span className="text-xs md:text-sm font-bold text-gray-800">
+                      {getEmployeeDisplayName(lead.manager || meeting.meeting_manager) || '---'}
+                    </span>
+                  </div>
                 </div>
-              </div>
-            )}
 
-            {/* Scheduler */}
-            {meeting.calendar_type !== 'staff' && (
-              <div className="flex justify-between items-center py-1">
-                <span className="text-xs md:text-base font-semibold text-gray-500">Scheduler</span>
-                <div className="flex items-center gap-2">
-                  {renderEmployeeAvatar(lead.scheduler_id || lead.scheduler || meeting.scheduler, 'md', false)}
-                  <span className="text-sm md:text-lg font-bold text-gray-800">
-                    {getEmployeeDisplayName(lead.scheduler || meeting.scheduler) || '---'}
-                  </span>
+                {/* Helper */}
+                <div className="flex justify-between items-center py-1">
+                  <span className="text-xs md:text-base font-semibold text-gray-500">Helper</span>
+                  <div className="flex items-center gap-2">
+                    {renderEmployeeAvatar(lead.helper_id || lead.helper || meeting.helper, 'lg', false)}
+                    <span className="text-xs md:text-sm font-bold text-gray-800">
+                      {getEmployeeDisplayName(lead.helper || meeting.helper) || '---'}
+                    </span>
+                  </div>
                 </div>
-              </div>
+
+              </>
             )}
 
             {/* Staff Meeting Attendees */}
@@ -4257,6 +4517,36 @@ const CalendarPage: React.FC = () => {
                   {meeting.meeting_manager || 'No attendees'}
                 </div>
               </div>
+            )}
+
+            {/* Guest 1 and Guest 2 - show for active_client and potential_client meetings */}
+            {(meeting.calendar_type === 'active_client' || meeting.calendar_type === 'potential_client') && (
+              <>
+                {/* Guest 1 */}
+                {meeting.extern1 && meeting.extern1 !== '--' && meeting.extern1 !== '' && (
+                  <div className="flex justify-between items-center py-1">
+                    <span className="text-xs md:text-base font-semibold text-gray-500">Guest 1</span>
+                    <div className="flex items-center gap-2">
+                      {renderEmployeeAvatar(meeting.extern1, 'lg', false)}
+                      <span className="text-xs md:text-sm font-bold text-gray-800">
+                        {getEmployeeDisplayName(meeting.extern1) || '---'}
+                      </span>
+                    </div>
+                  </div>
+                )}
+                {/* Guest 2 */}
+                {meeting.extern2 && meeting.extern2 !== '--' && meeting.extern2 !== '' && (
+                  <div className="flex justify-between items-center py-1">
+                    <span className="text-xs md:text-base font-semibold text-gray-500">Guest 2</span>
+                    <div className="flex items-center gap-2">
+                      {renderEmployeeAvatar(meeting.extern2, 'lg', false)}
+                      <span className="text-xs md:text-sm font-bold text-gray-800">
+                        {getEmployeeDisplayName(meeting.extern2) || '---'}
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
 
             {/* Category */}
@@ -4273,7 +4563,7 @@ const CalendarPage: React.FC = () => {
                   // Same logic as Clients.tsx balance badge
                   const isLegacy = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
                   let balanceValue: any;
-                  
+
                   if (isLegacy) {
                     // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
                     const currencyId = (lead as any).currency_id;
@@ -4289,7 +4579,7 @@ const CalendarPage: React.FC = () => {
                   } else {
                     balanceValue = lead.balance || (lead as any).proposal_total;
                   }
-                  
+
                   // Get currency symbol - for both legacy and new leads, use currency_id if available
                   let balanceCurrency = lead.balance_currency;
                   if (!balanceCurrency) {
@@ -4302,84 +4592,60 @@ const CalendarPage: React.FC = () => {
                       } else {
                         // Fallback to hardcoded mapping if currency not found in map
                         balanceCurrency = numericCurrencyId === 1 ? 'NIS' :
-                                         numericCurrencyId === 2 ? 'USD' :
-                                         numericCurrencyId === 3 ? 'EUR' :
-                                         numericCurrencyId === 4 ? 'GBP' : 'NIS';
+                          numericCurrencyId === 2 ? 'USD' :
+                            numericCurrencyId === 3 ? 'EUR' :
+                              numericCurrencyId === 4 ? 'GBP' : 'NIS';
                       }
                     } else {
                       // If no currency_id, try meeting currency or default to NIS
                       balanceCurrency = meeting.meeting_currency || 'NIS';
                     }
                   }
-                  
+
                   // Fallback to meeting amount if no balance
                   if (!balanceValue && meeting.meeting_amount) {
                     balanceValue = meeting.meeting_amount;
                     balanceCurrency = meeting.meeting_currency || balanceCurrency || 'NIS';
                   }
-                  
+
                   if (balanceValue === '--' || meeting.meeting_amount === '--') {
                     return '--';
                   }
-                  
+
                   // Ensure we have a currency (default to NIS)
                   if (!balanceCurrency) {
                     balanceCurrency = 'NIS';
                   }
-                  
+
                   // Handle 0 values - show currency symbol
                   if (balanceValue === 0 || balanceValue === '0' || Number(balanceValue) === 0) {
                     return `${getCurrencySymbol(balanceCurrency)}0`;
                   }
-                  
+
                   if (balanceValue && (Number(balanceValue) > 0 || balanceValue !== '0')) {
-                    const formattedValue = typeof balanceValue === 'number' 
+                    const formattedValue = typeof balanceValue === 'number'
                       ? balanceValue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
                       : Number(balanceValue).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
                     return `${getCurrencySymbol(balanceCurrency)}${formattedValue}`;
                   }
-                  
+
                   if (typeof meeting.meeting_amount === 'number' && meeting.meeting_amount > 0) {
                     return `${getCurrencySymbol(meeting.meeting_currency || 'NIS')}${meeting.meeting_amount.toLocaleString()}`;
                   }
-                  
+
                   // Default: show 0 with NIS symbol
                   return `${getCurrencySymbol(balanceCurrency)}0`;
                 })()}
               </span>
             </div>
 
-            {/* Expert */}
-            <div className="flex justify-between items-center py-1">
-              <span className="text-xs md:text-base font-semibold text-gray-500">Expert</span>
-              <div className="flex items-center gap-2">
-                {renderEmployeeAvatar(lead.expert_id || lead.expert || meeting.expert, 'md', false)}
-                <span className="text-sm md:text-lg font-bold text-gray-800">
-                  {(() => {
-                    // Use expert_id if available (for proper lookup), otherwise use expert
-                    const expertId = lead.expert_id || meeting.expert_id || meeting.expert;
-                    const expertDisplayName = expertId ? getEmployeeDisplayName(expertId) : null;
-                    // If getEmployeeDisplayName returns the ID (meaning employee not found), try using lead.expert as display name
-                    if (expertDisplayName && expertDisplayName !== expertId?.toString() && expertDisplayName !== '--') {
-                      return expertDisplayName;
-                    }
-                    // Fallback to lead.expert if it's a display name, or show N/A
-                    return lead.expert && typeof lead.expert === 'string' && isNaN(Number(lead.expert)) 
-                      ? lead.expert 
-                      : (expertDisplayName || 'N/A');
-                  })()}
-                </span>
-                {getExpertStatusIcon(lead, meeting, 'small')}
-              </div>
-            </div>
-
             {/* Location */}
             <div className="flex justify-between items-center py-1">
               <span className="text-xs md:text-base font-semibold text-gray-500">Location</span>
               <span className="text-sm md:text-lg font-bold text-gray-800">
-                {meeting.location || meeting.meeting_location || 
-                 (meeting.meeting_location_id ? getLegacyMeetingLocation(meeting.meeting_location_id) : null) || 
-                 'N/A'}
+                {meeting.location || meeting.meeting_location ||
+                  (meeting.meeting_location_id ? getLegacyMeetingLocation(meeting.meeting_location_id) : null) ||
+                  'N/A'}
               </span>
             </div>
 
@@ -4391,11 +4657,11 @@ const CalendarPage: React.FC = () => {
                 {meeting.attendance_probability ? (
                   <div className="flex items-center gap-1">
                     <span className="text-sm font-bold text-gray-800">
-                      {meeting.attendance_probability === 'Low' ? 'L' : 
-                       meeting.attendance_probability === 'Medium' ? 'M' : 
-                       meeting.attendance_probability === 'High' ? 'H' : 
-                       meeting.attendance_probability === 'Very High' ? 'VH' : 
-                       meeting.attendance_probability}
+                      {meeting.attendance_probability === 'Low' ? 'L' :
+                        meeting.attendance_probability === 'Medium' ? 'M' :
+                          meeting.attendance_probability === 'High' ? 'H' :
+                            meeting.attendance_probability === 'Very High' ? 'VH' :
+                              meeting.attendance_probability}
                     </span>
                     {typeof probabilityNumber === 'number' && !isNaN(probabilityNumber) && (
                       <span className="text-xs text-gray-500">({probabilityNumber}%)</span>
@@ -4418,26 +4684,25 @@ const CalendarPage: React.FC = () => {
                 )}
 
                 {/* Car Icon */}
-                {(meeting.location?.toLowerCase().includes('tlv with parking') || 
+                {(meeting.location?.toLowerCase().includes('tlv with parking') ||
                   meeting.meeting_location?.toLowerCase().includes('tlv with parking')) && (
-                  <TruckIcon 
-                    className="w-5 h-5 text-green-500" 
-                    title={getLegacyCarNumber(meeting) || "TLV with parking location"} 
-                  />
-                )}
+                    <TruckIcon
+                      className="w-5 h-5 text-green-500"
+                      title={getLegacyCarNumber(meeting) || "TLV with parking location"}
+                    />
+                  )}
 
                 {/* Paid meeting indicator based on meeting_collection_id on lead */}
                 {((meeting.lead && meeting.lead.meeting_collection_id) ||
                   meeting.legacy_lead?.meeting_collection_id) && (
-                  <CurrencyDollarIcon
-                    className="w-5 h-5 text-green-600"
-                    title={`Paid meeting / ${
-                      meeting.meeting_amount
+                    <CurrencyDollarIcon
+                      className="w-5 h-5 text-green-600"
+                      title={`Paid meeting / ${meeting.meeting_amount
                         ? `${getCurrencySymbol(meeting.meeting_currency || 'NIS')}${meeting.meeting_amount.toLocaleString()}`
                         : 'no amount set'
-                    }`}
-                  />
-                )}
+                        }`}
+                    />
+                  )}
 
                 {/* Flame Icon */}
                 {isNotFirstMeeting(meeting) && (
@@ -4482,56 +4747,116 @@ const CalendarPage: React.FC = () => {
               </div>
             ) : (
               <div className="space-y-4">
-                <div className="bg-white p-3 rounded-lg">
-                  <h6 className="font-semibold text-gray-800 mb-2">Expert Notes</h6>
+                <div className="bg-white p-4 rounded-lg">
+                  <div className="flex items-center justify-between mb-3">
+                    <h6 className="font-semibold text-base text-gray-800">Expert Notes</h6>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedMeetingForNotes(meeting);
+                        setIsNotesModalOpen(true);
+                      }}
+                      className="btn btn-sm btn-outline btn-primary"
+                    >
+                      View All
+                    </button>
+                  </div>
                   <div className="space-y-2 max-h-32 overflow-y-auto">
                     {Array.isArray(expandedData.expert_notes) && expandedData.expert_notes.length > 0 ? (
-                      expandedData.expert_notes.map((note: any) => (
-                        <div key={note.id} className="bg-gray-50 p-2 rounded text-xs">
-                          <div className="flex items-center gap-1 text-gray-500 mb-1">
-                            <ClockIcon className="w-3 h-3" />
-                            <span>{note.timestamp}</span>
+                      <>
+                        {expandedData.expert_notes.slice(0, 2).map((note: any) => (
+                          <div key={note.id} className="bg-gray-50 p-3 rounded text-sm">
+                            <div className="flex items-center gap-1 text-gray-500 mb-1">
+                              <ClockIcon className="w-4 h-4" />
+                              <span className="text-sm">{note.timestamp}</span>
+                            </div>
+                            <p className="text-gray-700 whitespace-pre-wrap line-clamp-2">{note.content}</p>
                           </div>
-                          <p className="text-gray-700 whitespace-pre-wrap">{note.content}</p>
-                        </div>
-                      ))
+                        ))}
+                        {expandedData.expert_notes.length > 2 && (
+                          <p className="text-sm text-gray-500 italic">+{expandedData.expert_notes.length - 2} more notes</p>
+                        )}
+                      </>
                     ) : (
-                      <p className="text-sm text-gray-500">
+                      <p className="text-base text-gray-500">
                         {expandedData.expert_notes || 'No expert notes yet.'}
                       </p>
                     )}
                   </div>
                 </div>
-                <div className="bg-white p-3 rounded-lg">
-                  <h6 className="font-semibold text-gray-800 mb-2">Handler Notes</h6>
+                <div className="bg-white p-4 rounded-lg">
+                  <div className="flex items-center justify-between mb-3">
+                    <h6 className="font-semibold text-base text-gray-800">Handler Notes</h6>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedMeetingForNotes(meeting);
+                        setIsNotesModalOpen(true);
+                      }}
+                      className="btn btn-sm btn-outline btn-primary"
+                    >
+                      View All
+                    </button>
+                  </div>
                   <div className="space-y-2 max-h-32 overflow-y-auto">
                     {Array.isArray(expandedData.handler_notes) && expandedData.handler_notes.length > 0 ? (
-                      expandedData.handler_notes.map((note: any) => (
-                        <div key={note.id} className="bg-gray-50 p-2 rounded text-xs">
-                          <div className="flex items-center gap-1 text-gray-500 mb-1">
-                            <ClockIcon className="w-3 h-3" />
-                            <span>{note.timestamp}</span>
+                      <>
+                        {expandedData.handler_notes.slice(0, 2).map((note: any) => (
+                          <div key={note.id} className="bg-gray-50 p-3 rounded text-sm">
+                            <div className="flex items-center gap-1 text-gray-500 mb-1">
+                              <ClockIcon className="w-4 h-4" />
+                              <span className="text-sm">{note.timestamp}</span>
+                            </div>
+                            <p className="text-gray-700 whitespace-pre-wrap line-clamp-2">{note.content}</p>
                           </div>
-                          <p className="text-gray-700 whitespace-pre-wrap">{note.content}</p>
-                        </div>
-                      ))
+                        ))}
+                        {expandedData.handler_notes.length > 2 && (
+                          <p className="text-sm text-gray-500 italic">+{expandedData.handler_notes.length - 2} more notes</p>
+                        )}
+                      </>
                     ) : (
-                      <p className="text-sm text-gray-500">
+                      <p className="text-base text-gray-500">
                         {expandedData.handler_notes || 'No handler notes yet.'}
                       </p>
                     )}
                   </div>
                 </div>
-                <div className="bg-white p-3 rounded-lg">
-                  <h6 className="font-semibold text-gray-800 mb-2">Facts of Case</h6>
+                <div className="bg-white p-4 rounded-lg">
+                  <div className="flex items-center justify-between mb-3">
+                    <h6 className="font-semibold text-base text-gray-800">Facts of Case</h6>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedMeetingForNotes(meeting);
+                        setIsNotesModalOpen(true);
+                      }}
+                      className="btn btn-sm btn-outline btn-primary"
+                    >
+                      View All
+                    </button>
+                  </div>
                   <div className="space-y-2 max-h-32 overflow-y-auto">
                     {expandedData.facts ? (
-                      <p className="text-sm text-gray-700 whitespace-pre-wrap">{expandedData.facts}</p>
+                      <p className="text-base text-gray-700 whitespace-pre-wrap line-clamp-3">{expandedData.facts}</p>
                     ) : (
-                      <p className="text-sm text-gray-500">No facts of case available.</p>
+                      <p className="text-base text-gray-500">No facts of case available.</p>
                     )}
                   </div>
                 </div>
+                {meeting.calendar_type !== 'staff' && (
+                  <div className="bg-white p-3 rounded-lg">
+                    <h6 className="font-semibold text-gray-800 mb-2">Staff</h6>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-gray-600">Scheduler:</span>
+                      <div className="flex items-center gap-2">
+                        {renderEmployeeAvatar(lead.scheduler_id || lead.scheduler || meeting.scheduler, 'sm', false)}
+                        <span className="text-sm text-gray-800 font-medium">
+                          {getEmployeeDisplayName(lead.scheduler || meeting.scheduler) || '---'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -4552,7 +4877,7 @@ const CalendarPage: React.FC = () => {
     if (probabilityNumber >= 80) probabilityColor = 'text-green-600';
     else if (probabilityNumber >= 60) probabilityColor = 'text-yellow-600';
     else if (probabilityNumber >= 40) probabilityColor = 'text-orange-600';
-    
+
     // Check if meeting should show green indicator:
     // 1. For potential_client: if lead has passed stage 20 (21 and higher) BUT NOT stage 55
     // 2. For active_client: if 2 hours have passed after meeting time
@@ -4562,11 +4887,11 @@ const CalendarPage: React.FC = () => {
         const leadStage = lead.stage ? Number(lead.stage) : null;
         const meetingStage = meeting.stage ? Number(meeting.stage) : null;
         const currentStage = leadStage || meetingStage;
-        
+
         // Stage must be > 20 AND not equal to 55
         return currentStage !== null && currentStage > 20 && currentStage !== 55;
       }
-      
+
       // For active_client meetings: check if 2 hours have passed after meeting time
       if (meeting.calendar_type === 'active_client' && meeting.meeting_date && meeting.meeting_time) {
         try {
@@ -4579,13 +4904,13 @@ const CalendarPage: React.FC = () => {
           return false;
         }
       }
-      
+
       return false;
     })();
-    
+
     return (
       <React.Fragment key={meeting.id}>
-        <tr 
+        <tr
           className={`hover:bg-base-200/50 ${selectedRowId === meeting.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''} ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}
           onClick={() => {
             if (meeting.calendar_type !== 'staff' && meeting.lead) {
@@ -4594,136 +4919,69 @@ const CalendarPage: React.FC = () => {
           }}
           style={{ cursor: meeting.calendar_type !== 'staff' && meeting.lead ? 'pointer' : 'default' }}
         >
-          <td className="font-bold">
+          {/* TYPE Column - First (New) */}
+          <td className="w-10">
             <div className="flex items-center gap-1 sm:gap-2">
               {hasPassedStage && (
                 <CheckCircleIcon className="w-4 h-4 sm:w-5 sm:h-5 text-green-500 flex-shrink-0" />
               )}
+              <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-bold border whitespace-nowrap" style={{
+                backgroundColor: getCalendarTypeBadgeStyles(meeting.calendar_type)?.backgroundColor,
+                color: getCalendarTypeBadgeStyles(meeting.calendar_type)?.textColor,
+                borderColor: getCalendarTypeBadgeStyles(meeting.calendar_type)?.borderColor
+              }}>
+                {getCalendarTypeBadgeStyles(meeting.calendar_type)?.label || meeting.calendar_type}
+              </span>
+            </div>
+          </td>
+
+          {/* Time Column - Second */}
+          <td className="text-sm sm:text-base">
+            <span
+              className="inline-flex items-center px-2 py-1 rounded-md text-white font-medium"
+              style={{ backgroundColor: 'rgb(25, 49, 31)' }}
+            >
+              {meeting.meeting_time ? meeting.meeting_time.slice(0, 5) : ''}
+            </span>
+          </td>
+          {/* Lead Column - Second */}
+          <td className="font-bold">
+            <div className="flex items-center gap-1 sm:gap-2">
               {meeting.calendar_type === 'staff' ? (
                 <>
-                  <span className="text-black text-xs sm:text-sm">
+                  <span className="text-black text-base sm:text-lg">
                     {lead.name || meeting.name}
                   </span>
-                  {(() => {
-                    const badge = getCalendarTypeBadgeStyles(meeting.calendar_type);
-                    if (!badge) return null;
-                    return (
-                      <span
-                        className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] sm:text-xs font-bold border ml-1"
-                        style={{
-                          backgroundColor: badge.backgroundColor,
-                          color: badge.textColor,
-                          borderColor: badge.borderColor
-                        }}
-                      >
-                        {badge.label}
-                      </span>
-                    );
-                  })()}
                 </>
               ) : (
                 <>
                   <div className="flex flex-col">
-                    <Link 
-                      to={buildClientRoute(lead)} 
-                      className="hover:opacity-80 text-xs sm:text-sm"
+                    <Link
+                      to={buildClientRoute(lead)}
+                      className="hover:opacity-80 text-base sm:text-lg"
                       style={{ color: '#3b28c7' }}
                     >
                       {lead.name || meeting.name}
                     </Link>
-                    <span className="text-xs text-gray-500">
+                    <span className="text-sm sm:text-base text-gray-500 font-semibold">
                       ({lead.lead_number || meeting.lead_number})
                     </span>
                   </div>
-                  {(() => {
-                    const badge = getCalendarTypeBadgeStyles(meeting.calendar_type);
-                    if (!badge) return null;
-                    return (
-                      <span
-                        className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] sm:text-xs font-bold border ml-1"
-                        style={{
-                          backgroundColor: badge.backgroundColor,
-                          color: badge.textColor,
-                          borderColor: badge.borderColor
-                        }}
-                      >
-                        {badge.label}
-                      </span>
-                    );
-                  })()}
                 </>
               )}
             </div>
           </td>
-          <td className="text-xs sm:text-sm">{meeting.meeting_time ? meeting.meeting_time.slice(0,5) : ''}</td>
-          <td>
-            {meeting.calendar_type === 'staff' ? (
-              <div className="max-w-xs">
-                <div className="text-xs font-medium text-gray-700">Attendees:</div>
-                <div className="text-sm font-semibold text-gray-800 break-words">
-                  {meeting.meeting_manager || 'No attendees'}
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                {/* Desktop only - employee image */}
-                <div className="hidden md:block">
-                  {renderEmployeeAvatar(lead.manager_id || lead.manager || meeting.meeting_manager_id || meeting.meeting_manager, 'md', false)}
-                </div>
-                <span className="text-xs sm:text-sm">{getEmployeeDisplayName(lead.manager || meeting.meeting_manager)}</span>
-              </div>
-            )}
+          {/* Category Column */}
+          <td className="text-sm sm:text-base">
+            {getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A'}
           </td>
-          <td>
-            {meeting.calendar_type === 'staff' ? (
-              null
-            ) : (
-              <div className="flex items-center gap-2">
-                {/* Desktop only - employee image */}
-                <div className="hidden md:block">
-                  {renderEmployeeAvatar(lead.helper_id || lead.helper || meeting.helper, 'md', false)}
-                </div>
-                <span className="text-xs sm:text-sm">{getEmployeeDisplayName(lead.helper || meeting.helper)}</span>
-              </div>
-            )}
-          </td>
-          <td>
-            {meeting.calendar_type === 'staff' ? (
-              null
-            ) : (
-              <div className="flex items-center gap-2">
-                {/* Desktop only - employee image */}
-                <div className="hidden md:block">
-                  {renderEmployeeAvatar(lead.scheduler_id || lead.scheduler || meeting.scheduler, 'md', false)}
-                </div>
-                <span className="text-xs sm:text-sm">{getEmployeeDisplayName(lead.scheduler || meeting.scheduler)}</span>
-              </div>
-            )}
-          </td>
-          <td className="text-xs sm:text-sm">
-            {(() => {
-              const categoryText = getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A';
-              // Split category name and main category (in parentheses) into two rows
-              const match = categoryText.match(/^(.+?)\s*\((.+?)\)$/);
-              if (match) {
-                const [, categoryName, mainCategory] = match;
-                return (
-                  <div className="flex flex-col">
-                    <span>{categoryName}</span>
-                    <span className="text-gray-500">({mainCategory})</span>
-                  </div>
-                );
-              }
-              // If no parentheses, just show the text
-              return <span>{categoryText}</span>;
-            })()}
-          </td>
-          <td className="text-xs sm:text-sm">
+          {/* Value Column - Third */}
+          <td className="text-sm sm:text-base">
             {(() => {
               // Same logic as Clients.tsx balance badge
               const isLegacy = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
               let balanceValue: any;
-              
+
               if (isLegacy) {
                 // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
                 const currencyId = (lead as any).currency_id;
@@ -4739,7 +4997,7 @@ const CalendarPage: React.FC = () => {
               } else {
                 balanceValue = lead.balance || (lead as any).proposal_total;
               }
-              
+
               // Get currency symbol - for both legacy and new leads, use currency_id if available
               let balanceCurrency = lead.balance_currency;
               if (!balanceCurrency) {
@@ -4751,214 +5009,166 @@ const CalendarPage: React.FC = () => {
                     balanceCurrency = currencyMap[numericCurrencyId].iso_code || currencyMap[numericCurrencyId].name || 'NIS';
                   } else {
                     // Fallback to hardcoded mapping if currency not found in map
-                    balanceCurrency = numericCurrencyId === 1 ? 'NIS' : 
-                                     numericCurrencyId === 2 ? 'USD' : 
-                                     numericCurrencyId === 3 ? 'EUR' : 
-                                     numericCurrencyId === 4 ? 'GBP' : 'NIS';
+                    balanceCurrency = numericCurrencyId === 1 ? 'NIS' :
+                      numericCurrencyId === 2 ? 'USD' :
+                        numericCurrencyId === 3 ? 'EUR' :
+                          numericCurrencyId === 4 ? 'GBP' : 'NIS';
                   }
                 } else {
                   // If no currency_id, try meeting currency or default to NIS
                   balanceCurrency = meeting.meeting_currency || 'NIS';
                 }
               }
-              
+
               // Fallback to meeting amount if no balance
               if (!balanceValue && meeting.meeting_amount) {
                 balanceValue = meeting.meeting_amount;
                 balanceCurrency = meeting.meeting_currency || balanceCurrency || 'NIS';
               }
-              
+
               if (balanceValue === '--' || meeting.meeting_amount === '--') {
                 return '--';
               }
-              
+
               // Ensure we have a currency (default to NIS)
               if (!balanceCurrency) {
                 balanceCurrency = 'NIS';
               }
-              
+
               // Handle 0 values - show currency symbol
               if (balanceValue === 0 || balanceValue === '0' || Number(balanceValue) === 0) {
                 return `${getCurrencySymbol(balanceCurrency)}0`;
               }
-              
+
               if (balanceValue && (Number(balanceValue) > 0 || balanceValue !== '0')) {
-                const formattedValue = typeof balanceValue === 'number' 
+                const formattedValue = typeof balanceValue === 'number'
                   ? balanceValue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
                   : Number(balanceValue).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
                 return `${getCurrencySymbol(balanceCurrency)}${formattedValue}`;
               }
-              
+
               if (typeof meeting.meeting_amount === 'number' && meeting.meeting_amount > 0) {
                 return `${getCurrencySymbol(meeting.meeting_currency || 'NIS')}${meeting.meeting_amount.toLocaleString()}`;
               }
-              
+
               // Default: show 0 with NIS symbol
               return `${getCurrencySymbol(balanceCurrency)}0`;
             })()}
           </td>
+          {/* Participants Column - Fourth */}
           <td>
-            <div className="flex items-center gap-2">
-              {/* Desktop only - employee image */}
-              <div className="hidden md:block relative">
-                {renderEmployeeAvatar(lead.expert_id || lead.expert || meeting.expert, 'md', false)}
+            {meeting.calendar_type === 'staff' ? (
+              <div className="max-w-xs">
+                <div className="text-xs font-medium text-gray-700">Attendees:</div>
+                <div className="text-xs font-semibold text-gray-800 break-words">
+                  {meeting.meeting_manager || 'No attendees'}
+                </div>
               </div>
-              <div className="flex flex-col gap-0.5">
-                {/* Expert status icon above the name */}
-                {meeting.calendar_type !== 'staff' && (() => {
-                  // For NEW leads: use eligibility_status field (text values)
-                  // For LEGACY leads: use expert_examination field (numeric values)
-                  if (lead.lead_type !== 'legacy') {
-                    const eligibilityStatus = lead.eligibility_status;
-                    
-                    if (!eligibilityStatus || eligibilityStatus === '') {
-                      return (
-                        <span className="w-5 h-5 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Expert opinion not checked">
-                          <QuestionMarkCircleIcon className="w-3 h-3" />
-                        </span>
-                      );
-                    }
-
-                    if (eligibilityStatus === 'not_feasible') {
-                      return (
-                        <span className="w-5 h-5 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Not Feasible">
-                          <XCircleIcon className="w-3 h-3" />
-                        </span>
-                      );
-                    } else if (eligibilityStatus === 'feasible_no_check') {
-                      return (
-                        <span className="w-5 h-5 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Feasible (no check)">
-                          <CheckCircleIcon className="w-3 h-3" />
-                        </span>
-                      );
-                    } else if (eligibilityStatus === 'feasible_with_check') {
-                      return (
-                        <span className="w-5 h-5 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Feasible (with check)">
-                          <ExclamationTriangleIcon className="w-3 h-3" />
-                        </span>
-                      );
-                    }
-
-                    return (
-                      <span className="w-5 h-5 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Expert opinion not checked">
-                        <QuestionMarkCircleIcon className="w-3 h-3" />
+            ) : (
+              <div className="flex flex-col gap-2 py-1">
+                {/* Handler - only show for active_client meetings */}
+                {meeting.calendar_type === 'active_client' && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500" style={{ writingMode: 'vertical-rl' }}>Handler</span>
+                    <div className="flex items-center gap-1">
+                      <div className="hidden md:block">
+                        {renderEmployeeAvatar(lead.handler_id || lead.handler, 'lg', false)}
+                      </div>
+                      <span className="text-sm sm:text-base">
+                        {(() => {
+                          // lead.handler should already be the display name from leadData processing
+                          // But if it looks like an ID (numeric), try to map it using handler_id
+                          if (lead.handler && lead.handler !== '--') {
+                            const isNumeric = typeof lead.handler === 'number' || (typeof lead.handler === 'string' && !isNaN(Number(lead.handler)) && lead.handler.trim() !== '');
+                            // If handler is numeric (likely an ID), use handler_id to get display name
+                            if (isNumeric && lead.handler_id) {
+                              const displayName = getEmployeeDisplayName(lead.handler_id);
+                              // Only use the mapped name if it's different from the ID
+                              if (displayName !== lead.handler_id.toString()) {
+                                return displayName;
+                              }
+                            }
+                            // Otherwise use handler directly (should be display name)
+                            return lead.handler;
+                          }
+                          // Fallback: try handler_id if handler is not available
+                          if (lead.handler_id) {
+                            return getEmployeeDisplayName(lead.handler_id);
+                          }
+                          return '--';
+                        })()}
                       </span>
-                    );
-                  }
-
-                  const expertExamination = lead.expert_examination;
-
-                  if (!expertExamination || expertExamination === 0 || expertExamination === '0') {
-                    return (
-                      <span className="w-5 h-5 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Expert opinion not checked">
-                        <QuestionMarkCircleIcon className="w-3 h-3" />
-                      </span>
-                    );
-                  }
-
-                  if (expertExamination === 1 || expertExamination === '1') {
-                    return (
-                      <span className="w-5 h-5 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Not Feasible">
-                        <XCircleIcon className="w-3 h-3" />
-                      </span>
-                    );
-                  } else if (expertExamination === 5 || expertExamination === '5') {
-                    return (
-                      <span className="w-5 h-5 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Feasible (further check)">
-                        <ExclamationTriangleIcon className="w-3 h-3" />
-                      </span>
-                    );
-                  } else if (expertExamination === 8 || expertExamination === '8') {
-                    return (
-                      <span className="w-5 h-5 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Feasible (no check)">
-                        <CheckCircleIcon className="w-3 h-3" />
-                      </span>
-                    );
-                  }
-
-                  return (
-                    <span className="w-5 h-5 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-sm self-start" title="Expert opinion status unknown">
-                      <QuestionMarkCircleIcon className="w-3 h-3" />
-                    </span>
-                  );
-                })()}
-                {/* Employee name below the icon */}
-                <span className="text-xs sm:text-sm">
-                  {(() => {
-                    // Use expert_id if available (for proper lookup), otherwise use expert
-                    const expertId = lead.expert_id || meeting.expert_id || meeting.expert;
-                    const expertDisplayName = expertId ? getEmployeeDisplayName(expertId) : null;
-                    // If getEmployeeDisplayName returns the ID (meaning employee not found), try using lead.expert as display name
-                    if (expertDisplayName && expertDisplayName !== expertId?.toString() && expertDisplayName !== '--') {
-                      return expertDisplayName;
-                    }
-                    // Fallback to lead.expert if it's a display name, or show N/A
-                    return lead.expert && typeof lead.expert === 'string' && isNaN(Number(lead.expert)) 
-                      ? lead.expert 
-                      : (expertDisplayName || <span className="text-gray-400">N/A</span>);
-                  })()}
-                </span>
+                    </div>
+                  </div>
+                )}
+                {/* Manager, Helper, Scheduler - show for potential_client and other non-active_client meetings */}
+                {meeting.calendar_type !== 'active_client' && meeting.calendar_type !== 'staff' && (
+                  <>
+                    {/* Manager */}
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500" style={{ writingMode: 'vertical-rl' }}>Manager</span>
+                      <div className="flex items-center gap-1">
+                        <div className="hidden md:block">
+                          {renderEmployeeAvatar(lead.manager_id || lead.manager || meeting.meeting_manager_id || meeting.meeting_manager, 'lg', false)}
+                        </div>
+                        <span className="text-sm sm:text-base">{getEmployeeDisplayName(lead.manager || meeting.meeting_manager)}</span>
+                      </div>
+                    </div>
+                    {/* Helper - only show if helper exists and is not "--" */}
+                    {(() => {
+                      const helperId = lead.helper_id || lead.helper || meeting.helper;
+                      return helperId && helperId !== '--' && helperId !== 'N/A' && helperId !== 'Not_assigned' && helperId !== '---';
+                    })() && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-gray-500" style={{ writingMode: 'vertical-rl' }}>Helper</span>
+                          <div className="flex items-center gap-1">
+                            <div className="hidden md:block">
+                              {renderEmployeeAvatar(lead.helper_id || lead.helper || meeting.helper, 'lg', false)}
+                            </div>
+                            <span className="text-sm sm:text-base">{getEmployeeDisplayName(lead.helper || meeting.helper)}</span>
+                          </div>
+                        </div>
+                      )}
+                  </>
+                )}
+                {/* Guest 1 and Guest 2 - show for active_client and potential_client meetings */}
+                {(meeting.calendar_type === 'active_client' || meeting.calendar_type === 'potential_client') && (
+                  <>
+                    {/* Guest 1 */}
+                    {meeting.extern1 && meeting.extern1 !== '--' && meeting.extern1 !== '' && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-500" style={{ writingMode: 'vertical-rl' }}>Guest 1</span>
+                        <div className="flex items-center gap-1">
+                          <div className="hidden md:block">
+                            {renderEmployeeAvatar(meeting.extern1, 'lg', false)}
+                          </div>
+                          <span className="text-sm sm:text-base">{getEmployeeDisplayName(meeting.extern1)}</span>
+                        </div>
+                      </div>
+                    )}
+                    {/* Guest 2 */}
+                    {meeting.extern2 && meeting.extern2 !== '--' && meeting.extern2 !== '' && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-500" style={{ writingMode: 'vertical-rl' }}>Guest 2</span>
+                        <div className="flex items-center gap-1">
+                          <div className="hidden md:block">
+                            {renderEmployeeAvatar(meeting.extern2, 'lg', false)}
+                          </div>
+                          <span className="text-sm sm:text-base">{getEmployeeDisplayName(meeting.extern2)}</span>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
+            )}
+          </td>
+          <td className="text-sm sm:text-base">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
+          <td>
+            <div className="flex items-center justify-center">
+              {getStageBadge(lead.stage ?? meeting.stage)}
             </div>
           </td>
-          <td className="text-xs sm:text-sm">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
-          <td>
-            <div className="flex items-center gap-1">
-              {isNotFirstMeeting(meeting) && (
-                <FireIcon className="w-4 h-4 sm:w-6 sm:h-6 text-orange-500" title="Another meeting" />
-              )}
-            <span className={`font-bold text-xs sm:text-sm ${probabilityColor}`}>
-                {(() => {
-                  // For new meetings, use attendance_probability
-                  if (meeting.attendance_probability && ['Low', 'Medium', 'High', 'Very High'].includes(meeting.attendance_probability)) {
-                    const letter = meeting.attendance_probability === 'Low' ? 'L' : 
-                                  meeting.attendance_probability === 'Medium' ? 'M' : 
-                                  meeting.attendance_probability === 'High' ? 'H' : 'VH';
-                    const title = `${meeting.attendance_probability} Attendance Probability`;
-                    return <span title={title}>{letter}</span>;
-                  }
-                  // For legacy meetings, convert probability number to letter
-                  else if (typeof probabilityNumber === 'number' && !isNaN(probabilityNumber)) {
-                    let letter, title;
-                    if (probabilityNumber >= 80) { letter = 'VH'; title = 'Very High Attendance Probability'; }
-                    else if (probabilityNumber >= 60) { letter = 'H'; title = 'High Attendance Probability'; }
-                    else if (probabilityNumber >= 40) { letter = 'M'; title = 'Medium Attendance Probability'; }
-                    else { letter = 'L'; title = 'Low Attendance Probability'; }
-                    return <span title={title}>{letter}</span>;
-                  }
-                  return 'N/A';
-                })()}
-                {typeof probabilityNumber === 'number' && !isNaN(probabilityNumber) ? ` ${probabilityNumber}%` : ''}
-            </span>
-              {((meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id))?.toLowerCase().includes('tlv with parking')) && (
-                <TruckIcon 
-                  className="w-4 h-4 sm:w-6 sm:h-6 text-blue-600 cursor-help" 
-                  title={getLegacyCarNumber(meeting) ? `Car Number: ${getLegacyCarNumber(meeting)}` : 'TLV with parking location'}
-                />
-              )}
-
-              {/* Paid meeting indicator based on meeting_collection_id on lead */}
-              {((meeting.lead && meeting.lead.meeting_collection_id) ||
-                meeting.legacy_lead?.meeting_collection_id) && (
-                <CurrencyDollarIcon
-                  className="w-4 h-4 sm:w-5 sm:h-5 text-green-600"
-                  title={`Paid meeting / ${
-                    meeting.meeting_amount
-                      ? `${getCurrencySymbol(meeting.meeting_currency || 'NIS')}${meeting.meeting_amount.toLocaleString()}`
-                      : 'no amount set'
-                  }`}
-                />
-              )}
-
-              {(meeting.complexity === 'Complex' || getLegacyMeetingComplexity(meeting.meeting_complexity) === 'Complex') && (
-                <BookOpenIcon 
-                  className="w-4 h-4 sm:w-6 sm:h-6 text-purple-600" 
-                  title="Complex Meeting"
-                />
-              )}
-            </div>
-          </td>
-          <td>{getStageBadge(lead.stage || meeting.stage)}</td>
           <td>
             <div className="flex flex-row items-center gap-1 sm:gap-2">
               {meeting.calendar_type !== 'staff' && (
@@ -4985,8 +5195,8 @@ const CalendarPage: React.FC = () => {
                 // Get location ID - try meeting_location_id first (for legacy leads), then look up by name
                 let locationIdNum: number | null = null;
                 if (meeting.meeting_location_id) {
-                  locationIdNum = typeof meeting.meeting_location_id === 'string' 
-                    ? parseInt(meeting.meeting_location_id, 10) 
+                  locationIdNum = typeof meeting.meeting_location_id === 'string'
+                    ? parseInt(meeting.meeting_location_id, 10)
                     : (typeof meeting.meeting_location_id === 'number' ? meeting.meeting_location_id : null);
                 }
                 // If no ID, try to look up by location name
@@ -4994,36 +5204,36 @@ const CalendarPage: React.FC = () => {
                 if (locationIdNum === null && locationName && locationName !== 'N/A') {
                   locationIdNum = meetingLocationNameToId[locationName] || null;
                 }
-                
+
                 // Check if location ID is in the allowed list
                 const hasAllowedLocationId = locationIdNum !== null && meetingLocationIdsWithLink.has(locationIdNum);
-                
+
                 // Also show for Teams meetings that have a teams_meeting_url
                 const isTeamsWithUrl = locationName && locationName.toLowerCase() === 'teams' && !!meeting.teams_meeting_url;
-                
+
                 // Also show for staff meetings (they have teams_meeting_url)
                 const isStaffMeeting = meeting.calendar_type === 'staff';
-                
+
                 return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting;
               })() && (
-                <button 
-                  className="btn btn-primary btn-xs sm:btn-sm"
-                  onClick={() => {
-                    // Use teams_meeting_url if available, otherwise use default_link from location
-                    const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
-                    const defaultLink = meetingLocationLinks[locationName] || '';
-                    const url = getValidTeamsLink(meeting.teams_meeting_url || defaultLink);
-                    if (url) {
-                      window.open(url, '_blank');
-                    } else {
-                      alert('No meeting URL available');
-                    }
-                  }}
-                  title="Teams Meeting"
-                >
-                  <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" />
-                </button>
-              )}
+                  <button
+                    className="btn btn-primary btn-xs sm:btn-sm"
+                    onClick={() => {
+                      // Use teams_meeting_url if available, otherwise use default_link from location
+                      const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
+                      const defaultLink = meetingLocationLinks[locationName] || '';
+                      const url = getValidTeamsLink(meeting.teams_meeting_url || defaultLink);
+                      if (url) {
+                        window.open(url, '_blank');
+                      } else {
+                        alert('No meeting URL available');
+                      }
+                    }}
+                    title="Teams Meeting"
+                  >
+                    <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                  </button>
+                )}
               {/* Show edit button for staff meetings */}
               {meeting.calendar_type === 'staff' && (
                 <button
@@ -5038,91 +5248,312 @@ const CalendarPage: React.FC = () => {
                   <PencilIcon className="w-4 h-4" />
                 </button>
               )}
+              {/* Add guest button for active_client and potential_client meetings */}
+              {(meeting.calendar_type === 'active_client' || meeting.calendar_type === 'potential_client') && (
+                <button
+                  className="btn btn-outline btn-primary btn-xs sm:btn-sm"
+                  title="Add Guest"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedMeetingForGuest(meeting);
+                    // Determine which guest slot to fill (extern1 or extern2)
+                    const hasGuest1 = meeting.extern1 && meeting.extern1 !== '--' && meeting.extern1 !== '';
+                    const hasGuest2 = meeting.extern2 && meeting.extern2 !== '--' && meeting.extern2 !== '';
+                    if (!hasGuest1) {
+                      setGuestSelectionType('extern1');
+                    } else if (!hasGuest2) {
+                      setGuestSelectionType('extern2');
+                    } else {
+                      // Both slots filled, allow replacing either
+                      setGuestSelectionType('extern1'); // Default to Guest 1
+                    }
+                    setIsGuestSelectionModalOpen(true);
+                  }}
+                >
+                  <PlusIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                </button>
+              )}
             </div>
           </td>
         </tr>
-        
+
         {/* Expanded Details Row */}
-        {isExpanded && (
-          <tr>
-            <td colSpan={11} className="p-0">
-              <div className="bg-base-100/50 p-4 border-t border-base-200">
-                {expandedData.loading ? (
-                  <div className="flex justify-center items-center py-4">
-                    <span className="loading loading-spinner loading-md"></span>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="bg-base-200/50 p-4 rounded-lg">
-                      <h5 className="font-semibold text-base-content/90 mb-2">Expert Notes</h5>
-                      <div className="space-y-3 max-h-60 overflow-y-auto">
-                        {Array.isArray(expandedData.expert_notes) && expandedData.expert_notes.length > 0 ? (
-                          expandedData.expert_notes.map((note: any) => (
-                            <div key={note.id} className="bg-base-200 p-3 rounded-md shadow-sm">
-                              <div className="flex items-center gap-2 text-xs text-base-content/60 mb-1">
-                                <ClockIcon className="w-4 h-4" />
-                                <span>{note.timestamp}</span>
+        {
+          isExpanded && (
+            <tr>
+              <td colSpan={9} className="p-0">
+                <div className="bg-base-100/50 p-4 border-t border-base-200">
+                  {expandedData.loading ? (
+                    <div className="flex justify-center items-center py-4">
+                      <span className="loading loading-spinner loading-md"></span>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {/* Staff */}
+                      {meeting.calendar_type !== 'staff' && (
+                        <div className="bg-base-200/50 p-4 rounded-lg">
+                          <h5 className="font-semibold text-base text-base-content/90 mb-3">Staff</h5>
+                          <div className="space-y-3">
+                            <div className="flex items-center gap-2">
+                              <span className="text-base text-base-content/70">Scheduler:</span>
+                              <div className="flex items-center gap-2">
+                                {renderEmployeeAvatar(lead.scheduler_id || lead.scheduler || meeting.scheduler, 'sm', false)}
+                                <span className="text-base text-base-content/90 font-medium">
+                                  {getEmployeeDisplayName(lead.scheduler || meeting.scheduler) || '---'}
+                                </span>
                               </div>
-                              <p className="text-sm text-base-content/90 whitespace-pre-wrap">{note.content}</p>
                             </div>
-                          ))
-                        ) : (
-                          <p className="text-sm text-base-content/70">
-                            {expandedData.expert_notes || 'No expert notes yet.'}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    <div className="bg-base-200/50 p-4 rounded-lg">
-                      <h5 className="font-semibold text-base-content/90 mb-2">Handler Notes</h5>
-                      <div className="space-y-3 max-h-60 overflow-y-auto">
-                        {Array.isArray(expandedData.handler_notes) && expandedData.handler_notes.length > 0 ? (
-                          expandedData.handler_notes.map((note: any) => (
-                            <div key={note.id} className="bg-base-200 p-3 rounded-md shadow-sm">
-                              <div className="flex items-center gap-2 text-xs text-base-content/60 mb-1">
-                                <ClockIcon className="w-4 h-4" />
-                                <span>{note.timestamp}</span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-base text-base-content/70">Expert:</span>
+                              <div className="flex items-center gap-2">
+                                {renderEmployeeAvatar(lead.expert_id || lead.expert || meeting.expert, 'sm', false)}
+                                <span className="text-base text-base-content/90 font-medium">
+                                  {(() => {
+                                    const expertId = lead.expert_id || meeting.expert_id || meeting.expert;
+                                    const expertDisplayName = expertId ? getEmployeeDisplayName(expertId) : null;
+                                    if (expertDisplayName && expertDisplayName !== expertId?.toString() && expertDisplayName !== '--') {
+                                      return expertDisplayName;
+                                    }
+                                    return lead.expert && typeof lead.expert === 'string' && isNaN(Number(lead.expert))
+                                      ? lead.expert
+                                      : (expertDisplayName || '---');
+                                  })()}
+                                </span>
                               </div>
-                              <p className="text-sm text-base-content/90 whitespace-pre-wrap">{note.content}</p>
                             </div>
-                          ))
-                        ) : (
-                          <p className="text-sm text-base-content/70">
-                            {expandedData.handler_notes || 'No handler notes yet.'}
-                          </p>
-                        )}
+                          </div>
+                        </div>
+                      )}
+                      {/* Info */}
+                      <div className="bg-base-200/50 p-5 rounded-lg">
+                        <h5 className="font-semibold text-lg text-base-content/90 mb-3">Info</h5>
+                        <div className="flex flex-col gap-3">
+                          {/* Expert Opinion Status */}
+                          {meeting.calendar_type !== 'staff' && (() => {
+                            // For NEW leads: use eligibility_status field (text values)
+                            // For LEGACY leads: use expert_examination field (numeric values)
+                            if (lead.lead_type !== 'legacy') {
+                              const eligibilityStatus = lead.eligibility_status;
+
+                              if (!eligibilityStatus || eligibilityStatus === '') {
+                                return (
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-7 h-7 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-sm" title="Expert opinion not checked">
+                                      <QuestionMarkCircleIcon className="w-5 h-5" />
+                                    </span>
+                                    <span className="text-base">Expert opinion not checked</span>
+                                  </div>
+                                );
+                              }
+
+                              if (eligibilityStatus === 'not_feasible') {
+                                return (
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-7 h-7 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-sm" title="Not Feasible">
+                                      <XCircleIcon className="w-5 h-5" />
+                                    </span>
+                                    <span className="text-base">Not Feasible</span>
+                                  </div>
+                                );
+                              } else if (eligibilityStatus === 'feasible_no_check') {
+                                return (
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-7 h-7 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-sm" title="Feasible (no check)">
+                                      <CheckCircleIcon className="w-5 h-5" />
+                                    </span>
+                                    <span className="text-base">Feasible (no check)</span>
+                                  </div>
+                                );
+                              } else if (eligibilityStatus === 'feasible_with_check') {
+                                return (
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-7 h-7 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-sm" title="Feasible (with check)">
+                                      <ExclamationTriangleIcon className="w-5 h-5" />
+                                    </span>
+                                    <span className="text-base">Feasible (with check)</span>
+                                  </div>
+                                );
+                              }
+
+                              return (
+                                <div className="flex items-center gap-2">
+                                  <span className="w-5 h-5 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-sm" title="Expert opinion not checked">
+                                    <QuestionMarkCircleIcon className="w-3 h-3" />
+                                  </span>
+                                  <span className="text-sm">Expert opinion not checked</span>
+                                </div>
+                              );
+                            }
+
+                            const expertExamination = lead.expert_examination;
+
+                            if (!expertExamination || expertExamination === 0 || expertExamination === '0') {
+                              return (
+                                <div className="flex items-center gap-2">
+                                  <span className="w-5 h-5 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-sm" title="Expert opinion not checked">
+                                    <QuestionMarkCircleIcon className="w-3 h-3" />
+                                  </span>
+                                  <span className="text-sm">Expert opinion not checked</span>
+                                </div>
+                              );
+                            }
+
+                            if (expertExamination === 1 || expertExamination === '1') {
+                              return (
+                                <div className="flex items-center gap-2">
+                                  <span className="w-7 h-7 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-sm" title="Not Feasible">
+                                    <XCircleIcon className="w-5 h-5" />
+                                  </span>
+                                  <span className="text-sm">Not Feasible</span>
+                                </div>
+                              );
+                            } else if (expertExamination === 5 || expertExamination === '5') {
+                              return (
+                                <div className="flex items-center gap-2">
+                                  <span className="w-7 h-7 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-sm" title="Feasible (further check)">
+                                    <ExclamationTriangleIcon className="w-5 h-5" />
+                                  </span>
+                                  <span className="text-base">Feasible (further check)</span>
+                                </div>
+                              );
+                            } else if (expertExamination === 8 || expertExamination === '8') {
+                              return (
+                                <div className="flex items-center gap-2">
+                                  <span className="w-7 h-7 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-sm" title="Feasible (no check)">
+                                    <CheckCircleIcon className="w-5 h-5" />
+                                  </span>
+                                  <span className="text-sm">Feasible (no check)</span>
+                                </div>
+                              );
+                            }
+
+                            return (
+                              <div className="flex items-center gap-2">
+                                <span className="w-7 h-7 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-sm" title="Expert opinion status unknown">
+                                  <QuestionMarkCircleIcon className="w-5 h-5" />
+                                </span>
+                                <span className="text-base">Expert opinion status unknown</span>
+                              </div>
+                            );
+                          })()}
+                          {isNotFirstMeeting(meeting) && (
+                            <div className="flex items-center gap-2">
+                              <FireIcon className="w-5 h-5 text-orange-500" />
+                              <span className="text-base">Another meeting</span>
+                            </div>
+                          )}
+                          <div className="flex items-center gap-2">
+                            <span className={`font-bold text-base ${probabilityColor}`}>
+                              {(() => {
+                                if (meeting.attendance_probability && ['Low', 'Medium', 'High', 'Very High'].includes(meeting.attendance_probability)) {
+                                  return meeting.attendance_probability;
+                                }
+                                else if (typeof probabilityNumber === 'number' && !isNaN(probabilityNumber)) {
+                                  if (probabilityNumber >= 80) return 'Very High';
+                                  else if (probabilityNumber >= 60) return 'High';
+                                  else if (probabilityNumber >= 40) return 'Medium';
+                                  else return 'Low';
+                                }
+                                return 'N/A';
+                              })()}
+                              {typeof probabilityNumber === 'number' && !isNaN(probabilityNumber) ? ` (${probabilityNumber}%)` : ''}
+                            </span>
+                          </div>
+                          {((meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id))?.toLowerCase().includes('tlv with parking')) && (
+                            <div className="flex items-center gap-2">
+                              <TruckIcon className="w-5 h-5 text-blue-600" />
+                              <span className="text-base">{getLegacyCarNumber(meeting) ? `Car: ${getLegacyCarNumber(meeting)}` : 'TLV with parking'}</span>
+                            </div>
+                          )}
+                          {((meeting.lead && meeting.lead.meeting_collection_id) || meeting.legacy_lead?.meeting_collection_id) && (
+                            <div className="flex items-center gap-2">
+                              <CurrencyDollarIcon className="w-5 h-5 text-green-600" />
+                              <span className="text-base">Paid meeting</span>
+                            </div>
+                          )}
+                          {(meeting.complexity === 'Complex' || getLegacyMeetingComplexity(meeting.meeting_complexity) === 'Complex') && (
+                            <div className="flex items-center gap-2">
+                              <BookOpenIcon className="w-5 h-5 text-purple-600" />
+                              <span className="text-base">Complex</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      {/* Notes */}
+                      <div className="bg-base-200/50 p-5 rounded-lg">
+                        <div className="flex items-center justify-between mb-3">
+                          <h5 className="font-semibold text-lg text-base-content/90">Notes</h5>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedMeetingForNotes(meeting);
+                              setIsNotesModalOpen(true);
+                            }}
+                            className="btn btn-sm btn-outline btn-primary"
+                          >
+                            View All
+                          </button>
+                        </div>
+                        <div className="space-y-2 max-h-60 overflow-y-auto">
+                          {Array.isArray(expandedData.expert_notes) && expandedData.expert_notes.length > 0 ? (
+                            <div>
+                              <h6 className="text-sm font-semibold text-base-content/70 mb-2">Expert Notes</h6>
+                              {expandedData.expert_notes.slice(0, 2).map((note: any) => (
+                                <div key={note.id} className="bg-base-200 p-2 rounded text-sm mb-1">
+                                  <p className="text-base-content/90 whitespace-pre-wrap line-clamp-2">{note.content}</p>
+                                </div>
+                              ))}
+                              {expandedData.expert_notes.length > 2 && (
+                                <p className="text-sm text-base-content/60 italic">+{expandedData.expert_notes.length - 2} more notes</p>
+                              )}
+                            </div>
+                          ) : null}
+                          {Array.isArray(expandedData.handler_notes) && expandedData.handler_notes.length > 0 ? (
+                            <div>
+                              <h6 className="text-sm font-semibold text-base-content/70 mb-2">Handler Notes</h6>
+                              {expandedData.handler_notes.slice(0, 2).map((note: any) => (
+                                <div key={note.id} className="bg-base-200 p-2 rounded text-sm mb-1">
+                                  <p className="text-base-content/90 whitespace-pre-wrap line-clamp-2">{note.content}</p>
+                                </div>
+                              ))}
+                              {expandedData.handler_notes.length > 2 && (
+                                <p className="text-sm text-base-content/60 italic">+{expandedData.handler_notes.length - 2} more notes</p>
+                              )}
+                            </div>
+                          ) : null}
+                          {expandedData.facts ? (
+                            <div>
+                              <h6 className="text-sm font-semibold text-base-content/70 mb-2">Facts of Case</h6>
+                              <p className="text-sm text-base-content/90 whitespace-pre-wrap line-clamp-3">{expandedData.facts}</p>
+                            </div>
+                          ) : null}
+                          {!expandedData.expert_notes?.length && !expandedData.handler_notes?.length && !expandedData.facts && (
+                            <p className="text-base text-base-content/70">No notes available.</p>
+                          )}
+                        </div>
                       </div>
                     </div>
-                    <div className="bg-base-200/50 p-4 rounded-lg">
-                      <h5 className="font-semibold text-base-content/90 mb-2">Facts of Case</h5>
-                      <div className="space-y-3 max-h-60 overflow-y-auto">
-                        {expandedData.facts ? (
-                          <p className="text-sm text-base-content/90 whitespace-pre-wrap">{expandedData.facts}</p>
-                        ) : (
-                          <p className="text-sm text-base-content/70">No facts of case available.</p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </td>
-          </tr>
-        )}
-        
+                  )}
+                </div>
+              </td>
+            </tr>
+          )
+        }
+
         {/* Toggle Row */}
         <tr>
-          <td colSpan={10} className="p-0">
+          <td colSpan={8} className="p-0">
             <button
               className="bg-white hover:bg-gray-50 cursor-pointer transition-colors p-2 text-center w-full block text-primary font-medium flex items-center justify-center gap-2 shadow-sm"
               style={{ border: 'none', outline: 'none' }}
               onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)}
             >
               <ChevronDownIcon className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+              <span className="text-xs">{isExpanded ? 'Hide Details' : 'Show More'}</span>
             </button>
           </td>
         </tr>
-      </React.Fragment>
+      </React.Fragment >
     );
   };
 
@@ -5149,24 +5580,24 @@ const CalendarPage: React.FC = () => {
         >
           <ChevronLeftIcon className="w-6 h-6" />
         </button>
-        
+
         <div className="flex items-center gap-3">
           <span className="text-sm font-semibold text-center sm:text-lg sm:text-left">
             {appliedFromDate === appliedToDate ? (
-              new Date(appliedFromDate).toLocaleDateString('en-US', { 
-                weekday: 'long', 
-                year: 'numeric', 
-                month: 'long', 
-                day: 'numeric' 
+              new Date(appliedFromDate).toLocaleDateString('en-US', {
+                weekday: 'long',
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
               })
             ) : (
-              `${new Date(appliedFromDate).toLocaleDateString('en-US', { 
-                month: 'short', 
-                day: 'numeric' 
-              })} - ${new Date(appliedToDate).toLocaleDateString('en-US', { 
-                month: 'short', 
-                day: 'numeric', 
-                year: 'numeric' 
+              `${new Date(appliedFromDate).toLocaleDateString('en-US', {
+                month: 'short',
+                day: 'numeric'
+              })} - ${new Date(appliedToDate).toLocaleDateString('en-US', {
+                month: 'short',
+                day: 'numeric',
+                year: 'numeric'
               })}`
             )}
           </span>
@@ -5178,7 +5609,7 @@ const CalendarPage: React.FC = () => {
             Today
           </button>
         </div>
-        
+
         <button
           onClick={goToNextDay}
           className="btn btn-circle btn-outline btn-primary"
@@ -5194,8 +5625,8 @@ const CalendarPage: React.FC = () => {
           <div className="flex flex-1 min-w-[260px] items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
             <FunnelIcon className="w-5 h-5 text-gray-500" />
             <div className="flex flex-wrap items-center gap-2 flex-1">
-              <input 
-                type="date" 
+              <input
+                type="date"
                 className="input input-bordered flex-1 min-w-[120px]"
                 value={fromDate}
                 onChange={(e) => {
@@ -5204,8 +5635,8 @@ const CalendarPage: React.FC = () => {
                 title="From Date"
               />
               <span className="text-gray-400 font-semibold">to</span>
-              <input 
-                type="date" 
+              <input
+                type="date"
                 className="input input-bordered flex-1 min-w-[120px]"
                 value={toDate}
                 onChange={(e) => {
@@ -5222,60 +5653,60 @@ const CalendarPage: React.FC = () => {
               </button>
             </div>
           </div>
-        <div className="flex flex-1 min-w-[220px] items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
-          <UserIcon className="w-5 h-5 text-gray-500" />
-          <div className="relative flex-1" ref={staffDropdownRef}>
-            <input
-              type="text"
-              className="input input-bordered w-full"
-              placeholder="All staff"
-              value={staffSearchTerm}
-              onFocus={() => setShowStaffDropdown(true)}
-              onChange={(e) => {
-                const value = e.target.value;
-                setStaffSearchTerm(value);
-                setShowStaffDropdown(true);
-                if (!value.trim()) {
-                  setSelectedStaff('');
-                }
-              }}
-            />
-            {showStaffDropdown && (
-              <div className="absolute z-30 mt-2 w-full bg-white border border-gray-200 rounded-xl shadow-lg max-h-64 overflow-auto">
-                <button
-                  type="button"
-                  className="w-full text-left px-4 py-2 text-sm text-gray-600 hover:bg-gray-100"
-                  onClick={() => {
+          <div className="flex flex-1 min-w-[220px] items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
+            <UserIcon className="w-5 h-5 text-gray-500" />
+            <div className="relative flex-1" ref={staffDropdownRef}>
+              <input
+                type="text"
+                className="input input-bordered w-full"
+                placeholder="All staff"
+                value={staffSearchTerm}
+                onFocus={() => setShowStaffDropdown(true)}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setStaffSearchTerm(value);
+                  setShowStaffDropdown(true);
+                  if (!value.trim()) {
                     setSelectedStaff('');
-                    setStaffSearchTerm('');
-                    setShowStaffDropdown(false);
-                  }}
-                >
-                  All Staff
-                </button>
-                {filteredStaffOptions.length > 0 ? (
-                  filteredStaffOptions.map((staffName, index) => (
-                    <button
-                      key={`${staffName}-${index}`}
-                      type="button"
-                      className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100"
-                      onClick={() => handleStaffSelect(staffName)}
-                    >
-                      {staffName}
-                    </button>
-                  ))
-                ) : (
-                  <div className="px-4 py-3 text-sm text-gray-500">
-                    No matches
-                  </div>
-                )}
-              </div>
-            )}
+                  }
+                }}
+              />
+              {showStaffDropdown && (
+                <div className="absolute z-30 mt-2 w-full bg-white border border-gray-200 rounded-xl shadow-lg max-h-64 overflow-auto">
+                  <button
+                    type="button"
+                    className="w-full text-left px-4 py-2 text-sm text-gray-600 hover:bg-gray-100"
+                    onClick={() => {
+                      setSelectedStaff('');
+                      setStaffSearchTerm('');
+                      setShowStaffDropdown(false);
+                    }}
+                  >
+                    All Staff
+                  </button>
+                  {filteredStaffOptions.length > 0 ? (
+                    filteredStaffOptions.map((staffName, index) => (
+                      <button
+                        key={`${staffName}-${index}`}
+                        type="button"
+                        className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100"
+                        onClick={() => handleStaffSelect(staffName)}
+                      >
+                        {staffName}
+                      </button>
+                    ))
+                  ) : (
+                    <div className="px-4 py-3 text-sm text-gray-500">
+                      No matches
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
           <div className="flex flex-1 min-w-[220px] items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
             <CalendarIcon className="w-5 h-5 text-gray-500" />
-            <select 
+            <select
               className="select select-bordered flex-1"
               value={selectedMeetingType}
               onChange={(e) => setSelectedMeetingType(e.target.value as 'all' | 'potential' | 'active' | 'staff' | 'paid')}
@@ -5299,9 +5730,9 @@ const CalendarPage: React.FC = () => {
             <span className="text-base md:text-lg font-bold" style={{ color: '#3b28c7' }}>{filteredMeetings.length}</span>
           </div>
         </div>
-        
+
         {/* Click Dropdown Menu - Top Right */}
-        <div 
+        <div
           className="relative"
           ref={actionMenuDropdownRef}
         >
@@ -5316,7 +5747,7 @@ const CalendarPage: React.FC = () => {
           >
             <EllipsisVerticalIcon className="w-6 h-6" />
           </button>
-          
+
           {/* Dropdown Menu */}
           {showActionMenuDropdown && (
             <div className="absolute right-0 top-full mt-2 w-56 bg-white border border-gray-200 rounded-xl shadow-2xl z-50 overflow-hidden">
@@ -5372,42 +5803,39 @@ const CalendarPage: React.FC = () => {
       <div className="mt-6 bg-base-100 rounded-lg shadow-lg overflow-x-auto">
         {/* Desktop Table - Show when viewMode is 'list' */}
         {viewMode === 'list' && (
-          <table className="table w-full text-xs sm:text-sm md:text-base">
+          <table className="table w-full text-sm sm:text-base md:text-lg">
             <thead>
-              <tr className="bg-white text-sm sm:text-base md:text-lg">
-                <th className="text-gray-900">Lead</th>
-                <th className="text-gray-900">Time</th>
-                <th className="text-gray-900">Manager</th>
-                <th className="text-gray-900">Helper</th>
-                <th className="text-gray-900">Scheduler</th>
-                <th className="text-gray-900">Category</th>
-                <th className="text-gray-900">Value</th>
-                <th className="text-gray-900">Expert</th>
-                <th className="text-gray-900">Location</th>
-                <th className="text-gray-900">Info</th>
-                <th className="text-gray-900">Status</th>
-                <th className="text-gray-900">Actions</th>
+              <tr className="bg-white text-sm sm:text-base">
+                <th className="text-gray-500">Type</th>
+                <th className="text-gray-500">Time</th>
+                <th className="text-gray-500">Lead</th>
+                <th className="text-gray-500">Category</th>
+                <th className="text-gray-500">Value</th>
+                <th className="text-gray-500">Participants</th>
+                <th className="text-gray-500">Location</th>
+                <th className="text-gray-500">Status</th>
+                <th className="text-gray-500">Actions</th>
               </tr>
             </thead>
             <tbody>
               {isLoading ? (
-                <tr><td colSpan={12} className="text-center p-8 text-lg">Loading meetings...</td></tr>
+                <tr><td colSpan={8} className="text-center p-8 text-lg">Loading meetings...</td></tr>
               ) : filteredMeetings.length > 0 ? (
                 filteredMeetings.map(renderMeetingRow)
               ) : isLegacyLoading ? (
-                <tr><td colSpan={12} className="text-center p-8 text-lg">
+                <tr><td colSpan={8} className="text-center p-8 text-lg">
                   <div className="flex items-center justify-center gap-2">
                     <span className="loading loading-spinner loading-sm"></span>
                     Loading meetings...
                   </div>
                 </td></tr>
               ) : (
-                <tr><td colSpan={12} className="text-center p-8 text-lg">No meetings found for the selected filters.</td></tr>
+                <tr><td colSpan={8} className="text-center p-8 text-lg">No meetings found for the selected filters.</td></tr>
               )}
             </tbody>
           </table>
         )}
-        
+
         {/* Cards View - Show when viewMode is 'cards' */}
         {viewMode === 'cards' && (
           <div>
@@ -5438,7 +5866,7 @@ const CalendarPage: React.FC = () => {
                     </div>
                   )}
                 </div>
-                
+
                 {/* Desktop: Grid Layout */}
                 <div className="hidden md:block">
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6 p-6">
@@ -5483,7 +5911,7 @@ const CalendarPage: React.FC = () => {
       </div>
 
       {/* Department List Component */}
-      <DepartmentList 
+      <DepartmentList
         meetings={filteredMeetings}
         viewMode={viewMode}
         renderMeetingCard={renderMeetingCard}
@@ -5511,6 +5939,216 @@ const CalendarPage: React.FC = () => {
         client={selectedClientForEmail || undefined}
       />
 
+      {/* Guest Selection Modal */}
+      {isGuestSelectionModalOpen && selectedMeetingForGuest && guestSelectionType && createPortal(
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            {/* Header */}
+            <div className="bg-white border-b border-gray-200 p-6 flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold text-black">Select Guest {guestSelectionType === 'extern1' ? '1' : '2'}</h2>
+                <p className="text-sm text-gray-500 mt-1">Choose an employee to add as a guest participant</p>
+              </div>
+              <button
+                onClick={() => {
+                  setIsGuestSelectionModalOpen(false);
+                  setSelectedMeetingForGuest(null);
+                  setGuestSelectionType(null);
+                }}
+                className="btn btn-ghost btn-sm btn-circle"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Employee List */}
+            <div className="flex-1 overflow-y-auto p-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {allEmployees.map((employee: any) => {
+                  const isSelected = selectedMeetingForGuest[guestSelectionType] === employee.id.toString();
+                  return (
+                    <button
+                      key={employee.id}
+                      onClick={() => {
+                        if (isSelected) {
+                          handleRemoveGuest(selectedMeetingForGuest.id, guestSelectionType);
+                        } else {
+                          handleSaveGuest(selectedMeetingForGuest.id, guestSelectionType, employee.id);
+                        }
+                      }}
+                      className={`flex items-center gap-3 p-4 rounded-lg border-2 transition-all ${isSelected
+                        ? 'border-primary bg-primary/10'
+                        : 'border-gray-200 hover:border-primary hover:bg-gray-50'
+                        }`}
+                    >
+                      <div className="flex-shrink-0">
+                        {renderEmployeeAvatar(employee.id, 'md', false)}
+                      </div>
+                      <div className="flex-1 text-left">
+                        <div className="font-semibold text-gray-900">{employee.display_name}</div>
+                        {employee.tenant_departement?.name && (
+                          <div className="text-sm text-gray-500">{employee.tenant_departement.name}</div>
+                        )}
+                      </div>
+                      {isSelected && (
+                        <CheckIcon className="w-5 h-5 text-primary" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="bg-gray-50 border-t border-gray-200 p-4 flex justify-end">
+              <button
+                onClick={() => {
+                  setIsGuestSelectionModalOpen(false);
+                  setSelectedMeetingForGuest(null);
+                  setGuestSelectionType(null);
+                }}
+                className="btn btn-ghost"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Notes Modal */}
+      {isNotesModalOpen && selectedMeetingForNotes && createPortal(
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            {/* Header */}
+            <div className="bg-white border-b border-gray-200 p-6 flex items-center justify-between">
+              <div>
+                <h2 className="text-2xl font-bold text-black">Notes</h2>
+                <p className="text-sm text-gray-500 mt-1">
+                  {selectedMeetingForNotes.lead?.name || selectedMeetingForNotes.name || 'Meeting Notes'}
+                  {selectedMeetingForNotes.lead?.lead_number && ` (${selectedMeetingForNotes.lead.lead_number})`}
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setIsNotesModalOpen(false);
+                  setSelectedMeetingForNotes(null);
+                }}
+                className="btn btn-ghost btn-sm btn-circle"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Notes Content */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              {(() => {
+                const meetingNotes = expandedMeetingData[selectedMeetingForNotes.id];
+                if (meetingNotes?.loading) {
+                  return (
+                    <div className="flex justify-center items-center py-12">
+                      <span className="loading loading-spinner loading-lg"></span>
+                    </div>
+                  );
+                }
+                return (
+                  <>
+                    {/* Expert Notes */}
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900 mb-3">Expert Notes</h3>
+                      {(() => {
+                        const expertNotes = meetingNotes?.expert_notes;
+                        if (Array.isArray(expertNotes) && expertNotes.length > 0) {
+                          return (
+                            <div className="space-y-3">
+                              {expertNotes.map((note: any) => (
+                                <div key={note.id} className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                                  {note.timestamp && (
+                                    <div className="flex items-center gap-2 text-gray-500 mb-2">
+                                      <ClockIcon className="w-4 h-4" />
+                                      <span className="text-sm">{note.timestamp}</span>
+                                    </div>
+                                  )}
+                                  <p className="text-base text-gray-800 whitespace-pre-wrap">{note.content}</p>
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        }
+                        return (
+                          <p className="text-base text-gray-500 italic">No expert notes available.</p>
+                        );
+                      })()}
+                    </div>
+
+                    {/* Handler Notes */}
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900 mb-3">Handler Notes</h3>
+                      {(() => {
+                        const handlerNotes = meetingNotes?.handler_notes;
+                        if (Array.isArray(handlerNotes) && handlerNotes.length > 0) {
+                          return (
+                            <div className="space-y-3">
+                              {handlerNotes.map((note: any) => (
+                                <div key={note.id} className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                                  {note.timestamp && (
+                                    <div className="flex items-center gap-2 text-gray-500 mb-2">
+                                      <ClockIcon className="w-4 h-4" />
+                                      <span className="text-sm">{note.timestamp}</span>
+                                    </div>
+                                  )}
+                                  <p className="text-base text-gray-800 whitespace-pre-wrap">{note.content}</p>
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        }
+                        return (
+                          <p className="text-base text-gray-500 italic">No handler notes available.</p>
+                        );
+                      })()}
+                    </div>
+
+                    {/* Facts of Case */}
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900 mb-3">Facts of Case</h3>
+                      {(() => {
+                        const facts = meetingNotes?.facts;
+                        if (facts) {
+                          return (
+                            <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                              <p className="text-base text-gray-800 whitespace-pre-wrap">{facts}</p>
+                            </div>
+                          );
+                        }
+                        return (
+                          <p className="text-base text-gray-500 italic">No facts of case available.</p>
+                        );
+                      })()}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+
+            {/* Footer */}
+            <div className="bg-gray-50 border-t border-gray-200 p-4 flex justify-end">
+              <button
+                onClick={() => {
+                  setIsNotesModalOpen(false);
+                  setSelectedMeetingForNotes(null);
+                }}
+                className="btn btn-primary"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
       {/* Assign Staff Modal */}
       {isAssignStaffModalOpen && createPortal(
         <div className="fixed inset-0 bg-white z-50">
@@ -5523,7 +6161,7 @@ const CalendarPage: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <h2 className="text-2xl font-bold text-black">Assign Staff</h2>
                   </div>
-                  
+
                 </div>
                 <button
                   onClick={() => setIsAssignStaffModalOpen(false)}
@@ -5532,11 +6170,11 @@ const CalendarPage: React.FC = () => {
                   <XMarkIcon className="w-6 h-6" />
                 </button>
               </div>
-              
+
               {/* Unavailable Employees for Selected Date */}
               {unavailableEmployees[modalSelectedDate] && unavailableEmployees[modalSelectedDate].length > 0 && (
                 <div className="mt-4 bg-white rounded-xl shadow-md border border-gray-200">
-                  <div 
+                  <div
                     className="flex items-center justify-between px-4 py-2 border-b border-gray-200 cursor-pointer hover:bg-gray-50 transition-colors"
                     onClick={() => setIsUnavailableStaffExpanded(!isUnavailableStaffExpanded)}
                   >
@@ -5547,20 +6185,20 @@ const CalendarPage: React.FC = () => {
                       <div>
                         <h3 className="text-sm font-bold text-gray-900">Unavailable Staff</h3>
                         <p className="text-xs text-gray-500">
-                          {new Date(modalSelectedDate).toLocaleDateString('en-US', { 
-                            weekday: 'long', 
-                            year: 'numeric', 
-                            month: 'long', 
-                            day: 'numeric' 
+                          {new Date(modalSelectedDate).toLocaleDateString('en-US', {
+                            weekday: 'long',
+                            year: 'numeric',
+                            month: 'long',
+                            day: 'numeric'
                           })}
                         </p>
                       </div>
                     </div>
-                    <ChevronDownIcon 
+                    <ChevronDownIcon
                       className={`w-5 h-5 text-gray-500 transition-transform ${isUnavailableStaffExpanded ? 'rotate-180' : ''}`}
                     />
                   </div>
-                  
+
                   {isUnavailableStaffExpanded ? (
                     // Expanded view - Full cards
                     <div className="px-4 pb-3 pt-3">
@@ -5570,20 +6208,20 @@ const CalendarPage: React.FC = () => {
                           const isFirstOccurrence = unavailableEmployees[modalSelectedDate].findIndex(
                             (emp: any) => emp.employeeId === item.employeeId
                           ) === index;
-                          
+
                           if (!isFirstOccurrence) return null;
-                          
+
                           const employeeInitials = item.employeeName
                             .split(' ')
                             .map((n: string) => n[0])
                             .join('')
                             .toUpperCase()
                             .slice(0, 2);
-                          
-                          const timeDisplay = item.isRange || item.startTime === 'All Day' 
-                            ? 'All Day' 
+
+                          const timeDisplay = item.isRange || item.startTime === 'All Day'
+                            ? 'All Day'
                             : `${item.startTime} - ${item.endTime}`;
-                          
+
                           return (
                             <div
                               key={`${item.employeeId}-${index}`}
@@ -5594,14 +6232,14 @@ const CalendarPage: React.FC = () => {
                             >
                               {/* Background Image with Overlay */}
                               {item.photo && (
-                                <div 
+                                <div
                                   className="absolute inset-0 bg-cover bg-center bg-no-repeat"
                                   style={{ backgroundImage: `url(${item.photo})` }}
                                 >
                                   <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/70"></div>
                                 </div>
                               )}
-                              
+
                               {/* Role Badge - Top Right Corner */}
                               {item.role && (
                                 <div className="absolute top-1 right-1 z-20">
@@ -5610,7 +6248,7 @@ const CalendarPage: React.FC = () => {
                                   </span>
                                 </div>
                               )}
-                              
+
                               {/* Content */}
                               <div className={`relative z-10 p-2.5 flex flex-col h-full ${item.photo ? 'text-white' : 'text-gray-900'}`}>
                                 {/* Top Row: Profile Image (Left), Time Range (Center), Role Badge (Right - already positioned) */}
@@ -5645,11 +6283,11 @@ const CalendarPage: React.FC = () => {
                                       {item.employeeName}
                                     </h4>
                                   </div>
-                                  
+
                                   {/* Spacer for right side (role badge) */}
                                   <div className="w-12 flex-shrink-0"></div>
                                 </div>
-                                
+
                                 {/* Center: Time Range */}
                                 <div className="flex-1 text-center px-1 mb-2">
                                   <div className={`text-xs font-semibold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
@@ -5662,7 +6300,7 @@ const CalendarPage: React.FC = () => {
                                     </div>
                                   )}
                                 </div>
-                                
+
                                 {/* Department */}
                                 {item.department && (
                                   <div className="text-center mb-2">
@@ -5671,7 +6309,7 @@ const CalendarPage: React.FC = () => {
                                     </div>
                                   </div>
                                 )}
-                                
+
                                 {/* Reason */}
                                 <div className={`border-t pt-1.5 mt-auto ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
                                   {item.reason && (
@@ -5695,13 +6333,13 @@ const CalendarPage: React.FC = () => {
                           const isFirstOccurrence = unavailableEmployees[modalSelectedDate].findIndex(
                             (emp: any) => emp.employeeId === item.employeeId
                           ) === index;
-                          
+
                           if (!isFirstOccurrence) return null;
-                          
-                          const timeDisplay = item.isRange || item.startTime === 'All Day' 
-                            ? 'All Day' 
+
+                          const timeDisplay = item.isRange || item.startTime === 'All Day'
+                            ? 'All Day'
                             : `${item.startTime} - ${item.endTime}`;
-                          
+
                           return (
                             <div
                               key={`${item.employeeId}-${index}`}
@@ -5718,7 +6356,7 @@ const CalendarPage: React.FC = () => {
                   )}
                 </div>
               )}
-              
+
               {/* Filters */}
               <div className="mt-4 flex flex-col md:flex-row gap-4">
                 {/* Date Selector */}
@@ -5730,8 +6368,8 @@ const CalendarPage: React.FC = () => {
                         const baseDate = modalSelectedDate || new Date().toISOString().split('T')[0];
                         const currentDate = new Date(baseDate);
                         if (!isNaN(currentDate.getTime())) {
-                        currentDate.setDate(currentDate.getDate() - 1);
-                        setModalSelectedDate(currentDate.toISOString().split('T')[0]);
+                          currentDate.setDate(currentDate.getDate() - 1);
+                          setModalSelectedDate(currentDate.toISOString().split('T')[0]);
                         }
                       }}
                       className="btn btn-sm btn-circle bg-white text-gray-800 hover:bg-gray-100"
@@ -5751,8 +6389,8 @@ const CalendarPage: React.FC = () => {
                         const baseDate = modalSelectedDate || new Date().toISOString().split('T')[0];
                         const currentDate = new Date(baseDate);
                         if (!isNaN(currentDate.getTime())) {
-                        currentDate.setDate(currentDate.getDate() + 1);
-                        setModalSelectedDate(currentDate.toISOString().split('T')[0]);
+                          currentDate.setDate(currentDate.getDate() + 1);
+                          setModalSelectedDate(currentDate.toISOString().split('T')[0]);
                         }
                       }}
                       className="btn btn-sm btn-circle bg-white text-gray-800 hover:bg-gray-100"
@@ -5761,7 +6399,7 @@ const CalendarPage: React.FC = () => {
                     </button>
                   </div>
                 </div>
-                
+
                 {/* Staff Filter */}
                 <div className="flex items-center gap-2">
                   <label className="text-sm font-semibold">Filter by Staff:</label>
@@ -5801,11 +6439,11 @@ const CalendarPage: React.FC = () => {
                       <div>
                         <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
                           <CalendarIcon className="w-6 h-6 text-blue-600" />
-                          {new Date(modalSelectedDate).toLocaleDateString('en-US', { 
-                            weekday: 'long', 
-                            year: 'numeric', 
-                            month: 'long', 
-                            day: 'numeric' 
+                          {new Date(modalSelectedDate).toLocaleDateString('en-US', {
+                            weekday: 'long',
+                            year: 'numeric',
+                            month: 'long',
+                            day: 'numeric'
                           })} ({filteredMeetings.length} meetings)
                         </h3>
                         {/* Table View */}
@@ -5813,15 +6451,15 @@ const CalendarPage: React.FC = () => {
                           <table className="table w-full overflow-visible">
                             <thead>
                               <tr>
-                                <th className="text-left text-base font-semibold">Lead</th>
-                                <th className="text-left text-base font-semibold">Time</th>
-                                <th className="text-left text-base font-semibold">Location</th>
-                                <th className="text-left text-base font-semibold">Category</th>
-                                <th className="text-left text-base font-semibold">Expert</th>
-                                <th className="text-left text-base font-semibold">Language</th>
-                                <th className="text-left text-base font-semibold">Balance</th>
-                                <th className="text-left text-base font-semibold">Info</th>
-                                <th className="text-left text-base font-semibold">
+                                <th className="text-left text-sm font-semibold text-gray-500">Lead</th>
+                                <th className="text-left text-sm font-semibold text-gray-500">Time</th>
+                                <th className="text-left text-sm font-semibold text-gray-500">Location</th>
+                                <th className="text-left text-sm font-semibold text-gray-500">Category</th>
+                                <th className="text-left text-sm font-semibold text-gray-500">Expert</th>
+                                <th className="text-left text-sm font-semibold text-gray-500">Language</th>
+                                <th className="text-left text-sm font-semibold text-gray-500">Balance</th>
+                                <th className="text-left text-sm font-semibold text-gray-500">Info</th>
+                                <th className="text-left text-sm font-semibold text-gray-500">
                                   <div className="flex items-center gap-2">
                                     <span>Manager</span>
                                     {(() => {
@@ -5834,120 +6472,147 @@ const CalendarPage: React.FC = () => {
                                     })()}
                                   </div>
                                 </th>
-                                <th className="text-left text-base font-semibold">Helper</th>
-                                <th className="text-left text-base font-semibold">Scheduler</th>
+                                <th className="text-left text-sm font-semibold text-gray-500">Helper</th>
+                                <th className="text-left text-sm font-semibold text-gray-500">Scheduler</th>
                               </tr>
                             </thead>
                             <tbody>
-                          {filteredMeetings.map((meeting) => {
-                            const lead = meeting.lead || {};
-                            
-                            // Check if meeting should show green indicator:
-                            // 1. For potential_client: if lead has passed stage 20 (21 and higher) BUT NOT stage 55
-                            // 2. For active_client: if 2 hours have passed after meeting time
-                            const hasPassedStage = (() => {
-                              // For potential_client meetings: check if stage > 20 and stage is not 55
-                              if (meeting.calendar_type === 'potential_client') {
-                                const leadStage = lead.stage ? Number(lead.stage) : null;
-                                const meetingStage = meeting.stage ? Number(meeting.stage) : null;
-                                const currentStage = leadStage || meetingStage;
-                                
-                                // Stage must be > 20 AND not equal to 55
-                                return currentStage !== null && currentStage > 20 && currentStage !== 55;
-                              }
-                              
-                              // For active_client meetings: check if 2 hours have passed after meeting time
-                              if (meeting.calendar_type === 'active_client' && meeting.meeting_date && meeting.meeting_time) {
-                                try {
-                                  const meetingDateTime = new Date(`${meeting.meeting_date}T${meeting.meeting_time}`);
-                                  const now = new Date();
-                                  const hoursPassed = (now.getTime() - meetingDateTime.getTime()) / (1000 * 60 * 60);
-                                  return hoursPassed >= 2;
-                                } catch (error) {
-                                  console.error('Error calculating meeting time:', error);
-                                  return false;
-                                }
-                              }
-                              
-                              return false;
-                            })();
-                            
-                            return (
-                                <tr key={meeting.id} className={`hover:bg-gray-50 ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}>
-                                  {/* Lead */}
-                                  <td className="text-base">
-                                    <div className="flex items-center gap-1 sm:gap-2">
-                                      {hasPassedStage && (
-                                        <CheckCircleIcon className="w-4 h-4 sm:w-5 sm:h-5 text-green-500 flex-shrink-0" />
-                                      )}
-                                      <div className="flex flex-col">
-                                        {meeting.calendar_type === 'staff' ? (
-                                          <span className="font-medium">
-                                            {meeting.lead?.name || 'N/A'}
-                                          </span>
-                                        ) : (
-                                          <>
-                                            <Link 
-                                              to={buildClientRoute(meeting.lead)}
-                                              className="hover:opacity-80 font-medium"
-                                              style={{ color: '#3b28c7' }}
-                                              onMouseEnter={(e) => e.currentTarget.style.opacity = '0.8'}
-                                              onMouseLeave={(e) => e.currentTarget.style.opacity = '1'}
-                                            >
-                                              {meeting.lead?.name || 'N/A'}
-                                            </Link>
-                                            <span className="text-xs text-gray-500">
-                                              ({meeting.lead?.lead_number || meeting.lead_number})
-                                            </span>
-                                          </>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </td>
-                                  
-                                  {/* Time */}
-                                  <td className="font-medium text-base">{formatTime(meeting.meeting_time)}</td>
-                                  
-                                  {/* Location */}
-                                  <td className="text-base">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
-                                  
-                                  {/* Category */}
-                                  <td className="text-base">
-                                    {(() => {
-                                      const categoryText = getCategoryName(meeting.lead?.category_id, meeting.lead?.category) || 'N/A';
-                                      // Split category name and main category (in parentheses) into two rows
-                                      const match = categoryText.match(/^(.+?)\s*\((.+?)\)$/);
-                                      if (match) {
-                                        const [, categoryName, mainCategory] = match;
-                                        return (
-                                          <div className="flex flex-col">
-                                            <span>{categoryName}</span>
-                                            <span className="text-xs text-gray-500">({mainCategory})</span>
-                                          </div>
-                                        );
-                                      }
-                                      // If no parentheses, just show the text
-                                      return <span>{categoryText}</span>;
-                                    })()}
-                                  </td>
-                                  
-                                  {/* Expert */}
-                                  <td className="text-base">
-                                    <div className="flex flex-col gap-2">
-                                      <span>{meeting.expert || meeting.lead?.expert || 'N/A'}</span>
-                                      {(() => {
-                                        if (meeting.calendar_type === 'staff') {
-                                          return null;
-                                        }
+                              {filteredMeetings.map((meeting) => {
+                                const lead = meeting.lead || {};
 
-                                        const lead = meeting.lead || {};
-                                        
-                                        // For NEW leads: use eligibility_status field (text values)
-                                        // For LEGACY leads: use expert_examination field (numeric values)
-                                        if (lead.lead_type !== 'legacy') {
-                                          const eligibilityStatus = lead.eligibility_status;
-                                          
-                                          if (!eligibilityStatus || eligibilityStatus === '') {
+                                // Check if meeting should show green indicator:
+                                // 1. For potential_client: if lead has passed stage 20 (21 and higher) BUT NOT stage 55
+                                // 2. For active_client: if 2 hours have passed after meeting time
+                                const hasPassedStage = (() => {
+                                  // For potential_client meetings: check if stage > 20 and stage is not 55
+                                  if (meeting.calendar_type === 'potential_client') {
+                                    const leadStage = lead.stage ? Number(lead.stage) : null;
+                                    const meetingStage = meeting.stage ? Number(meeting.stage) : null;
+                                    const currentStage = leadStage || meetingStage;
+
+                                    // Stage must be > 20 AND not equal to 55
+                                    return currentStage !== null && currentStage > 20 && currentStage !== 55;
+                                  }
+
+                                  // For active_client meetings: check if 2 hours have passed after meeting time
+                                  if (meeting.calendar_type === 'active_client' && meeting.meeting_date && meeting.meeting_time) {
+                                    try {
+                                      const meetingDateTime = new Date(`${meeting.meeting_date}T${meeting.meeting_time}`);
+                                      const now = new Date();
+                                      const hoursPassed = (now.getTime() - meetingDateTime.getTime()) / (1000 * 60 * 60);
+                                      return hoursPassed >= 2;
+                                    } catch (error) {
+                                      console.error('Error calculating meeting time:', error);
+                                      return false;
+                                    }
+                                  }
+
+                                  return false;
+                                })();
+
+                                return (
+                                  <tr key={meeting.id} className={`hover:bg-gray-50 ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}>
+                                    {/* Lead */}
+                                    <td className="text-base">
+                                      <div className="flex items-center gap-1 sm:gap-2">
+                                        {hasPassedStage && (
+                                          <CheckCircleIcon className="w-4 h-4 sm:w-5 sm:h-5 text-green-500 flex-shrink-0" />
+                                        )}
+                                        <div className="flex flex-col">
+                                          {meeting.calendar_type === 'staff' ? (
+                                            <span className="font-medium">
+                                              {meeting.lead?.name || 'N/A'}
+                                            </span>
+                                          ) : (
+                                            <>
+                                              <Link
+                                                to={buildClientRoute(meeting.lead)}
+                                                className="hover:opacity-80 font-medium"
+                                                style={{ color: '#3b28c7' }}
+                                                onMouseEnter={(e) => e.currentTarget.style.opacity = '0.8'}
+                                                onMouseLeave={(e) => e.currentTarget.style.opacity = '1'}
+                                              >
+                                                {meeting.lead?.name || 'N/A'}
+                                              </Link>
+                                              <span className="text-xs text-gray-500">
+                                                ({meeting.lead?.lead_number || meeting.lead_number})
+                                              </span>
+                                            </>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </td>
+
+                                    {/* Time */}
+                                    <td className="font-medium text-base">{formatTime(meeting.meeting_time)}</td>
+
+                                    {/* Location */}
+                                    <td className="text-base">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
+
+                                    {/* Category */}
+                                    <td className="text-base">
+                                      {(() => {
+                                        const categoryText = getCategoryName(meeting.lead?.category_id, meeting.lead?.category) || 'N/A';
+                                        // Split category name and main category (in parentheses) into two rows
+                                        const match = categoryText.match(/^(.+?)\s*\((.+?)\)$/);
+                                        if (match) {
+                                          const [, categoryName, mainCategory] = match;
+                                          return (
+                                            <div className="flex flex-col">
+                                              <span>{categoryName}</span>
+                                              <span className="text-xs text-gray-500">({mainCategory})</span>
+                                            </div>
+                                          );
+                                        }
+                                        // If no parentheses, just show the text
+                                        return <span>{categoryText}</span>;
+                                      })()}
+                                    </td>
+
+                                    {/* Expert */}
+                                    <td className="text-base">
+                                      <div className="flex flex-col gap-2">
+                                        <span>{meeting.expert || meeting.lead?.expert || 'N/A'}</span>
+                                        {(() => {
+                                          if (meeting.calendar_type === 'staff') {
+                                            return null;
+                                          }
+
+                                          const lead = meeting.lead || {};
+
+                                          // For NEW leads: use eligibility_status field (text values)
+                                          // For LEGACY leads: use expert_examination field (numeric values)
+                                          if (lead.lead_type !== 'legacy') {
+                                            const eligibilityStatus = lead.eligibility_status;
+
+                                            if (!eligibilityStatus || eligibilityStatus === '') {
+                                              return (
+                                                <span className="w-9 h-9 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
+                                                  <QuestionMarkCircleIcon className="w-5 h-5" />
+                                                </span>
+                                              );
+                                            }
+
+                                            if (eligibilityStatus === 'not_feasible') {
+                                              return (
+                                                <span className="w-9 h-9 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
+                                                  <XCircleIcon className="w-5 h-5" />
+                                                </span>
+                                              );
+                                            } else if (eligibilityStatus === 'feasible_no_check') {
+                                              return (
+                                                <span className="w-9 h-9 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
+                                                  <CheckCircleIcon className="w-5 h-5" />
+                                                </span>
+                                              );
+                                            } else if (eligibilityStatus === 'feasible_with_check') {
+                                              return (
+                                                <span className="w-9 h-9 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (with check)">
+                                                  <ExclamationTriangleIcon className="w-5 h-5" />
+                                                </span>
+                                              );
+                                            }
+
                                             return (
                                               <span className="w-9 h-9 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
                                                 <QuestionMarkCircleIcon className="w-5 h-5" />
@@ -5955,224 +6620,197 @@ const CalendarPage: React.FC = () => {
                                             );
                                           }
 
-                                          if (eligibilityStatus === 'not_feasible') {
+                                          const expertExamination = lead.expert_examination;
+
+                                          if (!expertExamination || expertExamination === 0 || expertExamination === '0') {
+                                            return (
+                                              <span className="w-9 h-9 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
+                                                <QuestionMarkCircleIcon className="w-5 h-5" />
+                                              </span>
+                                            );
+                                          }
+
+                                          if (expertExamination === 1 || expertExamination === '1') {
                                             return (
                                               <span className="w-9 h-9 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
                                                 <XCircleIcon className="w-5 h-5" />
                                               </span>
                                             );
-                                          } else if (eligibilityStatus === 'feasible_no_check') {
+                                          } else if (expertExamination === 5 || expertExamination === '5') {
+                                            return (
+                                              <span className="w-9 h-9 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (further check)">
+                                                <ExclamationTriangleIcon className="w-5 h-5" />
+                                              </span>
+                                            );
+                                          } else if (expertExamination === 8 || expertExamination === '8') {
                                             return (
                                               <span className="w-9 h-9 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
                                                 <CheckCircleIcon className="w-5 h-5" />
                                               </span>
                                             );
-                                          } else if (eligibilityStatus === 'feasible_with_check') {
-                                            return (
-                                              <span className="w-9 h-9 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (with check)">
-                                                <ExclamationTriangleIcon className="w-5 h-5" />
-                                              </span>
-                                            );
                                           }
 
                                           return (
-                                            <span className="w-9 h-9 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
-                                              <QuestionMarkCircleIcon className="w-5 h-5" />
+                                            <span className="px-2 py-1 rounded-full bg-gray-400 text-white gap-1 inline-flex items-center font-semibold shadow-md text-xs" title="Expert opinion status unknown">
+                                              <QuestionMarkCircleIcon className="w-3 h-3" />
+                                              Unknown
                                             </span>
                                           );
-                                        }
-
-                                        const expertExamination = lead.expert_examination;
-
-                                        if (!expertExamination || expertExamination === 0 || expertExamination === '0') {
-                                          return (
-                                            <span className="w-9 h-9 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
-                                              <QuestionMarkCircleIcon className="w-5 h-5" />
-                                            </span>
-                                          );
-                                        }
-
-                                        if (expertExamination === 1 || expertExamination === '1') {
-                                          return (
-                                            <span className="w-9 h-9 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
-                                              <XCircleIcon className="w-5 h-5" />
-                                            </span>
-                                          );
-                                        } else if (expertExamination === 5 || expertExamination === '5') {
-                                          return (
-                                            <span className="w-9 h-9 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (further check)">
-                                              <ExclamationTriangleIcon className="w-5 h-5" />
-                                            </span>
-                                          );
-                                        } else if (expertExamination === 8 || expertExamination === '8') {
-                                          return (
-                                            <span className="w-9 h-9 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
-                                              <CheckCircleIcon className="w-5 h-5" />
-                                            </span>
-                                          );
-                                        }
-
-                                        return (
-                                          <span className="px-2 py-1 rounded-full bg-gray-400 text-white gap-1 inline-flex items-center font-semibold shadow-md text-xs" title="Expert opinion status unknown">
-                                            <QuestionMarkCircleIcon className="w-3 h-3" />
-                                            Unknown
-                                          </span>
-                                        );
-                                      })()}
-                                    </div>
-                                  </td>
-                                  
-                                  {/* Language */}
-                                  <td className="text-base">{meeting.language || meeting.lead?.language || 'N/A'}</td>
-                                  
-                                  {/* Balance */}
-                                  <td className="font-medium text-base">
-                                    {meeting.lead?.balance ? 
-                                      `${getCurrencySymbol(meeting.lead?.balance_currency)}${meeting.lead.balance.toLocaleString()}` : 
-                                      'N/A'
-                                    }
-                                  </td>
-
-                                  {/* Info */}
-                                  <td className="text-base">
-                                    <div className="flex items-center gap-1">
-                                      {isNotFirstMeeting(meeting) && (
-                                        <FireIcon className="w-6 h-6 text-orange-500" title="Another meeting" />
-                                      )}
-                                      <span className={`font-bold ${(() => {
-                                        const probability = meeting.lead?.probability ?? meeting.probability;
-                                        const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
-                                        let probabilityColor = 'text-red-600';
-                                        if (probabilityNumber >= 80) probabilityColor = 'text-green-600';
-                                        else if (probabilityNumber >= 60) probabilityColor = 'text-yellow-600';
-                                        else if (probabilityNumber >= 40) probabilityColor = 'text-orange-600';
-                                        return probabilityColor;
-                                      })()}`}>
-                                        {(() => {
-                                          const probability = meeting.lead?.probability ?? meeting.probability;
-                                          const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
-                                          
-                                          // For new meetings, use attendance_probability
-                                          if (meeting.attendance_probability && ['Low', 'Medium', 'High', 'Very High'].includes(meeting.attendance_probability)) {
-                                            const letter = meeting.attendance_probability === 'Low' ? 'L' : 
-                                                          meeting.attendance_probability === 'Medium' ? 'M' : 
-                                                          meeting.attendance_probability === 'High' ? 'H' : 'VH';
-                                            const title = `${meeting.attendance_probability} Attendance Probability`;
-                                            return <span title={title}>{letter}</span>;
-                                          }
-                                          // For legacy meetings, convert probability number to letter
-                                          else if (typeof probabilityNumber === 'number' && !isNaN(probabilityNumber)) {
-                                            let letter, title;
-                                            if (probabilityNumber >= 80) { letter = 'VH'; title = 'Very High Attendance Probability'; }
-                                            else if (probabilityNumber >= 60) { letter = 'H'; title = 'High Attendance Probability'; }
-                                            else if (probabilityNumber >= 40) { letter = 'M'; title = 'Medium Attendance Probability'; }
-                                            else { letter = 'L'; title = 'Low Attendance Probability'; }
-                                            return <span title={title}>{letter}</span>;
-                                          }
-                                          return 'N/A';
                                         })()}
-                                        {(() => {
-                                          const probability = meeting.lead?.probability ?? meeting.probability;
-                                          const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
-                                          return typeof probabilityNumber === 'number' && !isNaN(probabilityNumber) ? ` ${probabilityNumber}%` : '';
-                                        })()}
-                                      </span>
-                                      {((meeting.meeting_location || meeting.location || getLegacyMeetingLocation(meeting.meeting_location_id))?.toLowerCase().includes('tlv with parking')) && (
-                                        <TruckIcon 
-                                          className="w-6 h-6 text-blue-600 cursor-help" 
-                                          title={getLegacyCarNumber(meeting) ? `Car Number: ${getLegacyCarNumber(meeting)}` : 'TLV with parking location'}
-                                        />
-                                      )}
-                                      {(meeting.complexity === 'Complex' || getLegacyMeetingComplexity(meeting.meeting_complexity) === 'Complex') && (
-                                        <BookOpenIcon 
-                                          className="w-6 h-6 text-purple-600" 
-                                          title="Complex Meeting"
-                                        />
-                                      )}
-                                  </div>
-                                  </td>
-
-                                {/* Manager Assignment */}
-                                  <td className="overflow-visible text-base">
-                                  <div className="relative">
-                                    {(() => {
-                                      const state = getMeetingDropdownState(meeting.id);
-                                      const hasManager = meeting.meeting_manager && meeting.meeting_manager !== '--' && meeting.meeting_manager.trim() !== '';
-                                      return (
-                                        <>
-                                            <div className="flex items-center gap-2">
-                                          <input
-                                            type="text"
-                                            placeholder={meeting.meeting_manager || "Select manager..."}
-                                                className={`input input-md input-bordered w-full pr-8 cursor-pointer staff-dropdown-input ${!hasManager ? 'border-red-500 bg-red-50' : ''}`}
-                                            value={state.managerSearch}
-                                            onChange={(e) => updateMeetingDropdownState(meeting.id, { managerSearch: e.target.value })}
-                                                onFocus={(e) => {
-                                              updateMeetingDropdownState(meeting.id, { showManagerDropdown: true, managerSearch: '' });
-                                                  handleDropdownOpen(meeting.id, 'manager', e.target);
-                                                }}
-                                                onBlur={() => setTimeout(() => {
-                                                  updateMeetingDropdownState(meeting.id, { showManagerDropdown: false });
-                                                  handleDropdownClose();
-                                                }, 500)}
-                                          />
-                                          <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
-                                                <ChevronDownIcon className="w-4 h-4 text-gray-400" />
-                                          </div>
-                                              </div>
-                                        </>
-                                      );
-                                    })()}
-                                  </div>
-                                  </td>
-
-                                {/* Helper Assignment */}
-                                  <td className="overflow-visible text-base">
-                                  <div className="relative">
-                                    {(() => {
-                                      const state = getMeetingDropdownState(meeting.id);
-                                      return (
-                                        <>
-                                            <div className="flex items-center gap-2">
-                                          <input
-                                            type="text"
-                                            placeholder={meeting.helper || "Select helper..."}
-                                                className="input input-md input-bordered w-full pr-8 cursor-pointer staff-dropdown-input"
-                                            value={state.helperSearch}
-                                            onChange={(e) => updateMeetingDropdownState(meeting.id, { helperSearch: e.target.value })}
-                                                onFocus={(e) => {
-                                              updateMeetingDropdownState(meeting.id, { showHelperDropdown: true, helperSearch: '' });
-                                                  handleDropdownOpen(meeting.id, 'helper', e.target);
-                                                }}
-                                                onBlur={() => setTimeout(() => {
-                                                  updateMeetingDropdownState(meeting.id, { showHelperDropdown: false });
-                                                  handleDropdownClose();
-                                                }, 500)}
-                                          />
-                                          <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
-                                                <ChevronDownIcon className="w-4 h-4 text-gray-400" />
-                                          </div>
-                                              </div>
-                                        </>
-                                      );
-                                    })()}
-                                  </div>
-                                  </td>
-
-                                {/* Scheduler */}
-                                  <td className="text-base">
-                                    {meeting.calendar_type === 'staff' ? (
-                                      null
-                                    ) : (
-                                      <div className="flex items-center gap-2">
-                                        {renderEmployeeAvatar(lead.scheduler_id || lead.scheduler || meeting.scheduler, 'md', false)}
-                                        <span className="text-xs sm:text-sm">{getEmployeeDisplayName(lead.scheduler || meeting.scheduler)}</span>
                                       </div>
-                                    )}
-                                  </td>
-                                </tr>
-                            );
-                          })}
+                                    </td>
+
+                                    {/* Language */}
+                                    <td className="text-base">{meeting.language || meeting.lead?.language || 'N/A'}</td>
+
+                                    {/* Balance */}
+                                    <td className="font-medium text-base">
+                                      {meeting.lead?.balance ?
+                                        `${getCurrencySymbol(meeting.lead?.balance_currency)}${meeting.lead.balance.toLocaleString()}` :
+                                        'N/A'
+                                      }
+                                    </td>
+
+                                    {/* Info */}
+                                    <td className="text-base">
+                                      <div className="flex items-center gap-1">
+                                        {isNotFirstMeeting(meeting) && (
+                                          <FireIcon className="w-6 h-6 text-orange-500" title="Another meeting" />
+                                        )}
+                                        <span className={`font-bold ${(() => {
+                                          const probability = meeting.lead?.probability ?? meeting.probability;
+                                          const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
+                                          let probabilityColor = 'text-red-600';
+                                          if (probabilityNumber >= 80) probabilityColor = 'text-green-600';
+                                          else if (probabilityNumber >= 60) probabilityColor = 'text-yellow-600';
+                                          else if (probabilityNumber >= 40) probabilityColor = 'text-orange-600';
+                                          return probabilityColor;
+                                        })()}`}>
+                                          {(() => {
+                                            const probability = meeting.lead?.probability ?? meeting.probability;
+                                            const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
+
+                                            // For new meetings, use attendance_probability
+                                            if (meeting.attendance_probability && ['Low', 'Medium', 'High', 'Very High'].includes(meeting.attendance_probability)) {
+                                              const letter = meeting.attendance_probability === 'Low' ? 'L' :
+                                                meeting.attendance_probability === 'Medium' ? 'M' :
+                                                  meeting.attendance_probability === 'High' ? 'H' : 'VH';
+                                              const title = `${meeting.attendance_probability} Attendance Probability`;
+                                              return <span title={title}>{letter}</span>;
+                                            }
+                                            // For legacy meetings, convert probability number to letter
+                                            else if (typeof probabilityNumber === 'number' && !isNaN(probabilityNumber)) {
+                                              let letter, title;
+                                              if (probabilityNumber >= 80) { letter = 'VH'; title = 'Very High Attendance Probability'; }
+                                              else if (probabilityNumber >= 60) { letter = 'H'; title = 'High Attendance Probability'; }
+                                              else if (probabilityNumber >= 40) { letter = 'M'; title = 'Medium Attendance Probability'; }
+                                              else { letter = 'L'; title = 'Low Attendance Probability'; }
+                                              return <span title={title}>{letter}</span>;
+                                            }
+                                            return 'N/A';
+                                          })()}
+                                          {(() => {
+                                            const probability = meeting.lead?.probability ?? meeting.probability;
+                                            const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
+                                            return typeof probabilityNumber === 'number' && !isNaN(probabilityNumber) ? ` ${probabilityNumber}%` : '';
+                                          })()}
+                                        </span>
+                                        {((meeting.meeting_location || meeting.location || getLegacyMeetingLocation(meeting.meeting_location_id))?.toLowerCase().includes('tlv with parking')) && (
+                                          <TruckIcon
+                                            className="w-6 h-6 text-blue-600 cursor-help"
+                                            title={getLegacyCarNumber(meeting) ? `Car Number: ${getLegacyCarNumber(meeting)}` : 'TLV with parking location'}
+                                          />
+                                        )}
+                                        {(meeting.complexity === 'Complex' || getLegacyMeetingComplexity(meeting.meeting_complexity) === 'Complex') && (
+                                          <BookOpenIcon
+                                            className="w-6 h-6 text-purple-600"
+                                            title="Complex Meeting"
+                                          />
+                                        )}
+                                      </div>
+                                    </td>
+
+                                    {/* Manager Assignment */}
+                                    <td className="overflow-visible text-base">
+                                      <div className="relative">
+                                        {(() => {
+                                          const state = getMeetingDropdownState(meeting.id);
+                                          const hasManager = meeting.meeting_manager && meeting.meeting_manager !== '--' && meeting.meeting_manager.trim() !== '';
+                                          return (
+                                            <>
+                                              <div className="flex items-center gap-2">
+                                                <input
+                                                  type="text"
+                                                  placeholder={meeting.meeting_manager || "Select manager..."}
+                                                  className={`input input-md input-bordered w-full pr-8 cursor-pointer staff-dropdown-input ${!hasManager ? 'border-red-500 bg-red-50' : ''}`}
+                                                  value={state.managerSearch}
+                                                  onChange={(e) => updateMeetingDropdownState(meeting.id, { managerSearch: e.target.value })}
+                                                  onFocus={(e) => {
+                                                    updateMeetingDropdownState(meeting.id, { showManagerDropdown: true, managerSearch: '' });
+                                                    handleDropdownOpen(meeting.id, 'manager', e.target);
+                                                  }}
+                                                  onBlur={() => setTimeout(() => {
+                                                    updateMeetingDropdownState(meeting.id, { showManagerDropdown: false });
+                                                    handleDropdownClose();
+                                                  }, 500)}
+                                                />
+                                                <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
+                                                  <ChevronDownIcon className="w-4 h-4 text-gray-400" />
+                                                </div>
+                                              </div>
+                                            </>
+                                          );
+                                        })()}
+                                      </div>
+                                    </td>
+
+                                    {/* Helper Assignment */}
+                                    <td className="overflow-visible text-base">
+                                      <div className="relative">
+                                        {(() => {
+                                          const state = getMeetingDropdownState(meeting.id);
+                                          return (
+                                            <>
+                                              <div className="flex items-center gap-2">
+                                                <input
+                                                  type="text"
+                                                  placeholder={meeting.helper || "Select helper..."}
+                                                  className="input input-md input-bordered w-full pr-8 cursor-pointer staff-dropdown-input"
+                                                  value={state.helperSearch}
+                                                  onChange={(e) => updateMeetingDropdownState(meeting.id, { helperSearch: e.target.value })}
+                                                  onFocus={(e) => {
+                                                    updateMeetingDropdownState(meeting.id, { showHelperDropdown: true, helperSearch: '' });
+                                                    handleDropdownOpen(meeting.id, 'helper', e.target);
+                                                  }}
+                                                  onBlur={() => setTimeout(() => {
+                                                    updateMeetingDropdownState(meeting.id, { showHelperDropdown: false });
+                                                    handleDropdownClose();
+                                                  }, 500)}
+                                                />
+                                                <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
+                                                  <ChevronDownIcon className="w-4 h-4 text-gray-400" />
+                                                </div>
+                                              </div>
+                                            </>
+                                          );
+                                        })()}
+                                      </div>
+                                    </td>
+
+                                    {/* Scheduler */}
+                                    <td className="text-base">
+                                      {meeting.calendar_type === 'staff' ? (
+                                        null
+                                      ) : (
+                                        <div className="flex items-center gap-2">
+                                          {renderEmployeeAvatar(lead.scheduler_id || lead.scheduler || meeting.scheduler, 'md', false)}
+                                          <span className="text-sm sm:text-base">{getEmployeeDisplayName(lead.scheduler || meeting.scheduler)}</span>
+                                        </div>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -6182,14 +6820,14 @@ const CalendarPage: React.FC = () => {
                         <CalendarIcon className="w-12 h-12 mx-auto text-gray-300 mb-4" />
                         <h3 className="text-lg font-semibold text-gray-600 mb-2">No Meetings Found</h3>
                         <p className="text-gray-500">
-                          {hasMeetingsForDate(modalSelectedDate) 
+                          {hasMeetingsForDate(modalSelectedDate)
                             ? "No meetings match the selected staff filter for this date."
-                            : `No meetings scheduled for ${new Date(modalSelectedDate).toLocaleDateString('en-US', { 
-                                weekday: 'long', 
-                                year: 'numeric', 
-                                month: 'long', 
-                                day: 'numeric' 
-                              })}.`
+                            : `No meetings scheduled for ${new Date(modalSelectedDate).toLocaleDateString('en-US', {
+                              weekday: 'long',
+                              year: 'numeric',
+                              month: 'long',
+                              day: 'numeric'
+                            })}.`
                           }
                         </p>
                         {!hasMeetingsForDate(modalSelectedDate) && (
@@ -6202,9 +6840,9 @@ const CalendarPage: React.FC = () => {
                                   onClick={() => setModalSelectedDate(date)}
                                   className="btn btn-xs btn-outline text-gray-600 hover:bg-gray-100"
                                 >
-                                  {new Date(date).toLocaleDateString('en-US', { 
-                                    month: 'short', 
-                                    day: 'numeric' 
+                                  {new Date(date).toLocaleDateString('en-US', {
+                                    month: 'short',
+                                    day: 'numeric'
                                   })}
                                 </button>
                               ))}
@@ -6234,7 +6872,7 @@ const CalendarPage: React.FC = () => {
         const selectedMeetingForActions = meetings.find(m => m.id === selectedRowId) || filteredMeetings.find(m => m.id === selectedRowId);
         if (!selectedMeetingForActions || !selectedMeetingForActions.lead || selectedMeetingForActions.calendar_type === 'staff') return null;
         const lead = selectedMeetingForActions.lead;
-        
+
         return (
           <>
             {/* Overlay to close buttons */}
@@ -6246,7 +6884,7 @@ const CalendarPage: React.FC = () => {
                 setSelectedLeadForActions(null);
               }}
             />
-            
+
             {/* Floating Action Buttons - Centered vertically on right side */}
             <div className="fixed right-6 top-1/2 -translate-y-1/2 z-50 flex flex-col items-end gap-3">
               {/* Call Button */}
@@ -6266,7 +6904,7 @@ const CalendarPage: React.FC = () => {
                   <PhoneIcon className="w-6 h-6" />
                 </button>
               </div>
-              
+
               {/* Email Button */}
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Email</span>
@@ -6284,7 +6922,7 @@ const CalendarPage: React.FC = () => {
                   <EnvelopeIcon className="w-6 h-6" />
                 </button>
               </div>
-              
+
               {/* WhatsApp Button */}
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">WhatsApp</span>
@@ -6302,7 +6940,7 @@ const CalendarPage: React.FC = () => {
                   <FaWhatsapp className="w-6 h-6" />
                 </button>
               </div>
-              
+
               {/* Timeline Button */}
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Timeline</span>
@@ -6320,7 +6958,7 @@ const CalendarPage: React.FC = () => {
                   <ClockIcon className="w-6 h-6" />
                 </button>
               </div>
-              
+
               {/* Edit Lead Button */}
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Edit Lead</span>
@@ -6338,7 +6976,7 @@ const CalendarPage: React.FC = () => {
                   <PencilSquareIcon className="w-6 h-6" />
                 </button>
               </div>
-              
+
               {/* View Client Button */}
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">View Client</span>
@@ -6356,7 +6994,7 @@ const CalendarPage: React.FC = () => {
                   <EyeIcon className="w-6 h-6" />
                 </button>
               </div>
-              
+
               {/* Documents Button */}
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Documents</span>
@@ -6388,7 +7026,7 @@ const CalendarPage: React.FC = () => {
         }}
         leadNumber={selectedMeeting?.lead?.lead_number || selectedMeeting?.lead_number || ''}
         clientName={selectedMeeting?.lead?.name || selectedMeeting?.name || ''}
-        onDocumentCountChange={() => {}}
+        onDocumentCountChange={() => { }}
       />
 
 
@@ -6410,9 +7048,9 @@ const CalendarPage: React.FC = () => {
               e.preventDefault();
               e.stopPropagation();
               handleAssignStaff(activeDropdown.meetingId, activeDropdown.type === 'manager' ? 'meeting_manager' : 'helper', '');
-              updateMeetingDropdownState(activeDropdown.meetingId, { 
-                [activeDropdown.type === 'manager' ? 'managerSearch' : 'helperSearch']: '', 
-                [activeDropdown.type === 'manager' ? 'showManagerDropdown' : 'showHelperDropdown']: false 
+              updateMeetingDropdownState(activeDropdown.meetingId, {
+                [activeDropdown.type === 'manager' ? 'managerSearch' : 'helperSearch']: '',
+                [activeDropdown.type === 'manager' ? 'showManagerDropdown' : 'showHelperDropdown']: false
               });
               handleDropdownClose();
             }}
@@ -6431,19 +7069,18 @@ const CalendarPage: React.FC = () => {
               return (
                 <div
                   key={`${staff}-${index}-${activeDropdown.meetingId}-${activeDropdown.type}`}
-                  className={`px-3 py-2 border-b border-gray-100 ${
-                    isUnavailable 
-                      ? 'bg-red-50 text-red-600 hover:bg-red-100' 
-                      : 'hover:bg-gray-100'
-                  } cursor-pointer`}
+                  className={`px-3 py-2 border-b border-gray-100 ${isUnavailable
+                    ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                    : 'hover:bg-gray-100'
+                    } cursor-pointer`}
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
                     // Always allow assignment - confirmation dialog will handle unavailability
                     handleAssignStaff(activeDropdown.meetingId, activeDropdown.type === 'manager' ? 'meeting_manager' : 'helper', staff);
-                    updateMeetingDropdownState(activeDropdown.meetingId, { 
-                      [activeDropdown.type === 'manager' ? 'managerSearch' : 'helperSearch']: '', 
-                      [activeDropdown.type === 'manager' ? 'showManagerDropdown' : 'showHelperDropdown']: false 
+                    updateMeetingDropdownState(activeDropdown.meetingId, {
+                      [activeDropdown.type === 'manager' ? 'managerSearch' : 'helperSearch']: '',
+                      [activeDropdown.type === 'manager' ? 'showManagerDropdown' : 'showHelperDropdown']: false
                     });
                     handleDropdownClose();
                   }}

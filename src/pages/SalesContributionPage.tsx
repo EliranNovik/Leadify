@@ -39,6 +39,7 @@ interface EmployeeData {
   signedNormalized: number;
   dueNormalized: number;
   signedPortion: number;
+  contribution?: number; // Contribution amount (used for Marketing/Finance from summary boxes)
   salaryBudget: number;
   salaryBrutto: number;
   totalSalaryCost: number;
@@ -59,6 +60,7 @@ interface DepartmentData {
     signedNormalized: number;
     dueNormalized: number;
     signedPortion: number;
+    contribution: number;
     salaryBudget: number;
     salaryBrutto: number;
     totalSalaryCost: number;
@@ -2399,6 +2401,7 @@ const SalesContributionPage = () => {
             display_name: employee.display_name,
             bonuses_role: employee.bonuses_role || null,
             department: dept?.name || 'Unknown',
+            department_id: employee.department_id || dept?.id || null,
             photo_url: employee.photo_url || employee.photo || null,
             email: user.email,
           };
@@ -2489,6 +2492,10 @@ const SalesContributionPage = () => {
 
       const partnersEmployees = filteredEmployees.filter(emp => {
         const role = emp.bonuses_role;
+        // Exclude employees with department_id 9 (Finance)
+        if (emp.department_id === 9) {
+          return false;
+        }
         // Note: 'dm' moved to Handlers
         return role && ['p', 'm', 'pm', 'se', 'b', 'partners', 'dv'].includes(role);
       });
@@ -2577,6 +2584,7 @@ const SalesContributionPage = () => {
               signedNormalized: 0,
               dueNormalized: 0,
               signedPortion: 0,
+              contribution: 0,
               salaryBudget: 0,
               salaryBrutto: 0,
               totalSalaryCost: 0,
@@ -2597,6 +2605,7 @@ const SalesContributionPage = () => {
         let deptSignedNormalized = 0;
         let deptDueNormalized = 0;
         let deptSignedPortion = 0;
+        let deptContribution = 0;
         let deptSalaryBudget = 0;
         let deptSalaryBrutto = 0;
         let deptTotalSalaryCost = 0;
@@ -2638,6 +2647,7 @@ const SalesContributionPage = () => {
           deptSignedNormalized += empData.signedNormalized || 0;
           deptDueNormalized += empData.dueNormalized || 0;
           deptSignedPortion += empData.signedPortion;
+          deptContribution += empData.contribution || 0;
           deptSalaryBudget += empData.salaryBudget || 0;
           deptSalaryBrutto += empData.salaryBrutto || 0;
           deptTotalSalaryCost += empData.totalSalaryCost || 0;
@@ -2659,6 +2669,7 @@ const SalesContributionPage = () => {
             signedNormalized: deptSignedNormalized,
             dueNormalized: deptDueNormalized,
             signedPortion: deptSignedPortion,
+            contribution: deptContribution,
             salaryBudget: deptSalaryBudget,
             salaryBrutto: deptSalaryBrutto,
             totalSalaryCost: deptTotalSalaryCost,
@@ -3635,6 +3646,8 @@ const SalesContributionPage = () => {
             });
           });
 
+          // Step 7.5: Removed - All departments now calculate contribution the same way from leads
+
           // Step 8: Calculate ALL employee metrics in one batch (PURE calculation, no async)
           console.log('🔍 Starting batch calculation:', {
             inputCount: calculationInputs.length,
@@ -3729,8 +3742,18 @@ const SalesContributionPage = () => {
                   updatedEmp.due = result.due;
                   updatedEmp.signedNormalized = result.signedNormalized;
                   updatedEmp.dueNormalized = result.dueNormalized;
-                  updatedEmp.signedPortion = result.contribution || 0; // Ensure contribution is set, default to 0 if undefined
-                  updatedEmp.salaryBudget = result.salaryBudget || 0;
+                  // All departments calculate contribution the same way from leads
+                  updatedEmp.signedPortion = result.signedPortion || 0;
+                  updatedEmp.contribution = result.contribution || 0;
+                  // Total is calculated from signedPortion + duePortion
+                  updatedEmp.total = updatedEmp.signedPortion + (result.duePortion || 0);
+                  // For Marketing and Finance: salaryBudget = totalSalaryCost
+                  // For other departments: use calculated salaryBudget
+                  if (deptName === 'Marketing' || deptName === 'Finance') {
+                    updatedEmp.salaryBudget = updatedEmp.totalSalaryCost || 0;
+                  } else {
+                    updatedEmp.salaryBudget = result.salaryBudget || 0;
+                  }
 
                   // DEBUG: Log Hava's state update
                   if (emp.employeeId === 108) {
@@ -3777,9 +3800,14 @@ const SalesContributionPage = () => {
               const deptSignedNormalized = updatedEmployees.reduce((sum, emp) => sum + (emp.signedNormalized || 0), 0);
               const deptDueNormalized = updatedEmployees.reduce((sum, emp) => sum + (emp.dueNormalized || 0), 0);
               const deptSignedPortion = updatedEmployees.reduce((sum, emp) => sum + (emp.signedPortion || 0), 0);
-              const deptSalaryBudget = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBudget || 0), 0);
-              const deptSalaryBrutto = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBrutto || 0), 0);
+              const deptContribution = updatedEmployees.reduce((sum, emp) => sum + (emp.contribution || 0), 0);
               const deptTotalSalaryCost = updatedEmployees.reduce((sum, emp) => sum + (emp.totalSalaryCost || 0), 0);
+              // For Marketing and Finance: salaryBudget = totalSalaryCost
+              // For other departments: use calculated salaryBudget
+              const deptSalaryBudget = (deptName === 'Marketing' || deptName === 'Finance')
+                ? deptTotalSalaryCost
+                : updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBudget || 0), 0);
+              const deptSalaryBrutto = updatedEmployees.reduce((sum, emp) => sum + (emp.salaryBrutto || 0), 0);
               const deptMaxIncentives = updatedEmployees.reduce((sum, emp) => sum + (emp.maxIncentives ?? 0), 0);
 
               updated.set(deptName, {
@@ -3792,6 +3820,7 @@ const SalesContributionPage = () => {
                   signedNormalized: deptSignedNormalized,
                   dueNormalized: deptDueNormalized,
                   signedPortion: deptSignedPortion,
+                  contribution: deptContribution,
                   salaryBudget: deptSalaryBudget,
                   salaryBrutto: deptSalaryBrutto,
                   totalSalaryCost: deptTotalSalaryCost,
@@ -4645,6 +4674,7 @@ const SalesContributionPage = () => {
                 signedNormalized: signedNormalized,
                 dueNormalized: fieldData.dueNormalized,
                 signedPortion: signedPortion,
+                contribution: signedPortion, // For field view, contribution equals signedPortion
                 salaryBudget: salaryBudget,
                 salaryBrutto: 0,
                 totalSalaryCost: 0,
@@ -4714,6 +4744,7 @@ const SalesContributionPage = () => {
               signedNormalized: generalSignedNormalized,
               dueNormalized: generalFieldData.dueNormalized,
               signedPortion: generalFieldData.signedPortion,
+              contribution: generalFieldData.signedPortion, // For field view, contribution equals signedPortion
               salaryBudget: generalSalaryBudget,
               salaryBrutto: 0,
               totalSalaryCost: 0,
@@ -5017,17 +5048,31 @@ const SalesContributionPage = () => {
 
   const renderTable = (deptData: DepartmentData, hideTitle?: boolean) => {
     const isFieldView = hideTitle === true;
-    const colSpanValue = isFieldView ? 10 : 11; // Updated for Max Incentives column
+    const colSpanValue = isFieldView ? 11 : 12; // Updated for Contribution Fixed column
+
+    // Calculate summary box amount for this department
+    const departmentPercentage = departmentPercentages.get(deptData.departmentName) || 0;
+    const baseAmount = (totalIncome || 0) * 0.4;
+    const summaryAmount = baseAmount * (departmentPercentage / 100);
 
     return (
       <div key={deptData.departmentName} className="mb-8">
-        {!hideTitle && <h2 className="text-2xl font-bold mb-4">{deptData.departmentName}</h2>}
+        {!hideTitle && (
+          <h2 className="text-2xl font-bold mb-4 flex items-center gap-3">
+            <span>{deptData.departmentName}</span>
+            {summaryAmount > 0 && (
+              <span className="text-lg font-normal text-gray-500">
+                ({formatCurrency(summaryAmount)})
+              </span>
+            )}
+          </h2>
+        )}
         <div className="overflow-x-auto">
           <table className="table w-full min-w-[800px] md:min-w-0 md:table-fixed">
             <thead>
               <tr>
                 <th className={`${isFieldView ? 'w-[20%]' : 'w-[20%]'} text-[10px] md:text-sm whitespace-nowrap`}>{isFieldView ? 'Category' : 'Employee'}</th>
-                {!isFieldView && <th className="w-[12%] min-w-[90px] text-[10px] md:text-sm px-2">
+                {!isFieldView && <th className="w-[12%] min-w-[100px] text-[10px] md:text-sm px-2">
                   <div className="whitespace-normal leading-tight">Department</div>
                 </th>}
                 <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Signed</th>
@@ -5035,6 +5080,12 @@ const SalesContributionPage = () => {
                 <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Signed Norm</th>
                 <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Due Norm</th>
                 <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Contribution</th>
+                <th className="text-right w-[10%] text-[10px] md:text-sm">
+                  <div className="flex flex-col items-end">
+                    <span>Contribution</span>
+                    <span>Fixed</span>
+                  </div>
+                </th>
                 <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Salary Budget</th>
                 <th className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm whitespace-nowrap">
                   Salary (B)
@@ -5102,12 +5153,13 @@ const SalesContributionPage = () => {
                             <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{emp.employeeName}</span>
                           </div>
                         </td>
-                        {!isFieldView && <td className="w-[12%] min-w-[90px] text-[10px] md:text-sm px-2 align-top py-2">
-                          <div className="break-words leading-tight whitespace-normal" style={{
+                        {!isFieldView && <td className="w-[12%] min-w-[100px] text-[10px] md:text-sm px-2 align-top py-2">
+                          <div className="break-words leading-tight" style={{
                             wordBreak: 'break-word',
-                            maxWidth: '90px',
+                            overflowWrap: 'break-word',
+                            maxWidth: '100px',
                             lineHeight: '1.2',
-                            display: 'block'
+                            hyphens: 'auto'
                           }}>
                             {emp.department}
                           </div>
@@ -5116,7 +5168,8 @@ const SalesContributionPage = () => {
                         <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.due || 0)}</td>
                         <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.signedNormalized || 0)}</td>
                         <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.dueNormalized || 0)}</td>
-                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.signedPortion)}</td>
+                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.contribution || 0)}</td>
+                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(0)}</td>
                         <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">
                           <div className="flex flex-col items-end">
                             <span>{formatCurrency(emp.salaryBudget || 0)}</span>
@@ -5317,7 +5370,8 @@ const SalesContributionPage = () => {
                 <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
                 <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
                 <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
-                <td className="text-right w-[10%] text-[10px] md:text-sm">{formatCurrency(deptData.totals.signedPortion)}</td>
+                <td className="text-right w-[10%] text-[10px] md:text-sm">{formatCurrency(deptData.totals.contribution || 0)}</td>
+                <td className="text-right w-[10%] text-[10px] md:text-sm">{formatCurrency(0)}</td>
                 <td className="text-right w-[10%] text-[10px] md:text-sm">
                   <div className="flex flex-col items-end">
                     <span>{formatCurrency(deptData.totals.salaryBudget || 0)}</span>
@@ -5373,7 +5427,7 @@ const SalesContributionPage = () => {
       <div className="mb-2">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-4">
           <div className="flex items-center gap-4">
-            <h1 className="text-3xl font-bold">Sales Contribution Report</h1>
+            <h1 className="text-3xl font-bold">Micro/Macro Contribution</h1>
             <button
               onClick={() => navigate('/reports')}
               className="btn btn-ghost btn-sm"

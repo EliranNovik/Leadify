@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { CheckIcon, EyeIcon, EyeSlashIcon } from '@heroicons/react/24/outline';
+import React, { useState, useEffect, useRef } from 'react';
+import { CheckIcon, EyeIcon, EyeSlashIcon, AdjustmentsHorizontalIcon } from '@heroicons/react/24/outline';
 
 interface DynamicTabProps {
   totalIncome: number;
@@ -38,11 +38,33 @@ const DynamicTab: React.FC<DynamicTabProps> = ({
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isVisible, setIsVisible] = useState(true);
+  const [isMinimized, setIsMinimized] = useState(true); // Default to minimized (circle)
+  const tabRef = useRef<HTMLDivElement>(null);
 
   // Hide tab when DynamicIsland is open, show when closed
   useEffect(() => {
     setIsVisible(!isDynamicIslandOpen);
   }, [isDynamicIslandOpen]);
+
+  // Handle double-click on tab container to toggle minimize
+  const handleTabContainerDoubleClick = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    
+    // Check if the click was on an input or button - if so, don't toggle
+    const isInput = target.tagName === 'INPUT' || target.closest('input');
+    const isButton = target.tagName === 'BUTTON' || target.closest('button');
+    
+    // Allow double-click everywhere except on inputs and buttons
+    if (!isInput && !isButton) {
+      setIsMinimized(!isMinimized);
+    }
+  };
+
+  // Toggle minimized state when clicking the circle
+  const handleToggleMinimize = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsMinimized(!isMinimized);
+  };
 
   // Initialize tempRolePercentages
   useEffect(() => {
@@ -96,28 +118,70 @@ const DynamicTab: React.FC<DynamicTabProps> = ({
 
       {/* Fixed bottom tab */}
       <div
+        ref={tabRef}
+        onDoubleClick={handleTabContainerDoubleClick}
         style={{
           position: 'fixed',
           bottom: '10px',
           left: '50%',
-          transform: isVisible ? 'translateX(-50%) translateY(0)' : 'translateX(-50%) translateY(150%)',
+          transform: isVisible 
+            ? (isMinimized 
+                ? 'translateX(-50%) translateY(0) scale(1)' 
+                : 'translateX(-50%) translateY(0)')
+            : 'translateX(-50%) translateY(150%)',
           zIndex: 9999,
-          borderRadius: '50px',
+          borderRadius: isMinimized ? '50%' : '50px',
           background: 'rgba(255, 255, 255, 0.6)',
           backdropFilter: 'blur(20px)',
           WebkitBackdropFilter: 'blur(20px)',
           boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
           border: '1px solid rgba(255, 255, 255, 0.3)',
-          padding: isExpanded ? '12px 24px' : '8px 24px',
-          minWidth: isExpanded ? 'auto' : '280px',
-          transition: 'all 0.3s ease',
+          padding: isMinimized ? '12px' : (isExpanded ? '12px 24px' : '8px 24px'),
+          minWidth: isMinimized ? '48px' : (isExpanded ? 'auto' : '280px'),
+          width: isMinimized ? '48px' : 'auto',
+          height: isMinimized ? '48px' : 'auto',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
           opacity: isVisible ? 1 : 0,
           pointerEvents: isVisible ? 'auto' : 'none',
+          overflow: isMinimized ? 'hidden' : 'visible',
         }}
-        className={`dynamic-tab-container md:max-w-[900px] md:px-10 ${isExpanded ? 'md:py-8' : 'md:py-6'} w-[calc(100%-20px)] md:w-auto`}
+        className={`dynamic-tab-container md:max-w-[900px] md:px-10 ${isExpanded ? 'md:py-8' : 'md:py-6'} w-[calc(100%-20px)] md:w-auto ${isMinimized ? 'cursor-pointer' : ''}`}
       >
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}
-          className="md:gap-6">
+        {/* Minimized state - show icon only */}
+        {isMinimized ? (
+          <button
+            onClick={handleToggleMinimize}
+            style={{
+              width: '100%',
+              height: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              border: 'none',
+              background: 'transparent',
+              cursor: 'pointer',
+              borderRadius: '50%',
+              transition: 'transform 0.2s',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.transform = 'scale(1.1)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = 'scale(1)';
+            }}
+            title="Expand filter bar"
+          >
+            <AdjustmentsHorizontalIcon 
+              style={{ width: '24px', height: '24px', color: '#374151' }}
+              className="md:w-8 md:h-8" 
+            />
+          </button>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}
+            className="md:gap-6">
           {/* Income Field */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flexShrink: 0 }}
             className="md:gap-3">
@@ -387,6 +451,7 @@ const DynamicTab: React.FC<DynamicTabProps> = ({
             </div>
           </div>
         </div>
+        )}
       </div>
 
       {/* Add spin animation for loading spinner and hide number input arrows */}
