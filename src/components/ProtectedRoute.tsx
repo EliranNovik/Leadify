@@ -9,8 +9,10 @@ import { useAuthContext } from '../contexts/AuthContext';
 const ProtectedRoute: React.FC<{ user: any; children: React.ReactNode }> = ({ children }) => {
   const { user, isLoading, isInitialized } = useAuthContext();
   
-  // Show loading while initializing
-  if (!isInitialized || isLoading) {
+  // Only show loading if we're truly not initialized (first time check)
+  // If initialized but still loading (background refresh), show content
+  // This prevents annoying loading screens on every page navigation
+  if (!isInitialized) {
     return (
       <div className="flex justify-center items-center h-screen bg-white">
         <div className="text-center">
@@ -21,12 +23,14 @@ const ProtectedRoute: React.FC<{ user: any; children: React.ReactNode }> = ({ ch
     );
   }
   
-  // Redirect to login if not authenticated
-  if (!user) {
+  // If initialized but no user, redirect to login
+  // Don't wait for isLoading if we're already initialized
+  if (!user && !isLoading) {
     return <Navigate to="/login" replace />;
   }
   
-  // User is authenticated, render children
+  // If we have a user or are still loading in background, render children
+  // This allows pages to render immediately if user exists, even if still loading details
   return <>{children}</>;
 };
 

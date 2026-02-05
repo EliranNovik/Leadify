@@ -71,7 +71,7 @@ const MyCasesPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedStage, setSelectedStage] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
-  
+
   // State for row selection and action menu
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
   const [showActionMenu, setShowActionMenu] = useState(false);
@@ -83,7 +83,7 @@ const MyCasesPage: React.FC = () => {
   const [showEditLeadDrawer, setShowEditLeadDrawer] = useState(false);
   const [isRMQModalOpen, setIsRMQModalOpen] = useState(false);
   const [rmqCloserUserId, setRmqCloserUserId] = useState<string | null>(null);
-  
+
   // Call options modal state
   const [isCallModalOpen, setIsCallModalOpen] = useState(false);
   const [callPhoneNumber, setCallPhoneNumber] = useState<string>('');
@@ -106,21 +106,21 @@ const MyCasesPage: React.FC = () => {
       if (typeof dateString === 'string' && dateString.trim() === '') {
         return null;
       }
-      
+
       const date = new Date(dateString);
-      
+
       // Check if date is valid using multiple methods
       if (isNaN(date.getTime())) {
         return null;
       }
-      
+
       // Additional check: verify the date is within a reasonable range
       // (between year 1900 and 2100)
       const year = date.getFullYear();
       if (year < 1900 || year > 2100) {
         return null;
       }
-      
+
       return date;
     } catch (error) {
       console.error('Error in safeParseDate:', error);
@@ -131,22 +131,22 @@ const MyCasesPage: React.FC = () => {
   // Helper function to get follow up date color based on date (same logic as SchedulerToolPage)
   const getFollowUpColor = (followUpDateStr: string | null | undefined): string => {
     if (!followUpDateStr) return 'bg-gray-100 text-gray-600';
-    
+
     try {
       const followUpDate = safeParseDate(followUpDateStr);
       if (!followUpDate) return 'bg-gray-100 text-gray-600';
-      
+
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      
+
       // Set follow up date to start of day for comparison
       const followUpDateStart = new Date(followUpDate);
       followUpDateStart.setHours(0, 0, 0, 0);
-      
+
       // Calculate difference in days
       const diffTime = followUpDateStart.getTime() - today.getTime();
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      
+
       if (diffDays < 0) {
         // Past follow up date - red
         return 'bg-red-500 text-white';
@@ -166,15 +166,15 @@ const MyCasesPage: React.FC = () => {
   // Helper function to get country timezone
   const getCountryTimezone = (countryId: string | number | null | undefined, countryName: string | null | undefined, phone?: string | null, mobile?: string | null) => {
     if (!countryId && !countryName) return null;
-    
+
     if (!allCountries || allCountries.length === 0) return null;
-    
+
     // Try to find by name first
     if (countryName) {
-      const countryByName = allCountries.find((country: any) => 
+      const countryByName = allCountries.find((country: any) =>
         country.name.toLowerCase().trim() === countryName.toLowerCase().trim()
       );
-      
+
       if (countryByName) {
         // Special handling for US (country ID 249): use area code from phone number
         if (countryByName.id === 249) {
@@ -184,19 +184,19 @@ const MyCasesPage: React.FC = () => {
           }
           return 'America/New_York'; // Fallback to default US timezone
         }
-        
+
         if (countryByName.timezone) {
           return countryByName.timezone;
         }
       }
     }
-    
+
     // Try to find by ID
     if (countryId) {
       const countryIdNum = typeof countryId === 'string' ? parseInt(countryId, 10) : countryId;
       if (!isNaN(countryIdNum as number)) {
         const countryById = allCountries.find((country: any) => country.id.toString() === countryIdNum.toString());
-        
+
         if (countryById) {
           // Special handling for US (country ID 249): use area code from phone number
           if (countryById.id === 249) {
@@ -206,24 +206,24 @@ const MyCasesPage: React.FC = () => {
             }
             return 'America/New_York'; // Fallback to default US timezone
           }
-          
+
           if (countryById.timezone) {
             return countryById.timezone;
           }
         }
       }
     }
-    
+
     return null;
   };
 
   // Helper function to get business hours info
   const getBusinessHoursInfo = (timezone: string | null) => {
     if (!timezone) return { isBusinessHours: false, localTime: null };
-    
+
     try {
       const now = new Date();
-      
+
       // Format the local time directly using the timezone
       const formattedTime = now.toLocaleString("en-US", {
         timeZone: timezone,
@@ -231,7 +231,7 @@ const MyCasesPage: React.FC = () => {
         minute: '2-digit',
         hour12: true
       });
-      
+
       // Get the hour in the target timezone using Intl.DateTimeFormat
       const hourFormatter = new Intl.DateTimeFormat("en-US", {
         timeZone: timezone,
@@ -240,10 +240,10 @@ const MyCasesPage: React.FC = () => {
       });
       const hourParts = hourFormatter.formatToParts(now);
       const hour = parseInt(hourParts.find(part => part.type === 'hour')?.value || '0', 10);
-      
+
       // Business hours: 8 AM to 8 PM (8:00 - 20:00)
       const isBusinessHours = hour >= 8 && hour < 20;
-      
+
       return { isBusinessHours, localTime: formattedTime };
     } catch (error) {
       console.error('Error checking business hours for timezone:', timezone, error);
@@ -273,14 +273,14 @@ const MyCasesPage: React.FC = () => {
 
       // Fetch all static/reference data and leads in parallel
       const [
-        newLeadsResult, 
+        newLeadsResult,
         legacyLeadsResult,
         allCountriesResult,
         stagesResult,
         allCategoriesResult,
         languageMappingResult
       ] = await Promise.all([
-        // New leads: check handler (text) or case_handler_id (numeric)
+        // New leads: check handler (text or ID) or case_handler_id (numeric)
         supabase
           .from('leads')
           .select(`
@@ -289,6 +289,7 @@ const MyCasesPage: React.FC = () => {
             name,
             stage,
             category_id,
+            category,
             created_at,
             balance,
             balance_currency,
@@ -302,16 +303,25 @@ const MyCasesPage: React.FC = () => {
               id,
               name,
               timezone
+            ),
+            misc_category!category_id (
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id (
+                id,
+                name
+              )
             )
           `)
           .or(
             userFullName
-              ? `handler.eq.${userFullName},case_handler_id.eq.${employeeId}`
-              : `case_handler_id.eq.${employeeId}`
+              ? `handler.eq.${userFullName},handler.eq.${employeeId},case_handler_id.eq.${employeeId}`
+              : `handler.eq.${employeeId},case_handler_id.eq.${employeeId}`
           )
           .order('created_at', { ascending: false })
           .limit(200),
-        
+
         // Legacy leads: check case_handler_id (numeric)
         supabase
           .from('leads_lead')
@@ -335,18 +345,18 @@ const MyCasesPage: React.FC = () => {
           .eq('case_handler_id', employeeId)
           .order('cdate', { ascending: false })
           .limit(200),
-        
+
         // Fetch countries with timezone data (static data)
         supabase
           .from('misc_country')
           .select('id, name, timezone')
           .order('name', { ascending: true }),
-        
+
         // Fetch stage names and colors (static data)
         supabase
           .from('lead_stages')
           .select('id, name, colour'),
-        
+
         // Fetch categories with their parent main category names (static data)
         supabase
           .from('misc_category')
@@ -360,7 +370,7 @@ const MyCasesPage: React.FC = () => {
             )
           `)
           .order('name', { ascending: true }),
-        
+
         // Fetch language mappings (static data)
         supabase
           .from('misc_language')
@@ -376,6 +386,16 @@ const MyCasesPage: React.FC = () => {
       const stages = stagesResult.data || [];
       const allCategories = allCategoriesResult.data || [];
       const languageMapping = languageMappingResult.data || [];
+
+      // Create a map from category name (normalized) to category data (including main category)
+      // This is used to look up categories by name when category_id is not available
+      const categoryNameToDataMap = new Map<string, any>();
+      allCategories.forEach((category: any) => {
+        if (category.name) {
+          const normalizedName = category.name.trim().toLowerCase();
+          categoryNameToDataMap.set(normalizedName, category);
+        }
+      });
 
       // Create lookup maps
       const stageMap = new Map();
@@ -411,26 +431,26 @@ const MyCasesPage: React.FC = () => {
         // Fetch payment information for new leads
         newLeadIds.length > 0
           ? supabase
-              .from('payment_plans')
-              .select('lead_id, paid, ready_to_pay, cancel_date')
-              .in('lead_id', newLeadIds)
-              .is('cancel_date', null)
+            .from('payment_plans')
+            .select('lead_id, paid, ready_to_pay, cancel_date')
+            .in('lead_id', newLeadIds)
+            .is('cancel_date', null)
           : Promise.resolve({ data: [], error: null }),
-        
+
         // Fetch payment information for legacy leads
         legacyLeadIds.length > 0
           ? supabase
-              .from('finances_paymentplanrow')
-              .select('lead_id, actual_date, ready_to_pay, cancel_date')
-              .in('lead_id', legacyLeadIds)
-              .is('cancel_date', null)
+            .from('finances_paymentplanrow')
+            .select('lead_id, actual_date, ready_to_pay, cancel_date')
+            .in('lead_id', legacyLeadIds)
+            .is('cancel_date', null)
           : Promise.resolve({ data: [], error: null }),
-        
+
         // Fetch country data for legacy leads via contacts
         legacyLeadIds.length > 0
           ? supabase
-              .from('lead_leadcontact')
-              .select(`
+            .from('lead_leadcontact')
+            .select(`
                 lead_id,
                 leads_contact (
                   country_id,
@@ -440,28 +460,28 @@ const MyCasesPage: React.FC = () => {
                   )
                 )
               `)
-              .in('lead_id', legacyLeadIdsForQueries)
-              .eq('main', 'true')
+            .in('lead_id', legacyLeadIdsForQueries)
+            .eq('main', 'true')
           : Promise.resolve({ data: [], error: null }),
-        
+
         // Fetch follow-ups for new leads
         newLeadIds.length > 0 && currentUserId
           ? supabase
-              .from('follow_ups')
-              .select('new_lead_id, date')
-              .eq('user_id', currentUserId)
-              .in('new_lead_id', newLeadIds)
-              .is('lead_id', null)
+            .from('follow_ups')
+            .select('new_lead_id, date')
+            .eq('user_id', currentUserId)
+            .in('new_lead_id', newLeadIds)
+            .is('lead_id', null)
           : Promise.resolve({ data: [], error: null }),
-        
+
         // Fetch follow-ups for legacy leads
         legacyLeadIdsForQueries.length > 0 && currentUserId
           ? supabase
-              .from('follow_ups')
-              .select('lead_id, date')
-              .eq('user_id', currentUserId)
-              .in('lead_id', legacyLeadIdsForQueries)
-              .is('new_lead_id', null)
+            .from('follow_ups')
+            .select('lead_id, date')
+            .eq('user_id', currentUserId)
+            .in('lead_id', legacyLeadIdsForQueries)
+            .is('new_lead_id', null)
           : Promise.resolve({ data: [], error: null })
       ]);
 
@@ -470,7 +490,7 @@ const MyCasesPage: React.FC = () => {
       const newLeadsReadyToPayMap = new Map<string, boolean>();
       const newLeadsUnpaidPaymentMap = new Map<string, boolean>();
       const newLeadsHasPaymentPlanMap = new Map<string, boolean>();
-      
+
       const newPayments = newPaymentsResult.data || [];
       const paymentsByLead = new Map<string, any[]>();
       newPayments.forEach((payment: any) => {
@@ -479,26 +499,26 @@ const MyCasesPage: React.FC = () => {
         }
         paymentsByLead.get(payment.lead_id)!.push(payment);
       });
-      
+
       // Mark all leads that have payments
       paymentsByLead.forEach((payments, leadId) => {
         newLeadsHasPaymentPlanMap.set(leadId, true);
       });
-      
+
       // Mark leads without payments
       newLeadIds.forEach(leadId => {
         if (!newLeadsHasPaymentPlanMap.has(leadId)) {
           newLeadsHasPaymentPlanMap.set(leadId, false);
         }
       });
-      
+
       paymentsByLead.forEach((payments, leadId) => {
         const hasPaidPayment = payments.some((payment: any) => payment.paid === true);
         newLeadsPaymentMap.set(leadId, hasPaidPayment);
-        
+
         const hasReadyToPay = payments.some((payment: any) => payment.ready_to_pay === true);
         newLeadsReadyToPayMap.set(leadId, hasReadyToPay);
-        
+
         const hasUnpaidPayment = payments.some((payment: any) => payment.paid !== true);
         newLeadsUnpaidPaymentMap.set(leadId, hasUnpaidPayment);
       });
@@ -508,7 +528,7 @@ const MyCasesPage: React.FC = () => {
       const legacyLeadsReadyToPayMap = new Map<string, boolean>();
       const legacyLeadsUnpaidPaymentMap = new Map<string, boolean>();
       const legacyLeadsHasPaymentPlanMap = new Map<string, boolean>();
-      
+
       const legacyPayments = legacyPaymentsResult.data || [];
       const legacyPaymentsByLead = new Map<string, any[]>();
       legacyPayments.forEach((payment: any) => {
@@ -518,27 +538,27 @@ const MyCasesPage: React.FC = () => {
         }
         legacyPaymentsByLead.get(leadId)!.push(payment);
       });
-      
+
       legacyPaymentsByLead.forEach((payments, leadId) => {
         legacyLeadsHasPaymentPlanMap.set(leadId, true);
       });
-      
+
       legacyLeadIds.forEach(leadId => {
         if (!legacyLeadsHasPaymentPlanMap.has(leadId)) {
           legacyLeadsHasPaymentPlanMap.set(leadId, false);
         }
       });
-      
+
       legacyPaymentsByLead.forEach((payments, leadId) => {
-        const hasPaidPayment = payments.some((payment: any) => 
+        const hasPaidPayment = payments.some((payment: any) =>
           payment.actual_date != null && payment.actual_date !== ''
         );
         legacyLeadsPaymentMap.set(leadId, hasPaidPayment);
-        
+
         const hasReadyToPay = payments.some((payment: any) => payment.ready_to_pay === true);
         legacyLeadsReadyToPayMap.set(leadId, hasReadyToPay);
-        
-        const hasUnpaidPayment = payments.some((payment: any) => 
+
+        const hasUnpaidPayment = payments.some((payment: any) =>
           payment.actual_date == null || payment.actual_date === ''
         );
         legacyLeadsUnpaidPaymentMap.set(leadId, hasUnpaidPayment);
@@ -573,7 +593,7 @@ const MyCasesPage: React.FC = () => {
           }
         }
       });
-      
+
       const legacyFollowups = legacyFollowupsResult.data || [];
       legacyFollowups.forEach(fu => {
         if (fu.lead_id && fu.date) {
@@ -591,29 +611,86 @@ const MyCasesPage: React.FC = () => {
         }
       });
 
-      // Helper function to get category name with main category
-      const getCategoryName = (categoryId: string | number | null | undefined) => {
-        if (!categoryId || categoryId === '---') return 'Unknown';
-        
-        const category = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString()) as any;
-        if (category) {
-          if (category.misc_maincategory?.name) {
-            return `${category.name} (${category.misc_maincategory.name})`;
+      // Helper function to get category name with main category (similar to CollectionDueReportPage)
+      const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string | number) => {
+        if (!categoryId || categoryId === '---' || categoryId === '--') {
+          // If no category_id but we have a fallback category (category text field), try to find it in the loaded categories
+          if (fallbackCategory && String(fallbackCategory).trim() !== '') {
+            // Try to find the fallback category in the loaded categories
+            // First try by ID if fallbackCategory is a number
+            let foundCategory = null;
+            if (typeof fallbackCategory === 'number') {
+              foundCategory = allCategories.find((cat: any) =>
+                cat.id.toString() === fallbackCategory.toString()
+              );
+            }
+
+            // If not found by ID, try by name using the map
+            if (!foundCategory) {
+              const normalizedName = String(fallbackCategory).trim().toLowerCase();
+              foundCategory = categoryNameToDataMap.get(normalizedName);
+            }
+
+            if (foundCategory) {
+              // Return category name with main category in parentheses
+              const mainCategory = Array.isArray(foundCategory.misc_maincategory)
+                ? foundCategory.misc_maincategory[0]
+                : foundCategory.misc_maincategory;
+              if (mainCategory?.name) {
+                return `${foundCategory.name} (${mainCategory.name})`;
+              } else {
+                return foundCategory.name; // Fallback if no main category
+              }
+            } else {
+              return String(fallbackCategory); // Use as-is if not found in loaded categories
+            }
+          }
+          return 'Unknown';
+        }
+
+        // If allCategories is not loaded yet, return the original value
+        if (!allCategories || allCategories.length === 0) {
+          return String(categoryId);
+        }
+
+        // First try to find by ID
+        const categoryById = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
+        if (categoryById) {
+          // Return category name with main category in parentheses
+          const mainCategory = Array.isArray(categoryById.misc_maincategory)
+            ? categoryById.misc_maincategory[0]
+            : categoryById.misc_maincategory;
+          if (mainCategory?.name) {
+            return `${categoryById.name} (${mainCategory.name})`;
           } else {
-            return category.name;
+            return categoryById.name; // Fallback if no main category
           }
         }
-        
-        return 'Unknown';
+
+        // If not found by ID, try to find by name (in case it's already a name)
+        const categoryByName = allCategories.find((cat: any) => cat.name === categoryId);
+        if (categoryByName) {
+          // Return category name with main category in parentheses
+          const mainCategory = Array.isArray(categoryByName.misc_maincategory)
+            ? categoryByName.misc_maincategory[0]
+            : categoryByName.misc_maincategory;
+          if (mainCategory?.name) {
+            return `${categoryByName.name} (${mainCategory.name})`;
+          } else {
+            return categoryByName.name; // Fallback if no main category
+          }
+        }
+
+        return String(categoryId); // Fallback to original value if not found
       };
 
       // Helper function to get currency symbol
       const getCurrencySymbol = (currencyId: number | null | undefined, currencyData: any): string => {
         if (!currencyId) return '₪'; // Default to shekel
-        
+
         // Handle currency data (could be array or object)
         const currency = Array.isArray(currencyData) ? currencyData[0] : currencyData;
-        
+
         if (currency?.iso_code) {
           // Map ISO codes to symbols
           const symbolMap: { [key: string]: string } = {
@@ -640,7 +717,7 @@ const MyCasesPage: React.FC = () => {
           };
           return symbolMap[currency.iso_code] || currency.iso_code;
         }
-        
+
         // Fallback to currency_id mapping if no currency data
         const fallbackMap: { [key: number]: string } = {
           1: '₪',
@@ -656,7 +733,23 @@ const MyCasesPage: React.FC = () => {
         const stageId = typeof lead.stage === 'string' ? parseInt(lead.stage, 10) : lead.stage;
         const stage = stageMap.get(String(lead.stage)) || String(lead.stage) || 'Unknown';
         const stageColour = stageColourMap.get(String(lead.stage)) || getStageColour(String(lead.stage)) || null;
-        const category = getCategoryName(lead.category_id);
+        // Get category from joined data if available, otherwise fall back to lookup
+        // Also check category text field as fallback (similar to CollectionDueReportPage)
+        const categoryData = (lead as any).misc_category;
+        let category: string;
+
+        if (categoryData) {
+          // Use joined category data
+          const mainCategory = Array.isArray(categoryData.misc_maincategory)
+            ? categoryData.misc_maincategory[0]
+            : categoryData.misc_maincategory;
+          category = mainCategory?.name
+            ? `${categoryData.name} (${mainCategory.name})`
+            : categoryData.name || 'Unknown';
+        } else {
+          // Fall back to lookup: try category_id first, then category text field
+          category = getCategoryName(lead.category_id, (lead as any).category);
+        }
         const value = lead.balance ? parseFloat(String(lead.balance)) : null;
         const currency = lead.balance_currency || '₪';
         const isFirstPaymentPaid = newLeadsPaymentMap.get(lead.id) || false;
@@ -751,13 +844,13 @@ const MyCasesPage: React.FC = () => {
         const stageId = (caseItem as any).stageId;
         return stageId !== undefined && stageId !== null && stageId <= 105;
       });
-      
+
       // Closed cases: stage === 200 (case closed)
       const closedCasesList = allProcessedCases.filter(caseItem => {
         const stageId = (caseItem as any).stageId;
         return stageId === 200;
       });
-      
+
       // Active cases: stage >= 110 (from "handler started" and beyond) and stage !== 200 (not closed)
       const activeCasesList = allProcessedCases.filter(caseItem => {
         const stageId = (caseItem as any).stageId;
@@ -786,7 +879,7 @@ const MyCasesPage: React.FC = () => {
 
   const handleRowSelect = (caseId: string, event?: React.MouseEvent) => {
     const isNewTab = event?.metaKey || event?.ctrlKey;
-    
+
     // If Cmd/Ctrl is pressed, open lead in new tab
     if (isNewTab) {
       const allCases = [...newCases, ...activeCases, ...closedCases];
@@ -797,7 +890,7 @@ const MyCasesPage: React.FC = () => {
         return;
       }
     }
-    
+
     // Normal behavior: select row
     const allCases = [...newCases, ...activeCases, ...closedCases];
     const caseItem = allCases.find(c => c.id === caseId);
@@ -812,20 +905,20 @@ const MyCasesPage: React.FC = () => {
     // Fetch phone data for the case
     try {
       const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
-      
+
       if (caseItem.isNewLead) {
         const { data: newLeadData } = await supabase
           .from('leads')
           .select('phone, mobile')
           .eq('lead_number', navigationId)
           .single();
-        
+
         const phoneNumber = newLeadData?.phone || newLeadData?.mobile;
         if (phoneNumber) {
           // Only show modal for US numbers (country code +1)
           const normalizedPhone = phoneNumber.replace(/[\s\-\(\)]/g, '');
           const isUSNumber = normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10);
-          
+
           if (isUSNumber) {
             setCallPhoneNumber(phoneNumber);
             setCallLeadName(caseItem.client_name || '');
@@ -842,12 +935,12 @@ const MyCasesPage: React.FC = () => {
           .select('phone, email')
           .eq('id', parseInt(navigationId))
           .single();
-        
+
         if (legacyLeadData?.phone) {
           // Only show modal for US numbers (country code +1)
           const normalizedPhone = legacyLeadData.phone.replace(/[\s\-\(\)]/g, '');
           const isUSNumber = normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10);
-          
+
           if (isUSNumber) {
             setCallPhoneNumber(legacyLeadData.phone);
             setCallLeadName(caseItem.client_name || '');
@@ -859,7 +952,7 @@ const MyCasesPage: React.FC = () => {
           return;
         }
       }
-      
+
       // If no phone found, navigate to client page with phone tab
       navigate(`/clients/${navigationId}?tab=phone`);
     } catch (error) {
@@ -899,13 +992,13 @@ const MyCasesPage: React.FC = () => {
   const handleViewClient = (caseItem: Case, event?: React.MouseEvent) => {
     const isNewTab = event?.metaKey || event?.ctrlKey;
     const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
-    
+
     if (isNewTab) {
       // Open in new tab
       window.open(`/clients/${navigationId}`, '_blank');
       return;
     }
-    
+
     // Normal navigation in same tab
     navigate(`/clients/${navigationId}`);
   };
@@ -939,8 +1032,8 @@ const MyCasesPage: React.FC = () => {
       let existingHighlight;
       if (!caseItem.isNewLead) {
         // Legacy lead
-        const numericId = typeof caseItem.id === 'string' && caseItem.id.startsWith('legacy_') 
-          ? parseInt(caseItem.id.replace('legacy_', '')) 
+        const numericId = typeof caseItem.id === 'string' && caseItem.id.startsWith('legacy_')
+          ? parseInt(caseItem.id.replace('legacy_', ''))
           : parseInt(caseItem.id);
         const { data } = await supabase
           .from('user_highlights')
@@ -973,8 +1066,8 @@ const MyCasesPage: React.FC = () => {
 
       if (!caseItem.isNewLead) {
         // Legacy lead
-        const numericId = typeof caseItem.id === 'string' && caseItem.id.startsWith('legacy_') 
-          ? parseInt(caseItem.id.replace('legacy_', '')) 
+        const numericId = typeof caseItem.id === 'string' && caseItem.id.startsWith('legacy_')
+          ? parseInt(caseItem.id.replace('legacy_', ''))
           : parseInt(caseItem.id);
         highlightData.lead_id = numericId;
       } else {
@@ -1136,18 +1229,18 @@ const MyCasesPage: React.FC = () => {
 
   const handleStartCase = async (caseItem: Case, e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent row click navigation
-    
+
     try {
       const actor = await fetchStageActorInfo();
       const timestamp = new Date().toISOString();
       const handlerStartedStageId = 110; // Handler Started stage ID
-      
+
       // Create a minimal lead object for the update function
       const lead: any = {
         id: caseItem.isNewLead ? caseItem.id : `legacy_${caseItem.id}`,
         lead_type: caseItem.isNewLead ? 'new' : 'legacy',
       };
-      
+
       if (caseItem.isNewLead) {
         // Update new lead
         const { error } = await supabase
@@ -1158,7 +1251,7 @@ const MyCasesPage: React.FC = () => {
             stage_changed_at: timestamp,
           })
           .eq('id', caseItem.id);
-        
+
         if (error) throw error;
       } else {
         // Update legacy lead
@@ -1171,10 +1264,10 @@ const MyCasesPage: React.FC = () => {
             stage_changed_at: timestamp,
           })
           .eq('id', legacyId);
-        
+
         if (error) throw error;
       }
-      
+
       // Record stage change history
       await updateLeadStageWithHistory({
         lead,
@@ -1182,9 +1275,9 @@ const MyCasesPage: React.FC = () => {
         actor,
         timestamp,
       });
-      
+
       toast.success('Case started successfully!');
-      
+
       // Refresh the cases list
       await fetchMyCases();
     } catch (error: any) {
@@ -1195,10 +1288,10 @@ const MyCasesPage: React.FC = () => {
 
   const handleMarkAsReadyToPay = async (caseItem: Case, e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent row click navigation
-    
+
     try {
       const currentDate = new Date().toISOString().split('T')[0]; // Get today's date in YYYY-MM-DD format
-      
+
       if (caseItem.isNewLead) {
         // For new leads, find the first unpaid payment
         const { data: payments, error: fetchError } = await supabase
@@ -1209,25 +1302,25 @@ const MyCasesPage: React.FC = () => {
           .is('cancel_date', null)
           .order('due_date', { ascending: true })
           .limit(1);
-        
+
         if (fetchError) throw fetchError;
-        
+
         if (!payments || payments.length === 0) {
           toast.error('No unpaid payments found for this lead');
           return;
         }
-        
+
         const firstUnpaidPayment = payments[0];
-        
+
         // Update the first unpaid payment
         const { error } = await supabase
           .from('payment_plans')
-          .update({ 
+          .update({
             ready_to_pay: true,
             due_date: currentDate
           })
           .eq('id', firstUnpaidPayment.id);
-        
+
         if (error) throw error;
       } else {
         // For legacy leads, find the first unpaid payment
@@ -1239,31 +1332,31 @@ const MyCasesPage: React.FC = () => {
           .is('cancel_date', null)
           .order('date', { ascending: true })
           .limit(1);
-        
+
         if (fetchError) throw fetchError;
-        
+
         if (!payments || payments.length === 0) {
           toast.error('No unpaid payments found for this lead');
           return;
         }
-        
+
         const firstUnpaidPayment = payments[0];
-        
+
         // Update the first unpaid payment
         const { error } = await supabase
           .from('finances_paymentplanrow')
-          .update({ 
+          .update({
             ready_to_pay: true,
             date: currentDate,
             due_date: currentDate
           })
           .eq('id', firstUnpaidPayment.id);
-        
+
         if (error) throw error;
       }
-      
+
       toast.success('Payment marked as ready to pay! Due date set to today. It will now appear in the collection page.');
-      
+
       // Refresh the cases list
       await fetchMyCases();
     } catch (error: any) {
@@ -1288,7 +1381,7 @@ const MyCasesPage: React.FC = () => {
       const actor = await fetchStageActorInfo();
       const timestamp = new Date().toISOString();
       const handlerStartedStageId = 110;
-      
+
       let successCount = 0;
       let errorCount = 0;
 
@@ -1308,7 +1401,7 @@ const MyCasesPage: React.FC = () => {
                 stage_changed_at: timestamp,
               })
               .eq('id', caseItem.id);
-            
+
             if (error) throw error;
           } else {
             const legacyId = caseItem.id;
@@ -1320,7 +1413,7 @@ const MyCasesPage: React.FC = () => {
                 stage_changed_at: timestamp,
               })
               .eq('id', legacyId);
-            
+
             if (error) throw error;
           }
 
@@ -1359,7 +1452,7 @@ const MyCasesPage: React.FC = () => {
     const eligibleNewCases = filteredNewCases.filter(
       caseItem => !caseItem.isFirstPaymentPaid && caseItem.hasUnpaidPayment && !caseItem.hasReadyToPay && caseItem.hasPaymentPlan
     );
-    
+
     const eligibleActiveCases = filteredActiveCases.filter(
       caseItem => !caseItem.isFirstPaymentPaid && caseItem.hasUnpaidPayment && !caseItem.hasReadyToPay && caseItem.hasPaymentPlan
     );
@@ -1387,23 +1480,23 @@ const MyCasesPage: React.FC = () => {
               .is('cancel_date', null)
               .order('due_date', { ascending: true })
               .limit(1);
-            
+
             if (fetchError) throw fetchError;
-            
+
             if (!payments || payments.length === 0) {
               continue;
             }
-            
+
             const firstUnpaidPayment = payments[0];
-            
+
             const { error } = await supabase
               .from('payment_plans')
-              .update({ 
+              .update({
                 ready_to_pay: true,
                 due_date: currentDate
               })
               .eq('id', firstUnpaidPayment.id);
-            
+
             if (error) throw error;
           } else {
             const { data: payments, error: fetchError } = await supabase
@@ -1414,24 +1507,24 @@ const MyCasesPage: React.FC = () => {
               .is('cancel_date', null)
               .order('date', { ascending: true })
               .limit(1);
-            
+
             if (fetchError) throw fetchError;
-            
+
             if (!payments || payments.length === 0) {
               continue;
             }
-            
+
             const firstUnpaidPayment = payments[0];
-            
+
             const { error } = await supabase
               .from('finances_paymentplanrow')
-              .update({ 
+              .update({
                 ready_to_pay: true,
                 date: currentDate,
                 due_date: currentDate
               })
               .eq('id', firstUnpaidPayment.id);
-            
+
             if (error) throw error;
           }
 
@@ -1460,13 +1553,13 @@ const MyCasesPage: React.FC = () => {
   // Fuzzy search function
   const fuzzySearch = (text: string, query: string): boolean => {
     if (!query) return true;
-    
+
     const textLower = text.toLowerCase();
     const queryLower = query.toLowerCase().trim();
-    
+
     // Direct substring match
     if (textLower.includes(queryLower)) return true;
-    
+
     // Fuzzy match - check if all characters in query appear in order in text
     let queryIndex = 0;
     for (let i = 0; i < textLower.length && queryIndex < queryLower.length; i++) {
@@ -1481,16 +1574,16 @@ const MyCasesPage: React.FC = () => {
   const filterCases = (cases: Case[]): Case[] => {
     return cases.filter(caseItem => {
       // Search filter
-      const matchesSearch = !searchQuery.trim() || 
+      const matchesSearch = !searchQuery.trim() ||
         fuzzySearch(caseItem.lead_number, searchQuery) ||
         fuzzySearch(caseItem.client_name, searchQuery);
-      
+
       // Stage filter
       const matchesStage = !selectedStage || caseItem.stage === selectedStage;
-      
+
       // Category filter
       const matchesCategory = !selectedCategory || caseItem.category === selectedCategory;
-      
+
       return matchesSearch && matchesStage && matchesCategory;
     });
   };
@@ -1510,11 +1603,11 @@ const MyCasesPage: React.FC = () => {
     const eligibleNew = filteredNewCases.filter(
       caseItem => !caseItem.isFirstPaymentPaid && caseItem.hasUnpaidPayment && !caseItem.hasReadyToPay && caseItem.hasPaymentPlan
     ).length;
-    
+
     const eligibleActive = filteredActiveCases.filter(
       caseItem => !caseItem.isFirstPaymentPaid && caseItem.hasUnpaidPayment && !caseItem.hasReadyToPay && caseItem.hasPaymentPlan
     ).length;
-    
+
     return eligibleNew + eligibleActive;
   }, [filteredNewCases, filteredActiveCases]);
 
@@ -1577,7 +1670,7 @@ const MyCasesPage: React.FC = () => {
       <div className="px-3 sm:px-6 py-2 sm:py-4 border-b">
         <h2 className="text-base sm:text-lg font-semibold text-gray-900">{title}</h2>
       </div>
-      
+
       {cases.length === 0 ? (
         <div className="px-3 sm:px-6 py-8 sm:py-12 text-center">
           <p className="text-sm sm:text-base text-gray-500">{emptyMessage}</p>
@@ -1621,11 +1714,10 @@ const MyCasesPage: React.FC = () => {
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {cases.map((caseItem) => (
-                <tr 
-                  key={caseItem.id} 
-                  className={`hover:bg-gray-50 cursor-pointer transition-colors ${
-                    selectedRowId === caseItem.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''
-                  }`}
+                <tr
+                  key={caseItem.id}
+                  className={`hover:bg-gray-50 cursor-pointer transition-colors ${selectedRowId === caseItem.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''
+                    }`}
                   onClick={(e) => handleRowSelect(caseItem.id, e)}
                 >
                   <td className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 min-w-[100px]">
@@ -1701,11 +1793,11 @@ const MyCasesPage: React.FC = () => {
                       {caseItem.country && (() => {
                         const timezone = getCountryTimezone(caseItem.country_id, caseItem.country, caseItem.phone, caseItem.mobile);
                         const businessInfo = getBusinessHoursInfo(timezone);
-                        
+
                         return timezone ? (
-                          <div 
-                            className={`w-3 h-3 rounded-full ${businessInfo.isBusinessHours ? 'bg-green-500' : 'bg-red-500'}`} 
-                            title={`${businessInfo.localTime ? `Local time: ${businessInfo.localTime}` : 'Time unavailable'} - ${businessInfo.isBusinessHours ? 'Business hours' : 'Outside business hours'} (${timezone})`} 
+                          <div
+                            className={`w-3 h-3 rounded-full ${businessInfo.isBusinessHours ? 'bg-green-500' : 'bg-red-500'}`}
+                            title={`${businessInfo.localTime ? `Local time: ${businessInfo.localTime}` : 'Time unavailable'} - ${businessInfo.isBusinessHours ? 'Business hours' : 'Outside business hours'} (${timezone})`}
                           />
                         ) : (
                           <div className="w-3 h-3 rounded-full bg-gray-300" title="No timezone data available" />
@@ -1925,24 +2017,24 @@ const MyCasesPage: React.FC = () => {
         <div className="space-y-3 sm:space-y-8">
           {/* New Cases Table */}
           {renderTable(
-            filteredNewCases, 
-            `New Cases (${filteredNewCases.length}${hasActiveFilters ? ` of ${newCases.length}` : ''})`, 
+            filteredNewCases,
+            `New Cases (${filteredNewCases.length}${hasActiveFilters ? ` of ${newCases.length}` : ''})`,
             hasActiveFilters ? "No matching new cases found." : "No new cases assigned in the last week.",
             true // isNewCases = true
           )}
 
           {/* Active Cases Table */}
           {renderTable(
-            filteredActiveCases, 
-            `Active Cases (${filteredActiveCases.length}${hasActiveFilters ? ` of ${activeCases.length}` : ''})`, 
+            filteredActiveCases,
+            `Active Cases (${filteredActiveCases.length}${hasActiveFilters ? ` of ${activeCases.length}` : ''})`,
             hasActiveFilters ? "No matching active cases found." : "No active cases found.",
             false // isNewCases = false
           )}
 
           {/* Closed Cases Table */}
           {renderTable(
-            filteredClosedCases, 
-            `Closed Cases (${filteredClosedCases.length}${hasActiveFilters ? ` of ${closedCases.length}` : ''})`, 
+            filteredClosedCases,
+            `Closed Cases (${filteredClosedCases.length}${hasActiveFilters ? ` of ${closedCases.length}` : ''})`,
             hasActiveFilters ? "No matching closed cases found." : "No closed cases found.",
             false // isNewCases = false
           )}
@@ -1962,7 +2054,7 @@ const MyCasesPage: React.FC = () => {
                 setSelectedCase(null);
               }}
             />
-            
+
             {/* Floating Action Buttons - Centered vertically on right side */}
             <div className="fixed right-6 top-1/2 -translate-y-1/2 z-50 flex flex-col items-end gap-3">
               {/* Call Button */}
@@ -1982,7 +2074,7 @@ const MyCasesPage: React.FC = () => {
                   <PhoneIcon className="w-6 h-6" />
                 </button>
               </div>
-              
+
               {/* Email Button */}
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Email</span>
@@ -1997,7 +2089,7 @@ const MyCasesPage: React.FC = () => {
                   <EnvelopeIcon className="w-6 h-6" />
                 </button>
               </div>
-              
+
               {/* WhatsApp Button */}
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">WhatsApp</span>
@@ -2012,7 +2104,7 @@ const MyCasesPage: React.FC = () => {
                   <FaWhatsapp className="w-6 h-6" />
                 </button>
               </div>
-              
+
               {/* Timeline Button */}
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Timeline</span>
@@ -2030,7 +2122,7 @@ const MyCasesPage: React.FC = () => {
                   <ClockIcon className="w-6 h-6" />
                 </button>
               </div>
-              
+
               {/* Edit Lead Button */}
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Edit Lead</span>
@@ -2045,7 +2137,7 @@ const MyCasesPage: React.FC = () => {
                   <PencilSquareIcon className="w-6 h-6" />
                 </button>
               </div>
-              
+
               {/* View Client Button */}
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">View Client</span>
@@ -2063,7 +2155,7 @@ const MyCasesPage: React.FC = () => {
                   <EyeIcon className="w-6 h-6" />
                 </button>
               </div>
-              
+
               {/* Highlight Button */}
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Highlight</span>
@@ -2081,7 +2173,7 @@ const MyCasesPage: React.FC = () => {
                   <StarIcon className="w-6 h-6 text-white" style={{ color: '#ffffff' }} />
                 </button>
               </div>
-              
+
               {/* Documents Button */}
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Documents</span>
@@ -2099,7 +2191,7 @@ const MyCasesPage: React.FC = () => {
                   <FolderIcon className="w-6 h-6" />
                 </button>
               </div>
-              
+
               {/* Finance Button */}
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Finance</span>
@@ -2157,17 +2249,17 @@ const MyCasesPage: React.FC = () => {
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
-            
+
             {/* Modal Content */}
             <div className="flex-1 overflow-y-auto p-6">
               <FinanceTab
                 leads={[handlerLeadForFinance]}
-                uploadFiles={async () => {}}
+                uploadFiles={async () => { }}
                 uploadingLeadId={null}
                 uploadedFiles={{}}
                 isUploading={false}
-                handleFileInput={async () => {}}
-                refreshLeads={async () => {}}
+                handleFileInput={async () => { }}
+                refreshLeads={async () => { }}
                 refreshDashboardData={async () => {
                   await fetchMyCases();
                 }}

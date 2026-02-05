@@ -69,8 +69,9 @@ const Dashboard: React.FC = () => {
   const { isExternalUser, isLoading: isLoadingExternal, userName: externalUserName, userImage: externalUserImage } = useExternalUser();
 
   // State to track if auth check is complete (prevents flash of dashboard before redirect)
-  // If user is already authenticated via context, skip the check
-  const [isAuthChecked, setIsAuthChecked] = useState(!!authUser && isInitialized);
+  // Only check isInitialized - if initialized, we can render (auth check happens in background)
+  // This prevents annoying loading screens on every page navigation
+  const [isAuthChecked, setIsAuthChecked] = useState(isInitialized);
 
   // Get the current month name
   const currentMonthName = new Date().toLocaleString('en-US', { month: 'long' });
@@ -179,14 +180,12 @@ const Dashboard: React.FC = () => {
 
   // Skip redundant auth check - ProtectedRoute already handles authentication
   // Just rely on AuthContext state for faster page loads
+  // Only check isInitialized - if initialized, we can render immediately
   useEffect(() => {
-    if (authUser && isInitialized) {
-      setIsAuthChecked(true);
-    } else if (isInitialized && !authUser) {
-      // AuthContext will handle redirect via ProtectedRoute
+    if (isInitialized) {
       setIsAuthChecked(true);
     }
-  }, [authUser, isInitialized]);
+  }, [isInitialized]);
 
   // Fetch meeting locations and their default links for join buttons
   useEffect(() => {
@@ -5017,7 +5016,6 @@ const Dashboard: React.FC = () => {
 
   // Show loading screen until auth is confirmed (must be after all hooks)
   if (!isAuthChecked) {
-    console.log('⏳ [Dashboard] Waiting for auth check, showing loading screen...');
     return (
       <div className="min-h-screen bg-white flex items-center justify-center">
         <div className="text-center">
@@ -5027,8 +5025,6 @@ const Dashboard: React.FC = () => {
       </div>
     );
   }
-
-  console.log('✅ [Dashboard] Auth check complete, rendering dashboard...');
 
   // Extended list for the modal view
   const allSuggestions = [
@@ -6013,20 +6009,11 @@ const Dashboard: React.FC = () => {
     );
   }
 
-  // Debug logging for external user detection
-  console.log('Dashboard render check:', {
-    isExternalUser,
-    isLoadingExternal,
-    externalUserName,
-    authUserId: authUser?.id
-  });
+  // Debug logging for external user detection (removed to reduce console noise)
 
   if (isExternalUser) {
-    console.log('Rendering ExternalUserDashboard');
     return <ExternalUserDashboard userName={externalUserName} />;
   }
-
-  console.log('Rendering regular Dashboard');
 
   return (
     <div className="p-0 md:p-6 space-y-8 animate-fade-in">

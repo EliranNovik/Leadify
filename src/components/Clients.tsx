@@ -12074,28 +12074,43 @@ const Clients: React.FC<ClientsProps> = ({
                   balanceValue = selectedClient.balance || (selectedClient as any).proposal_total;
                 }
 
-                // Get currency symbol - SIMPLE: use balance_currency directly (it's already the symbol from accounting_currencies.name)
-                // balance_currency is set from accounting_currencies.name which contains the symbol (₪, $, €, £)
-                let balanceCurrency = selectedClient.balance_currency || '₪';
-
-                // If balance_currency is not set or empty, fall back to currency_id mapping
-                if (!balanceCurrency || balanceCurrency.trim() === '') {
-                  const currencyId = (selectedClient as any).currency_id;
-                  if (currencyId !== null && currencyId !== undefined && currencyId !== '') {
-                    const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                    if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
-                      // Mapping: 1=₪, 2=€, 3=$, 4=£ (matches accounting_currencies table)
-                      switch (numericCurrencyId) {
-                        case 1: balanceCurrency = '₪'; break;
-                        case 2: balanceCurrency = '€'; break;
-                        case 3: balanceCurrency = '$'; break;
-                        case 4: balanceCurrency = '£'; break;
-                        default: balanceCurrency = '₪';
-                      }
-                    }
-                  } else {
-                    balanceCurrency = '₪';
+                // Get currency symbol from accounting_currencies table
+                // Priority: 1) accounting_currencies join data, 2) balance_currency, 3) currency_id mapping
+                let balanceCurrency: string | null = null;
+                
+                // First, try to get from accounting_currencies join data (most reliable)
+                const accountingCurrencies = (selectedClient as any).accounting_currencies;
+                if (accountingCurrencies) {
+                  const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
+                  if (currencyRecord?.name) {
+                    balanceCurrency = currencyRecord.name;
                   }
+                }
+                
+                // If not available from join, use balance_currency (which should be set from accounting_currencies.name)
+                if (!balanceCurrency || balanceCurrency.trim() === '') {
+                  balanceCurrency = selectedClient.balance_currency || null;
+                }
+                
+                // Final fallback: map currency_id to accounting_currencies table values
+                if ((!balanceCurrency || balanceCurrency.trim() === '') && (selectedClient as any).currency_id) {
+                  const currencyId = (selectedClient as any).currency_id;
+                  const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                  if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
+                    // Mapping: 1=₪, 2=€, 3=$, 4=£ (matches accounting_currencies table)
+                    switch (numericCurrencyId) {
+                      case 1: balanceCurrency = '₪'; break;
+                      case 2: balanceCurrency = '€'; break;
+                      case 3: balanceCurrency = '$'; break;
+                      case 4: balanceCurrency = '£'; break;
+                      default: balanceCurrency = '₪';
+                    }
+                  }
+                }
+                
+                // Ensure we have a currency (default to ₪ if all else fails)
+                if (!balanceCurrency || balanceCurrency.trim() === '') {
+                  balanceCurrency = '₪';
                 }
 
                 if (balanceValue && (Number(balanceValue) > 0 || balanceValue !== '0')) {
@@ -12209,20 +12224,37 @@ const Clients: React.FC<ClientsProps> = ({
     );
   }
 
-  // Show loading state while determining view (only if not unactivated)
-  if (localLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="loading loading-spinner loading-lg"></div>
-      </div>
-    );
-  }
-
+  // Render full layout structure immediately, show loading overlay instead of blocking render
+  // This prevents sidebar/header from loading first, then content appearing later
   return (
     <div className="min-h-screen bg-base-100">
-      {/* Sticky Header - appears when scrolled down, positioned below main header */}
-      {showStickyHeader && selectedClient && (
-        <div className="fixed top-16 left-0 md:left-[100px] right-0 z-[45] bg-base-100 shadow-lg border-b border-base-300 transition-all duration-300 ease-in-out">
+      {/* Loading overlay - shows on top of content for smooth transition */}
+      {localLoading && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 backdrop-blur-sm">
+          <div className="text-center">
+            <div className="loading loading-spinner loading-lg text-primary"></div>
+            <p className="mt-4 text-gray-600">Loading client data...</p>
+          </div>
+        </div>
+      )}
+      
+      {/* Don't render content if selectedClient is null (prevents errors) */}
+      {!selectedClient && !localLoading && (
+        <div className="p-6">
+          <h1 className="text-2xl font-bold mb-4">Clients</h1>
+          <div className="alert">
+            <span>Please select a client from search or create a new one.</span>
+          </div>
+        </div>
+      )}
+      
+      {/* Only render main content if selectedClient exists */}
+      {selectedClient && (
+        <>
+          {/* Sticky Header - appears when scrolled down, positioned below main header */}
+          {/* Extends to left edge but sits below sidebar (lower z-index) */}
+          {showStickyHeader && (
+        <div className="fixed top-16 left-0 right-0 z-[35] bg-base-100 shadow-lg border-b border-base-300 transition-all duration-300 ease-in-out">
           <div className="max-w-7xl mx-auto px-4 py-3">
             {/* Mobile View - Only lead number and client name */}
             <div className="md:hidden flex items-center justify-between gap-2">
@@ -12553,7 +12585,7 @@ const Clients: React.FC<ClientsProps> = ({
                         }
                       }
 
-                      console.log('💰 Balance badge rendering - currency_id:', selectedClient?.currency_id, 'proposal_currency:', selectedClient?.proposal_currency, 'balance_currency:', selectedClient?.balance_currency, 'final currency:', currency);
+                      // Balance badge currency resolved
 
                       // Calculate VAT - only show if vat column is 'true' for new leads
                       let vatAmount = 0;
@@ -13661,8 +13693,11 @@ const Clients: React.FC<ClientsProps> = ({
 
                 {/* Show "Case is not active" message for unactivated leads */}
                 {(() => {
-                  const isLegacyForBadge = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                  const statusValueForBadge = selectedClient ? (selectedClient as any).status : null;
+                  // Early return if selectedClient is null
+                  if (!selectedClient) return null;
+                  
+                  const isLegacyForBadge = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                  const statusValueForBadge = (selectedClient as any).status;
                   const isUnactivatedForBadge = isLegacyForBadge
                     ? (statusValueForBadge === 10 || statusValueForBadge === '10' || Number(statusValueForBadge) === 10)
                     : (statusValueForBadge === 'inactive');
@@ -17041,39 +17076,41 @@ const Clients: React.FC<ClientsProps> = ({
         }}
       />
 
-      {/* Mobile Tabs Navigation - Bottom of page, horizontal oval box, horizontally scrollable */}
-      <div className="md:hidden fixed bottom-0 left-0 right-0 z-50 pb-safe">
-        <div className="flex justify-center px-4 pb-4">
-          <div className="bg-white dark:bg-gray-800 rounded-full shadow-2xl border-2 border-gray-200 dark:border-gray-700 px-3 py-3 overflow-x-auto scrollbar-hide" style={{ borderRadius: '9999px', maxWidth: '95vw' }}>
-            <div className="flex items-center gap-2" style={{ scrollBehavior: 'smooth' }}>
-              {tabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  className={`relative flex items-center justify-center gap-2 px-4 py-3 rounded-full font-semibold text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
-                    ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg'
-                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700'
-                    }`}
-                  onClick={() => setActiveTab(tab.id)}
-                >
-                  <tab.icon className={`w-5 h-5 flex-shrink-0 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
-                  <span className={`saira-light font-bold text-xs ${activeTab === tab.id ? 'text-white' : 'text-gray-600'}`}>{tab.label}</span>
-                  {tab.id === 'interactions' && tab.badge && (
-                    <div className={`badge badge-sm font-bold ${activeTab === tab.id
-                      ? 'bg-white/20 text-white border-white/30'
-                      : 'bg-purple-100 text-purple-700 border-purple-200'
-                      }`}>
-                      {tab.badge}
-                    </div>
-                  )}
-                  {activeTab === tab.id && (
-                    <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
-                  )}
-                </button>
-              ))}
+          {/* Mobile Tabs Navigation - Bottom of page, horizontal oval box, horizontally scrollable */}
+          <div className="md:hidden fixed bottom-0 left-0 right-0 z-50 pb-safe">
+            <div className="flex justify-center px-4 pb-4">
+              <div className="bg-white dark:bg-gray-800 rounded-full shadow-2xl border-2 border-gray-200 dark:border-gray-700 px-3 py-3 overflow-x-auto scrollbar-hide" style={{ borderRadius: '9999px', maxWidth: '95vw' }}>
+                <div className="flex items-center gap-2" style={{ scrollBehavior: 'smooth' }}>
+                  {tabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      className={`relative flex items-center justify-center gap-2 px-4 py-3 rounded-full font-semibold text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
+                        ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg'
+                        : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700'
+                        }`}
+                      onClick={() => setActiveTab(tab.id)}
+                    >
+                      <tab.icon className={`w-5 h-5 flex-shrink-0 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
+                      <span className={`saira-light font-bold text-xs ${activeTab === tab.id ? 'text-white' : 'text-gray-600'}`}>{tab.label}</span>
+                      {tab.id === 'interactions' && tab.badge && (
+                        <div className={`badge badge-sm font-bold ${activeTab === tab.id
+                          ? 'bg-white/20 text-white border-white/30'
+                          : 'bg-purple-100 text-purple-700 border-purple-200'
+                          }`}>
+                          {tab.badge}
+                        </div>
+                      )}
+                      {activeTab === tab.id && (
+                        <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-      </div>
+        </>
+      )}
     </div>
   );
 };

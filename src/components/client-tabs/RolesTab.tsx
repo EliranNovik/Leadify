@@ -137,12 +137,23 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
         assignee: isLegacyLead
           ? getEmployeeDisplayName((client as any).case_handler_id, employeesToUse)
           : (() => {
-            const handlerValue = client.handler;
-            // Convert "Not assigned" or empty/null values to '---'
-            if (!handlerValue || handlerValue.trim() === '' || handlerValue.toLowerCase() === 'not assigned') {
-              return '---';
+            // For new leads: handler can be stored as employee_id in handler column OR as display_name
+            // Also check case_handler_id if available
+            const handlerId = (client as any).case_handler_id || (client as any).handler;
+            const handlerValue = (client as any).handler;
+
+            // If case_handler_id exists, use it (most reliable)
+            if ((client as any).case_handler_id) {
+              return getEmployeeDisplayName((client as any).case_handler_id, employeesToUse);
             }
-            return handlerValue;
+
+            // If handler is numeric (employee ID), map it
+            if (handlerValue && (typeof handlerValue === 'number' || (typeof handlerValue === 'string' && !isNaN(Number(handlerValue)) && handlerValue.toString().trim() !== ''))) {
+              return getEmployeeDisplayName(handlerValue, employeesToUse);
+            }
+
+            // Otherwise, assume handler is already a display name
+            return handlerValue || '---';
           })(),
         fieldName: 'handler',
         legacyFieldName: 'case_handler_id'
@@ -633,8 +644,8 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
           {isSuperuser && (
             <button
               className={`btn gap-2 px-6 shadow-md hover:scale-105 transition-transform ${isRolesLocked
-                  ? 'btn-error text-white'
-                  : 'btn-ghost border border-gray-300'
+                ? 'btn-error text-white'
+                : 'btn-ghost border border-gray-300'
                 }`}
               onClick={handleToggleLock}
               title={isRolesLocked ? 'Unlock roles' : 'Lock roles'}

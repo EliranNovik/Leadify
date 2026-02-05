@@ -532,7 +532,13 @@ const CalendarPage: React.FC = () => {
     if (!employeeId || employeeId === '---' || employeeId === '--') return '--';
     // Find employee in the loaded employees array
     // Convert both to string for comparison since employeeId might be bigint
-    const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
+    const employee = allEmployees.find((emp: any) => {
+      // Try multiple comparison methods to handle type mismatches
+      return emp.id.toString() === employeeId.toString() ||
+        emp.id === employeeId ||
+        String(emp.id) === String(employeeId) ||
+        Number(emp.id) === Number(employeeId);
+    });
     return employee ? employee.display_name : employeeId.toString(); // Fallback to ID if not found
   };
 
@@ -4454,28 +4460,7 @@ const CalendarPage: React.FC = () => {
                 <div className="flex items-center gap-2">
                   {renderEmployeeAvatar(lead.handler_id || lead.handler, 'lg', false)}
                   <span className="text-xs md:text-sm font-bold text-gray-800">
-                    {(() => {
-                      // lead.handler should already be the display name from leadData processing
-                      // But if it looks like an ID (numeric), try to map it using handler_id
-                      if (lead.handler && lead.handler !== '--') {
-                        const isNumeric = typeof lead.handler === 'number' || (typeof lead.handler === 'string' && !isNaN(Number(lead.handler)) && lead.handler.trim() !== '');
-                        // If handler is numeric (likely an ID), use handler_id to get display name
-                        if (isNumeric && lead.handler_id) {
-                          const displayName = getEmployeeDisplayName(lead.handler_id);
-                          // Only use the mapped name if it's different from the ID
-                          if (displayName !== lead.handler_id.toString()) {
-                            return displayName;
-                          }
-                        }
-                        // Otherwise use handler directly (should be display name)
-                        return lead.handler;
-                      }
-                      // Fallback: try handler_id if handler is not available
-                      if (lead.handler_id) {
-                        return getEmployeeDisplayName(lead.handler_id);
-                      }
-                      return '--';
-                    })() || '---'}
+                    {getEmployeeDisplayName(lead.handler || meeting.handler) || '---'}
                   </span>
                 </div>
               </div>
@@ -5075,28 +5060,7 @@ const CalendarPage: React.FC = () => {
                         {renderEmployeeAvatar(lead.handler_id || lead.handler, 'lg', false)}
                       </div>
                       <span className="text-sm sm:text-base">
-                        {(() => {
-                          // lead.handler should already be the display name from leadData processing
-                          // But if it looks like an ID (numeric), try to map it using handler_id
-                          if (lead.handler && lead.handler !== '--') {
-                            const isNumeric = typeof lead.handler === 'number' || (typeof lead.handler === 'string' && !isNaN(Number(lead.handler)) && lead.handler.trim() !== '');
-                            // If handler is numeric (likely an ID), use handler_id to get display name
-                            if (isNumeric && lead.handler_id) {
-                              const displayName = getEmployeeDisplayName(lead.handler_id);
-                              // Only use the mapped name if it's different from the ID
-                              if (displayName !== lead.handler_id.toString()) {
-                                return displayName;
-                              }
-                            }
-                            // Otherwise use handler directly (should be display name)
-                            return lead.handler;
-                          }
-                          // Fallback: try handler_id if handler is not available
-                          if (lead.handler_id) {
-                            return getEmployeeDisplayName(lead.handler_id);
-                          }
-                          return '--';
-                        })()}
+                        {getEmployeeDisplayName(lead.handler || meeting.handler)}
                       </span>
                     </div>
                   </div>

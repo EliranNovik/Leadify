@@ -23,12 +23,19 @@ function useAuthContext() {
 export { useAuthContext };
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  // Check localStorage synchronously first to avoid loading screen if session exists
+  // This allows pages to render immediately while auth verification happens in background
+  const hasStoredSession = typeof window !== 'undefined' && 
+    Object.keys(localStorage).some(key => key.includes('supabase.auth.token'));
+  
   const [authState, setAuthState] = useState<AuthState>({
     user: null,
     userFullName: null,
     userInitials: null,
-    isLoading: true,
-    isInitialized: false,
+    // If we have a stored session, mark as initialized immediately to skip loading screen
+    // The actual session verification will happen in the background
+    isLoading: false, // Don't show loading if we have stored session
+    isInitialized: hasStoredSession, // Mark as initialized if session exists
   });
 
   // Prevent duplicate processing
@@ -339,7 +346,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (isMounted && !initHandled) {
           initHandled = true;
           // On error, mark as initialized to prevent infinite loading
-          setAuthState(prev => ({ ...prev, isLoading: false, isInitialized: true }));
+          // If we had a stored session, we still mark as initialized (user might be logged out)
+          setAuthState(prev => ({ 
+            ...prev, 
+            isLoading: false, 
+            isInitialized: true,
+            // Clear user on error if we had one
+            user: prev.user && hasStoredSession ? prev.user : null
+          }));
         }
       }
     };
