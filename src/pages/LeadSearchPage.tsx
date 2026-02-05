@@ -953,11 +953,13 @@ const LeadSearchPage: React.FC = () => {
   const navigate = useNavigate();
 
   // Handle lead click navigation
+  // Uses the exact same logic as MasterLeadPage.tsx
   const handleLeadClick = (lead: Lead | string, event?: React.MouseEvent) => {
     // Handle both string (legacy) and Lead object (new)
     let leadNumber: string;
     let manualId: string | null = null;
     let leadType: 'new' | 'legacy' | undefined;
+    let leadId: string | null = null;
 
     if (typeof lead === 'string') {
       // Legacy: just a lead number string
@@ -968,29 +970,39 @@ const LeadSearchPage: React.FC = () => {
       leadNumber = anyLead.display_lead_number || anyLead.lead_number || lead.id?.toString() || '';
       manualId = anyLead.manual_id || null;
       leadType = anyLead.lead_type;
+      leadId = anyLead.id?.toString() || null;
     }
 
-    if (!leadNumber) return;
+    if (!leadNumber && !leadId) return;
 
-    // Check if it's a sublead (contains '/')
-    const isSubLead = leadNumber.includes('/');
-
-    // Build the URL using the same logic as Clients.tsx buildClientRoute
+    // Build the URL using the exact same logic as MasterLeadPage
+    // MasterLeadPage uses subLead.route which is set to /clients/${lead.id} for legacy leads
+    // But for display, it should use manual_id if available (as user expects /clients/150926)
     let path = '';
 
-    if (isSubLead && manualId) {
-      // Sublead with manual_id: use query parameter format like /clients/2104625?lead=L210764%2F3
-      // This matches the format used by Clients.tsx buildClientRoute
-      path = `/clients/${encodeURIComponent(manualId)}?lead=${encodeURIComponent(leadNumber)}`;
-    } else if (isSubLead && !manualId && leadType === 'new') {
-      // New lead sublead without manual_id: extract base from display_lead_number
-      // For new leads, manual_id might be the same as the base lead_number
-      const baseNumber = leadNumber.split('/')[0];
-      path = `/clients/${encodeURIComponent(baseNumber)}?lead=${encodeURIComponent(leadNumber)}`;
-    } else {
-      // Regular lead: use manual_id if available, otherwise use lead_number
-      const identifier = manualId || leadNumber;
+    if (leadType === 'legacy') {
+      // Legacy leads: use numeric id from leads_lead table (same as MasterLeadPage route: /clients/${lead.id})
+      // MasterLeadPage uses subLead.route which is set to /clients/${lead.id} in masterLeadApi.ts
+      const identifier = leadId || '';
+      if (!identifier) return;
       path = `/clients/${encodeURIComponent(identifier)}`;
+    } else {
+      // New leads: use buildClientRoute logic
+      // Check if it's a sublead (contains '/')
+      const isSubLead = leadNumber.includes('/');
+      
+      if (isSubLead && manualId) {
+        // Sublead with manual_id: use query parameter format like /clients/2104625?lead=L210764%2F3
+        path = `/clients/${encodeURIComponent(manualId)}?lead=${encodeURIComponent(leadNumber)}`;
+      } else if (isSubLead && !manualId) {
+        // Sublead without manual_id: extract base from display_lead_number
+        const baseNumber = leadNumber.split('/')[0];
+        path = `/clients/${encodeURIComponent(baseNumber)}?lead=${encodeURIComponent(leadNumber)}`;
+      } else {
+        // Regular lead: use manual_id if available, otherwise use lead_number
+        const identifier = manualId || leadNumber || leadId || '';
+        path = `/clients/${encodeURIComponent(identifier)}`;
+      }
     }
 
     if (event && (event.metaKey || event.ctrlKey)) {
@@ -3304,43 +3316,37 @@ const LeadSearchPage: React.FC = () => {
           case_handler: getEmployeeName(legacyLead.case_handler_id),
         };
 
-        // Format lead number with sublead handling (similar to Clients.tsx)
+        // Format lead number with sublead handling (same logic as MasterLeadPage formatLegacyLeadNumber)
         let displayLeadNumber: string;
         const legacyLeadAny = legacyLead as any;
-        if (legacyLeadAny.master_id) {
-          // It's a sublead - format as master_id/suffix
-          // If lead_number already has a /, use it; otherwise calculate suffix
-          if (legacyLead.lead_number && String(legacyLead.lead_number).includes('/')) {
-            displayLeadNumber = legacyLead.lead_number;
+        const masterId = legacyLeadAny.master_id;
+        const leadId = String(legacyLead.id);
+        
+        if (masterId && String(masterId).trim() !== '') {
+          // It's a sublead - format as masterId/suffix (same as MasterLeadPage)
+          const leadKey = legacyLead.id?.toString();
+          const suffix = leadKey ? legacySubLeadSuffixMap.get(leadKey) : undefined;
+          
+          if (suffix !== undefined) {
+            // Use calculated suffix (starts at 2 for first sublead)
+            displayLeadNumber = `${masterId}/${suffix}`;
           } else {
-            // Calculate suffix based on position in ordered list of subleads with same master_id
-            const leadKey = legacyLead.id?.toString();
-            const suffix = leadKey ? legacySubLeadSuffixMap.get(leadKey) : undefined;
-
-            // Find the master lead to get its lead_number or manual_id
-            const masterLead = filteredLegacyLeads.find((l: any) => l.id === legacyLeadAny.master_id);
-            const masterLeadNumber = masterLead?.lead_number || masterLead?.manual_id || legacyLeadAny.master_id?.toString() || '';
-
-            // Use calculated suffix if available, otherwise default to /2
-            displayLeadNumber = suffix ? `${masterLeadNumber}/${suffix}` : `${masterLeadNumber}/2`;
+            // Fallback if suffix not found
+            displayLeadNumber = `${masterId}/?`;
           }
         } else {
           // It's a master lead or standalone lead
-          const baseNumber = legacyLeadAny.manual_id ||
-            legacyLead.lead_number ||
-            legacyLead.id?.toString?.() ||
-            '';
-          // Add /1 suffix ONLY if this master lead has subleads
-          // Check if this lead's ID is in the set of master IDs that have subleads
+          // Check if this lead has subleads
           const leadIdStr = legacyLead.id?.toString();
           const hasSubLeads = leadIdStr && legacyMasterIdsWithSubLeads.has(leadIdStr);
-
-          // Check if it already has a suffix
-          if (hasSubLeads && baseNumber && !baseNumber.includes('/')) {
-            displayLeadNumber = `${baseNumber}/1`;
-          } else {
-            displayLeadNumber = baseNumber;
-          }
+          
+          // Use leadId (numeric ID) as base, add /1 if has subleads (same as MasterLeadPage)
+          displayLeadNumber = hasSubLeads ? `${leadId}/1` : leadId;
+        }
+        
+        // Add "C" prefix for legacy leads with stage "100" (Success) - same as MasterLeadPage
+        if (legacyLead.stage === 100 || legacyLead.stage === '100') {
+          displayLeadNumber = `C${displayLeadNumber}`;
         }
 
         return {
@@ -3348,6 +3354,7 @@ const LeadSearchPage: React.FC = () => {
           id: legacyLead.id,
           lead_number: legacyLead.lead_number || legacyLead.id.toString(),
           display_lead_number: String(displayLeadNumber),
+          manual_id: legacyLead.manual_id || null,
           name: legacyLead.name,
           topic: legacyLead.topic,
 

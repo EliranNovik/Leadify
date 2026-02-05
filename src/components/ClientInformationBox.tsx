@@ -493,17 +493,25 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                  const leadId = isLegacyLead
-                    ? selectedClient.id.toString().replace('legacy_', '')
-                    : selectedClient.id;
-                  const leadNumber = selectedClient.lead_number || selectedClient.manual_id || leadId;
-                  navigate(`/clients/${encodeURIComponent(leadNumber)}/master`);
+                  if (!selectedClient) return;
+                  // Use the same logic as MasterLeadPage and LeadSearchPage
+                  // For legacy leads: use numeric id from leads_lead table
+                  // For new leads: use lead_number or manual_id
+                  const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                  let identifier: string;
+                  if (isLegacyLead) {
+                    // Legacy leads: use numeric id (remove 'legacy_' prefix if present)
+                    identifier = selectedClient.id.toString().replace('legacy_', '');
+                  } else {
+                    // New leads: use lead_number or manual_id
+                    identifier = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '';
+                  }
+                  navigate(`/clients/${encodeURIComponent(identifier)}/master`);
                 }}
                 className="text-xs font-semibold text-purple-600 hover:text-purple-700 hover:underline transition-colors cursor-pointer"
                 title={`View all ${subLeadsCount} sub-lead${subLeadsCount !== 1 ? 's' : ''}`}
               >
-                Master lead ({subLeadsCount} sub-lead{subLeadsCount !== 1 ? 's' : ''})
+                Master Dashboard ({subLeadsCount} sub-lead{subLeadsCount !== 1 ? 's' : ''})
               </button>
             </div>
           )}
@@ -581,7 +589,7 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
                     className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-blue-600 rounded-full flex items-center gap-1.5 flex-shrink-0 w-fit hover:from-purple-700 hover:to-blue-700 transition-all"
                   >
                     <ArrowRightIcon className="w-4 h-4" />
-                    Master Lead
+                    Master Dashboard
                   </a>
                 );
               } else {
@@ -686,7 +694,7 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
                     className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-blue-600 rounded-full flex items-center gap-1.5 flex-shrink-0 w-fit hover:from-purple-700 hover:to-blue-700 transition-all"
                   >
                     <ArrowRightIcon className="w-4 h-4" />
-                    Master Lead
+                    Master Dashboard
                   </a>
                 );
               }

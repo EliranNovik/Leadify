@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { ClientTabProps } from '../../types/client';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
 import { UserGroupIcon, PencilSquareIcon, UserIcon, CheckIcon, XMarkIcon, CalendarIcon, UserCircleIcon, AcademicCapIcon, HandRaisedIcon, WrenchScrewdriverIcon, CogIcon, LockClosedIcon, LockOpenIcon } from '@heroicons/react/24/outline';
@@ -18,6 +19,7 @@ interface Role {
 const defaultAssignees = ['---'];
 
 const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmployees: allEmployeesProp = [] }) => {
+  const navigate = useNavigate();
   const [allUsers, setAllUsers] = useState<{ full_name: string; role: string }[]>([]);
   // Use employees from prop (loaded in parent) or fallback to local state
   const [allEmployees, setAllEmployees] = useState<any[]>(allEmployeesProp);
@@ -29,6 +31,124 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
 
   // Check if this is a legacy lead
   const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+
+  // Helper function to get employee by ID or name (matching CalendarPage logic)
+  const getEmployeeById = (employeeIdOrName: string | number | null | undefined) => {
+    const employeesToUse = (allEmployeesProp && allEmployeesProp.length > 0) ? allEmployeesProp : allEmployees;
+    
+    if (!employeeIdOrName || employeeIdOrName === '---' || employeeIdOrName === '--' || employeeIdOrName === '') {
+      return null;
+    }
+
+    // First, try to match by ID
+    const employeeById = employeesToUse.find((emp: any) => {
+      const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
+      const searchId = typeof employeeIdOrName === 'string' ? parseInt(employeeIdOrName, 10) : employeeIdOrName;
+
+      if (isNaN(Number(searchId))) return false;
+
+      if (empId.toString() === searchId.toString()) return true;
+      if (Number(empId) === Number(searchId)) return true;
+
+      return false;
+    });
+
+    if (employeeById) {
+      return employeeById;
+    }
+
+    // If not found by ID, try to match by display name
+    if (typeof employeeIdOrName === 'string') {
+      const employeeByName = employeesToUse.find((emp: any) => {
+        if (!emp.display_name) return false;
+        return emp.display_name.trim().toLowerCase() === employeeIdOrName.trim().toLowerCase();
+      });
+
+      if (employeeByName) {
+        return employeeByName;
+      }
+    }
+
+    return null;
+  };
+
+  // Helper function to get employee initials
+  const getEmployeeInitials = (name: string | null | undefined): string => {
+    if (!name || name === '---' || name === '--' || name === 'Not assigned') return '';
+    const parts = name.trim().split(' ');
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+    return name.substring(0, 2).toUpperCase();
+  };
+
+  // Helper to get employee ID from role assignee name
+  const getEmployeeIdFromRole = (role: Role): string | number | null => {
+    const employeesToUse = (allEmployeesProp && allEmployeesProp.length > 0) ? allEmployeesProp : allEmployees;
+    
+    if (!role.assignee || role.assignee === '---') return null;
+
+    if (isLegacyLead && role.legacyFieldName) {
+      // For legacy leads, get the ID directly from the client
+      return (client as any)[role.legacyFieldName] || null;
+    } else {
+      // For new leads, find employee by display name
+      const employee = employeesToUse.find((emp: any) => {
+        return emp.display_name && emp.display_name.trim() === role.assignee.trim();
+      });
+      return employee?.id || null;
+    }
+  };
+
+  // Component to render employee avatar
+  const EmployeeAvatar: React.FC<{
+    employeeId: string | number | null | undefined;
+    size?: 'sm' | 'md' | 'lg';
+  }> = ({ employeeId, size = 'md' }) => {
+    const [imageError, setImageError] = useState(false);
+    const employee = getEmployeeById(employeeId);
+    const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : size === 'md' ? 'w-12 h-12 text-sm' : 'w-16 h-16 text-base';
+    
+    if (!employee) {
+      return null;
+    }
+
+    const photoUrl = employee.photo_url || employee.photo;
+    const initials = getEmployeeInitials(employee.display_name);
+
+    // If we know there's no photo URL or we have an error, show initials immediately
+    if (imageError || !photoUrl) {
+      return (
+        <div 
+          className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
+          onClick={() => {
+            if (employee.id) {
+              navigate(`/my-profile/${employee.id}`);
+            }
+          }}
+          title={`View ${employee.display_name}'s profile`}
+        >
+          {initials}
+        </div>
+      );
+    }
+
+    // Try to render image
+    return (
+      <img
+        src={photoUrl}
+        alt={employee.display_name}
+        className={`${sizeClasses} rounded-full object-cover flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
+        onClick={() => {
+          if (employee.id) {
+            navigate(`/my-profile/${employee.id}`);
+          }
+        }}
+        onError={() => setImageError(true)}
+        title={`View ${employee.display_name}'s profile`}
+      />
+    );
+  };
 
   // Update local employees state when prop changes (employees are loaded in parent)
   useEffect(() => {
@@ -207,7 +327,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
       const fetchEmployees = async () => {
         const { data, error } = await supabase
           .from('tenants_employee')
-          .select('id, display_name')
+          .select('id, display_name, photo_url, photo')
           .order('display_name', { ascending: true });
 
         if (!error && data) {
@@ -732,6 +852,11 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
                   <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600">
                     {React.createElement(getRoleIcon(role.id), { className: "w-6 h-6 text-white" })}
                   </div>
+
+                  {/* Employee Avatar */}
+                  {hasAssignee && (
+                    <EmployeeAvatar employeeId={getEmployeeIdFromRole(role)} size="md" />
+                  )}
 
                   {/* Assignee Name */}
                   <div className="flex-1 relative">

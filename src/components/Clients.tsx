@@ -88,6 +88,7 @@ import { generateProformaName } from '../lib/proforma';
 import TimePicker from './TimePicker';
 import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
+import ClientHeader from './ClientHeader';
 import SendPriceOfferModal from './SendPriceOfferModal';
 import { addToHighlights, removeFromHighlights, isInHighlights } from '../lib/highlightsUtils';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
@@ -581,7 +582,10 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Optimized function to find duplicate contacts - uses parallel queries and batching
   const findDuplicateContacts = async () => {
+    console.log('🔍 findDuplicateContacts called', { selectedClientId: selectedClient?.id });
+
     if (!selectedClient?.id) {
+      console.log('⚠️ findDuplicateContacts: No selectedClient.id, returning');
       setDuplicateContacts([]);
       return;
     }
@@ -601,36 +605,51 @@ const Clients: React.FC<ClientsProps> = ({
         return phone.replace(/\D/g, '');
       };
 
-      // Step 1: Get all contacts for the current lead (parallel with contact details)
-      const [leadContactsResult, currentContactsResult] = await Promise.all([
-        supabase
-          .from('lead_leadcontact')
-          .select('contact_id, main, newlead_id, lead_id')
-          .or(isLegacyLead
-            ? `lead_id.eq.${currentLeadId}`
-            : `newlead_id.eq.${currentLeadId}`
-          ),
-        // Pre-fetch contact details in parallel
-        supabase
-          .from('leads_contact')
-          .select('id, name, email, phone, mobile')
-      ]);
+      // Step 1: Get all contacts for the current lead
+      const leadContactsResult = await supabase
+        .from('lead_leadcontact')
+        .select('contact_id, main, newlead_id, lead_id')
+        .or(isLegacyLead
+          ? `lead_id.eq.${currentLeadId}`
+          : `newlead_id.eq.${currentLeadId}`
+        );
 
       const leadContacts = leadContactsResult.data;
+      console.log('🔍 findDuplicateContacts: Lead contacts fetched', {
+        leadContactsCount: leadContacts?.length,
+        currentLeadId,
+        isLegacyLead
+      });
+
       if (!leadContacts || leadContacts.length === 0) {
+        console.log('⚠️ findDuplicateContacts: No lead contacts found');
         setDuplicateContacts([]);
         return;
       }
 
       const contactIds = leadContacts.map(lc => lc.contact_id).filter(Boolean);
+      console.log('🔍 findDuplicateContacts: Contact IDs', { contactIds });
+
       if (contactIds.length === 0) {
+        console.log('⚠️ findDuplicateContacts: No contact IDs');
         setDuplicateContacts([]);
         return;
       }
 
-      // Filter current contacts from pre-fetched data
-      const currentContacts = (currentContactsResult.data || []).filter(c => contactIds.includes(c.id));
+      // Step 2: Fetch only the specific contacts we need
+      const currentContactsResult = await supabase
+        .from('leads_contact')
+        .select('id, name, email, phone, mobile')
+        .in('id', contactIds);
+
+      const currentContacts = currentContactsResult.data || [];
+      console.log('🔍 findDuplicateContacts: Current contacts', {
+        currentContactsCount: currentContacts.length,
+        currentContacts: currentContacts.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone }))
+      });
+
       if (currentContacts.length === 0) {
+        console.log('⚠️ findDuplicateContacts: No current contacts found');
         setDuplicateContacts([]);
         return;
       }
@@ -923,9 +942,15 @@ const Clients: React.FC<ClientsProps> = ({
         ).values()
       );
 
+      console.log('✅ findDuplicateContacts: Found duplicates', {
+        duplicateMatchesCount: duplicateMatches.length,
+        uniqueMatchesCount: uniqueMatches.length,
+        uniqueMatches
+      });
+
       setDuplicateContacts(uniqueMatches);
     } catch (error) {
-      console.error('Error finding duplicate contacts:', error);
+      console.error('❌ Error finding duplicate contacts:', error);
       setDuplicateContacts([]);
     }
   };
@@ -1311,7 +1336,7 @@ const Clients: React.FC<ClientsProps> = ({
       try {
         const { data, error } = await supabase
           .from('tenants_employee')
-          .select('id, display_name, official_name, unavailable_times, unavailable_ranges')
+          .select('id, display_name, official_name, unavailable_times, unavailable_ranges, photo_url, photo')
           .order('display_name', { ascending: true });
 
         if (error) throw error;
@@ -1335,6 +1360,8 @@ const Clients: React.FC<ClientsProps> = ({
               display_name: displayName,
               unavailable_times: emp.unavailable_times || [],
               unavailable_ranges: emp.unavailable_ranges || [],
+              photo_url: (emp as any).photo_url || null,
+              photo: (emp as any).photo || null,
             };
           });
 
@@ -4265,7 +4292,8 @@ const Clients: React.FC<ClientsProps> = ({
     const rawClientId = selectedClient.id;
     const handlerIdRaw = option?.id ?? '';
     const handlerLabel = option?.label ?? '';
-    const trimmedId = handlerIdRaw.trim();
+    // Convert to string first in case id is a number
+    const trimmedId = String(handlerIdRaw).trim();
     const handlerIdNumeric =
       trimmedId && /^\d+$/.test(trimmedId) ? Number.parseInt(trimmedId, 10) : null;
     const clientIdString =
@@ -7293,10 +7321,18 @@ const Clients: React.FC<ClientsProps> = ({
         ? String(selectedClient.case_handler_id)
         : '';
 
-    const derivedLabel =
+    let derivedLabel =
       (handlerId && handlerOptionsMap.get(handlerId)) ||
       selectedClient.handler ||
       '';
+
+    // If derivedLabel is a numeric ID (which happens when new leads store ID in handler field), resolve it
+    if (derivedLabel && /^\d+$/.test(String(derivedLabel).trim())) {
+      const resolvedName = getEmployeeDisplayName(derivedLabel);
+      if (resolvedName && resolvedName !== derivedLabel) {
+        derivedLabel = resolvedName;
+      }
+    }
 
     // If handler is "Not assigned" or empty, set search to empty (will show as placeholder)
     const handlerValue = (derivedLabel && derivedLabel.toLowerCase() !== 'not assigned' && derivedLabel.trim() !== '')
@@ -12077,7 +12113,7 @@ const Clients: React.FC<ClientsProps> = ({
                 // Get currency symbol from accounting_currencies table
                 // Priority: 1) accounting_currencies join data, 2) balance_currency, 3) currency_id mapping
                 let balanceCurrency: string | null = null;
-                
+
                 // First, try to get from accounting_currencies join data (most reliable)
                 const accountingCurrencies = (selectedClient as any).accounting_currencies;
                 if (accountingCurrencies) {
@@ -12086,12 +12122,12 @@ const Clients: React.FC<ClientsProps> = ({
                     balanceCurrency = currencyRecord.name;
                   }
                 }
-                
+
                 // If not available from join, use balance_currency (which should be set from accounting_currencies.name)
                 if (!balanceCurrency || balanceCurrency.trim() === '') {
                   balanceCurrency = selectedClient.balance_currency || null;
                 }
-                
+
                 // Final fallback: map currency_id to accounting_currencies table values
                 if ((!balanceCurrency || balanceCurrency.trim() === '') && (selectedClient as any).currency_id) {
                   const currencyId = (selectedClient as any).currency_id;
@@ -12107,7 +12143,7 @@ const Clients: React.FC<ClientsProps> = ({
                     }
                   }
                 }
-                
+
                 // Ensure we have a currency (default to ₪ if all else fails)
                 if (!balanceCurrency || balanceCurrency.trim() === '') {
                   balanceCurrency = '₪';
@@ -12237,7 +12273,7 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
         </div>
       )}
-      
+
       {/* Don't render content if selectedClient is null (prevents errors) */}
       {!selectedClient && !localLoading && (
         <div className="p-6">
@@ -12247,2343 +12283,943 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
         </div>
       )}
-      
+
       {/* Only render main content if selectedClient exists */}
       {selectedClient && (
         <>
           {/* Sticky Header - appears when scrolled down, positioned below main header */}
           {/* Extends to left edge but sits below sidebar (lower z-index) */}
           {showStickyHeader && (
-        <div className="fixed top-16 left-0 right-0 z-[35] bg-base-100 shadow-lg border-b border-base-300 transition-all duration-300 ease-in-out">
-          <div className="max-w-7xl mx-auto px-4 py-3">
-            {/* Mobile View - Only lead number and client name */}
-            <div className="md:hidden flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0 flex-1">
-                <span className="text-base font-bold text-base-content whitespace-nowrap">
-                  #{selectedClient.lead_number || selectedClient.id}
-                </span>
-                <span className="text-base font-semibold text-base-content/90 truncate">
-                  {selectedClient.name || 'Unnamed Lead'}
-                </span>
-              </div>
-            </div>
-
-            {/* Desktop View - Full layout with tab navigation */}
-            <div className="hidden md:flex flex-col gap-2">
-              {/* Duplicate Contacts Badge - Desktop - At the top */}
-              {duplicateContacts.length > 0 && (
-                <div className="w-full flex justify-start items-center px-4">
-                  <div className="relative">
-                    {duplicateContacts.length === 1 ? (
-                      <button
-                        onClick={() => setIsDuplicateModalOpen(true)}
-                        className="rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
-                      >
-                        <DocumentDuplicateIcon className="w-4 h-4" />
-                        Duplicate Contact: {duplicateContacts[0].contactName} in Lead {duplicateContacts[0].leadNumber}
-                      </button>
-                    ) : (
-                      <div className="relative">
-                        <button
-                          onClick={() => setIsDuplicateDropdownOpen(!isDuplicateDropdownOpen)}
-                          className="rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
-                        >
-                          <DocumentDuplicateIcon className="w-4 h-4" />
-                          {duplicateContacts.length} Duplicate Contacts
-                          <ChevronDownIcon className={`w-4 h-4 transition-transform ${isDuplicateDropdownOpen ? 'rotate-180' : ''}`} />
-                        </button>
-                        {isDuplicateDropdownOpen && (
-                          <div className="absolute top-full left-0 mt-2 bg-base-100 rounded-lg shadow-xl border border-base-300 z-50 min-w-[300px] max-h-96 overflow-y-auto">
-                            {duplicateContacts.map((dup, idx) => (
-                              <div
-                                key={`${dup.contactId}-${dup.leadId}-${idx}`}
-                                className="p-3 border-b border-base-300 hover:bg-base-200 cursor-pointer"
-                                onClick={() => {
-                                  navigate(`/clients/${dup.leadNumber}`);
-                                  setIsDuplicateDropdownOpen(false);
-                                }}
-                              >
-                                <div className="font-semibold text-base-content">{dup.contactName}</div>
-                                <div className="text-sm text-base-content/80">Lead {dup.leadNumber}: {dup.leadName}</div>
-                                <div className="flex items-center gap-2 mt-1 flex-wrap">
-                                  {dup.stage && (
-                                    <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
-                                      Stage: {dup.stage}
-                                    </span>
-                                  )}
-                                  {dup.category && (
-                                    <span className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded">
-                                      {dup.category}
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="text-xs text-base-content/70 mt-1">
-                                  Matches: {dup.matchingFields.join(', ')}
-                                </div>
-                              </div>
-                            ))}
-                            <div className="p-3 border-t border-gray-200 bg-gray-50">
-                              <button
-                                onClick={() => {
-                                  setIsDuplicateModalOpen(true);
-                                  setIsDuplicateDropdownOpen(false);
-                                }}
-                                className="w-full text-sm font-semibold text-orange-600 hover:text-orange-700"
-                              >
-                                View All Details
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-              <div className="flex items-center justify-between gap-4 flex-wrap">
-                {/* Left side: Tab navigation arrows, tab name badge, lead number, name, and next follow-up */}
-                <div className="flex items-center gap-3 flex-1 min-w-0">
-                  {/* Tab Navigation Buttons and Tab Name - Desktop Only - On the left */}
-                  <div className="hidden md:flex items-center gap-2">
-                    <button
-                      onClick={() => {
-                        const currentIndex = tabs.findIndex(tab => tab.id === activeTab);
-                        if (currentIndex > 0) {
-                          setActiveTab(tabs[currentIndex - 1].id);
-                        } else {
-                          setActiveTab(tabs[tabs.length - 1].id); // Wrap to last tab
-                        }
-                      }}
-                      className="p-2 rounded-lg hover:bg-base-200 transition-colors"
-                      title="Previous tab"
-                      aria-label="Previous tab"
-                    >
-                      <ChevronLeftIcon className="w-6 h-6" style={{ color: '#4218CC' }} />
-                    </button>
-                    {/* Current Tab Name Badge */}
-                    {(() => {
-                      const currentTab = tabs.find(tab => tab.id === activeTab);
-                      return currentTab ? (
-                        <span className="badge text-sm px-3 py-1.5 font-semibold shadow-sm whitespace-nowrap" style={{ backgroundColor: '#4218CC', color: '#ffffff', borderColor: '#4218CC' }}>
-                          {currentTab.label}
-                        </span>
-                      ) : null;
-                    })()}
-                    <button
-                      onClick={() => {
-                        const currentIndex = tabs.findIndex(tab => tab.id === activeTab);
-                        if (currentIndex < tabs.length - 1) {
-                          setActiveTab(tabs[currentIndex + 1].id);
-                        } else {
-                          setActiveTab(tabs[0].id); // Wrap to first tab
-                        }
-                      }}
-                      className="p-2 rounded-lg hover:bg-base-200 transition-colors"
-                      title="Next tab"
-                      aria-label="Next tab"
-                    >
-                      <ChevronRightIcon className="w-6 h-6" style={{ color: '#4218CC' }} />
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-3 min-w-0 flex-wrap">
-                    <span className="text-lg font-bold text-base-content whitespace-nowrap">
+            <div className="fixed top-16 left-0 right-0 z-[35] bg-base-100 shadow-lg border-b border-base-300 transition-all duration-300 ease-in-out">
+              <div className="max-w-7xl mx-auto px-4 py-3">
+                {/* Mobile View - Only lead number and client name */}
+                <div className="md:hidden flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    <span className="text-base font-bold text-base-content whitespace-nowrap">
                       #{selectedClient.lead_number || selectedClient.id}
                     </span>
-                    <span className="text-lg font-semibold text-base-content/90 truncate">
+                    <span className="text-base font-semibold text-base-content/90 truncate">
                       {selectedClient.name || 'Unnamed Lead'}
                     </span>
-                    {selectedClient.next_followup && (
-                      <div className="flex items-center gap-1.5 text-sm text-base-content/80 whitespace-nowrap">
-                        <CalendarDaysIcon className="w-4 h-4 flex-shrink-0" />
-                        <span className="font-medium">
-                          {new Date(selectedClient.next_followup).toLocaleDateString('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                            year: 'numeric'
-                          })}
-                        </span>
-                      </div>
-                    )}
                   </div>
                 </div>
 
-                {/* Right side: Stage badge and topic */}
-                <div className="flex items-center gap-3 flex-shrink-0">
-                  {/* Stage Badge */}
-                  {(() => {
-                    const stageStr = (selectedClient.stage !== null && selectedClient.stage !== undefined) ? String(selectedClient.stage) : '';
-                    const stageName = getStageName(stageStr);
-                    const stageColor = getStageColour(stageStr);
-                    const textColor = getContrastingTextColor(stageColor);
-                    const backgroundColor = stageColor || '#3b28c7';
-
-                    return (
-                      <span
-                        className="badge text-sm px-4 py-2 font-bold shadow-sm whitespace-nowrap"
-                        style={{
-                          backgroundColor: backgroundColor,
-                          color: textColor,
-                          borderColor: backgroundColor,
-                        }}
-                      >
-                        {stageName}
-                      </span>
-                    );
-                  })()}
-
-                  {/* Topic/Category - same size as stage badge */}
-                  {selectedClient.category && (
-                    <span
-                      className="badge text-sm px-4 py-2 font-bold shadow-sm bg-base-200 text-base-content/90 border-base-300 whitespace-nowrap flex items-center gap-2"
-                    >
-                      <TagIcon className="w-4 h-4 flex-shrink-0" />
-                      <span className="hidden sm:inline">{selectedClient.category}</span>
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Background loading indicator */}
-      {backgroundLoading && (
-        <div className="fixed top-4 right-4 z-40 bg-info/20 text-info-content px-3 py-2 rounded-lg shadow-lg flex items-center gap-2 text-sm">
-          <div className="loading loading-spinner loading-xs"></div>
-          Loading additional data...
-        </div>
-      )}
-      {/* Mobile view - aligned with desktop layout */}
-      <div className="md:hidden px-4 pt-4 pb-3">
-        <div className="flex flex-col gap-4">
-
-
-          {/* Amount badge + stage badge + applicants - Moved to top for mobile */}
-          <div className="w-full flex flex-col items-center mb-4">
-            {/* Mobile Badges - Meeting, Lead is Cold, Duplicate Contact - Above balance badge */}
-            <div className="md:hidden w-full flex flex-col gap-2 mb-3 px-2">
-              {/* Meeting Scheduled Badge */}
-              {hasScheduledMeetings && nextMeetingDate && (
-                <button
-                  onClick={() => setActiveTab('meeting')}
-                  className="w-full rounded-xl bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center justify-center gap-2 border-2 border-white/20 hover:from-green-600 hover:to-emerald-600 transition-all cursor-pointer animate-pulse"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                  </svg>
-                  Meeting Scheduled: {(() => {
-                    const date = new Date(nextMeetingDate);
-                    return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
-                  })()}
-                </button>
-              )}
-
-              {/* Duplicate Contact Badge */}
-              {duplicateContacts.length > 0 && (
-                <button
-                  onClick={() => setIsDuplicateModalOpen(true)}
-                  className="w-full rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center justify-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
-                >
-                  <DocumentDuplicateIcon className="w-4 h-4" />
-                  {duplicateContacts.length === 1
-                    ? `Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`
-                    : `${duplicateContacts.length} Duplicate Contacts`
-                  }
-                </button>
-              )}
-            </div>
-
-            {/* Next Payment Due Indicator */}
-            {nextDuePayment && (
-              <div className="bg-gradient-to-r from-orange-500 to-red-500 rounded-xl shadow-lg px-4 py-2 mb-2 w-full max-w-xs">
-                <div className="text-center">
-                  <div className="text-white text-xs font-semibold mb-1">Next Payment Due</div>
-                  <div className="text-white text-sm font-bold">
-                    {(() => {
-                      const dueDate = new Date(nextDuePayment.due_date);
-                      const today = new Date();
-                      const diffTime = dueDate.getTime() - today.getTime();
-                      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-                      let dateText = dueDate.toLocaleDateString('en-GB');
-                      if (diffDays === 0) {
-                        dateText = 'Today';
-                      } else if (diffDays === 1) {
-                        dateText = 'Tomorrow';
-                      } else if (diffDays < 0) {
-                        dateText = `${Math.abs(diffDays)} days overdue`;
-                      }
-
-                      const currency = nextDuePayment.isLegacy
-                        ? (nextDuePayment.accounting_currencies?.iso_code === 'ILS' ? '₪' : nextDuePayment.accounting_currencies?.iso_code || '₪')
-                        : (nextDuePayment.currency || '₪');
-
-                      const amount = nextDuePayment.isLegacy
-                        ? (Number(nextDuePayment.value) + Number(nextDuePayment.vat_value || 0))
-                        : (Number(nextDuePayment.value) + Number(nextDuePayment.value_vat || 0));
-
-                      return `${currency}${Number(amount.toFixed(2)).toLocaleString()} - ${dateText}`;
-                    })()}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Balance and Stage badges in one line on mobile */}
-            <div className="flex items-center gap-2 mb-3 w-full">
-              <div
-                className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl shadow-lg px-3 py-2 flex-1 cursor-pointer hover:from-purple-700 hover:to-blue-700 transition-all duration-200"
-                onClick={() => setIsBalanceModalOpen(true)}
-                title="Click to edit balance"
-              >
-                <div className="text-center">
-                  <div className="text-white text-base font-bold whitespace-nowrap truncate">
-                    {(() => {
-                      // For new leads, use balance column. For legacy: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
-                      const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
-                      let baseAmount: number;
-                      if (isLegacyLead) {
-                        // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
-                        const currencyId = (selectedClient as any)?.currency_id;
-                        // Convert to number for comparison (handle both string and number types)
-                        // Default to 1 (NIS) if currency_id is null/undefined/NaN (same as BalanceEditModal)
-                        let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                        if (!numericCurrencyId || isNaN(numericCurrencyId)) {
-                          numericCurrencyId = 1; // Default to NIS
-                        }
-                        if (numericCurrencyId === 1) {
-                          // For currency_id 1, show total_base (only, no fallback)
-                          baseAmount = Number((selectedClient as any)?.total_base ?? 0);
-                        } else {
-                          // For other currencies, show total column (only, no fallback)
-                          baseAmount = Number((selectedClient as any)?.total ?? 0);
-                        }
-                      } else {
-                        baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
-                      }
-                      // For legacy leads: balance badge should show WITHOUT subtracting subcontractor fee
-                      // For new leads: subtract subcontractor fee
-                      const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
-                      const mainAmount = isLegacyLead ? baseAmount : (baseAmount - subcontractorFee);
-
-                      // Get currency symbol - prioritize computed values from refreshClientData
-                      // These are set by App.tsx refreshClientData and are fresh
-                      let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
-
-                      // If no computed currency, try to get from currency_id directly
-                      if ((!currency || currency === '₪') && selectedClient?.currency_id && !isLegacyLead) {
-                        // For new leads without computed currency, use currency_id mapping
-                        // This is a fallback - normally App.tsx should set proposal_currency/balance_currency
-                        const currencyId = Number(selectedClient.currency_id);
-                        switch (currencyId) {
-                          case 1: currency = '₪'; break; // ILS
-                          case 2: currency = '€'; break; // EUR  
-                          case 3: currency = '$'; break; // USD
-                          case 4: currency = '£'; break; // GBP
-                          default: currency = '₪';
-                        }
-                      }
-
-                      // Balance badge currency resolved
-
-                      // Calculate VAT - only show if vat column is 'true' for new leads
-                      let vatAmount = 0;
-                      let shouldShowVAT = false;
-
-                      if (isLegacyLead) {
-                        // Legacy leads: check 'vat' column (text type, same as new leads)
-                        // 'false', '0', 'no' → VAT excluded (don't show VAT)
-                        // 'true', '1', 'yes', NULL, undefined → VAT included (show VAT)
-                        const vatValue = (selectedClient as any)?.vat;
-                        shouldShowVAT = true; // Default to showing VAT (included)
-
-                        if (vatValue !== null && vatValue !== undefined) {
-                          const vatStr = String(vatValue).toLowerCase().trim();
-                          // If VAT is excluded, don't show VAT in badge
-                          if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') {
-                            shouldShowVAT = false;
-                          }
-                        }
-
-                        // Only calculate VAT if we should show it
-                        if (shouldShowVAT) {
-                          // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
-                          const currencyId = (selectedClient as any)?.currency_id;
-                          let totalAmount: number;
-                          // Default to 1 (NIS) if currency_id is null/undefined/NaN (same as BalanceEditModal)
-                          let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                          if (!numericCurrencyId || isNaN(numericCurrencyId)) {
-                            numericCurrencyId = 1; // Default to NIS
-                          }
-                          if (numericCurrencyId === 1) {
-                            // For currency_id 1, use total_base (only, no fallback)
-                            totalAmount = Number((selectedClient as any)?.total_base ?? 0);
-                          } else {
-                            // For other currencies, use total column (only, no fallback)
-                            totalAmount = Number((selectedClient as any)?.total ?? 0);
-                          }
-                          vatAmount = totalAmount * 0.18;
-                        }
-                      } else {
-                        // New leads: check 'vat' column (text type)
-                        // 'false', '0', 'no' → VAT excluded (don't show VAT)
-                        // 'true', '1', 'yes', NULL, undefined → VAT included (show VAT)
-                        const vatValue = selectedClient?.vat;
-                        shouldShowVAT = true; // Default to showing VAT (included)
-
-                        if (vatValue !== null && vatValue !== undefined) {
-                          const vatStr = String(vatValue).toLowerCase().trim();
-                          // If VAT is excluded, don't show VAT in badge
-                          if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') {
-                            shouldShowVAT = false;
-                          }
-                        }
-
-                        // Only calculate VAT if we should show it
-                        if (shouldShowVAT) {
-                          // Use vat_value from database if available, otherwise calculate for all currencies
-                          if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
-                            vatAmount = Number(selectedClient.vat_value);
-                          } else {
-                            const totalAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
-                            vatAmount = totalAmount * 0.18; // Calculate VAT for all currencies
-                          }
-                        }
-                      }
-
-                      return (
-                        <span>
-                          {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
-                          {shouldShowVAT && vatAmount > 0 && (
-                            <span className="text-white text-base opacity-90 font-normal ml-2">
-                              +{Number(vatAmount.toFixed(2)).toLocaleString()} VAT
-                            </span>
-                          )}
-                        </span>
-                      );
-                    })()}
-                  </div>
-                  {/* Show Total with full amount (no subtraction) */}
-                  <div className="text-white text-xs opacity-90 mt-1">
-                    Total: {(() => {
-                      const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
-                      const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? (selectedClient as any)?.subcontractor_fee ?? 0);
-
-                      // Get currency symbol - prioritize computed values from refreshClientData
-                      let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
-
-                      // If no computed currency, try to get from currency_id directly
-                      if ((!currency || currency === '₪') && selectedClient?.currency_id) {
-                        const currencyId = Number(selectedClient.currency_id);
-                        switch (currencyId) {
-                          case 1: currency = '₪'; break; // ILS
-                          case 2: currency = '€'; break; // EUR  
-                          case 3: currency = '$'; break; // USD
-                          case 4: currency = '£'; break; // GBP
-                          default: currency = '₪';
-                        }
-                      }
-
-                      // Calculate base amount using same logic as main display
-                      let baseAmount: number;
-                      if (isLegacyLead) {
-                        // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
-                        const currencyId = (selectedClient as any)?.currency_id;
-                        let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                        if (!numericCurrencyId || isNaN(numericCurrencyId)) {
-                          numericCurrencyId = 1; // Default to NIS
-                        }
-                        if (numericCurrencyId === 1) {
-                          baseAmount = Number((selectedClient as any)?.total_base ?? 0);
-                        } else {
-                          baseAmount = Number((selectedClient as any)?.total ?? 0);
-                        }
-                      } else {
-                        baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
-                      }
-
-                      // Total should show FULL amount (no subtraction)
-                      const totalAmount = baseAmount;
-
-                      return `${currency}${Number(totalAmount.toFixed(2)).toLocaleString()}`;
-                    })()}
-                  </div>
-                  {/* Always show Potential Value */}
-                  <div className="text-white text-xs opacity-90 mt-1.5 pt-1.5 border-t border-white/20">
-                    <div className="font-medium">Potential Value:</div>
-                    <div className="text-white">
-                      {(() => {
-                        // Check both potential_total and potential_value for both types
-                        const potentialValue = (selectedClient as any)?.potential_total || (selectedClient as any)?.potential_value || null;
-
-                        if (potentialValue !== null && potentialValue !== undefined) {
-                          const numValue = typeof potentialValue === 'string' ? parseFloat(potentialValue) : Number(potentialValue);
-                          if (!isNaN(numValue) && numValue > 0) {
-                            // Get currency symbol - prioritize computed values from refreshClientData
-                            let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
-
-                            // If no computed currency, try to get from currency_id directly
-                            if ((!currency || currency === '₪') && selectedClient?.currency_id) {
-                              const currencyId = Number(selectedClient.currency_id);
-                              switch (currencyId) {
-                                case 1: currency = '₪'; break; // ILS
-                                case 2: currency = '€'; break; // EUR  
-                                case 3: currency = '$'; break; // USD
-                                case 4: currency = '£'; break; // GBP
-                                default: currency = '₪';
-                              }
-                            }
-                            const formattedValue = typeof potentialValue === 'string'
-                              ? potentialValue
-                              : numValue.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-                            return (
-                              <span className="text-white">
-                                {currency}{formattedValue}
-                              </span>
-                            );
-                          }
-                        }
-                        return <span className="text-white opacity-60">Not set</span>;
-                      })()}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Stage Badge - Same line - Hidden on mobile, shown on desktop */}
-              <div className="hidden md:flex flex-col gap-1.5 flex-shrink-0">
-                {selectedClient?.stage !== null &&
-                  selectedClient?.stage !== undefined &&
-                  selectedClient?.stage !== '' && (
-                    <>
-                      {getStageBadge(selectedClient.stage, 'badge')}
-                      {/* Meeting Scheduled badge directly under stage */}
-                      {hasScheduledMeetings && nextMeetingDate && (
-                        <button
-                          onClick={() => setActiveTab('meeting')}
-                          className="badge badge-sm px-3 py-1.5 shadow-md cursor-pointer animate-pulse font-semibold whitespace-nowrap"
-                          style={{
-                            background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',
-                            color: 'white',
-                            borderColor: '#10b981',
-                            fontSize: '0.7rem',
-                            minHeight: '1.5rem',
-                          }}
-                        >
-                          Meeting: {(() => {
-                            const date = new Date(nextMeetingDate);
-                            return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
-                          })()}
-                        </button>
-                      )}
-                    </>
-                  )}
-              </div>
-            </div>
-
-            {/* Action Buttons - Below badges */}
-            {selectedClient?.stage !== null &&
-              selectedClient?.stage !== undefined &&
-              selectedClient?.stage !== '' && (
-                <div className="flex justify-center items-center gap-2 mb-2 flex-wrap">
-                  {areStagesEquivalent(currentStageName, 'Handler Set') && (
-                    <button
-                      type="button"
-                      onClick={handleStartCase}
-                      className="flex items-center gap-2 px-3 py-2 rounded-full bg-gradient-to-r from-purple-500 to-indigo-500 text-white font-semibold shadow-lg animate-pulse hover:animate-none transition-transform duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 text-sm"
-                    >
-                      <PlayIcon className="w-5 h-5" />
-                      Start Case
-                    </button>
-                  )}
-                  {areStagesEquivalent(currentStageName, 'Handler Started') && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => updateLeadStage('Application submitted')}
-                        className="flex items-center gap-2 px-3 py-2 rounded-full bg-gradient-to-r from-green-500 to-emerald-500 text-white font-semibold shadow-lg animate-pulse hover:animate-none transition-transform duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 text-sm"
-                      >
-                        <DocumentCheckIcon className="w-6 h-6" />
-                        Application submitted
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => updateLeadStage('Case Closed')}
-                        className="flex items-center gap-2 px-3 py-2 rounded-full bg-gradient-to-r from-gray-500 to-slate-500 text-white font-semibold shadow-lg animate-pulse hover:animate-none transition-transform duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 text-sm"
-                      >
-                        <CheckCircleIcon className="w-6 h-6" />
-                        Case closed
-                      </button>
-                    </>
-                  )}
-                  {areStagesEquivalent(currentStageName, 'Application submitted') && (
-                    <button
-                      type="button"
-                      onClick={() => updateLeadStage('Case Closed')}
-                      className="flex items-center gap-2 px-3 py-2 rounded-full bg-gradient-to-r from-gray-500 to-slate-500 text-white font-semibold shadow-lg animate-pulse hover:animate-none transition-transform duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 text-sm"
-                    >
-                      <CheckCircleIcon className="w-6 h-6" />
-                      Case closed
-                    </button>
-                  )}
-                </div>
-              )}
-
-          </div>
-
-          {/* Client Header - Lead number with language badge below, name aligned with lead number */}
-          <div className="flex items-center gap-3 mb-3 px-1">
-            <div className="hidden md:flex w-10 h-10 rounded-full items-center justify-center flex-shrink-0" style={{ backgroundColor: '#391BC8' }}>
-              <UserIcon className="w-5 h-5 text-white" />
-            </div>
-            <div className="flex flex-col gap-1 flex-1 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-lg font-bold text-base-content whitespace-nowrap">
-                  {selectedClient ? getDisplayLeadNumber(selectedClient) : '---'}
-                </span>
-                <span className="text-lg font-bold text-base-content">-</span>
-                <span className="text-xl font-bold text-base-content/90 truncate">
-                  {selectedClient ? (selectedClient.name || '---') : '---'}
-                </span>
-                {/* Master Lead button - next to client name on mobile only (for sub-leads) */}
-                {isSubLead && masterLeadNumber && (
-                  <a
-                    href={`/clients/${masterLeadNumber}/master`}
-                    className="md:hidden px-2 py-1 text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-blue-600 rounded-full flex items-center flex-shrink-0 hover:from-purple-700 hover:to-blue-700 transition-all"
-                  >
-                    <ArrowRightIcon className="w-4 h-4" />
-                  </a>
-                )}
-                {/* View Sub-Leads button - next to client name on mobile only (for master leads) */}
-                {isMasterLead && subLeads.length > 0 && !(selectedClient?.master_id && String(selectedClient.master_id).trim() !== '') && (
-                  <a
-                    href={`/clients/${(() => {
-                      // Get the base lead number without any suffix like /2
-                      const leadNumber = selectedClient.lead_number || selectedClient.id || '';
-                      return leadNumber.toString().split('/')[0];
-                    })()}/master`}
-                    className="md:hidden px-2 py-1 text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-blue-600 rounded-full flex items-center flex-shrink-0 hover:from-purple-700 hover:to-blue-700 transition-all"
-                  >
-                    <ArrowRightIcon className="w-4 h-4" />
-                  </a>
-                )}
-              </div>
-
-              {/* Category and Topic - plain text */}
-              <div className="flex items-center gap-2 flex-wrap text-sm text-base-content/70">
-                {selectedClient?.category && (
-                  <span className="font-medium">
-                    {selectedClient.category}
-                  </span>
-                )}
-                {selectedClient?.category && selectedClient?.topic && (
-                  <span>•</span>
-                )}
-                {selectedClient?.topic && (
-                  <span className="font-medium">
-                    {selectedClient.topic}
-                  </span>
-                )}
-              </div>
-
-              {/* Language and Applicant badges */}
-              <div className="flex items-center gap-2 flex-wrap">
-                {selectedClient?.language && (
-                  <span className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 rounded-full flex-shrink-0 w-fit">
-                    {selectedClient.language}
-                  </span>
-                )}
-                {/* Stage Badge - Mobile only, next to language badge */}
-                {selectedClient?.stage !== null &&
-                  selectedClient?.stage !== undefined &&
-                  selectedClient?.stage !== '' && (
-                    <div className="md:hidden">
-                      {getStageBadge(selectedClient.stage, 'mobile')}
-                    </div>
-                  )}
-                {(() => {
-                  const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                  const applicantsCount = isLegacyLead ? selectedClient?.no_of_applicants : selectedClient?.number_of_applicants_meeting;
-                  return applicantsCount && applicantsCount > 0 ? (
-                    <span className="badge badge-lg bg-gradient-to-r from-blue-500 to-indigo-500 text-white font-bold border-0 shadow-md px-4 py-3">
-                      {applicantsCount}
-                    </span>
-                  ) : null;
-                })()}
-              </div>
-            </div>
-          </div>
-
-          {/* Client info and Progress boxes - Horizontally scrollable on mobile - HIDDEN ON MOBILE: Accessed via menu button */}
-          <div className="hidden lg:flex flex-row gap-3 w-full -mx-4 px-4 overflow-x-auto scrollbar-hide snap-x snap-mandatory md:overflow-x-visible">
-            {/* Client Information Box */}
-            <div className="min-w-[calc(100%-1rem)] md:flex-1 md:min-w-0 snap-start bg-base-100 rounded-2xl shadow-md border border-base-300 overflow-hidden hover:shadow-lg transition-shadow duration-200">
-              <div className="h-full flex flex-col">
-                {/* Header with collapse button */}
-                <div className="flex items-center justify-between gap-3 mb-4 md:hidden p-3.5 pb-0">
-                  <div className="flex items-center gap-3 flex-1">
-                    <span className="text-base font-semibold text-base-content">Client Information</span>
-                  </div>
-                  <button
-                    onClick={() => {
-                      const next = !(isClientInfoCollapsed && isProgressCollapsed);
-                      setIsClientInfoCollapsed(next);
-                      setIsProgressCollapsed(next);
-                    }}
-                    className="btn btn-ghost btn-sm btn-circle p-0 w-8 h-8 min-h-0"
-                    aria-label={isClientInfoCollapsed ? "Expand" : "Collapse"}
-                  >
-                    {isClientInfoCollapsed ? (
-                      <ChevronRightIcon className="w-5 h-5 text-base-content/80" />
-                    ) : (
-                      <ChevronDownIcon className="w-5 h-5 text-base-content/80" />
-                    )}
-                  </button>
-                </div>
-                {/* Collapsible content */}
-                <div className={`overflow-hidden transition-all duration-300 ease-in-out ${isClientInfoCollapsed ? 'max-h-0 opacity-0' : 'max-h-[2000px] opacity-100'} md:max-h-none md:opacity-100`}>
-                  <div className="p-3.5 pt-0 md:pt-3.5">
-                    <div className="hide-client-header-mobile">
-                      <ClientInformationBox
-                        selectedClient={selectedClient}
-                        getEmployeeDisplayName={getEmployeeDisplayName}
-                        onClientUpdate={async () => await refreshClientData(selectedClient?.id)}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Progress & Follow-up Box */}
-            <div className="min-w-[calc(100%-1rem)] md:flex-1 md:min-w-0 snap-start bg-base-100 rounded-2xl shadow-md border border-base-300 overflow-visible hover:shadow-lg transition-shadow duration-200">
-              <div className="h-full flex flex-col">
-                {/* Header with collapse button - no icon on mobile */}
-                <div className="flex items-center justify-between gap-3 mb-4 md:hidden p-3.5 pb-0">
-                  <div className="flex items-center gap-3 flex-1">
-                    <span className="text-base font-semibold text-base-content">Progress & Follow-up</span>
-                  </div>
-                  <button
-                    onClick={() => {
-                      const next = !(isClientInfoCollapsed && isProgressCollapsed);
-                      setIsClientInfoCollapsed(next);
-                      setIsProgressCollapsed(next);
-                    }}
-                    className="btn btn-ghost btn-sm btn-circle p-0 w-8 h-8 min-h-0"
-                    aria-label={isProgressCollapsed ? "Expand" : "Collapse"}
-                  >
-                    {isProgressCollapsed ? (
-                      <ChevronRightIcon className="w-5 h-5 text-base-content/80" />
-                    ) : (
-                      <ChevronDownIcon className="w-5 h-5 text-base-content/80" />
-                    )}
-                  </button>
-                </div>
-                {/* Collapsible content */}
-                <div className={`overflow-visible transition-all duration-300 ease-in-out ${isProgressCollapsed ? 'max-h-0' : 'max-h-[2000px]'} md:max-h-none`}>
-                  <div className="p-3.5 pt-0 md:pt-3.5" style={{ overflow: 'visible' }}>
-                    <ProgressFollowupBox
-                      selectedClient={selectedClient}
-                      getEmployeeDisplayName={getEmployeeDisplayName}
-                      dropdownsContent={
-                        <>
-                          {/* First row: Stages and Actions buttons - Desktop Only */}
-                          <div className="hidden md:flex flex-row gap-3 w-full">
-                            <div className="flex flex-col flex-1 gap-3">
-                              <div className="dropdown relative" style={{ zIndex: 9999, overflow: 'visible' }}>
-                                <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base saira-regular w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
-                                  <span>Stages</span>
-                                  <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
-                                </label>
-                                {dropdownItems && (
-                                  <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-base-100 rounded-xl w-56 shadow-2xl border border-base-300" style={{ zIndex: 9999 }}>
-                                    {dropdownItems}
-                                  </ul>
-                                )}
-                              </div>
-
-                              {/* Input fields under Stages button */}
-                              {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
-                                <div className="flex flex-col items-start gap-1">
-                                  <label className="block text-sm font-semibold text-primary mb-1">Assign case handler</label>
-                                  <div ref={successStageHandlerContainerRef} className="relative w-full">
-                                    <input
-                                      type="text"
-                                      className="input input-bordered w-full"
-                                      placeholder="Not assigned"
-                                      value={successStageHandlerSearch}
-                                      onChange={e => {
-                                        console.log('📝 Input onChange:', e.target.value);
-                                        setSuccessStageHandlerSearch(e.target.value);
-                                        setShowSuccessStageHandlerDropdown(true);
-                                        console.log('✅ Set dropdown to show');
-                                      }}
-                                      onFocus={() => {
-                                        console.log('🎯 Input onFocus - showing dropdown');
-                                        setShowSuccessStageHandlerDropdown(true);
-                                        setFilteredSuccessStageHandlerOptions(handlerOptions);
-                                      }}
-                                      onBlur={() => {
-                                        console.log('👋 Input onBlur');
-                                      }}
-                                      autoComplete="off"
-                                      disabled={isUpdatingSuccessStageHandler}
-                                    />
-                                    {showSuccessStageHandlerDropdown && (() => {
-                                      console.log('🎨 Rendering success handler dropdown with', filteredSuccessStageHandlerOptions.length, 'options');
-                                      return (
-                                        <div className="absolute z-[9999] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                                          <button
-                                            type="button"
-                                            className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
-                                            onClick={() => {
-                                              console.log('🖱️ Clear handler clicked');
-                                              setSuccessStageHandlerSearch('');
-                                              setShowSuccessStageHandlerDropdown(false);
-                                              setFilteredSuccessStageHandlerOptions(handlerOptions);
-                                              void assignSuccessStageHandler(null);
-                                            }}
-                                            disabled={isUpdatingSuccessStageHandler}
-                                          >
-                                            ---------
-                                          </button>
-                                          {filteredSuccessStageHandlerOptions.length > 0 ? (
-                                            filteredSuccessStageHandlerOptions.map(option => (
-                                              <button
-                                                type="button"
-                                                key={option.id}
-                                                className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
-                                                onClick={() => {
-                                                  console.log('🖱️ Dropdown option clicked:', option);
-                                                  setSuccessStageHandlerSearch(option.label);
-                                                  setShowSuccessStageHandlerDropdown(false);
-                                                  setFilteredSuccessStageHandlerOptions(handlerOptions);
-                                                  void assignSuccessStageHandler(option);
-                                                }}
-                                                disabled={isUpdatingSuccessStageHandler}
-                                              >
-                                                {option.label}
-                                              </button>
-                                            ))
-                                          ) : (
-                                            <div className="px-4 py-3 text-sm text-base-content/60">
-                                              No handlers found
-                                            </div>
-                                          )}
-                                        </div>
-                                      );
-                                    })()}
-                                  </div>
-                                </div>
-                              )}
-
-                              {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
-                                <div className="relative" data-assign-dropdown="true">
-                                  <label className="block text-sm font-medium text-primary mb-1">Assign to</label>
-                                  <input
-                                    type="text"
-                                    className="input input-bordered w-full"
-                                    placeholder="---"
-                                    value={schedulerSearchTerm}
-                                    onChange={e => {
-                                      setSchedulerSearchTerm(e.target.value);
-                                      setShowSchedulerDropdown(true);
+                {/* Desktop View - Full layout with tab navigation */}
+                <div className="hidden md:flex flex-col gap-2">
+                  {/* Duplicate Contacts Badge - Desktop - At the top */}
+                  {duplicateContacts.length > 0 && (
+                    <div className="w-full flex justify-start items-center px-4">
+                      <div className="relative">
+                        {duplicateContacts.length === 1 ? (
+                          <button
+                            onClick={() => setIsDuplicateModalOpen(true)}
+                            className="rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
+                          >
+                            <DocumentDuplicateIcon className="w-4 h-4" />
+                            Duplicate Contact: {duplicateContacts[0].contactName} in Lead {duplicateContacts[0].leadNumber}
+                          </button>
+                        ) : (
+                          <div className="relative">
+                            <button
+                              onClick={() => setIsDuplicateDropdownOpen(!isDuplicateDropdownOpen)}
+                              className="rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
+                            >
+                              <DocumentDuplicateIcon className="w-4 h-4" />
+                              {duplicateContacts.length} Duplicate Contacts
+                              <ChevronDownIcon className={`w-4 h-4 transition-transform ${isDuplicateDropdownOpen ? 'rotate-180' : ''}`} />
+                            </button>
+                            {isDuplicateDropdownOpen && (
+                              <div className="absolute top-full left-0 mt-2 bg-base-100 rounded-lg shadow-xl border border-base-300 z-50 min-w-[300px] max-h-96 overflow-y-auto">
+                                {duplicateContacts.map((dup, idx) => (
+                                  <div
+                                    key={`${dup.contactId}-${dup.leadId}-${idx}`}
+                                    className="p-3 border-b border-base-300 hover:bg-base-200 cursor-pointer"
+                                    onClick={() => {
+                                      navigate(`/clients/${dup.leadNumber}`);
+                                      setIsDuplicateDropdownOpen(false);
                                     }}
-                                    onFocus={() => setShowSchedulerDropdown(true)}
-                                  />
-                                  {showSchedulerDropdown && (
-                                    <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                                      <button
-                                        type="button"
-                                        className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
-                                        onClick={() => {
-                                          setSchedulerSearchTerm('');
-                                          setShowSchedulerDropdown(false);
-                                          updateScheduler('');
-                                        }}
-                                      >
-                                        ---------
-                                      </button>
-                                      {filteredSchedulerOptions.length > 0 ? (
-                                        filteredSchedulerOptions.map(option => (
-                                          <button
-                                            type="button"
-                                            key={option}
-                                            className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
-                                            onClick={() => {
-                                              setSchedulerSearchTerm(option);
-                                              setShowSchedulerDropdown(false);
-                                              updateScheduler(option);
-                                            }}
-                                          >
-                                            {option}
-                                          </button>
-                                        ))
-                                      ) : (
-                                        <div className="px-4 py-3 text-sm text-base-content/60">
-                                          No matches found
-                                        </div>
+                                  >
+                                    <div className="font-semibold text-base-content">{dup.contactName}</div>
+                                    <div className="text-sm text-base-content/80">Lead {dup.leadNumber}: {dup.leadName}</div>
+                                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                      {dup.stage && (
+                                        <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
+                                          Stage: {dup.stage}
+                                        </span>
+                                      )}
+                                      {dup.category && (
+                                        <span className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded">
+                                          {dup.category}
+                                        </span>
                                       )}
                                     </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-
-                            <div className="dropdown dropdown-end flex-1 relative" style={{ zIndex: 9999, overflow: 'visible' }}>
-                              <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
-                                <span>Actions</span>
-                                <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
-                              </label>
-                              <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-base-100 rounded-xl w-56 shadow-2xl border border-base-300" style={{ zIndex: 9999 }}>
-                                {(() => {
-                                  const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                                  const isUnactivated = isLegacy
-                                    ? (selectedClient?.status === 10)
-                                    : (selectedClient?.status === 'inactive');
-                                  return isUnactivated;
-                                })() ? (
-                                  <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
-                                ) : (
-                                  <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
-                                )}
-                                <li>
-                                  <a
-                                    className="flex items-center gap-3 py-3 hover:bg-base-200 transition-colors rounded-lg"
-                                    onClick={async () => {
-                                      if (!selectedClient?.id) return;
-
-                                      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                      const leadId = isLegacyLead
-                                        ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
-                                        : selectedClient.id;
-                                      const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-
-                                      if (isInHighlightsState) {
-                                        await removeFromHighlights(leadId, isLegacyLead);
-                                      } else {
-                                        await addToHighlights(leadId, leadNumber, isLegacyLead);
-                                      }
-
-                                      (document.activeElement as HTMLElement | null)?.blur();
-                                    }}
-                                  >
-                                    {isInHighlightsState ? (
-                                      <>
-                                        <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                                        <span className="font-medium">Remove from Highlights</span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                                        <span className="font-medium">Add to Highlights</span>
-                                      </>
-                                    )}
-                                  </a>
-                                </li>
-                                <li>
-                                  <a
-                                    className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                                    <div className="text-xs text-base-content/70 mt-1">
+                                      Matches: {dup.matchingFields.join(', ')}
+                                    </div>
+                                  </div>
+                                ))}
+                                <div className="p-3 border-t border-gray-200 bg-gray-50">
+                                  <button
                                     onClick={() => {
-                                      openEditLeadDrawer();
-                                      (document.activeElement as HTMLElement | null)?.blur();
+                                      setIsDuplicateModalOpen(true);
+                                      setIsDuplicateDropdownOpen(false);
                                     }}
+                                    className="w-full text-sm font-semibold text-orange-600 hover:text-orange-700"
                                   >
-                                    <PencilSquareIcon className="w-5 h-5 text-blue-500" />
-                                    <span className="font-medium">Edit lead</span>
-                                  </a>
-                                </li>
-                                <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
-                                {isSuperuser && (
-                                  <li>
-                                    <a
-                                      className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg"
-                                      onClick={() => {
-                                        setShowDeleteModal(true);
-                                        (document.activeElement as HTMLElement | null)?.blur();
-                                      }}
-                                    >
-                                      <TrashIcon className="w-5 h-5 text-red-500" />
-                                      <span className="text-red-600 font-medium">Delete Lead</span>
-                                    </a>
-                                  </li>
-                                )}
-                              </ul>
-                            </div>
-                          </div>
-                        </>
-                      }
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      {/* Badges section - Duplicate Contacts - Desktop */}
-      {duplicateContacts.length > 0 && (
-        <div className="hidden md:flex w-full justify-start items-center mt-2 mb-2 px-4">
-          <div className="relative">
-            {duplicateContacts.length === 1 ? (
-              <button
-                onClick={() => setIsDuplicateModalOpen(true)}
-                className="rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
-              >
-                <DocumentDuplicateIcon className="w-4 h-4" />
-                Duplicate Contact: {duplicateContacts[0].contactName} in Lead {duplicateContacts[0].leadNumber}
-              </button>
-            ) : (
-              <div className="relative">
-                <button
-                  onClick={() => setIsDuplicateDropdownOpen(!isDuplicateDropdownOpen)}
-                  className="rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
-                >
-                  <DocumentDuplicateIcon className="w-4 h-4" />
-                  {duplicateContacts.length} Duplicate Contacts
-                  <ChevronDownIcon className={`w-4 h-4 transition-transform ${isDuplicateDropdownOpen ? 'rotate-180' : ''}`} />
-                </button>
-                {isDuplicateDropdownOpen && (
-                  <div className="absolute top-full left-0 mt-2 bg-base-100 rounded-lg shadow-xl border border-base-300 z-50 min-w-[300px] max-h-96 overflow-y-auto">
-                    {duplicateContacts.map((dup, idx) => (
-                      <div
-                        key={`${dup.contactId}-${dup.leadId}-${idx}`}
-                        className="p-3 border-b border-base-300 hover:bg-base-200 cursor-pointer"
-                        onClick={() => {
-                          navigate(`/clients/${dup.leadNumber}`);
-                          setIsDuplicateDropdownOpen(false);
-                        }}
-                      >
-                        <div className="font-semibold text-base-content">{dup.contactName}</div>
-                        <div className="text-sm text-base-content/80">Lead {dup.leadNumber}: {dup.leadName}</div>
-                        <div className="flex items-center gap-2 mt-1 flex-wrap">
-                          {dup.stage && (
-                            <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
-                              Stage: {dup.stage}
-                            </span>
-                          )}
-                          {dup.category && (
-                            <span className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded">
-                              {dup.category}
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-xs text-base-content/70 mt-1">
-                          Matches: {dup.matchingFields.join(', ')}
-                        </div>
-                      </div>
-                    ))}
-                    <div className="p-3 border-t border-gray-200 bg-gray-50">
-                      <button
-                        onClick={() => {
-                          setIsDuplicateModalOpen(true);
-                          setIsDuplicateDropdownOpen(false);
-                        }}
-                        className="w-full text-sm font-semibold text-orange-600 hover:text-orange-700"
-                      >
-                        View All Details
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-      {/* Client Details Section (desktop) */}
-      <div className="hidden md:block bg-white dark:bg-gray-900 w-full">
-        {/* Modern CRM Header */}
-        <div className="px-8 py-6">
-
-          {/* Client Details - Modern Box Design */}
-          <div className="pt-0">
-            <div className="flex flex-col lg:flex-row justify-between gap-8">
-              <div className="w-full lg:w-80">
-                {(() => {
-                  console.log('🔍 Clients.tsx - Rendering ClientInformationBox with props:', {
-                    isSubLead,
-                    masterLeadNumber,
-                    isMasterLeadProp: isMasterLead,
-                    subLeadsCountProp: subLeads.length,
-                    selectedClientLanguage: selectedClient?.language,
-                    selectedClientCategory: selectedClient?.category,
-                    selectedClientId: selectedClient?.id
-                  });
-                  return (
-                    <ClientInformationBox
-                      selectedClient={selectedClient}
-                      onClientUpdate={async () => await refreshClientData(selectedClient?.id)}
-                      isSubLead={isSubLead}
-                      masterLeadNumber={masterLeadNumber}
-                      isMasterLeadProp={isMasterLead}
-                      subLeadsCountProp={subLeads.length}
-                    />
-                  );
-                })()}
-              </div>
-              <div className="w-full lg:w-48 flex flex-col items-center">
-                {/* Next Payment Due Indicator */}
-                {nextDuePayment && (
-                  <div className="bg-gradient-to-r from-orange-500 to-red-500 rounded-xl shadow-lg px-4 py-2 mb-2 w-full max-w-xs">
-                    <div className="text-center">
-                      <div className="text-white text-xs font-semibold mb-1">Next Payment Due</div>
-                      <div className="text-white text-sm font-bold">
-                        {(() => {
-                          const dueDate = new Date(nextDuePayment.due_date);
-                          const today = new Date();
-                          const diffTime = dueDate.getTime() - today.getTime();
-                          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-                          let dateText = dueDate.toLocaleDateString('en-GB');
-                          if (diffDays === 0) {
-                            dateText = 'Today';
-                          } else if (diffDays === 1) {
-                            dateText = 'Tomorrow';
-                          } else if (diffDays < 0) {
-                            dateText = `${Math.abs(diffDays)} days overdue`;
-                          }
-
-                          const currency = nextDuePayment.isLegacy
-                            ? (nextDuePayment.accounting_currencies?.iso_code === 'ILS' ? '₪' : nextDuePayment.accounting_currencies?.iso_code || '₪')
-                            : (nextDuePayment.currency || '₪');
-
-                          const amount = nextDuePayment.isLegacy
-                            ? (Number(nextDuePayment.value) + Number(nextDuePayment.vat_value || 0))
-                            : (Number(nextDuePayment.value) + Number(nextDuePayment.value_vat || 0));
-
-                          return `${currency}${Number(amount.toFixed(2)).toLocaleString()} - ${dateText}`;
-                        })()}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                <div
-                  className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-2xl shadow-lg p-4 mb-3 cursor-pointer hover:from-purple-700 hover:to-blue-700 transition-all duration-200"
-                  onClick={() => setIsBalanceModalOpen(true)}
-                  title="Click to edit balance"
-                >
-                  <div className="text-center">
-                    <div className="text-white text-2xl font-bold whitespace-nowrap">
-                      {(() => {
-                        // For new leads, use balance column. For legacy, use total (or total_base if total is 0)
-                        const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
-                        let baseAmount: number;
-                        if (isLegacyLead) {
-                          // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
-                          const currencyId = (selectedClient as any)?.currency_id;
-                          // Convert to number for comparison (handle both string and number types)
-                          // Default to 1 (NIS) if currency_id is null/undefined/NaN (same as BalanceEditModal)
-                          let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                          if (!numericCurrencyId || isNaN(numericCurrencyId)) {
-                            numericCurrencyId = 1; // Default to NIS
-                          }
-                          if (numericCurrencyId === 1) {
-                            // For currency_id 1, show total_base (only, no fallback)
-                            // Check if total_base is actually loaded (not null/undefined) before using it
-                            const totalBase = (selectedClient as any)?.total_base;
-                            if (totalBase === null || totalBase === undefined) {
-                              // Data not loaded yet - don't render to prevent showing 0
-                              // The badge will render once data is loaded via refreshClientData
-                              return null;
-                            }
-                            baseAmount = Number(totalBase);
-                          } else {
-                            // For other currencies, show total column (only, no fallback)
-                            // Check if total is actually loaded (not null/undefined) before using it
-                            const total = (selectedClient as any)?.total;
-                            if (total === null || total === undefined) {
-                              // Data not loaded yet - don't render to prevent showing 0
-                              // The badge will render once data is loaded via refreshClientData
-                              return null;
-                            }
-                            baseAmount = Number(total);
-                          }
-                        } else {
-                          baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
-                        }
-                        // For legacy leads: main display should show WITH subtracting subcontractor fee
-                        // For new leads: also subtract subcontractor fee
-                        const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? (selectedClient as any)?.subcontractor_fee ?? 0);
-                        const mainAmount = baseAmount - subcontractorFee;
-
-                        // Get currency symbol - prioritize computed values from refreshClientData
-                        let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
-
-                        // If no computed currency, try to get from currency_id directly
-                        if ((!currency || currency === '₪') && selectedClient?.currency_id && !isLegacyLead) {
-                          const currencyId = Number(selectedClient.currency_id);
-                          switch (currencyId) {
-                            case 1: currency = '₪'; break; // ILS
-                            case 2: currency = '€'; break; // EUR  
-                            case 3: currency = '$'; break; // USD
-                            case 4: currency = '£'; break; // GBP
-                            default: currency = '₪';
-                          }
-                        }
-
-                        // Calculate VAT - only show if vat column is 'true' for new leads
-                        let vatAmount = 0;
-                        let shouldShowVAT = false;
-
-                        if (isLegacyLead) {
-                          // Legacy leads: check 'vat' column (text type, same as new leads)
-                          // 'false', '0', 'no' → VAT excluded (don't show VAT)
-                          // 'true', '1', 'yes', NULL, undefined → VAT included (show VAT)
-                          const vatValue = (selectedClient as any)?.vat;
-                          shouldShowVAT = true; // Default to showing VAT (included)
-
-                          if (vatValue !== null && vatValue !== undefined) {
-                            const vatStr = String(vatValue).toLowerCase().trim();
-                            // If VAT is excluded, don't show VAT in badge
-                            if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') {
-                              shouldShowVAT = false;
-                            }
-                          }
-
-                          // Only calculate VAT if we should show it
-                          if (shouldShowVAT) {
-                            // Use same logic as baseAmount: total_base for currency_id === 1, total for others
-                            const currencyId = (selectedClient as any)?.currency_id;
-                            let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                            if (!numericCurrencyId || isNaN(numericCurrencyId)) {
-                              numericCurrencyId = 1; // Default to NIS
-                            }
-                            const totalAmount = numericCurrencyId === 1
-                              ? Number((selectedClient as any)?.total_base ?? 0)
-                              : Number((selectedClient as any)?.total ?? 0);
-                            vatAmount = totalAmount * 0.18;
-                          }
-                        } else {
-                          // New leads: check 'vat' column (text type)
-                          // 'false', '0', 'no' → VAT excluded (don't show VAT)
-                          // 'true', '1', 'yes', NULL, undefined → VAT included (show VAT)
-                          const vatValue = selectedClient?.vat;
-                          shouldShowVAT = true; // Default to showing VAT (included)
-
-                          if (vatValue !== null && vatValue !== undefined) {
-                            const vatStr = String(vatValue).toLowerCase().trim();
-                            // If VAT is excluded, don't show VAT in badge
-                            if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') {
-                              shouldShowVAT = false;
-                            }
-                          }
-
-                          // Only calculate VAT if we should show it
-                          if (shouldShowVAT) {
-                            // Use vat_value from database if available, otherwise calculate for all currencies
-                            if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
-                              vatAmount = Number(selectedClient.vat_value);
-                            } else {
-                              const totalAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
-                              vatAmount = totalAmount * 0.18; // Calculate VAT for all currencies
-                            }
-                          }
-                        }
-
-                        return (
-                          <span>
-                            {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
-                            {shouldShowVAT && vatAmount > 0 && (
-                              <span className="text-white text-base opacity-90 font-normal ml-2">
-                                +{Number(vatAmount.toFixed(2)).toLocaleString()} VAT
-                              </span>
-                            )}
-                          </span>
-                        );
-                      })()}
-                    </div>
-                    {/* Conditionally show Potential Value - only if set */}
-                    {(() => {
-                      const potentialValue = (selectedClient as any)?.potential_total || (selectedClient as any)?.potential_value || null;
-                      if (potentialValue !== null && potentialValue !== undefined) {
-                        const numValue = typeof potentialValue === 'string' ? parseFloat(potentialValue) : Number(potentialValue);
-                        if (!isNaN(numValue) && numValue > 0) {
-                          // Get currency symbol - prioritize computed values from refreshClientData
-                          let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
-
-                          // If no computed currency, try to get from currency_id directly
-                          if ((!currency || currency === '₪') && selectedClient?.currency_id) {
-                            const currencyId = Number(selectedClient.currency_id);
-                            switch (currencyId) {
-                              case 1: currency = '₪'; break; // ILS
-                              case 2: currency = '€'; break; // EUR  
-                              case 3: currency = '$'; break; // USD
-                              case 4: currency = '£'; break; // GBP
-                              default: currency = '₪';
-                            }
-                          }
-                          const formattedValue = typeof potentialValue === 'string'
-                            ? potentialValue
-                            : numValue.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-                          return (
-                            <div className="text-white text-sm opacity-90 mt-2 pt-2 border-t border-white/20">
-                              <div className="font-medium">Potential Value:</div>
-                              <div className="text-white">
-                                <span className="text-white">
-                                  {currency}{formattedValue}
-                                </span>
+                                    View All Details
+                                  </button>
+                                </div>
                               </div>
-                            </div>
-                          );
-                        }
-                      }
-                      return null;
-                    })()}
-                    {/* Show Total with full amount (no subtraction) for legacy leads */}
-                    {(() => {
-                      const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
-                      const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? (selectedClient as any)?.subcontractor_fee ?? 0);
-
-                      // For legacy leads, always show Total if there's a subcontractor fee
-                      // For new leads, show Total if there's a subcontractor fee
-                      if (subcontractorFee > 0) {
-                        // Get currency symbol - prioritize computed values from refreshClientData
-                        let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
-
-                        // If no computed currency, try to get from currency_id directly
-                        if ((!currency || currency === '₪') && selectedClient?.currency_id) {
-                          const currencyId = Number(selectedClient.currency_id);
-                          switch (currencyId) {
-                            case 1: currency = '₪'; break; // ILS
-                            case 2: currency = '€'; break; // EUR  
-                            case 3: currency = '$'; break; // USD
-                            case 4: currency = '£'; break; // GBP
-                            default: currency = '₪';
-                          }
-                        }
-
-                        // Calculate base amount using same logic as main display
-                        let baseAmount: number;
-                        if (isLegacyLead) {
-                          // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
-                          const currencyId = (selectedClient as any)?.currency_id;
-                          let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                          if (!numericCurrencyId || isNaN(numericCurrencyId)) {
-                            numericCurrencyId = 1; // Default to NIS
-                          }
-                          if (numericCurrencyId === 1) {
-                            baseAmount = Number((selectedClient as any)?.total_base ?? 0);
-                          } else {
-                            baseAmount = Number((selectedClient as any)?.total ?? 0);
-                          }
-                        } else {
-                          baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
-                        }
-
-                        // Total should show FULL amount (no subtraction)
-                        const totalAmount = baseAmount;
-
-                        return (
-                          <div className="text-white text-sm opacity-90 mt-2 pt-2 border-t border-white/20">
-                            Total: {currency}{Number(totalAmount.toFixed(2)).toLocaleString()}
-                          </div>
-                        );
-                      }
-                      return null;
-                    })()}
-                  </div>
-                </div>
-
-                {/* Stage Badge - Under balance badge */}
-                {selectedClient?.stage !== null &&
-                  selectedClient?.stage !== undefined &&
-                  selectedClient?.stage !== '' && (
-                    <div className="mb-3 flex justify-center items-center gap-3">
-                      {getStageBadge(selectedClient.stage, 'desktop')}
-                      {/* Meeting Scheduled Badge */}
-                      {hasScheduledMeetings && nextMeetingDate && (
-                        <button
-                          onClick={() => setActiveTab('meeting')}
-                          className="shadow-lg cursor-pointer animate-pulse font-semibold rounded-full"
-                          style={{
-                            background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',
-                            color: 'white',
-                            borderColor: '#10b981',
-                            padding: '0.5rem 1rem',
-                            minHeight: '3.5rem',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            fontSize: '0.875rem',
-                            lineHeight: '1.25rem',
-                          }}
-                        >
-                          <span className="flex flex-col items-center gap-0.5">
-                            <span className="font-semibold">Meeting Scheduled</span>
-                            <span className="text-xs font-medium opacity-90">
-                              {(() => {
-                                const date = new Date(nextMeetingDate);
-                                return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
-                              })()}
-                            </span>
-                          </span>
-                        </button>
-                      )}
-                      {areStagesEquivalent(currentStageName, 'Handler Set') && (
-                        <button
-                          type="button"
-                          onClick={handleStartCase}
-                          className="flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-purple-500 to-indigo-500 text-white font-semibold shadow-lg animate-pulse hover:animate-none hover:scale-105 transition-transform duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500"
-                        >
-                          <PlayIcon className="w-5 h-5" />
-                          Start Case
-                        </button>
-                      )}
-                      {areStagesEquivalent(currentStageName, 'Handler Started') && (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => updateLeadStage('Application submitted')}
-                            className="flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-green-500 to-emerald-500 text-white font-semibold shadow-lg animate-pulse hover:animate-none hover:scale-105 transition-transform duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
-                          >
-                            <DocumentCheckIcon className="w-6 h-6" />
-                            Application submitted
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => updateLeadStage('Case Closed')}
-                            className="flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-gray-500 to-slate-500 text-white font-semibold shadow-lg animate-pulse hover:animate-none hover:scale-105 transition-transform duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
-                          >
-                            <CheckCircleIcon className="w-6 h-6" />
-                            Case closed
-                          </button>
-                        </>
-                      )}
-                      {areStagesEquivalent(currentStageName, 'Application submitted') && (
-                        <button
-                          type="button"
-                          onClick={() => updateLeadStage('Case Closed')}
-                          className="flex items-center gap-2 px-4 py-2 rounded-full bg-gradient-to-r from-gray-500 to-slate-500 text-white font-semibold shadow-lg animate-pulse hover:animate-none hover:scale-105 transition-transform duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
-                        >
-                          <CheckCircleIcon className="w-6 h-6" />
-                          Case closed
-                        </button>
-                      )}
-                    </div>
-                  )}
-
-                {/* Category Prompt Message - Under stage badge */}
-                {(!selectedClient?.category_id && !selectedClient?.category) && (
-                  <div className="text-center mb-3">
-                    <div className="text-sm text-orange-600 bg-orange-50 px-3 py-2 rounded-lg border border-orange-200 inline-block animate-pulse shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105" style={{
-                      boxShadow: '0 4px 8px rgba(0,0,0,0.1), 0 8px 16px rgba(0,0,0,0.1), inset 0 1px 0 rgba(255,255,255,0.2)',
-                      animation: 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite'
-                    }}>
-                      Please add a category for this lead
-                    </div>
-                  </div>
-                )}
-
-                {/* Applicants Display - Under stage badge */}
-                {(() => {
-                  const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                  const applicantsCount = isLegacyLead ? selectedClient?.no_of_applicants : selectedClient?.number_of_applicants_meeting;
-
-                  return applicantsCount && applicantsCount > 0 ? (
-                    <div className="text-center mb-3">
-                      <div className="text-black text-lg font-semibold">
-                        {applicantsCount} applicant{applicantsCount !== 1 ? 's' : ''}
-                      </div>
-                    </div>
-                  ) : null;
-                })()}
-
-                {/* Show "Case is not active" message for unactivated leads */}
-                {(() => {
-                  // Early return if selectedClient is null
-                  if (!selectedClient) return null;
-                  
-                  const isLegacyForBadge = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                  const statusValueForBadge = (selectedClient as any).status;
-                  const isUnactivatedForBadge = isLegacyForBadge
-                    ? (statusValueForBadge === 10 || statusValueForBadge === '10' || Number(statusValueForBadge) === 10)
-                    : (statusValueForBadge === 'inactive');
-
-                  // Get deactivate_notes for both legacy and new leads
-                  const deactivateNotes = (selectedClient as any).deactivate_notes || null;
-
-                  // Detect if text contains Hebrew characters for RTL/LTR alignment
-                  const hasHebrew = deactivateNotes ? /[\u0590-\u05FF]/.test(deactivateNotes) : false;
-
-                  // Text truncation settings
-                  const MAX_TEXT_LENGTH = 150;
-                  const shouldTruncate = deactivateNotes && deactivateNotes.length > MAX_TEXT_LENGTH;
-                  const displayText = shouldTruncate && !isInactiveBadgeExpanded
-                    ? deactivateNotes.substring(0, MAX_TEXT_LENGTH) + '...'
-                    : deactivateNotes;
-
-                  return isUnactivatedForBadge ? (
-                    <div className="mt-3 w-full">
-                      <div className="bg-white border border-red-200 rounded-xl shadow-sm overflow-hidden w-full">
-                        {/* Darker red header box */}
-                        <div className="bg-red-600 px-4 py-2.5 flex items-center gap-2">
-                          <ExclamationTriangleIcon className="w-5 h-5 text-white flex-shrink-0" />
-                          <span className="text-white font-semibold text-sm">Case is not active</span>
-                        </div>
-                        {/* Content area */}
-                        {deactivateNotes && (
-                          <div className="px-4 py-3 bg-red-50">
-                            <span
-                              className="text-red-800 text-sm leading-relaxed block"
-                              dir={hasHebrew ? 'rtl' : 'ltr'}
-                              style={{
-                                textAlign: hasHebrew ? 'right' : 'left',
-                                whiteSpace: 'pre-wrap'
-                              }}
-                            >
-                              {displayText}
-                            </span>
-                            {shouldTruncate && (
-                              <button
-                                onClick={() => setIsInactiveBadgeExpanded(!isInactiveBadgeExpanded)}
-                                className={`mt-2 text-red-700 hover:text-red-900 text-xs font-medium flex items-center gap-1 transition-colors ${hasHebrew ? 'flex-row-reverse' : ''}`}
-                                dir={hasHebrew ? 'rtl' : 'ltr'}
-                              >
-                                {isInactiveBadgeExpanded ? (
-                                  <>
-                                    <span>Show less</span>
-                                    <ChevronUpIcon className="w-4 h-4" />
-                                  </>
-                                ) : (
-                                  <>
-                                    <span>Show more</span>
-                                    <ChevronDownIcon className="w-4 h-4" />
-                                  </>
-                                )}
-                              </button>
                             )}
                           </div>
                         )}
                       </div>
                     </div>
-                  ) : null;
-                })()}
-              </div>
-              <div className="w-full lg:w-80">
-                <ProgressFollowupBox
-                  selectedClient={selectedClient}
-                  getEmployeeDisplayName={getEmployeeDisplayName}
-                  dropdownsContent={
-                    <>
-                      {/* First row: Stages and Actions buttons */}
-                      <div className="flex flex-row gap-3 w-full">
-                        <div className="flex flex-col flex-1 gap-3">
-                          <div className="dropdown relative" style={{ zIndex: 9999, overflow: 'visible' }}>
-                            <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base saira-regular w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
-                              <span>Stages</span>
-                              <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
-                            </label>
-                            {dropdownItems && (
-                              <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-2xl" style={{ zIndex: 9999 }}>
-                                {dropdownItems}
-                              </ul>
-                            )}
-                          </div>
-
-                          {/* Input fields under Stages button */}
-                          {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
-                            <div className="flex flex-col items-start gap-1">
-                              <label className="block text-sm font-semibold text-primary mb-1">Assign case handler</label>
-                              <div ref={successStageHandlerContainerRefDesktop} className="relative w-full">
-                                <input
-                                  type="text"
-                                  className="input input-bordered w-full"
-                                  placeholder="Not assigned"
-                                  value={successStageHandlerSearch}
-                                  onChange={e => {
-                                    setSuccessStageHandlerSearch(e.target.value);
-                                    setShowSuccessStageHandlerDropdown(true);
-                                  }}
-                                  onFocus={() => {
-                                    setShowSuccessStageHandlerDropdown(true);
-                                    setFilteredSuccessStageHandlerOptions(handlerOptions);
-                                  }}
-                                  autoComplete="off"
-                                  disabled={isUpdatingSuccessStageHandler}
-                                />
-                                {showSuccessStageHandlerDropdown && (
-                                  <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                                    <button
-                                      type="button"
-                                      className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
-                                      onClick={() => {
-                                        setSuccessStageHandlerSearch('');
-                                        setShowSuccessStageHandlerDropdown(false);
-                                        setFilteredSuccessStageHandlerOptions(handlerOptions);
-                                        void assignSuccessStageHandler(null);
-                                      }}
-                                      disabled={isUpdatingSuccessStageHandler}
-                                    >
-                                      ---------
-                                    </button>
-                                    {filteredSuccessStageHandlerOptions.length > 0 ? (
-                                      filteredSuccessStageHandlerOptions.map(option => (
-                                        <button
-                                          type="button"
-                                          key={option.id}
-                                          className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
-                                          onClick={() => {
-                                            setSuccessStageHandlerSearch(option.label);
-                                            setShowSuccessStageHandlerDropdown(false);
-                                            setFilteredSuccessStageHandlerOptions(handlerOptions);
-                                            void assignSuccessStageHandler(option);
-                                          }}
-                                          disabled={isUpdatingSuccessStageHandler}
-                                        >
-                                          {option.label}
-                                        </button>
-                                      ))
-                                    ) : (
-                                      <div className="px-4 py-3 text-sm text-base-content/60">
-                                        No handlers found
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          )}
-
-                          {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
-                            <div className="relative" data-assign-dropdown="true">
-                              <label className="block text-sm font-medium text-primary mb-1">Assign to</label>
-                              <input
-                                type="text"
-                                className="input input-bordered w-full"
-                                placeholder="---"
-                                value={schedulerSearchTerm}
-                                onChange={e => {
-                                  setSchedulerSearchTerm(e.target.value);
-                                  setShowSchedulerDropdown(true);
-                                }}
-                                onFocus={() => setShowSchedulerDropdown(true)}
-                              />
-                              {showSchedulerDropdown && (
-                                <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                                  <button
-                                    type="button"
-                                    className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
-                                    onClick={() => {
-                                      setSchedulerSearchTerm('');
-                                      setShowSchedulerDropdown(false);
-                                      updateScheduler('');
-                                    }}
-                                  >
-                                    ---------
-                                  </button>
-                                  {filteredSchedulerOptions.length > 0 ? (
-                                    filteredSchedulerOptions.map(option => (
-                                      <button
-                                        type="button"
-                                        key={option}
-                                        className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
-                                        onClick={() => {
-                                          setSchedulerSearchTerm(option);
-                                          setShowSchedulerDropdown(false);
-                                          updateScheduler(option);
-                                        }}
-                                      >
-                                        {option}
-                                      </button>
-                                    ))
-                                  ) : (
-                                    <div className="px-4 py-3 text-sm text-base-content/60">
-                                      No matches found
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="dropdown dropdown-end flex-1 relative" style={{ zIndex: 9999, overflow: 'visible' }}>
-                          <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
-                            <span>Actions</span>
-                            <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
-                          </label>
-                          <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-2xl border border-gray-200" style={{ zIndex: 9999 }}>
-                            {(() => {
-                              const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                              const isUnactivated = isLegacy
-                                ? (selectedClient?.status === 10)
-                                : (selectedClient?.status === 'inactive');
-                              return isUnactivated;
-                            })() ? (
-                              <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
-                            ) : (
-                              <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
-                            )}
-                            <li>
-                              <a
-                                className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                                onClick={async () => {
-                                  if (!selectedClient?.id) return;
-
-                                  const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                  const leadId = isLegacyLead
-                                    ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
-                                    : selectedClient.id;
-                                  const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-
-                                  if (isInHighlightsState) {
-                                    await removeFromHighlights(leadId, isLegacyLead);
-                                  } else {
-                                    await addToHighlights(leadId, leadNumber, isLegacyLead);
-                                  }
-
-                                  (document.activeElement as HTMLElement | null)?.blur();
-                                }}
-                              >
-                                {isInHighlightsState ? (
-                                  <>
-                                    <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                                    <span className="font-medium">Remove from Highlights</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                                    <span className="font-medium">Add to Highlights</span>
-                                  </>
-                                )}
-                              </a>
-                            </li>
-                            <li>
-                              <a
-                                className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                                onClick={() => {
-                                  openEditLeadDrawer();
-                                  (document.activeElement as HTMLElement | null)?.blur();
-                                }}
-                              >
-                                <PencilSquareIcon className="w-5 h-5 text-blue-500" />
-                                <span className="font-medium">Edit lead</span>
-                              </a>
-                            </li>
-                            <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
-                            {isSuperuser && (
-                              <li>
-                                <a
-                                  className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg"
-                                  onClick={() => {
-                                    setShowDeleteModal(true);
-                                    (document.activeElement as HTMLElement | null)?.blur();
-                                  }}
-                                >
-                                  <TrashIcon className="w-5 h-5 text-red-500" />
-                                  <span className="text-red-600 font-medium">Delete Lead</span>
-                                </a>
-                              </li>
-                            )}
-                          </ul>
-                        </div>
+                  )}
+                  <div className="flex items-center justify-between gap-4 flex-wrap">
+                    {/* Left side: Tab navigation arrows, tab name badge, lead number, name, and next follow-up */}
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      {/* Tab Navigation Buttons and Tab Name - Desktop Only - On the left */}
+                      <div className="hidden md:flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            const currentIndex = tabs.findIndex(tab => tab.id === activeTab);
+                            if (currentIndex > 0) {
+                              setActiveTab(tabs[currentIndex - 1].id);
+                            } else {
+                              setActiveTab(tabs[tabs.length - 1].id); // Wrap to last tab
+                            }
+                          }}
+                          className="p-2 rounded-lg hover:bg-base-200 transition-colors"
+                          title="Previous tab"
+                          aria-label="Previous tab"
+                        >
+                          <ChevronLeftIcon className="w-6 h-6" style={{ color: '#4218CC' }} />
+                        </button>
+                        {/* Current Tab Name Badge */}
+                        {(() => {
+                          const currentTab = tabs.find(tab => tab.id === activeTab);
+                          return currentTab ? (
+                            <span className="badge text-sm px-3 py-1.5 font-semibold shadow-sm whitespace-nowrap" style={{ backgroundColor: '#4218CC', color: '#ffffff', borderColor: '#4218CC' }}>
+                              {currentTab.label}
+                            </span>
+                          ) : null;
+                        })()}
+                        <button
+                          onClick={() => {
+                            const currentIndex = tabs.findIndex(tab => tab.id === activeTab);
+                            if (currentIndex < tabs.length - 1) {
+                              setActiveTab(tabs[currentIndex + 1].id);
+                            } else {
+                              setActiveTab(tabs[0].id); // Wrap to first tab
+                            }
+                          }}
+                          className="p-2 rounded-lg hover:bg-base-200 transition-colors"
+                          title="Next tab"
+                          aria-label="Next tab"
+                        >
+                          <ChevronRightIcon className="w-6 h-6" style={{ color: '#4218CC' }} />
+                        </button>
                       </div>
-                    </>
-                  }
-                />
+                      <div className="flex items-center gap-3 min-w-0 flex-wrap">
+                        <span className="text-lg font-bold text-base-content whitespace-nowrap">
+                          #{selectedClient.lead_number || selectedClient.id}
+                        </span>
+                        <span className="text-lg font-semibold text-base-content/90 truncate">
+                          {selectedClient.name || 'Unnamed Lead'}
+                        </span>
+                        {selectedClient.next_followup && (
+                          <div className="flex items-center gap-1.5 text-sm text-base-content/80 whitespace-nowrap">
+                            <CalendarDaysIcon className="w-4 h-4 flex-shrink-0" />
+                            <span className="font-medium">
+                              {new Date(selectedClient.next_followup).toLocaleDateString('en-US', {
+                                month: 'short',
+                                day: 'numeric',
+                                year: 'numeric'
+                              })}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Right side: Stage badge and topic */}
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      {/* Stage Badge */}
+                      {(() => {
+                        const stageStr = (selectedClient.stage !== null && selectedClient.stage !== undefined) ? String(selectedClient.stage) : '';
+                        const stageName = getStageName(stageStr);
+                        const stageColor = getStageColour(stageStr);
+                        const textColor = getContrastingTextColor(stageColor);
+                        const backgroundColor = stageColor || '#3b28c7';
+
+                        return (
+                          <span
+                            className="badge text-sm px-4 py-2 font-bold shadow-sm whitespace-nowrap"
+                            style={{
+                              backgroundColor: backgroundColor,
+                              color: textColor,
+                              borderColor: backgroundColor,
+                            }}
+                          >
+                            {stageName}
+                          </span>
+                        );
+                      })()}
+
+                      {/* Topic/Category - same size as stage badge */}
+                      {selectedClient.category && (
+                        <span
+                          className="badge text-sm px-4 py-2 font-bold shadow-sm bg-base-200 text-base-content/90 border-base-300 whitespace-nowrap flex items-center gap-2"
+                        >
+                          <TagIcon className="w-4 h-4 flex-shrink-0" />
+                          <span className="hidden sm:inline">{selectedClient.category}</span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
-      </div>
+          )}
 
-      {/* Tabs Navigation */}
+          {/* Background loading indicator */}
+          {backgroundLoading && (
+            <div className="fixed top-4 right-4 z-40 bg-info/20 text-info-content px-3 py-2 rounded-lg shadow-lg flex items-center gap-2 text-sm">
+              <div className="loading loading-spinner loading-xs"></div>
+              Loading additional data...
+            </div>
+          )}
 
-      {/* Tabs Navigation - Desktop Only (Hidden on Mobile) - Using style tag to ensure it's hidden */}
-      <style>{`
+
+
+
+          {/* Desktop Header - Using new ClientHeader component */}
+          <ClientHeader
+            selectedClient={selectedClient}
+            refreshClientData={refreshClientData}
+            isSubLead={isSubLead}
+            masterLeadNumber={masterLeadNumber}
+            isMasterLead={isMasterLead}
+            subLeadsCount={subLeads.length}
+            nextDuePayment={nextDuePayment}
+            setIsBalanceModalOpen={setIsBalanceModalOpen}
+            currentStageName={currentStageName}
+            handleStartCase={handleStartCase}
+            updateLeadStage={updateLeadStage}
+            isInHighlightsState={isInHighlightsState}
+            isSuperuser={isSuperuser}
+            setShowDeleteModal={setShowDeleteModal}
+            duplicateContacts={duplicateContacts}
+            setIsDuplicateModalOpen={setIsDuplicateModalOpen}
+            setIsDuplicateDropdownOpen={setIsDuplicateDropdownOpen}
+            isDuplicateDropdownOpen={isDuplicateDropdownOpen}
+            setShowSubLeadDrawer={setShowSubLeadDrawer}
+            openEditLeadDrawer={openEditLeadDrawer}
+            handleActivation={handleActivation}
+            setShowUnactivationModal={setShowUnactivationModal}
+            renderStageBadge={(anchor) => getStageBadge(selectedClient.stage, anchor)}
+            getEmployeeDisplayName={getEmployeeDisplayName}
+            allEmployees={allEmployees}
+            dropdownItems={dropdownItems}
+            handlePaymentReceivedNewClient={handlePaymentReceivedNewClient}
+            handleScheduleMenuClick={handleScheduleMenuClick}
+            handleStageUpdate={handleStageUpdate}
+            openSendOfferModal={openSendOfferModal}
+            handleOpenSignedDrawer={handleOpenSignedDrawer}
+            handleOpenDeclinedDrawer={handleOpenDeclinedDrawer}
+            setShowRescheduleDrawer={setShowRescheduleDrawer}
+            scheduleMenuLabel={scheduleMenuLabel}
+            hasScheduledMeetings={hasScheduledMeetings}
+            isStageNumeric={isStageNumeric}
+            stageNumeric={stageNumeric}
+            dropdownsContent={
+              <>
+                {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
+                  <div className="flex flex-col items-start gap-1 w-full">
+                    <label className="block text-xs font-semibold text-gray-500 mb-1">Assign case handler</label>
+                    <div ref={successStageHandlerContainerRefDesktop} className="relative w-full flex items-center gap-1">
+                      <div className="relative w-full">
+                        <input
+                          type="text"
+                          className="input input-sm input-bordered w-full"
+                          placeholder="Not assigned"
+                          value={successStageHandlerSearch}
+                          onChange={e => {
+                            setSuccessStageHandlerSearch(e.target.value);
+                            setShowSuccessStageHandlerDropdown(true);
+                          }}
+                          onFocus={() => {
+                            setShowSuccessStageHandlerDropdown(true);
+                            setFilteredSuccessStageHandlerOptions(handlerOptions);
+                          }}
+                          autoComplete="off"
+                          disabled={isUpdatingSuccessStageHandler}
+                        />
+                      </div>
+                      <button
+                        className="btn btn-sm btn-square btn-success text-white"
+                        onClick={() => {
+                          const searchText = successStageHandlerSearch.trim();
+                          if (!searchText) return;
+
+                          // 1. Try to find strict match in allEmployees (best for ID resolution)
+                          const matchedEmployee = allEmployees.find(emp =>
+                            emp.display_name.toLowerCase() === searchText.toLowerCase()
+                          );
+
+                          let optionToAssign: HandlerOption;
+
+                          if (matchedEmployee) {
+                            optionToAssign = { id: matchedEmployee.id, label: matchedEmployee.display_name };
+                          } else {
+                            // 2. Fallback: try to find in existing handlerOptions
+                            const matchedOption = handlerOptions.find(opt => opt.label.toLowerCase() === searchText.toLowerCase());
+                            if (matchedOption) {
+                              optionToAssign = matchedOption;
+                            } else {
+                              // 3. Last resort: custom text. Pass empty ID but valid label.
+                              // The assignSuccessStageHandler logic checks for label presence to trigger stage update.
+                              optionToAssign = { id: '', label: searchText };
+                            }
+                          }
+
+                          // Trigger assignment. This function handles stage update logic (to "Handler Set").
+                          void assignSuccessStageHandler(optionToAssign);
+                        }}
+                        disabled={isUpdatingSuccessStageHandler}
+                        title="Assign Handler"
+                      >
+                        <CheckIcon className="w-5 h-5" />
+                      </button>
+                      {showSuccessStageHandlerDropdown && (
+                        <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                          <button
+                            type="button"
+                            className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                            onClick={() => {
+                              setSuccessStageHandlerSearch('');
+                              setShowSuccessStageHandlerDropdown(false);
+                              setFilteredSuccessStageHandlerOptions(handlerOptions);
+                              void assignSuccessStageHandler(null);
+                            }}
+                            disabled={isUpdatingSuccessStageHandler}
+                          >
+                            ---------
+                          </button>
+                          {filteredSuccessStageHandlerOptions.length > 0 ? (
+                            filteredSuccessStageHandlerOptions.map(option => (
+                              <button
+                                type="button"
+                                key={option.id}
+                                className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                                onClick={() => {
+                                  setSuccessStageHandlerSearch(option.label);
+                                  setShowSuccessStageHandlerDropdown(false);
+                                  setFilteredSuccessStageHandlerOptions(handlerOptions);
+                                  void assignSuccessStageHandler(option);
+                                }}
+                                disabled={isUpdatingSuccessStageHandler}
+                              >
+                                {option.label}
+                              </button>
+                            ))
+                          ) : (
+                            <div className="px-4 py-3 text-sm text-base-content/60">
+                              No handlers found
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
+                  <div className="relative w-full" data-assign-dropdown="true">
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Assign to</label>
+                    <div className="flex items-center gap-1">
+                      <div className="relative w-full">
+                        <input
+                          type="text"
+                          className="input input-sm input-bordered w-full"
+                          placeholder="---"
+                          value={schedulerSearchTerm}
+                          onChange={e => {
+                            setSchedulerSearchTerm(e.target.value);
+                            setShowSchedulerDropdown(true);
+                          }}
+                          onFocus={() => setShowSchedulerDropdown(true)}
+                        />
+                      </div>
+                      <button
+                        className="btn btn-sm btn-square btn-success text-white"
+                        onClick={() => {
+                          const searchText = schedulerSearchTerm.trim();
+                          if (searchText) {
+                            updateScheduler(searchText);
+                          }
+                        }}
+                        title="Assign Scheduler"
+                      >
+                        <CheckIcon className="w-5 h-5" />
+                      </button>
+                    </div>
+                    {showSchedulerDropdown && (
+                      <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                        <button
+                          type="button"
+                          className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                          onClick={() => {
+                            setSchedulerSearchTerm('');
+                            setShowSchedulerDropdown(false);
+                            updateScheduler('');
+                          }}
+                        >
+                          ---------
+                        </button>
+                        {filteredSchedulerOptions.length > 0 ? (
+                          filteredSchedulerOptions.map(option => (
+                            <button
+                              type="button"
+                              key={option}
+                              className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                              onClick={() => {
+                                setSchedulerSearchTerm(option);
+                                setShowSchedulerDropdown(false);
+                                updateScheduler(option);
+                              }}
+                            >
+                              {option}
+                            </button>
+                          ))
+                        ) : (
+                          <div className="px-4 py-3 text-sm text-base-content/60">
+                            No matches found
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            }
+          />
+          {/* Tabs Navigation */}
+
+          {/* Tabs Navigation - Desktop Only (Hidden on Mobile) - Using style tag to ensure it's hidden */}
+          <style>{`
         @media (max-width: 1023px) {
           .desktop-tabs-navigation {
             display: none !important;
           }
         }
       `}</style>
-      <div className="desktop-tabs-navigation hidden lg:block bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mb-6 mx-6">
-        <div className="w-full">
-          {/* Desktop version */}
-          <div className="flex flex-col px-4 py-4 gap-4">
-            <div className="flex items-center gap-4 flex-wrap">
-              <div ref={desktopTabsRef} className="flex bg-white dark:bg-gray-800 p-1 gap-1 overflow-x-auto flex-1 rounded-lg scrollbar-hide min-w-0" style={{ scrollBehavior: 'smooth' }}>
-                {tabs.map((tab) => (
-                  <button
-                    key={tab.id}
-                    className={`relative flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm transition-all duration-300 hover:scale-[1.02] whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
-                      ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg transform scale-[1.02]'
-                      : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
-                      }`}
-                    onClick={() => setActiveTab(tab.id)}
-                  >
-                    <tab.icon className={`w-5 h-5 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
-                    <span className={`whitespace-nowrap saira-light font-bold ${activeTab === tab.id ? 'text-white' : 'text-gray-600'}`}>{tab.label}</span>
-                    {tab.id === 'interactions' && tab.badge && (
-                      <div className={`badge badge-sm font-bold ${activeTab === tab.id
-                        ? 'bg-white/20 text-white border-white/30'
-                        : 'bg-purple-100 text-purple-700 border-purple-200'
-                        }`}>
-                        {tab.badge}
-                      </div>
-                    )}
-                    {activeTab === tab.id && (
-                      <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
-                    )}
-                  </button>
-                ))}
+          <div className="desktop-tabs-navigation hidden lg:block bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mb-6 mx-6">
+            <div className="w-full">
+              {/* Desktop version */}
+              <div className="flex flex-col px-4 py-4 gap-4">
+                <div className="flex items-center gap-4 flex-wrap">
+                  <div ref={desktopTabsRef} className="flex bg-white dark:bg-gray-800 p-1 gap-1 overflow-x-auto flex-1 rounded-lg scrollbar-hide min-w-0" style={{ scrollBehavior: 'smooth' }}>
+                    {tabs.map((tab) => (
+                      <button
+                        key={tab.id}
+                        className={`relative flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm transition-all duration-300 hover:scale-[1.02] whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
+                          ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg transform scale-[1.02]'
+                          : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
+                          }`}
+                        onClick={() => setActiveTab(tab.id)}
+                      >
+                        <tab.icon className={`w-5 h-5 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
+                        <span className={`whitespace-nowrap saira-light font-bold ${activeTab === tab.id ? 'text-white' : 'text-gray-600'}`}>{tab.label}</span>
+                        {tab.id === 'interactions' && tab.badge && (
+                          <div className={`badge badge-sm font-bold ${activeTab === tab.id
+                            ? 'bg-white/20 text-white border-white/30'
+                            : 'bg-purple-100 text-purple-700 border-purple-200'
+                            }`}>
+                            {tab.badge}
+                          </div>
+                        )}
+                        {activeTab === tab.id && (
+                          <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      </div>
-      {/* Mobile: Edge-positioned arrow buttons */}
-      <div className="lg:hidden">
-        {/* Right Edge - Menu Button */}
-        <button
-          onClick={() => {
-            setShowMobileMenu(!showMobileMenu);
-            setShowMobileStagesDropdown(false);
-            setShowMobileActionsDropdown(false);
-          }}
-          className="fixed right-2 top-1/2 -translate-y-1/2 z-[45] bg-white rounded-full shadow-lg p-3 transition-all hover:scale-110"
-          style={{ backgroundColor: '#4218CC' }}
-        >
-          <Bars3Icon className="w-6 h-6 text-white" />
-        </button>
+          {/* Mobile: Edge-positioned arrow buttons */}
+          <div className="lg:hidden">
+            {/* Right Edge - Menu Button */}
+            <button
+              onClick={() => {
+                setShowMobileMenu(!showMobileMenu);
+                setShowMobileStagesDropdown(false);
+                setShowMobileActionsDropdown(false);
+              }}
+              className="fixed right-2 top-1/2 -translate-y-1/2 z-[45] bg-white rounded-full shadow-lg p-3 transition-all hover:scale-110"
+              style={{ backgroundColor: '#4218CC' }}
+            >
+              <Bars3Icon className="w-6 h-6 text-white" />
+            </button>
 
-        {/* Mobile Menu - Choose Client Info, Stages or Actions */}
-        {showMobileMenu && (
-          <>
-            <div
-              className="fixed inset-0 z-40 bg-black/20"
-              onClick={() => setShowMobileMenu(false)}
-            />
-            <div className="fixed right-2 top-1/2 -translate-y-1/2 mr-16 z-50 bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden">
-              <button
-                onClick={() => {
-                  setShowMobileMenu(false);
-                  setShowMobileClientInfo(true);
-                  setShowMobileStagesDropdown(false);
-                  setShowMobileActionsDropdown(false);
-                }}
-                className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors border-b border-gray-100"
-              >
-                <span className="font-semibold" style={{ color: '#4218CC' }}>Client Info</span>
-              </button>
-              <button
-                onClick={() => {
-                  setShowMobileMenu(false);
-                  setShowMobileStagesDropdown(true);
-                  setShowMobileActionsDropdown(false);
-                  setShowMobileClientInfo(false);
-                }}
-                className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors border-b border-gray-100"
-              >
-                <span className="font-semibold" style={{ color: '#4218CC' }}>Stages</span>
-              </button>
-              <button
-                onClick={() => {
-                  setShowMobileMenu(false);
-                  setShowMobileStagesDropdown(false);
-                  setShowMobileActionsDropdown(true);
-                  setShowMobileClientInfo(false);
-                }}
-                className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors"
-              >
-                <span className="font-semibold" style={{ color: '#4218CC' }}>Actions</span>
-              </button>
-            </div>
-          </>
-        )}
-
-        {/* Mobile Stages Dropdown */}
-        {showMobileStagesDropdown && (
-          <>
-            <div
-              className="fixed inset-0 z-40 bg-black/20"
-              onClick={() => setShowMobileStagesDropdown(false)}
-            />
-            <div className="fixed left-0 top-1/2 -translate-y-1/2 z-50 bg-base-100 rounded-r-2xl shadow-2xl border border-l-0 border-base-300 w-64 max-h-[80vh] overflow-y-auto">
-              <div className="p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="font-semibold text-base" style={{ color: '#4218CC' }}>Stages</h3>
-                  <button
-                    onClick={() => setShowMobileStagesDropdown(false)}
-                    className="btn btn-ghost btn-sm btn-circle"
-                  >
-                    <XMarkIcon className="w-5 h-5" />
-                  </button>
-                </div>
-                {dropdownItems && (
-                  <ul className="menu p-0">
-                    {dropdownItems}
-                  </ul>
-                )}
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* Mobile Actions Dropdown */}
-        {showMobileActionsDropdown && (
-          <>
-            <div
-              className="fixed inset-0 z-40 bg-black/20"
-              onClick={() => setShowMobileActionsDropdown(false)}
-            />
-            <div className="fixed right-0 top-1/2 -translate-y-1/2 z-50 bg-base-100 rounded-l-2xl shadow-2xl border border-r-0 border-base-300 w-64 max-h-[80vh] overflow-y-auto">
-              <div className="p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="font-semibold text-base" style={{ color: '#4218CC' }}>Actions</h3>
-                  <button
-                    onClick={() => setShowMobileActionsDropdown(false)}
-                    className="btn btn-ghost btn-sm btn-circle"
-                  >
-                    <XMarkIcon className="w-5 h-5" />
-                  </button>
-                </div>
-                <ul className="menu p-0">
-                  {(() => {
-                    const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                    const isUnactivated = isLegacy
-                      ? (selectedClient?.status === 10)
-                      : (selectedClient?.status === 'inactive');
-                    return isUnactivated;
-                  })() ? (
-                    <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
-                  ) : (
-                    <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
-                  )}
-                  <li>
-                    <a
-                      className="flex items-center gap-3 py-3 hover:bg-base-200 transition-colors rounded-lg"
-                      onClick={async () => {
-                        if (!selectedClient?.id) return;
-
-                        const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                        const leadId = isLegacyLead
-                          ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
-                          : selectedClient.id;
-                        const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-
-                        if (isInHighlightsState) {
-                          await removeFromHighlights(leadId, isLegacyLead);
-                        } else {
-                          await addToHighlights(leadId, leadNumber, isLegacyLead);
-                        }
-
-                        setShowMobileActionsDropdown(false);
-                      }}
-                    >
-                      {isInHighlightsState ? (
-                        <>
-                          <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                          <span className="font-medium">Remove from Highlights</span>
-                        </>
-                      ) : (
-                        <>
-                          <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                          <span className="font-medium">Add to Highlights</span>
-                        </>
-                      )}
-                    </a>
-                  </li>
-                  <li>
-                    <a
-                      className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                      onClick={() => {
-                        openEditLeadDrawer();
-                        setShowMobileActionsDropdown(false);
-                      }}
-                    >
-                      <PencilSquareIcon className="w-5 h-5 text-blue-500" />
-                      <span className="font-medium">Edit lead</span>
-                    </a>
-                  </li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); setShowMobileActionsDropdown(false); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
-                  {isSuperuser && (
-                    <li>
-                      <a
-                        className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg"
-                        onClick={() => {
-                          setShowDeleteModal(true);
-                          setShowMobileActionsDropdown(false);
-                        }}
-                      >
-                        <TrashIcon className="w-5 h-5 text-red-500" />
-                        <span className="text-red-600 font-medium">Delete Lead</span>
-                      </a>
-                    </li>
-                  )}
-                </ul>
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* Mobile Client Information Panel */}
-        {showMobileClientInfo && (
-          <>
-            <div
-              className="fixed inset-0 z-40 bg-black/20"
-              onClick={() => setShowMobileClientInfo(false)}
-            />
-            <div className="fixed right-0 top-0 bottom-0 z-50 bg-base-100 shadow-2xl border-l border-base-300 w-80 max-w-[85vw] overflow-y-auto">
-              <div className="p-4">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="font-semibold text-lg" style={{ color: '#4218CC' }}>Client Information</h3>
-                  <button
-                    onClick={() => setShowMobileClientInfo(false)}
-                    className="btn btn-ghost btn-sm btn-circle"
-                  >
-                    <XMarkIcon className="w-5 h-5" />
-                  </button>
-                </div>
-                <ClientInformationBox
-                  selectedClient={selectedClient}
-                  getEmployeeDisplayName={getEmployeeDisplayName}
-                  onClientUpdate={async () => await refreshClientData(selectedClient?.id)}
+            {/* Mobile Menu - Choose Client Info, Stages or Actions */}
+            {showMobileMenu && (
+              <>
+                <div
+                  className="fixed inset-0 z-40 bg-black/20"
+                  onClick={() => setShowMobileMenu(false)}
                 />
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Stages, Actions, and Assign to - Mobile Only - Above Tabs - HIDDEN: Using edge arrows instead */}
-      <div className="hidden px-4 py-3 space-y-3">
-        {/* First row: Stages and Actions buttons */}
-        <div className="flex flex-row gap-3 w-full">
-          <div className="flex flex-col flex-1 gap-3">
-            <div className="dropdown relative" style={{ zIndex: 9999, overflow: 'visible' }}>
-              <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base saira-regular w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
-                <span>Stages</span>
-                <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
-              </label>
-              {dropdownItems && (
-                <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-2xl" style={{ zIndex: 9999 }}>
-                  {dropdownItems}
-                </ul>
-              )}
-            </div>
-
-            {/* Input fields under Stages button */}
-            {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
-              <div className="flex flex-col items-start gap-1">
-                <label className="block text-sm font-semibold text-primary mb-1">Assign case handler</label>
-                <div ref={successStageHandlerContainerRef} className="relative w-full">
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    placeholder="Not assigned"
-                    value={successStageHandlerSearch}
-                    onChange={e => {
-                      setSuccessStageHandlerSearch(e.target.value);
-                      setShowSuccessStageHandlerDropdown(true);
+                <div className="fixed right-2 top-1/2 -translate-y-1/2 mr-16 z-50 bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden">
+                  <button
+                    onClick={() => {
+                      setShowMobileMenu(false);
+                      setShowMobileClientInfo(true);
+                      setShowMobileStagesDropdown(false);
+                      setShowMobileActionsDropdown(false);
                     }}
-                    onFocus={() => {
-                      setShowSuccessStageHandlerDropdown(true);
-                      setFilteredSuccessStageHandlerOptions(handlerOptions);
+                    className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors border-b border-gray-100"
+                  >
+                    <span className="font-semibold" style={{ color: '#4218CC' }}>Client Info</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowMobileMenu(false);
+                      setShowMobileStagesDropdown(true);
+                      setShowMobileActionsDropdown(false);
+                      setShowMobileClientInfo(false);
                     }}
-                    autoComplete="off"
-                    disabled={isUpdatingSuccessStageHandler}
-                  />
-                  {showSuccessStageHandlerDropdown && (
-                    <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                    className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors border-b border-gray-100"
+                  >
+                    <span className="font-semibold" style={{ color: '#4218CC' }}>Stages</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowMobileMenu(false);
+                      setShowMobileStagesDropdown(false);
+                      setShowMobileActionsDropdown(true);
+                      setShowMobileClientInfo(false);
+                    }}
+                    className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors"
+                  >
+                    <span className="font-semibold" style={{ color: '#4218CC' }}>Actions</span>
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Mobile Stages Dropdown */}
+            {showMobileStagesDropdown && (
+              <>
+                <div
+                  className="fixed inset-0 z-40 bg-black/20"
+                  onClick={() => setShowMobileStagesDropdown(false)}
+                />
+                <div className="fixed left-0 top-1/2 -translate-y-1/2 z-50 bg-base-100 rounded-r-2xl shadow-2xl border border-l-0 border-base-300 w-64 max-h-[80vh] overflow-y-auto">
+                  <div className="p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="font-semibold text-base" style={{ color: '#4218CC' }}>Stages</h3>
                       <button
-                        type="button"
-                        className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
-                        onClick={() => {
-                          setSuccessStageHandlerSearch('');
-                          setShowSuccessStageHandlerDropdown(false);
-                          setFilteredSuccessStageHandlerOptions(handlerOptions);
-                          void assignSuccessStageHandler(null);
-                        }}
-                        disabled={isUpdatingSuccessStageHandler}
+                        onClick={() => setShowMobileStagesDropdown(false)}
+                        className="btn btn-ghost btn-sm btn-circle"
                       >
-                        ---------
+                        <XMarkIcon className="w-5 h-5" />
                       </button>
-                      {filteredSuccessStageHandlerOptions.length > 0 ? (
-                        filteredSuccessStageHandlerOptions.map(option => (
+                    </div>
+                    {dropdownItems && (
+                      <ul className="menu p-0">
+                        {dropdownItems}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Mobile Actions Dropdown */}
+            {showMobileActionsDropdown && (
+              <>
+                <div
+                  className="fixed inset-0 z-40 bg-black/20"
+                  onClick={() => setShowMobileActionsDropdown(false)}
+                />
+                <div className="fixed right-0 top-1/2 -translate-y-1/2 z-50 bg-base-100 rounded-l-2xl shadow-2xl border border-r-0 border-base-300 w-64 max-h-[80vh] overflow-y-auto">
+                  <div className="p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="font-semibold text-base" style={{ color: '#4218CC' }}>Actions</h3>
+                      <button
+                        onClick={() => setShowMobileActionsDropdown(false)}
+                        className="btn btn-ghost btn-sm btn-circle"
+                      >
+                        <XMarkIcon className="w-5 h-5" />
+                      </button>
+                    </div>
+                    <ul className="menu p-0">
+                      {(() => {
+                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                        const isUnactivated = isLegacy
+                          ? (selectedClient?.status === 10)
+                          : (selectedClient?.status === 'inactive');
+                        return isUnactivated;
+                      })() ? (
+                        <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
+                      ) : (
+                        <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
+                      )}
+                      <li>
+                        <a
+                          className="flex items-center gap-3 py-3 hover:bg-base-200 transition-colors rounded-lg"
+                          onClick={async () => {
+                            if (!selectedClient?.id) return;
+
+                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                            const leadId = isLegacyLead
+                              ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
+                              : selectedClient.id;
+                            const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+
+                            if (isInHighlightsState) {
+                              await removeFromHighlights(leadId, isLegacyLead);
+                            } else {
+                              await addToHighlights(leadId, leadNumber, isLegacyLead);
+                            }
+
+                            setShowMobileActionsDropdown(false);
+                          }}
+                        >
+                          {isInHighlightsState ? (
+                            <>
+                              <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                              <span className="font-medium">Remove from Highlights</span>
+                            </>
+                          ) : (
+                            <>
+                              <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                              <span className="font-medium">Add to Highlights</span>
+                            </>
+                          )}
+                        </a>
+                      </li>
+                      <li>
+                        <a
+                          className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                          onClick={() => {
+                            openEditLeadDrawer();
+                            setShowMobileActionsDropdown(false);
+                          }}
+                        >
+                          <PencilSquareIcon className="w-5 h-5 text-blue-500" />
+                          <span className="font-medium">Edit lead</span>
+                        </a>
+                      </li>
+                      <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); setShowMobileActionsDropdown(false); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                      {isSuperuser && (
+                        <li>
+                          <a
+                            className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg"
+                            onClick={() => {
+                              setShowDeleteModal(true);
+                              setShowMobileActionsDropdown(false);
+                            }}
+                          >
+                            <TrashIcon className="w-5 h-5 text-red-500" />
+                            <span className="text-red-600 font-medium">Delete Lead</span>
+                          </a>
+                        </li>
+                      )}
+                    </ul>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Mobile Client Information Panel */}
+            {showMobileClientInfo && (
+              <>
+                <div
+                  className="fixed inset-0 z-40 bg-black/20"
+                  onClick={() => setShowMobileClientInfo(false)}
+                />
+                <div className="fixed right-0 top-0 bottom-0 z-50 bg-base-100 shadow-2xl border-l border-base-300 w-80 max-w-[85vw] overflow-y-auto">
+                  <div className="p-4">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="font-semibold text-lg" style={{ color: '#4218CC' }}>Client Information</h3>
+                      <button
+                        onClick={() => setShowMobileClientInfo(false)}
+                        className="btn btn-ghost btn-sm btn-circle"
+                      >
+                        <XMarkIcon className="w-5 h-5" />
+                      </button>
+                    </div>
+                    <ClientInformationBox
+                      selectedClient={selectedClient}
+                      getEmployeeDisplayName={getEmployeeDisplayName}
+                      onClientUpdate={async () => await refreshClientData(selectedClient?.id)}
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Stages, Actions, and Assign to - Mobile Only - Above Tabs - HIDDEN: Using edge arrows instead */}
+          <div className="hidden px-4 py-3 space-y-3">
+            {/* First row: Stages and Actions buttons */}
+            <div className="flex flex-row gap-3 w-full">
+              <div className="flex flex-col flex-1 gap-3">
+                <div className="dropdown relative" style={{ zIndex: 9999, overflow: 'visible' }}>
+                  <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base saira-regular w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
+                    <span>Stages</span>
+                    <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
+                  </label>
+                  {dropdownItems && (
+                    <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-2xl" style={{ zIndex: 9999 }}>
+                      {dropdownItems}
+                    </ul>
+                  )}
+                </div>
+
+                {/* Input fields under Stages button */}
+                {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
+                  <div className="flex flex-col items-start gap-1">
+                    <label className="block text-sm font-semibold text-primary mb-1">Assign case handler</label>
+                    <div ref={successStageHandlerContainerRef} className="relative w-full">
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Not assigned"
+                        value={successStageHandlerSearch}
+                        onChange={e => {
+                          setSuccessStageHandlerSearch(e.target.value);
+                          setShowSuccessStageHandlerDropdown(true);
+                        }}
+                        onFocus={() => {
+                          setShowSuccessStageHandlerDropdown(true);
+                          setFilteredSuccessStageHandlerOptions(handlerOptions);
+                        }}
+                        autoComplete="off"
+                        disabled={isUpdatingSuccessStageHandler}
+                      />
+                      {showSuccessStageHandlerDropdown && (
+                        <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
                           <button
                             type="button"
-                            key={option.id}
-                            className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                            className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
                             onClick={() => {
-                              setSuccessStageHandlerSearch(option.label);
+                              setSuccessStageHandlerSearch('');
                               setShowSuccessStageHandlerDropdown(false);
                               setFilteredSuccessStageHandlerOptions(handlerOptions);
-                              void assignSuccessStageHandler(option);
+                              void assignSuccessStageHandler(null);
                             }}
                             disabled={isUpdatingSuccessStageHandler}
                           >
-                            {option.label}
+                            ---------
                           </button>
-                        ))
-                      ) : (
-                        <div className="px-4 py-3 text-sm text-base-content/60">
-                          No handlers found
+                          {filteredSuccessStageHandlerOptions.length > 0 ? (
+                            filteredSuccessStageHandlerOptions.map(option => (
+                              <button
+                                type="button"
+                                key={option.id}
+                                className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                                onClick={() => {
+                                  setSuccessStageHandlerSearch(option.label);
+                                  setShowSuccessStageHandlerDropdown(false);
+                                  setFilteredSuccessStageHandlerOptions(handlerOptions);
+                                  void assignSuccessStageHandler(option);
+                                }}
+                                disabled={isUpdatingSuccessStageHandler}
+                              >
+                                {option.label}
+                              </button>
+                            ))
+                          ) : (
+                            <div className="px-4 py-3 text-sm text-base-content/60">
+                              No handlers found
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
-                  )}
-                </div>
-              </div>
-            )}
+                  </div>
+                )}
 
-            {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
-              <div className="relative" data-assign-dropdown="true">
-                <label className="block text-sm font-medium text-primary mb-1">Assign to</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  placeholder="---"
-                  value={schedulerSearchTerm}
-                  onChange={e => {
-                    setSchedulerSearchTerm(e.target.value);
-                    setShowSchedulerDropdown(true);
-                  }}
-                  onFocus={() => setShowSchedulerDropdown(true)}
-                />
-                {showSchedulerDropdown && (
-                  <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                    <button
-                      type="button"
-                      className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
-                      onClick={() => {
-                        setSchedulerSearchTerm('');
-                        setShowSchedulerDropdown(false);
-                        updateScheduler('');
+                {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
+                  <div className="relative" data-assign-dropdown="true">
+                    <label className="block text-sm font-medium text-primary mb-1">Assign to</label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      placeholder="---"
+                      value={schedulerSearchTerm}
+                      onChange={e => {
+                        setSchedulerSearchTerm(e.target.value);
+                        setShowSchedulerDropdown(true);
                       }}
-                    >
-                      ---------
-                    </button>
-                    {filteredSchedulerOptions.length > 0 ? (
-                      filteredSchedulerOptions.map(option => (
+                      onFocus={() => setShowSchedulerDropdown(true)}
+                    />
+                    {showSchedulerDropdown && (
+                      <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
                         <button
                           type="button"
-                          key={option}
-                          className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                          className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
                           onClick={() => {
-                            setSchedulerSearchTerm(option);
+                            setSchedulerSearchTerm('');
                             setShowSchedulerDropdown(false);
-                            updateScheduler(option);
+                            updateScheduler('');
                           }}
                         >
-                          {option}
+                          ---------
                         </button>
-                      ))
-                    ) : (
-                      <div className="px-4 py-3 text-sm text-base-content/60">
-                        No matches found
+                        {filteredSchedulerOptions.length > 0 ? (
+                          filteredSchedulerOptions.map(option => (
+                            <button
+                              type="button"
+                              key={option}
+                              className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                              onClick={() => {
+                                setSchedulerSearchTerm(option);
+                                setShowSchedulerDropdown(false);
+                                updateScheduler(option);
+                              }}
+                            >
+                              {option}
+                            </button>
+                          ))
+                        ) : (
+                          <div className="px-4 py-3 text-sm text-base-content/60">
+                            No matches found
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
                 )}
               </div>
-            )}
-          </div>
 
-          <div className="dropdown dropdown-end flex-1 relative" style={{ zIndex: 9999, overflow: 'visible' }}>
-            <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
-              <span>Actions</span>
-              <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
-            </label>
-            <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-2xl border border-gray-200" style={{ zIndex: 9999 }}>
-              {(() => {
-                const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                const isUnactivated = isLegacy
-                  ? (selectedClient?.status === 10)
-                  : (selectedClient?.status === 'inactive');
-                return isUnactivated;
-              })() ? (
-                <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
-              ) : (
-                <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
-              )}
-              <li>
-                <a
-                  className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                  onClick={async () => {
-                    if (!selectedClient?.id) return;
 
-                    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                    const leadId = isLegacyLead
-                      ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
-                      : selectedClient.id;
-                    const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-
-                    if (isInHighlightsState) {
-                      await removeFromHighlights(leadId, isLegacyLead);
-                    } else {
-                      await addToHighlights(leadId, leadNumber, isLegacyLead);
-                    }
-
-                    (document.activeElement as HTMLElement | null)?.blur();
-                  }}
-                >
-                  {isInHighlightsState ? (
-                    <>
-                      <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                      <span className="font-medium">Remove from Highlights</span>
-                    </>
-                  ) : (
-                    <>
-                      <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                      <span className="font-medium">Add to Highlights</span>
-                    </>
-                  )}
-                </a>
-              </li>
-              <li>
-                <a
-                  className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                  onClick={() => {
-                    openEditLeadDrawer();
-                    (document.activeElement as HTMLElement | null)?.blur();
-                  }}
-                >
-                  <PencilSquareIcon className="w-5 h-5 text-blue-500" />
-                  <span className="font-medium">Edit lead</span>
-                </a>
-              </li>
-              <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
-              {isSuperuser && (
-                <li>
-                  <a
-                    className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg"
-                    onClick={() => {
-                      setShowDeleteModal(true);
-                      (document.activeElement as HTMLElement | null)?.blur();
-                    }}
-                  >
-                    <TrashIcon className="w-5 h-5 text-red-500" />
-                    <span className="text-red-600 font-medium">Delete Lead</span>
-                  </a>
-                </li>
-              )}
-            </ul>
-          </div>
-        </div>
-      </div>
-
-      {/* Tabs Navigation - Mobile (Hidden - using bottom oval navigation instead) */}
-      <div className="hidden px-4 py-2 mb-6 mt-2">
-
-        <div
-          ref={mobileTabsRef}
-          className="relative overflow-x-auto overflow-y-hidden scrollbar-hide touch-pan-x w-full -mx-2 px-2"
-          style={{ WebkitOverflowScrolling: 'touch' }}
-        >
-          {/* Scroll indicator - fade gradient on left */}
-          {canScrollLeft && (
-            <div
-              className="absolute left-0 top-0 bottom-0 w-8 pointer-events-none z-30"
-              style={{
-                background: 'linear-gradient(to right, rgba(15, 23, 42, 0.15) 0%, rgba(255, 255, 255, 0.85) 45%, rgba(255, 255, 255, 0) 100%)'
-              }}
-            />
-          )}
-          {/* Scroll indicator - fade gradient on right */}
-          {canScrollRight && (
-            <div
-              className="absolute right-0 top-0 bottom-0 w-8 pointer-events-none z-30"
-              style={{
-                background: 'linear-gradient(to left, rgba(15, 23, 42, 0.15) 0%, rgba(255, 255, 255, 0.85) 45%, rgba(255, 255, 255, 0) 100%)'
-              }}
-            />
-          )}
-          <div className="flex gap-2 pb-1 min-w-max">
-            {tabs.map((tab) => {
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  className={`relative flex flex-col items-center justify-center p-3 rounded-lg transition-all duration-300 min-w-[85px] ${isActive
-                    ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
-                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
-                    }`}
-                  onClick={() => setActiveTab(tab.id)}
-                >
-                  <div className="relative">
-                    <tab.icon className={`w-5 h-5 mb-1 ${isActive ? 'text-white' : 'text-gray-500'}`} />
-                    {tab.id === 'interactions' && tab.badge && (
-                      <div className={`absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center ${isActive
-                        ? 'bg-white/20 text-white'
-                        : 'bg-purple-100 text-purple-700'
-                        }`}>
-                        {tab.badge}
-                      </div>
-                    )}
-                  </div>
-                  <span className={`text-xs font-semibold truncate max-w-[80px] ${isActive ? 'text-white' : 'text-gray-600'
-                    }`}>
-                    {tab.label}
-                  </span>
-                  {isActive && (
-                    <div className="absolute -bottom-0.5 left-1/2 transform -translate-x-1/2 w-1 h-1 bg-white dark:bg-gray-800 rounded-full"></div>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* Tab Content - full width, white background */}
-      <div className="w-full bg-base-100 min-h-screen">
-        <div
-          key={`${activeTab}-${interactionCount}`}
-          className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0"
-        >
-          {ActiveComponent && selectedClient && (
-            <div className="md:pb-0 pb-32">
-              <ActiveComponent
-                key={`${activeTab}-${selectedClient.id}`}
-                client={selectedClient}
-                onClientUpdate={onClientUpdate}
-                interactionsCache={interactionsCacheForLead}
-                onInteractionsCacheUpdate={handleInteractionsCacheUpdate}
-                onInteractionCountUpdate={handleInteractionCountUpdate}
-                allEmployees={allEmployees}
-                {...financeProps}
-              />
             </div>
-          )}
-        </div>
-      </div>
-      {/* Schedule Meeting Right Panel */}
-      {showScheduleMeetingPanel && (
-        <div className="fixed inset-0 z-50 flex">
-          {/* Overlay */}
-          <div
-            className="fixed inset-0 bg-black/30"
-            onClick={closeSchedulePanel}
-          />
-          {/* Panel */}
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
-            {/* Fixed Header */}
-            <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
-              <h3 className="text-2xl font-bold">Schedule Meeting</h3>
-              <button className="btn btn-ghost btn-sm" onClick={closeSchedulePanel}>
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
+          </div>
 
-            {/* Scrollable Content */}
-            <div className="flex-1 overflow-y-auto p-8 pt-4">
-              {/* Notify Client Toggle */}
-              <div className="mb-6 flex items-center justify-between">
-                <label className="block font-semibold text-base">Notify Client</label>
-                <input
-                  type="checkbox"
-                  className="toggle toggle-primary"
-                  checked={notifyClientOnSchedule}
-                  onChange={(e) => setNotifyClientOnSchedule(e.target.checked)}
+          {/* Tabs Navigation - Mobile (Hidden - using bottom oval navigation instead) */}
+          <div className="hidden px-4 py-2 mb-6 mt-2">
+
+            <div
+              ref={mobileTabsRef}
+              className="relative overflow-x-auto overflow-y-hidden scrollbar-hide touch-pan-x w-full -mx-2 px-2"
+              style={{ WebkitOverflowScrolling: 'touch' }}
+            >
+              {/* Scroll indicator - fade gradient on left */}
+              {canScrollLeft && (
+                <div
+                  className="absolute left-0 top-0 bottom-0 w-8 pointer-events-none z-30"
+                  style={{
+                    background: 'linear-gradient(to right, rgba(15, 23, 42, 0.15) 0%, rgba(255, 255, 255, 0.85) 45%, rgba(255, 255, 255, 0) 100%)'
+                  }}
                 />
+              )}
+              {/* Scroll indicator - fade gradient on right */}
+              {canScrollRight && (
+                <div
+                  className="absolute right-0 top-0 bottom-0 w-8 pointer-events-none z-30"
+                  style={{
+                    background: 'linear-gradient(to left, rgba(15, 23, 42, 0.15) 0%, rgba(255, 255, 255, 0.85) 45%, rgba(255, 255, 255, 0) 100%)'
+                  }}
+                />
+              )}
+              <div className="flex gap-2 pb-1 min-w-max">
+                {tabs.map((tab) => {
+                  const isActive = activeTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      className={`relative flex flex-col items-center justify-center p-3 rounded-lg transition-all duration-300 min-w-[85px] ${isActive
+                        ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
+                        : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
+                        }`}
+                      onClick={() => setActiveTab(tab.id)}
+                    >
+                      <div className="relative">
+                        <tab.icon className={`w-5 h-5 mb-1 ${isActive ? 'text-white' : 'text-gray-500'}`} />
+                        {tab.id === 'interactions' && tab.badge && (
+                          <div className={`absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center ${isActive
+                            ? 'bg-white/20 text-white'
+                            : 'bg-purple-100 text-purple-700'
+                            }`}>
+                            {tab.badge}
+                          </div>
+                        )}
+                      </div>
+                      <span className={`text-xs font-semibold truncate max-w-[80px] ${isActive ? 'text-white' : 'text-gray-600'
+                        }`}>
+                        {tab.label}
+                      </span>
+                      {isActive && (
+                        <div className="absolute -bottom-0.5 left-1/2 transform -translate-x-1/2 w-1 h-1 bg-white dark:bg-gray-800 rounded-full"></div>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
+            </div>
+          </div>
 
-              {/* Tabs: Regular vs Paid meeting */}
-              {/* <div className="mb-4">
+          {/* Tab Content - full width, white background */}
+          <div className="w-full bg-base-100 min-h-screen">
+            <div
+              key={`${activeTab}-${interactionCount}`}
+              className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0"
+            >
+              {ActiveComponent && selectedClient && (
+                <div className="md:pb-0 pb-32">
+                  <ActiveComponent
+                    key={`${activeTab}-${selectedClient.id}`}
+                    client={selectedClient}
+                    onClientUpdate={onClientUpdate}
+                    interactionsCache={interactionsCacheForLead}
+                    onInteractionsCacheUpdate={handleInteractionsCacheUpdate}
+                    onInteractionCountUpdate={handleInteractionCountUpdate}
+                    allEmployees={allEmployees}
+                    {...financeProps}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+          {/* Schedule Meeting Right Panel */}
+          {showScheduleMeetingPanel && (
+            <div className="fixed inset-0 z-50 flex">
+              {/* Overlay */}
+              <div
+                className="fixed inset-0 bg-black/30"
+                onClick={closeSchedulePanel}
+              />
+              {/* Panel */}
+              <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
+                {/* Fixed Header */}
+                <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
+                  <h3 className="text-2xl font-bold">Schedule Meeting</h3>
+                  <button className="btn btn-ghost btn-sm" onClick={closeSchedulePanel}>
+                    <XMarkIcon className="w-6 h-6" />
+                  </button>
+                </div>
+
+                {/* Scrollable Content */}
+                <div className="flex-1 overflow-y-auto p-8 pt-4">
+                  {/* Notify Client Toggle */}
+                  <div className="mb-6 flex items-center justify-between">
+                    <label className="block font-semibold text-base">Notify Client</label>
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-primary"
+                      checked={notifyClientOnSchedule}
+                      onChange={(e) => setNotifyClientOnSchedule(e.target.checked)}
+                    />
+                  </div>
+
+                  {/* Tabs: Regular vs Paid meeting */}
+                  {/* <div className="mb-4">
                 <div className="inline-flex rounded-lg bg-base-200 p-1">
                   <button
                     type="button"
@@ -14610,194 +13246,194 @@ const Clients: React.FC<ClientsProps> = ({
                 </div>
               </div> */}
 
-              <div className="flex flex-col gap-4">
-                {/* Location */}
-                <div>
-                  <label className="block font-semibold mb-1">Location</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={meetingFormData.location}
-                    onChange={(e) => setMeetingFormData(prev => ({ ...prev, location: e.target.value }))}
-                  >
-                    {meetingLocations.map((location) => (
-                      <option key={location.id} value={location.name}>
-                        {location.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                  <div className="flex flex-col gap-4">
+                    {/* Location */}
+                    <div>
+                      <label className="block font-semibold mb-1">Location</label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={meetingFormData.location}
+                        onChange={(e) => setMeetingFormData(prev => ({ ...prev, location: e.target.value }))}
+                      >
+                        {meetingLocations.map((location) => (
+                          <option key={location.id} value={location.name}>
+                            {location.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
-                {/* Calendar */}
-                <div>
-                  <label className="block font-semibold mb-1">Calendar</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={meetingFormData.calendar}
-                    onChange={(e) => setMeetingFormData(prev => ({ ...prev, calendar: e.target.value }))}
-                  >
-                    <option value="current">Potential Client</option>
-                  </select>
-                </div>
+                    {/* Calendar */}
+                    <div>
+                      <label className="block font-semibold mb-1">Calendar</label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={meetingFormData.calendar}
+                        onChange={(e) => setMeetingFormData(prev => ({ ...prev, calendar: e.target.value }))}
+                      >
+                        <option value="current">Potential Client</option>
+                      </select>
+                    </div>
 
-                {/* Date */}
-                <div>
-                  <label className="block font-semibold mb-1">Date</label>
-                  <input
-                    type="date"
-                    className="input input-bordered w-full"
-                    value={meetingFormData.date}
-                    onChange={(e) => {
-                      setMeetingFormData(prev => ({ ...prev, date: e.target.value }));
-                      // Reset meeting counts when date changes
-                      setMeetingCountsByTime({});
-                    }}
-                    required
-                    min={new Date().toISOString().split('T')[0]}
-                  />
-                </div>
+                    {/* Date */}
+                    <div>
+                      <label className="block font-semibold mb-1">Date</label>
+                      <input
+                        type="date"
+                        className="input input-bordered w-full"
+                        value={meetingFormData.date}
+                        onChange={(e) => {
+                          setMeetingFormData(prev => ({ ...prev, date: e.target.value }));
+                          // Reset meeting counts when date changes
+                          setMeetingCountsByTime({});
+                        }}
+                        required
+                        min={new Date().toISOString().split('T')[0]}
+                      />
+                    </div>
 
-                {/* Time */}
-                <TimePicker
-                  value={meetingFormData.time}
-                  onChange={(time) => setMeetingFormData(prev => ({ ...prev, time }))}
-                  meetingCounts={meetingCountsByTime}
-                  label="Time"
-                />
+                    {/* Time */}
+                    <TimePicker
+                      value={meetingFormData.time}
+                      onChange={(time) => setMeetingFormData(prev => ({ ...prev, time }))}
+                      meetingCounts={meetingCountsByTime}
+                      label="Time"
+                    />
 
-                {/* Manager (Optional) */}
-                <div className="relative" ref={managerDropdownRef}>
-                  <label className="block font-semibold mb-1">Manager (Optional)</label>
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    placeholder="Select a manager..."
-                    value={meetingFormData.manager}
-                    onChange={(e) => {
-                      const value = e.target.value;
-                      setMeetingFormData(prev => ({ ...prev, manager: value }));
-                      setManagerSearchTerm(value);
-                      setShowManagerDropdown(true);
-                    }}
-                    onFocus={() => {
-                      setManagerSearchTerm(meetingFormData.manager || '');
-                      setShowManagerDropdown(true);
-                    }}
-                    autoComplete="off"
-                  />
-                  {showManagerDropdown && (
-                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                      {(() => {
-                        const searchTerm = (managerSearchTerm || meetingFormData.manager || '').toLowerCase();
-                        const filteredEmployees = allEmployees.filter(emp => {
-                          return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
-                        });
+                    {/* Manager (Optional) */}
+                    <div className="relative" ref={managerDropdownRef}>
+                      <label className="block font-semibold mb-1">Manager (Optional)</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Select a manager..."
+                        value={meetingFormData.manager}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setMeetingFormData(prev => ({ ...prev, manager: value }));
+                          setManagerSearchTerm(value);
+                          setShowManagerDropdown(true);
+                        }}
+                        onFocus={() => {
+                          setManagerSearchTerm(meetingFormData.manager || '');
+                          setShowManagerDropdown(true);
+                        }}
+                        autoComplete="off"
+                      />
+                      {showManagerDropdown && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {(() => {
+                            const searchTerm = (managerSearchTerm || meetingFormData.manager || '').toLowerCase();
+                            const filteredEmployees = allEmployees.filter(emp => {
+                              return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
+                            });
 
-                        return filteredEmployees.length > 0 ? (
-                          filteredEmployees.map(emp => {
-                            const isUnavailable = meetingFormData.date && meetingFormData.time
-                              ? isEmployeeUnavailable(emp.display_name, meetingFormData.date, meetingFormData.time)
-                              : false;
-                            return (
-                              <div
-                                key={emp.id}
-                                className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isUnavailable
-                                  ? 'bg-red-50 text-red-600 hover:bg-red-100'
-                                  : 'hover:bg-gray-100'
-                                  }`}
-                                onClick={() => {
-                                  setMeetingFormData(prev => ({ ...prev, manager: emp.display_name }));
-                                  setManagerSearchTerm('');
-                                  setShowManagerDropdown(false);
-                                }}
-                              >
-                                <span>{emp.display_name}</span>
-                                {isUnavailable && (
-                                  <div className="flex items-center gap-1">
-                                    <ClockIcon className="w-4 h-4" />
-                                    <span className="text-xs">Unavailable</span>
+                            return filteredEmployees.length > 0 ? (
+                              filteredEmployees.map(emp => {
+                                const isUnavailable = meetingFormData.date && meetingFormData.time
+                                  ? isEmployeeUnavailable(emp.display_name, meetingFormData.date, meetingFormData.time)
+                                  : false;
+                                return (
+                                  <div
+                                    key={emp.id}
+                                    className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isUnavailable
+                                      ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                                      : 'hover:bg-gray-100'
+                                      }`}
+                                    onClick={() => {
+                                      setMeetingFormData(prev => ({ ...prev, manager: emp.display_name }));
+                                      setManagerSearchTerm('');
+                                      setShowManagerDropdown(false);
+                                    }}
+                                  >
+                                    <span>{emp.display_name}</span>
+                                    {isUnavailable && (
+                                      <div className="flex items-center gap-1">
+                                        <ClockIcon className="w-4 h-4" />
+                                        <span className="text-xs">Unavailable</span>
+                                      </div>
+                                    )}
                                   </div>
-                                )}
+                                );
+                              })
+                            ) : (
+                              <div className="px-4 py-2 text-gray-500 text-center">
+                                No employees found
                               </div>
                             );
-                          })
-                        ) : (
-                          <div className="px-4 py-2 text-gray-500 text-center">
-                            No employees found
-                          </div>
-                        );
-                      })()}
+                          })()}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
 
-                {/* Helper (Optional) */}
-                <div className="relative" ref={helperDropdownRef}>
-                  <label className="block font-semibold mb-1">Helper (Optional)</label>
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    placeholder="Select a helper..."
-                    value={meetingFormData.helper}
-                    onChange={(e) => {
-                      const value = e.target.value;
-                      setMeetingFormData(prev => ({ ...prev, helper: value }));
-                      setHelperSearchTerm(value);
-                      setShowHelperDropdown(true);
-                    }}
-                    onFocus={() => {
-                      setHelperSearchTerm(meetingFormData.helper || '');
-                      setShowHelperDropdown(true);
-                    }}
-                    autoComplete="off"
-                  />
-                  {showHelperDropdown && (
-                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                      {(() => {
-                        const searchTerm = (helperSearchTerm || meetingFormData.helper || '').toLowerCase();
-                        const filteredEmployees = allEmployees.filter(emp => {
-                          return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
-                        });
+                    {/* Helper (Optional) */}
+                    <div className="relative" ref={helperDropdownRef}>
+                      <label className="block font-semibold mb-1">Helper (Optional)</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Select a helper..."
+                        value={meetingFormData.helper}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setMeetingFormData(prev => ({ ...prev, helper: value }));
+                          setHelperSearchTerm(value);
+                          setShowHelperDropdown(true);
+                        }}
+                        onFocus={() => {
+                          setHelperSearchTerm(meetingFormData.helper || '');
+                          setShowHelperDropdown(true);
+                        }}
+                        autoComplete="off"
+                      />
+                      {showHelperDropdown && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {(() => {
+                            const searchTerm = (helperSearchTerm || meetingFormData.helper || '').toLowerCase();
+                            const filteredEmployees = allEmployees.filter(emp => {
+                              return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
+                            });
 
-                        return filteredEmployees.length > 0 ? (
-                          filteredEmployees.map(emp => {
-                            const isUnavailable = meetingFormData.date && meetingFormData.time
-                              ? isEmployeeUnavailable(emp.display_name, meetingFormData.date, meetingFormData.time)
-                              : false;
-                            return (
-                              <div
-                                key={emp.id}
-                                className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isUnavailable
-                                  ? 'bg-red-50 text-red-600 hover:bg-red-100'
-                                  : 'hover:bg-gray-100'
-                                  }`}
-                                onClick={() => {
-                                  setMeetingFormData(prev => ({ ...prev, helper: emp.display_name }));
-                                  setHelperSearchTerm('');
-                                  setShowHelperDropdown(false);
-                                }}
-                              >
-                                <span>{emp.display_name}</span>
-                                {isUnavailable && (
-                                  <div className="flex items-center gap-1">
-                                    <ClockIcon className="w-4 h-4" />
-                                    <span className="text-xs">Unavailable</span>
+                            return filteredEmployees.length > 0 ? (
+                              filteredEmployees.map(emp => {
+                                const isUnavailable = meetingFormData.date && meetingFormData.time
+                                  ? isEmployeeUnavailable(emp.display_name, meetingFormData.date, meetingFormData.time)
+                                  : false;
+                                return (
+                                  <div
+                                    key={emp.id}
+                                    className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isUnavailable
+                                      ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                                      : 'hover:bg-gray-100'
+                                      }`}
+                                    onClick={() => {
+                                      setMeetingFormData(prev => ({ ...prev, helper: emp.display_name }));
+                                      setHelperSearchTerm('');
+                                      setShowHelperDropdown(false);
+                                    }}
+                                  >
+                                    <span>{emp.display_name}</span>
+                                    {isUnavailable && (
+                                      <div className="flex items-center gap-1">
+                                        <ClockIcon className="w-4 h-4" />
+                                        <span className="text-xs">Unavailable</span>
+                                      </div>
+                                    )}
                                   </div>
-                                )}
+                                );
+                              })
+                            ) : (
+                              <div className="px-4 py-2 text-gray-500 text-center">
+                                No employees found
                               </div>
                             );
-                          })
-                        ) : (
-                          <div className="px-4 py-2 text-gray-500 text-center">
-                            No employees found
-                          </div>
-                        );
-                      })()}
+                          })()}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
 
-                {/* Extra fields only for Paid meeting - COMMENTED OUT */}
-                {/* {meetingType === 'paid' && (
+                    {/* Extra fields only for Paid meeting - COMMENTED OUT */}
+                    {/* {meetingType === 'paid' && (
                 <>
                   <div>
                     <label className="block font-semibold mb-1">Meeting collection manager</label>
@@ -14886,2089 +13522,13 @@ const Clients: React.FC<ClientsProps> = ({
                 </>
               )} */}
 
-                {/* Meeting Attendance Probability */}
-                <div>
-                  <label className="block font-semibold mb-1">Meeting Attendance Probability</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={meetingFormData.attendance_probability}
-                    onChange={(e) => setMeetingFormData(prev => ({ ...prev, attendance_probability: e.target.value }))}
-                  >
-                    <option value="Low">Low</option>
-                    <option value="Medium">Medium</option>
-                    <option value="High">High</option>
-                    <option value="Very High">Very High</option>
-                  </select>
-                </div>
-
-                {/* Meeting Complexity */}
-                <div>
-                  <label className="block font-semibold mb-1">Meeting Complexity</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={meetingFormData.complexity}
-                    onChange={(e) => setMeetingFormData(prev => ({ ...prev, complexity: e.target.value }))}
-                  >
-                    <option value="Simple">Simple</option>
-                    <option value="Complex">Complex</option>
-                  </select>
-                </div>
-
-                {/* Meeting Car Number */}
-                <div>
-                  <label htmlFor="car-number" className="block font-semibold mb-1">Meeting Car Number</label>
-                  <input
-                    id="car-number"
-                    type="text"
-                    className="input input-bordered w-full"
-                    value={meetingFormData.car_number}
-                    onChange={(e) => setMeetingFormData(prev => ({ ...prev, car_number: e.target.value }))}
-                    placeholder="Enter car number..."
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Fixed Footer */}
-            <div className="p-8 pt-4 border-t border-base-300 bg-base-100">
-              <div className="flex justify-end">
-                <button
-                  className="btn btn-primary px-8"
-                  onClick={handleScheduleMeeting}
-                  disabled={!meetingFormData.date || !meetingFormData.time || isCreatingMeeting}
-                >
-                  {isCreatingMeeting ? (
-                    <>
-                      <span className="loading loading-spinner loading-sm"></span>
-                      Creating Meeting...
-                    </>
-                  ) : (
-                    'Create Meeting'
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Update Lead Drawer */}
-      {showUpdateDrawer && (
-        <div className="fixed inset-0 z-50 flex">
-          {/* Overlay */}
-          <div
-            className="fixed inset-0 bg-black/30"
-            onClick={() => setShowUpdateDrawer(false)}
-          />
-          {/* Drawer */}
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}>
-            {/* Header */}
-            <div className="flex items-center justify-between p-6 pb-4 flex-shrink-0 border-b border-base-300">
-              <h3 className="text-2xl font-bold">Update Lead</h3>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowUpdateDrawer(false)}>
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-            {/* Scrollable Content */}
-            <div className="flex-1 overflow-y-auto p-6 pt-4">
-              <div className="flex flex-col gap-4">
-                <div>
-                  <label htmlFor="meeting-notes" className="block font-semibold mb-1">Meeting scheduling notes:</label>
-                  <textarea
-                    id="meeting-notes"
-                    name="meeting-notes"
-                    className="textarea textarea-bordered w-full min-h-[120px]"
-                    value={meetingNotes}
-                    onChange={e => setMeetingNotes(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="block font-semibold mb-1">Next followup:</label>
-                  <input
-                    type="date"
-                    className="input input-bordered w-full"
-                    value={nextFollowup}
-                    onChange={e => setNextFollowup(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="followup-notes" className="block font-semibold mb-1">Followup:</label>
-                  <textarea
-                    id="followup-notes"
-                    name="followup-notes"
-                    className="textarea textarea-bordered w-full min-h-[120px]"
-                    value={followup}
-                    onChange={e => setFollowup(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="block font-semibold mb-1">Potential applicants:</label>
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    value={potentialApplicants}
-                    onChange={e => setPotentialApplicants(e.target.value)}
-                  />
-                </div>
-              </div>
-            </div>
-            {/* Fixed Save Button */}
-            <div className="p-6 pt-4 border-t border-base-300 flex-shrink-0 bg-base-100" style={{ paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom, 0))' }}>
-              <button
-                className="btn btn-primary w-full text-lg font-semibold"
-                onClick={handleSaveUpdateDrawer}
-                disabled={isSavingUpdate}
-              >
-                {isSavingUpdate ? 'Saving...' : 'Save'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Meeting Ended Drawer */}
-      {showMeetingEndedDrawer && (
-        <div className="fixed inset-0 z-[60] flex">
-          <div
-            className="fixed inset-0 bg-black/30"
-            onClick={() => setShowMeetingEndedDrawer(false)}
-          />
-          <div className="ml-auto w-full max-w-lg bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50 overflow-y-auto">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold">Update Lead</h3>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowMeetingEndedDrawer(false)}>
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-            <div className="flex flex-col gap-4 flex-1">
-              {/* Probability */}
-              <div>
-                <label className="block font-semibold mb-1">Probability: {meetingEndedData.probability}%</label>
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={meetingEndedData.probability}
-                  onChange={e => handleMeetingEndedChange('probability', Number(e.target.value))}
-                  className="range range-primary"
-                />
-              </div>
-              {/* Meeting Brief */}
-              <div>
-                <label className="block font-semibold mb-1">Meeting Brief:</label>
-                <textarea
-                  className="textarea textarea-bordered w-full min-h-[120px]"
-                  value={meetingEndedData.meetingBrief}
-                  onChange={e => handleMeetingEndedChange('meetingBrief', e.target.value)}
-                />
-              </div>
-              {/* Number of applicants */}
-              <div>
-                <label className="block font-semibold mb-1">Number of applicants:</label>
-                <input
-                  type="number"
-                  className="input input-bordered w-full"
-                  value={meetingEndedData.numberOfApplicants}
-                  onChange={e => handleMeetingEndedChange('numberOfApplicants', Number(e.target.value))}
-                />
-              </div>
-              {/* Proposal Total */}
-              <div>
-                <label className="block font-semibold mb-1">Proposal Total:</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  value={meetingEndedData.proposalTotal}
-                  onFocus={(e) => e.target.select()}
-                  onChange={e => {
-                    // Only allow numbers and decimal point
-                    let value = e.target.value.replace(/[^0-9.]/g, '');
-                    // Prevent multiple decimal points
-                    const parts = value.split('.');
-                    if (parts.length > 2) {
-                      value = parts[0] + '.' + parts.slice(1).join('');
-                    }
-                    handleMeetingEndedChange('proposalTotal', value);
-                  }}
-                />
-              </div>
-              {/* Currency */}
-              <div>
-                <label className="block font-semibold mb-1">Currency:</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={meetingEndedData.proposalCurrency}
-                  onChange={e => handleMeetingEndedChange('proposalCurrency', e.target.value)}
-                >
-                  {currencies.length > 0 ? (
-                    currencies.map((currency) => (
-                      <option key={currency.id} value={currency.iso_code || currency.name}>
-                        {currency.name || currency.iso_code}
-                      </option>
-                    ))
-                  ) : (
-                    <>
-                      <option>NIS</option>
-                      <option>USD</option>
-                      <option>EUR</option>
-                    </>
-                  )}
-                </select>
-              </div>
-              {/* Meeting Total */}
-              <div>
-                <label className="block font-semibold mb-1">Meeting Total:</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  value={meetingEndedData.meetingTotal}
-                  onFocus={(e) => e.target.select()}
-                  onChange={e => {
-                    // Only allow numbers and decimal point
-                    let value = e.target.value.replace(/[^0-9.]/g, '');
-                    // Prevent multiple decimal points
-                    const parts = value.split('.');
-                    if (parts.length > 2) {
-                      value = parts[0] + '.' + parts.slice(1).join('');
-                    }
-                    handleMeetingEndedChange('meetingTotal', value);
-                  }}
-                />
-              </div>
-              {/* Meeting total currency */}
-              <div>
-                <label className="block font-semibold mb-1">Meeting total currency:</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={meetingEndedData.meetingTotalCurrency}
-                  onChange={e => handleMeetingEndedChange('meetingTotalCurrency', e.target.value)}
-                >
-                  {currencies.length > 0 ? (
-                    currencies.map((currency) => (
-                      <option key={currency.id} value={currency.iso_code || currency.name}>
-                        {currency.name || currency.iso_code}
-                      </option>
-                    ))
-                  ) : (
-                    <>
-                      <option>NIS</option>
-                      <option>USD</option>
-                      <option>EUR</option>
-                    </>
-                  )}
-                </select>
-              </div>
-              {/* Meeting Payment form */}
-              <div>
-                <label className="block font-semibold mb-1">Meeting Payment form:</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={meetingEndedData.meetingPaymentForm}
-                  onChange={e => handleMeetingEndedChange('meetingPaymentForm', e.target.value)}
-                >
-                  <option value="">---------</option>
-                  <option value="Credit Card">Credit Card</option>
-                  <option value="Bank Transfer">Bank Transfer</option>
-                  <option value="Cash">Cash</option>
-                </select>
-              </div>
-              {/* Special notes */}
-              <div>
-                <label className="block font-semibold mb-1">Special notes:</label>
-                <textarea
-                  className="textarea textarea-bordered w-full min-h-[120px]"
-                  value={meetingEndedData.specialNotes}
-                  onChange={e => handleMeetingEndedChange('specialNotes', e.target.value)}
-                />
-              </div>
-              {/* Potential applicants */}
-              <div>
-                <label className="block font-semibold mb-1">Potential applicants:</label>
-                <input
-                  type="number"
-                  className="input input-bordered w-full"
-                  value={meetingEndedData.potentialApplicants}
-                  onChange={e => handleMeetingEndedChange('potentialApplicants', Number(e.target.value))}
-                />
-              </div>
-
-              {/* Action Buttons */}
-              <div className="flex justify-between items-center mt-6">
-                <button
-                  className="btn btn-error gap-2"
-                  onClick={handleMeetingIrrelevant}
-                  disabled={isSavingMeetingEnded}
-                >
-                  <HandThumbDownIcon className="w-5 h-5" />
-                  Meeting Irrelevant
-                </button>
-                <button
-                  className="btn btn-success gap-2"
-                  onClick={handleSendPriceOffer}
-                  disabled={isSavingMeetingEnded}
-                >
-                  {isSavingMeetingEnded ? (
-                    <span className="loading loading-spinner loading-sm" />
-                  ) : (
-                    <DocumentCheckIcon className="w-5 h-5" />
-                  )}
-                  I have to send Price offer
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-      {showMeetingIrrelevantModal && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center">
-          <div
-            className="fixed inset-0 bg-black/50"
-            onClick={() => {
-              if (!isProcessingMeetingIrrelevant) {
-                handleCancelMeetingIrrelevant();
-              }
-            }}
-          />
-          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-lg w-full mx-4 z-10">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="flex items-center gap-3 text-2xl font-bold text-gray-900">
-                <ExclamationTriangleIcon className="w-7 h-7 text-red-500" />
-                Mark Lead as Irrelevant
-              </h3>
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={handleCancelMeetingIrrelevant}
-                disabled={isProcessingMeetingIrrelevant}
-              >
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-
-            <div className="space-y-5">
-              <p className="text-sm text-red-600 leading-relaxed">
-                Marking this lead as irrelevant should only be done when you are certain there is no legal eligibility. If you are unsure, please click cancel.
-              </p>
-
-              <div>
-                <label className="block font-semibold mb-2 text-gray-900">Reason for this action</label>
-                <textarea
-                  className="textarea textarea-bordered w-full min-h-[120px]"
-                  placeholder="Provide details about why this lead is irrelevant..."
-                  value={meetingIrrelevantReason}
-                  onChange={(e) => setMeetingIrrelevantReason(e.target.value)}
-                  disabled={isProcessingMeetingIrrelevant}
-                />
-                <p className="text-xs text-gray-500 mt-2">
-                  This reason will be saved to the lead history for future reference.
-                </p>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-3 mt-6">
-              <button
-                className="btn btn-outline"
-                onClick={handleCancelMeetingIrrelevant}
-                disabled={isProcessingMeetingIrrelevant}
-              >
-                Cancel
-              </button>
-              <button
-                className="btn btn-error"
-                onClick={handleConfirmMeetingIrrelevant}
-                disabled={isProcessingMeetingIrrelevant || !meetingIrrelevantReason.trim()}
-              >
-                {isProcessingMeetingIrrelevant ? (
-                  <span className="loading loading-spinner loading-sm" />
-                ) : (
-                  'Confirm'
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Client Signed Drawer (New) */}
-      {showSuccessDrawer && (
-        <div className="fixed inset-0 z-[60] flex">
-          <div
-            className="fixed inset-0 bg-black/30"
-            onClick={() => setShowSuccessDrawer(false)}
-          />
-          <div className="ml-auto w-full max-w-lg bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
-            <div className="flex items-start justify-between mb-6">
-              <div>
-                <h3 className="text-3xl font-black tracking-tight text-primary">Client signed !!!!</h3>
-                <p className="mt-2 text-lg font-semibold text-base-content">
-                  Name: <span className="font-bold">{selectedClient?.name || '—'}</span>
-                </p>
-                <p className="text-lg font-semibold text-base-content">
-                  Topic: <span className="font-bold">{selectedClient?.topic || '—'}</span>
-                </p>
-              </div>
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={() => setShowSuccessDrawer(false)}
-              >
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-
-            <div className="flex flex-col gap-5 flex-1 overflow-y-auto">
-              <div>
-                <label className="block font-semibold mb-1">File ID</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  value={successForm.fileId}
-                  onChange={e => handleSuccessFieldChange('fileId', e.target.value)}
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold mb-1">Case handler</label>
-                <div ref={handlerSearchContainerRef} className="relative">
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    placeholder="Type case handler name or choose from suggestions..."
-                    value={handlerSearchTerm}
-                    onChange={e => {
-                      const value = e.target.value;
-                      setHandlerSearchTerm(value);
-                      setShowHandlerSearchDropdown(true);
-                      setSuccessForm(prev => ({
-                        ...prev,
-                        handler: value,
-                        handlerId: '',
-                      }));
-                    }}
-                    onFocus={() => {
-                      setShowHandlerSearchDropdown(true);
-                      setFilteredHandlerSearchOptions(handlerOptions);
-                    }}
-                    autoComplete="off"
-                  />
-                  {showHandlerSearchDropdown && (
-                    <div className="absolute z-30 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                      <button
-                        type="button"
-                        className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
-                        onClick={() => {
-                          setSuccessForm(prev => ({
-                            ...prev,
-                            handlerId: '',
-                            handler: '',
-                          }));
-                          setHandlerSearchTerm('');
-                          setShowHandlerSearchDropdown(false);
-                        }}
-                      >
-                        ---------
-                      </button>
-                      {filteredHandlerSearchOptions.length > 0 ? (
-                        filteredHandlerSearchOptions.map(option => (
-                          <button
-                            type="button"
-                            key={option.id}
-                            className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
-                            onClick={() => {
-                              setSuccessForm(prev => ({
-                                ...prev,
-                                handlerId: option.id,
-                                handler: option.label,
-                              }));
-                              setHandlerSearchTerm(option.label);
-                              setShowHandlerSearchDropdown(false);
-                            }}
-                          >
-                            {option.label}
-                          </button>
-                        ))
-                      ) : (
-                        <div className="px-4 py-3 text-sm text-base-content/60">
-                          No handlers found
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-semibold mb-1">Currency</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={successForm.currency}
-                  onChange={e => handleSuccessFieldChange('currency', e.target.value)}
-                >
-                  {currencyOptions.map(currency => (
-                    <option key={currency.value} value={currency.value}>
-                      {currency.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-semibold mb-1">Number of applicants</label>
-                <input
-                  type="number"
-                  min="0"
-                  className="input input-bordered w-full"
-                  value={successForm.numApplicants}
-                  onChange={e => handleSuccessFieldChange('numApplicants', e.target.value)}
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold mb-1">Proposal Total</label>
-                <input
-                  type="number"
-                  className="input input-bordered w-full"
-                  value={successForm.proposal}
-                  onChange={e => handleSuccessFieldChange('proposal', e.target.value)}
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold mb-1">Potential Value</label>
-                <input
-                  type="number"
-                  className="input input-bordered w-full"
-                  value={successForm.potentialValue}
-                  onChange={e => handleSuccessFieldChange('potentialValue', e.target.value)}
-                />
-              </div>
-            </div>
-
-            <div className="mt-6 flex items-center justify-end gap-3">
-              <button
-                className="btn btn-ghost"
-                onClick={() => setShowSuccessDrawer(false)}
-              >
-                Cancel
-              </button>
-              <button
-                className="btn btn-primary px-8"
-                onClick={handleSaveSuccessDrawer}
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Client Signed Drawer */}
-      {showSignedDrawer && (
-        <div className="fixed inset-0 z-[60] flex">
-          <div className="fixed inset-0 bg-black/30" onClick={() => setShowSignedDrawer(false)} />
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold">Client Signed Agreement</h3>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowSignedDrawer(false)}>
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-            <div className="flex flex-col gap-4 flex-1">
-              <div>
-                <label className="block font-semibold mb-1">Date Signed</label>
-                <input type="date" className="input input-bordered w-full" value={signedDate} onChange={e => setSignedDate(e.target.value)} />
-              </div>
-            </div>
-            <div className="mt-6 flex justify-end">
-              <button className="btn btn-primary px-8" onClick={handleSaveSignedDrawer}>
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Client Declined Drawer */}
-      {showDeclinedDrawer && (
-        <div className="fixed inset-0 z-[60] flex">
-          <div className="fixed inset-0 bg-black/30" onClick={() => setShowDeclinedDrawer(false)} />
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold">Client Declined</h3>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowDeclinedDrawer(false)}>
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-            <div className="flex flex-col gap-6 flex-1">
-              {isSuperuser ? (
-                <>
-                  <div className="alert alert-warning">
-                    <ExclamationTriangleIcon className="w-6 h-6" />
-                    <div>
-                      <h4 className="font-bold">Important Notice</h4>
-                      <p>Please contact your supervisor before choosing this option.</p>
-                    </div>
-                  </div>
-                  <div className="text-base-content/80">
-                    <p>Are you sure you want to mark this client as declined?</p>
-                    <p className="mt-2 text-sm">This action will change the lead stage to "Client declined".</p>
-                  </div>
-                  {!isAdmin && !isAdminLoading && (
-                    <div className="alert alert-error">
-                      <ExclamationTriangleIcon className="w-6 h-6" />
-                      <div>
-                        <h4 className="font-bold">Access Restricted</h4>
-                        <p>Only administrators can decline clients. Please contact your supervisor.</p>
-                      </div>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="alert alert-warning">
-                  <ExclamationTriangleIcon className="w-6 h-6" />
-                  <div>
-                    <h4 className="font-bold">Access Restricted</h4>
-                    <p>You do not have access to perform this action. Please contact a manager or admin for assistance.</p>
-                  </div>
-                </div>
-              )}
-            </div>
-            {isSuperuser && (
-              <div className="mt-6 flex gap-3 justify-end">
-                <button className="btn btn-ghost" onClick={() => setShowDeclinedDrawer(false)}>
-                  Cancel
-                </button>
-                {isAdmin && (
-                  <button className="btn btn-error" onClick={handleConfirmDeclined}>
-                    Yes, decline client
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Delete Lead Confirmation Modal */}
-      {showDeleteModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center">
-          <div className="fixed inset-0 bg-black/50" onClick={() => !isDeletingLead && setShowDeleteModal(false)} />
-          <div className="relative bg-base-100 rounded-xl shadow-2xl p-8 max-w-md w-full mx-4 z-50">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold text-error">Delete Lead</h3>
-              <button
-                className="btn btn-ghost btn-sm btn-circle"
-                onClick={() => setShowDeleteModal(false)}
-                disabled={isDeletingLead}
-              >
-                <XMarkIcon className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="flex flex-col gap-4">
-              <div className="alert alert-error">
-                <ExclamationTriangleIcon className="w-6 h-6" />
-                <div>
-                  <h4 className="font-bold">Warning: This action cannot be undone!</h4>
-                  <p>Are you sure you want to delete this lead? This will permanently remove the lead and all associated data.</p>
-                </div>
-              </div>
-              {selectedClient && (
-                <div className="bg-base-200 rounded-lg p-4">
-                  <p className="font-semibold">Lead: {selectedClient.lead_number || selectedClient.id}</p>
-                  <p className="text-base-content/70">Name: {selectedClient.name || '---'}</p>
-                </div>
-              )}
-            </div>
-            <div className="mt-6 flex gap-3 justify-end">
-              <button
-                className="btn btn-ghost"
-                onClick={() => setShowDeleteModal(false)}
-                disabled={isDeletingLead}
-              >
-                Cancel
-              </button>
-              <button
-                className="btn btn-error"
-                onClick={handleDeleteLead}
-                disabled={isDeletingLead}
-              >
-                {isDeletingLead ? (
-                  <>
-                    <span className="loading loading-spinner loading-sm"></span>
-                    Deleting...
-                  </>
-                ) : (
-                  'Yes, delete lead'
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Edit Lead Drawer */}
-      {showEditLeadDrawer && (
-        <div className="fixed inset-0 z-50 flex">
-          {/* Overlay */}
-          <div className="fixed inset-0 bg-black/30" onClick={() => setShowEditLeadDrawer(false)} />
-          {/* Drawer */}
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold">Edit Lead</h3>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowEditLeadDrawer(false)}>
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-            <div className="flex flex-col gap-4 flex-1 overflow-y-auto">
-              <div>
-                <label className="block font-semibold mb-1">Tags</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  placeholder="Search or select tags..."
-                  value={editLeadData.tags}
-                  onChange={e => handleEditLeadChange('tags', e.target.value)}
-                  list="tags-options"
-                />
-                <datalist id="tags-options">
-                  {tagsList.map((name, index) => (
-                    <option key={`${name}-${index}`} value={name} />
-                  ))}
-                </datalist>
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Source</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  placeholder="Search or select a source..."
-                  value={editLeadData.source}
-                  onChange={e => handleEditLeadChange('source', e.target.value)}
-                  list="source-options"
-                />
-                <datalist id="source-options">
-                  {sources.map((name, index) => (
-                    <option key={`${name}-${index}`} value={name} />
-                  ))}
-                </datalist>
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Client Name</label>
-                <input type="text" className="input input-bordered w-full" value={editLeadData.name} onChange={e => handleEditLeadChange('name', e.target.value)} />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Language</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  placeholder="Search or select a language..."
-                  value={editLeadData.language}
-                  onChange={e => handleEditLeadChange('language', e.target.value)}
-                  list="language-options"
-                />
-                <datalist id="language-options">
-                  {languagesList.map((name, index) => (
-                    <option key={`${name}-${index}`} value={name} />
-                  ))}
-                </datalist>
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Category</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  placeholder="Search or select a category..."
-                  value={editLeadData.category}
-                  onChange={e => handleEditLeadChange('category', e.target.value)}
-                  list="category-options"
-                />
-                <datalist id="category-options">
-                  {mainCategories.map((name, index) => (
-                    <option key={`${name}-${index}`} value={name} />
-                  ))}
-                </datalist>
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Topic</label>
-                <input type="text" className="input input-bordered w-full" value={editLeadData.topic} onChange={e => handleEditLeadChange('topic', e.target.value)} />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Special Notes</label>
-                <textarea className="textarea textarea-bordered w-full min-h-[60px]" value={editLeadData.special_notes} onChange={e => handleEditLeadChange('special_notes', e.target.value)} />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Probability</label>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    className="range range-primary flex-1"
-                    value={editLeadData.probability || 0}
-                    onChange={e => handleEditLeadChange('probability', parseInt(e.target.value))}
-                  />
-                  <span className="text-sm font-medium text-gray-700 min-w-[50px] text-right">
-                    {editLeadData.probability || 0}%
-                  </span>
-                </div>
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Number of Applicants</label>
-                <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.number_of_applicants_meeting} onChange={e => handleEditLeadChange('number_of_applicants_meeting', e.target.value)} />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Potential Applicants</label>
-                <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.potential_applicants_meeting} onChange={e => handleEditLeadChange('potential_applicants_meeting', e.target.value)} />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Balance (Amount)</label>
-                <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.balance} onChange={e => handleEditLeadChange('balance', e.target.value)} />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Follow Up Date</label>
-                <input type="date" className="input input-bordered w-full" value={editLeadData.next_followup} onChange={e => handleEditLeadChange('next_followup', e.target.value)} />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Balance Currency</label>
-                <select className="select select-bordered w-full" value={editLeadData.balance_currency} onChange={e => handleEditLeadChange('balance_currency', e.target.value)}>
-                  {currencies.length > 0 ? (
-                    <>
-                      {/* Show current currency first */}
-                      {currencies
-                        .filter(currency => currency.name === editLeadData.balance_currency)
-                        .map((currency) => (
-                          <option key={`current-${currency.id}`} value={currency.name}>
-                            {currency.name} ({currency.iso_code})
-                          </option>
-                        ))
-                      }
-                      {/* Show other currencies */}
-                      {currencies
-                        .filter(currency => currency.name !== editLeadData.balance_currency)
-                        .map((currency) => (
-                          <option key={currency.id} value={currency.name}>
-                            {currency.name} ({currency.iso_code})
-                          </option>
-                        ))
-                      }
-                    </>
-                  ) : (
-                    <option value="">Loading currencies...</option>
-                  )}
-                </select>
-              </div>
-            </div>
-            <div className="mt-6 flex justify-end">
-              <button className="btn btn-primary px-8" onClick={handleSaveEditLead}>
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <LeadSummaryDrawer isOpen={showLeadSummaryDrawer} onClose={() => setShowLeadSummaryDrawer(false)} client={selectedClient} />
-      {/* Price Offer Choice Modal */}
-      {showPriceOfferChoiceModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
-          <div className="bg-base-100 rounded-xl shadow-xl p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold mb-4">Send Price Offer</h3>
-            <p className="text-base-content/70 mb-6">How would you like to send the price offer?</p>
-            <div className="flex flex-col gap-3">
-              <button
-                className="btn btn-primary w-full"
-                onClick={() => handlePriceOfferChoice('automated')}
-              >
-                Automated Email
-              </button>
-              <button
-                className="btn btn-outline w-full"
-                onClick={() => handlePriceOfferChoice('manual')}
-              >
-                Manual Price Offer
-              </button>
-              <button
-                className="btn btn-ghost w-full mt-2"
-                onClick={() => setShowPriceOfferChoiceModal(false)}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Manual Price Offer Modal */}
-      {showManualPriceOfferModal && (
-        <div className="fixed inset-0 z-[10000] md:flex md:items-center md:justify-center md:bg-black/30" style={{ zIndex: 10000 }}>
-          <div className="bg-base-100 h-full w-full flex flex-col p-6 md:h-auto md:rounded-xl md:shadow-xl md:max-w-2xl md:w-full md:mx-4 md:max-h-[90vh] relative" style={{ zIndex: 10001 }}>
-            <h3 className="text-lg font-semibold mb-4">Manual Price Offer</h3>
-            <textarea
-              className="textarea textarea-bordered w-full flex-1 min-h-[300px] mb-4"
-              placeholder="Enter price offer text..."
-              value={manualPriceOfferText}
-              onChange={(e) => setManualPriceOfferText(e.target.value)}
-            />
-            <div className="flex gap-3 justify-end">
-              <button
-                className="btn btn-ghost"
-                onClick={() => {
-                  setShowManualPriceOfferModal(false);
-                  setManualPriceOfferText('');
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={handleSaveManualPriceOffer}
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <SendPriceOfferModal
-        isOpen={Boolean(showSendOfferModal && selectedClient)}
-        onClose={() => setShowSendOfferModal(false)}
-        client={selectedClient}
-        msalInstance={instance}
-        loginRequest={loginRequest}
-        onOfferSent={onClientUpdate}
-      />
-      {/* Loading overlay spinner */}
-      {localLoading && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/60">
-          <span className="loading loading-spinner loading-lg text-primary"></span>
-        </div>
-      )}
-      {showSubLeadDrawer && (
-        <div className="fixed inset-0 z-50 flex">
-          <div
-            className="fixed inset-0 bg-black/30"
-            onClick={() => {
-              setShowSubLeadDrawer(false);
-              setSubLeadStep('initial');
-              setIsSavingSubLead(false);
-              setSelectedContractContactId(null);
-              setSelectedContractId(null);
-            }}
-          />
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
-            {/* Fixed Header */}
-            <div className="flex items-center justify-between p-8 pb-6 border-b border-base-300">
-              <h3 className="text-2xl font-bold">Create Sub-Lead</h3>
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={() => {
-                  setShowSubLeadDrawer(false);
-                  setIsSavingSubLead(false);
-                  setSubLeadStep('initial');
-                  setSelectedContractContactId(null);
-                  setSelectedContractId(null);
-                }}
-              >
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-            {/* Scrollable Content Area */}
-            <div className="flex-1 overflow-y-auto p-8 pt-6">
-              <div className="flex flex-col gap-4">
-                {subLeadStep === 'initial' && (
-                  <>
-                    <button
-                      className="btn btn-primary mb-4"
-                      onClick={() => {
-                        prefillSubLeadFormFromClient();
-                        setSubLeadStep('newProcedure');
-                      }}
-                    >
-                      New Procedure (Same Contact)
-                    </button>
-                    <button
-                      className="btn btn-outline"
-                      onClick={() => {
-                        // Pre-fill category, topic, facts, and special notes from existing client
-                        const baseCategoryId = selectedClient?.category_id != null ? String(selectedClient.category_id) : '';
-                        const categoryOption = baseCategoryId ? categoryOptionsMap.get(baseCategoryId) : undefined;
-
-                        setSubLeadForm({
-                          name: '',
-                          email: '',
-                          phone: '',
-                          mobile: '',
-                          country: '',
-                          countryId: '',
-                          category: categoryOption?.label || selectedClient?.category || '',
-                          categoryId: baseCategoryId || '',
-                          topic: selectedClient?.topic || '',
-                          special_notes: selectedClient?.special_notes || '',
-                          source: '',
-                          language: '',
-                          tags: '',
-                          facts: selectedClient?.facts || '',
-                          handler: '',
-                          handlerId: '',
-                          currency: 'NIS',
-                          numApplicants: '',
-                          proposal: '',
-                          potentialValue: '',
-                        });
-                        setSubLeadStep('newContact');
-                      }}
-                    >
-                      Add New Contact
-                    </button>
-                    {/* Same Contract buttons - one for each contact with a contract */}
-                    {contactsWithContracts.map((item) => (
-                      <button
-                        key={item.contactId}
-                        className="btn btn-outline btn-success"
-                        onClick={() => {
-                          setSelectedContractContactId(item.contactId);
-                          setSelectedContractId(item.contractId);
-                          // Pre-fill form with client data
-                          const baseCategoryId = selectedClient?.category_id != null ? String(selectedClient.category_id) : '';
-                          const countryIdValue = item.contactCountryId ?? selectedClient?.country_id ?? '';
-                          const countryIdString =
-                            countryIdValue !== null && countryIdValue !== undefined ? String(countryIdValue) : '';
-                          setSubLeadForm({
-                            name: item.contactName,
-                            email: item.contactEmail || selectedClient?.email || '',
-                            phone: item.contactPhone || selectedClient?.phone || '',
-                            mobile: item.contactMobile || selectedClient?.mobile || '',
-                            country: '',
-                            countryId: countryIdString,
-                            category: selectedClient?.category || '',
-                            categoryId: baseCategoryId || '',
-                            topic: selectedClient?.topic || '',
-                            special_notes: selectedClient?.special_notes || '',
-                            source: '',
-                            language: selectedClient?.language || '',
-                            tags: '',
-                            facts: selectedClient?.facts || '',
-                            handler: '',
-                            handlerId: '',
-                            currency: 'NIS',
-                            numApplicants: '',
-                            proposal: '',
-                            potentialValue: '',
-                          });
-                          setSubLeadStep('sameContract');
-                        }}
-                      >
-                        Same Contract - {item.contactName}
-                      </button>
-                    ))}
-                  </>
-                )}
-                {subLeadStep === 'newContact' && (
-                  <>
-                    <label className="block font-semibold mb-1">Category</label>
-                    <div className="relative">
-                      <input
-                        type="text"
-                        className="input input-bordered w-full pr-10"
-                        value={subLeadForm.category}
-                        onChange={e => {
-                          const value = e.target.value;
-                          setSubLeadForm(f => ({ ...f, category: value, categoryId: '' }));
-                        }}
-                        placeholder="Type to search categories..."
-                      />
-                      {subLeadForm.category && (
-                        <button
-                          type="button"
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                          onClick={() => setSubLeadForm(f => ({ ...f, category: '', categoryId: '' }))}
-                        >
-                          ✕
-                        </button>
-                      )}
-                      {subLeadForm.category && !subLeadForm.categoryId && (
-                        <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                          {categoryOptions
-                            .filter(opt => opt.label.toLowerCase().includes(subLeadForm.category.toLowerCase()))
-                            .slice(0, 10)
-                            .map(opt => (
-                              <button
-                                key={opt.id}
-                                type="button"
-                                className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
-                                onClick={() => {
-                                  setSubLeadForm(f => ({
-                                    ...f,
-                                    categoryId: opt.id,
-                                    category: opt.label
-                                  }));
-                                }}
-                              >
-                                {opt.label}
-                              </button>
-                            ))}
-                        </div>
-                      )}
-                    </div>
-                    <label className="block font-semibold mb-1 mt-4">Topic</label>
-                    <input
-                      className="input input-bordered w-full"
-                      value={subLeadForm.topic}
-                      onChange={e => setSubLeadForm(f => ({ ...f, topic: e.target.value }))}
-                      placeholder="Enter topic"
-                    />
-                    <label className="block font-semibold mb-1">Client Name</label>
-                    <input
-                      className="input input-bordered w-full"
-                      value={subLeadForm.name}
-                      onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
-                      placeholder="Enter client name"
-                    />
-                    <label className="block font-semibold mb-1">Language</label>
-                    <select
-                      className="select select-bordered w-full"
-                      value={subLeadForm.language}
-                      onChange={e => setSubLeadForm(f => ({ ...f, language: e.target.value }))}
-                    >
-                      <option value="">Select language...</option>
-                      {allLanguages.map(lang => (
-                        <option key={lang.id} value={lang.name || ''}>
-                          {lang.name || 'Unknown'}
-                        </option>
-                      ))}
-                    </select>
-                    <label className="block font-semibold mb-1">Facts of Case</label>
-                    <textarea
-                      className="textarea textarea-bordered w-full"
-                      value={subLeadForm.facts}
-                      onChange={e => setSubLeadForm(f => ({ ...f, facts: e.target.value }))}
-                      placeholder="Enter facts of the case"
-                      rows={4}
-                    />
-                    <label className="block font-semibold mb-1">Special Notes</label>
-                    <textarea
-                      className="textarea textarea-bordered w-full"
-                      value={subLeadForm.special_notes}
-                      onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))}
-                      placeholder="Enter special notes"
-                      rows={4}
-                    />
-                  </>
-                )}
-                {subLeadStep === 'newContactDetails' && (
-                  <>
-                    <label className="block font-semibold mb-1">Name *</label>
-                    <input
-                      className="input input-bordered w-full"
-                      value={subLeadForm.name}
-                      onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
-                      placeholder="Enter contact name"
-                    />
-                    <label className="block font-semibold mb-1">Mobile</label>
-                    <div className="flex gap-2">
-                      <select
-                        className="select select-bordered w-40"
-                        value={parsePhoneNumber(subLeadForm.mobile).countryCode}
-                        onChange={(e) => {
-                          const currentMobile = subLeadForm.mobile || '';
-                          const currentParsed = parsePhoneNumber(currentMobile);
-                          const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
-                          setSubLeadForm(f => ({ ...f, mobile: newNumber }));
-                        }}
-                      >
-                        {countryCodes.map((code) => (
-                          <option key={`${code.code}-${code.country}`} value={code.code}>
-                            {code.code} {code.name}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        type="tel"
-                        placeholder="Enter mobile number"
-                        className="input input-bordered flex-1"
-                        value={parsePhoneNumber(subLeadForm.mobile).number}
-                        onChange={(e) => {
-                          const { countryCode } = parsePhoneNumber(subLeadForm.mobile);
-                          setSubLeadForm(f => ({ ...f, mobile: formatPhoneNumber(countryCode, e.target.value) }));
-                        }}
-                      />
-                    </div>
-                    <label className="block font-semibold mb-1">Phone</label>
-                    <div className="flex gap-2">
-                      <select
-                        className="select select-bordered w-40"
-                        value={parsePhoneNumber(subLeadForm.phone).countryCode}
-                        onChange={(e) => {
-                          const currentPhone = subLeadForm.phone || '';
-                          const currentParsed = parsePhoneNumber(currentPhone);
-                          const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
-                          setSubLeadForm(f => ({ ...f, phone: newNumber }));
-                        }}
-                      >
-                        {countryCodes.map((code) => (
-                          <option key={`${code.code}-${code.country}`} value={code.code}>
-                            {code.code} {code.name}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        type="tel"
-                        placeholder="Enter phone number"
-                        className="input input-bordered flex-1"
-                        value={parsePhoneNumber(subLeadForm.phone).number}
-                        onChange={(e) => {
-                          const { countryCode } = parsePhoneNumber(subLeadForm.phone);
-                          setSubLeadForm(f => ({ ...f, phone: formatPhoneNumber(countryCode, e.target.value) }));
-                        }}
-                      />
-                    </div>
-                    <label className="block font-semibold mb-1">Email</label>
-                    <input
-                      className="input input-bordered w-full"
-                      value={subLeadForm.email}
-                      onChange={e => setSubLeadForm(f => ({ ...f, email: e.target.value }))}
-                      placeholder="Enter email address"
-                      type="email"
-                    />
-                    <label className="block font-semibold mb-1">Country</label>
-                    <select
-                      className="select select-bordered w-full"
-                      value={subLeadForm.country}
-                      onChange={e => {
-                        const countryName = e.target.value;
-                        const countryId = allCountries.find(c => c.name === countryName)?.id || '';
-                        setSubLeadForm(f => ({ ...f, country: countryName, countryId: countryId.toString() }));
-                      }}
-                    >
-                      <option value="">Select country...</option>
-                      {allCountries.map(country => (
-                        <option key={country.id} value={country.name}>
-                          {country.name}
-                        </option>
-                      ))}
-                    </select>
-                  </>
-                )}
-                {subLeadStep === 'sameContract' && (
-                  <>
-                    <div className="mb-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
-                      <p className="text-sm text-blue-800">
-                        <strong>Contract:</strong> {contactContracts[selectedContractContactId || 0]?.contractName || 'Contract'} - {contactContracts[selectedContractContactId || 0]?.contactName || 'Contact'}
-                      </p>
-                    </div>
-                    <label className="block font-semibold mb-1">Category</label>
-                    <div className="relative">
-                      <input
-                        type="text"
-                        className="input input-bordered w-full pr-10"
-                        value={subLeadForm.category}
-                        onChange={e => {
-                          const value = e.target.value;
-                          setSubLeadForm(f => ({ ...f, category: value, categoryId: '' }));
-                        }}
-                        placeholder="Type to search categories..."
-                      />
-                      {subLeadForm.category && (
-                        <button
-                          type="button"
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                          onClick={() => setSubLeadForm(f => ({ ...f, category: '', categoryId: '' }))}
-                        >
-                          ✕
-                        </button>
-                      )}
-                      {subLeadForm.category && !subLeadForm.categoryId && (
-                        <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                          {categoryOptions
-                            .filter(opt => opt.label.toLowerCase().includes(subLeadForm.category.toLowerCase()))
-                            .slice(0, 10)
-                            .map(opt => (
-                              <button
-                                key={opt.id}
-                                type="button"
-                                className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
-                                onClick={() => {
-                                  setSubLeadForm(f => ({
-                                    ...f,
-                                    categoryId: opt.id,
-                                    category: opt.label
-                                  }));
-                                }}
-                              >
-                                {opt.label}
-                              </button>
-                            ))}
-                        </div>
-                      )}
-                    </div>
-                    <label className="block font-semibold mb-1">Name</label>
-                    <input
-                      className="input input-bordered w-full"
-                      value={subLeadForm.name}
-                      onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
-                      placeholder="Enter client name"
-                    />
-                    <label className="block font-semibold mb-1">Language</label>
-                    <select
-                      className="select select-bordered w-full"
-                      value={subLeadForm.language}
-                      onChange={e => setSubLeadForm(f => ({ ...f, language: e.target.value }))}
-                    >
-                      <option value="">Select language...</option>
-                      {allLanguages.map(lang => (
-                        <option key={lang.id} value={lang.name || ''}>
-                          {lang.name || 'Unknown'}
-                        </option>
-                      ))}
-                    </select>
-                    <label className="block font-semibold mb-1">Facts of Case</label>
-                    <textarea
-                      className="textarea textarea-bordered w-full"
-                      value={subLeadForm.facts}
-                      onChange={e => setSubLeadForm(f => ({ ...f, facts: e.target.value }))}
-                      placeholder="Enter facts of the case"
-                      rows={4}
-                    />
-                    <label className="block font-semibold mb-1">Special Notes</label>
-                    <textarea
-                      className="textarea textarea-bordered w-full"
-                      value={subLeadForm.special_notes}
-                      onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))}
-                      placeholder="Enter special notes"
-                      rows={4}
-                    />
-                  </>
-                )}
-                {subLeadStep === 'newProcedure' && (
-                  <>
-                    <label className="block font-semibold mb-1">Category</label>
-                    <div className="relative">
-                      <input
-                        type="text"
-                        className="input input-bordered w-full pr-10"
-                        value={subLeadForm.category}
-                        onChange={e => {
-                          const value = e.target.value;
-                          setSubLeadForm(f => ({ ...f, category: value, categoryId: '' }));
-                        }}
-                        placeholder="Type to search categories..."
-                      />
-                      {subLeadForm.category && (
-                        <button
-                          type="button"
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                          onClick={() => setSubLeadForm(f => ({ ...f, category: '', categoryId: '' }))}
-                        >
-                          ✕
-                        </button>
-                      )}
-                      {subLeadForm.category && !subLeadForm.categoryId && (
-                        <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                          {categoryOptions
-                            .filter(opt => opt.label.toLowerCase().includes(subLeadForm.category.toLowerCase()))
-                            .slice(0, 10)
-                            .map(opt => (
-                              <button
-                                key={opt.id}
-                                type="button"
-                                className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
-                                onClick={() => {
-                                  setSubLeadForm(f => ({
-                                    ...f,
-                                    categoryId: opt.id,
-                                    category: opt.label
-                                  }));
-                                }}
-                              >
-                                {opt.label}
-                              </button>
-                            ))}
-                        </div>
-                      )}
-                    </div>
-                    <label className="block font-semibold mb-1 mt-4">Topic</label>
-                    <input
-                      className="input input-bordered w-full"
-                      value={subLeadForm.topic}
-                      onChange={e => setSubLeadForm(f => ({ ...f, topic: e.target.value }))}
-                      placeholder="Enter topic"
-                    />
-                    <label className="block font-semibold mb-1">Client Name</label>
-                    <input
-                      className="input input-bordered w-full"
-                      value={subLeadForm.name}
-                      onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
-                      placeholder="Enter client name"
-                    />
-                    <label className="block font-semibold mb-1">Language</label>
-                    <select
-                      className="select select-bordered w-full"
-                      value={subLeadForm.language}
-                      onChange={e => setSubLeadForm(f => ({ ...f, language: e.target.value }))}
-                    >
-                      <option value="">Select language...</option>
-                      {allLanguages.map(lang => (
-                        <option key={lang.id} value={lang.name || ''}>
-                          {lang.name || 'Unknown'}
-                        </option>
-                      ))}
-                    </select>
-                    <label className="block font-semibold mb-1">Facts of Case</label>
-                    <textarea
-                      className="textarea textarea-bordered w-full"
-                      value={subLeadForm.facts}
-                      onChange={e => setSubLeadForm(f => ({ ...f, facts: e.target.value }))}
-                      placeholder="Enter facts of the case"
-                      rows={4}
-                    />
-                    <label className="block font-semibold mb-1">Special Notes</label>
-                    <textarea
-                      className="textarea textarea-bordered w-full"
-                      value={subLeadForm.special_notes}
-                      onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))}
-                      placeholder="Enter special notes"
-                      rows={4}
-                    />
-                  </>
-                )}
-                {subLeadStep === 'details' && (
-                  <>
-                    <label className="block font-semibold mb-1">Handler</label>
-                    <select
-                      className="select select-bordered w-full"
-                      value={subLeadForm.handlerId}
-                      onChange={e => {
-                        const value = e.target.value;
-                        setSubLeadForm(f => ({
-                          ...f,
-                          handlerId: value,
-                          handler: handlerOptionsMap.get(value) || '',
-                        }));
-                      }}
-                    >
-                      <option value="">Select handler...</option>
-                      {handlerOptions.map(opt => (
-                        <option key={opt.id} value={opt.id}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                    <label className="block font-semibold mb-1">Currency</label>
-                    <select className="select select-bordered w-full" value={subLeadForm.currency} onChange={e => setSubLeadForm(f => ({ ...f, currency: e.target.value }))}>
-                      <option value="NIS">NIS</option>
-                      <option value="USD">USD</option>
-                      <option value="EUR">EUR</option>
-                    </select>
-                    <label className="block font-semibold mb-1">Number of Applicants</label>
-                    <input className="input input-bordered w-full" value={subLeadForm.numApplicants} onChange={e => setSubLeadForm(f => ({ ...f, numApplicants: e.target.value }))} />
-                    <label className="block font-semibold mb-1">Proposal (Amount Total)</label>
-                    <input className="input input-bordered w-full" value={subLeadForm.proposal} onChange={e => setSubLeadForm(f => ({ ...f, proposal: e.target.value }))} />
-                    <label className="block font-semibold mb-1">Potential Value</label>
-                    <input className="input input-bordered w-full" value={subLeadForm.potentialValue} onChange={e => setSubLeadForm(f => ({ ...f, potentialValue: e.target.value }))} />
-                  </>
-                )}
-              </div>
-            </div>
-            {/* Fixed Footer with Action Button */}
-            {subLeadStep === 'newContact' && (
-              <div className="border-t border-base-300 p-4 bg-base-100">
-                <button
-                  className="btn btn-primary w-full"
-                  onClick={() => setSubLeadStep('newContactDetails')}
-                >
-                  Next: Contact Details
-                </button>
-              </div>
-            )}
-            {(subLeadStep === 'newContactDetails' || subLeadStep === 'sameContract' || subLeadStep === 'newProcedure' || subLeadStep === 'details') && (
-              <div className="border-t border-base-300 p-4 bg-base-100">
-                <button
-                  className="btn btn-primary w-full"
-                  onClick={handleSaveSubLead}
-                  disabled={isSavingSubLead}
-                >
-                  {isSavingSubLead
-                    ? (subLeadStep === 'details' ? 'Saving...' : 'Creating...')
-                    : (subLeadStep === 'details' ? 'Save Sub-Lead' : 'Create Sub-Lead')
-                  }
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Activation Modal */}
-      {showActivationModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="fixed inset-0 bg-black/50" onClick={() => setShowActivationModal(false)} />
-          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 z-10">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold text-gray-900">Activate Lead</h3>
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={() => setShowActivationModal(false)}
-              >
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-
-            <div className="space-y-6">
-              <div>
-                <p className="text-gray-600 mb-4">
-                  Are you sure you want to activate <strong>{selectedClient?.name}</strong> (Lead #{selectedClient?.lead_number})?
-                </p>
-
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                  <div className="flex items-center gap-2">
-                    <CheckCircleIcon className="w-5 h-5 text-green-500" />
-                    <span className="text-green-700 font-medium">
-                      This will restore the lead to its previous stage: <strong>{selectedClient?.previous_stage ? getStageName(selectedClient.previous_stage) : 'Created'}</strong>
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex gap-3 justify-end">
-                <button
-                  className="btn btn-outline"
-                  onClick={() => setShowActivationModal(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="btn btn-success"
-                  onClick={handleActivation}
-                >
-                  Activate Lead
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-      {/* Unactivation Modal */}
-      {showUnactivationModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="fixed inset-0 bg-black/50" onClick={() => {
-            setShowUnactivationModal(false);
-            setUnactivationReason('');
-            setDeactivateNotesDescription('');
-          }} />
-          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 z-10">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold text-gray-900">Unactivate Lead</h3>
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={() => {
-                  setShowUnactivationModal(false);
-                  setUnactivationReason('');
-                  setDeactivateNotesDescription('');
-                }}
-              >
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-
-            <div className="space-y-6">
-              <div>
-                <p className="text-gray-600 mb-4">
-                  Are you sure you want to unactivate <strong>{selectedClient?.name}</strong> (Lead #{selectedClient?.lead_number})?
-                </p>
-
-                <label className="block font-semibold mb-2 text-gray-900">Reason for Unactivation</label>
-                <select
-                  className="select select-bordered w-full mb-4"
-                  value={unactivationReason}
-                  onChange={(e) => setUnactivationReason(e.target.value)}
-                >
-                  <option value="">Select a reason...</option>
-                  <option value="test">test</option>
-                  <option value="spam">spam</option>
-                  <option value="double - same source">double - same source</option>
-                  <option value="double -diff. source">double -diff. source</option>
-                  <option value="no intent">no intent</option>
-                  <option value="non active category">non active category</option>
-                  <option value="IrrelevantBackground">IrrelevantBackground</option>
-                  <option value="incorrect contact">incorrect contact</option>
-                  <option value="no legal eligibility">no legal eligibility</option>
-                  <option value="no profitability">no profitability</option>
-                  <option value="can't be reached">can't be reached</option>
-                  <option value="expired">expired</option>
-                </select>
-
-                <label className="block font-semibold mb-2 text-gray-900">Description</label>
-                <textarea
-                  className="textarea textarea-bordered w-full min-h-[100px]"
-                  placeholder="Enter description for deactivation..."
-                  value={deactivateNotesDescription}
-                  onChange={(e) => setDeactivateNotesDescription(e.target.value)}
-                />
-              </div>
-
-              <div className="flex gap-3 justify-end">
-                <button
-                  className="btn btn-outline"
-                  onClick={() => {
-                    setShowUnactivationModal(false);
-                    setUnactivationReason('');
-                    setDeactivateNotesDescription('');
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="btn btn-error"
-                  onClick={handleUnactivation}
-                  disabled={!unactivationReason.trim() || !deactivateNotesDescription.trim()}
-                >
-                  Unactivate Lead
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Duplicate Contacts Modal */}
-      {isDuplicateModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-0">
-          <div
-            className="fixed inset-0 bg-black/50"
-            onClick={() => setIsDuplicateModalOpen(false)}
-          />
-          <div className="bg-white rounded-none shadow-2xl p-4 md:p-8 w-full h-full z-10 overflow-y-auto">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-xl md:text-2xl font-bold text-gray-900">Duplicate Contacts</h3>
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={() => setIsDuplicateModalOpen(false)}
-              >
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <p className="text-sm md:text-base text-gray-600 mb-4">
-                The following contacts have matching data (email, phone, or mobile) and are associated with other leads:
-              </p>
-
-              {/* Mobile: horizontal scroll, Desktop: 3-column grid */}
-              <div className="overflow-x-auto md:overflow-x-visible -mx-2 sm:-mx-4 md:-mx-0 px-2 sm:px-4 md:px-0">
-                <div className="flex md:grid md:grid-cols-3 gap-3 sm:gap-4 min-w-max md:min-w-0 pb-4">
-                  {duplicateContacts.map((dup, idx) => {
-                    // Helper to get stage badge
-                    const getStageBadgeForDuplicate = (stage: string | number | null) => {
-                      if (!stage && stage !== 0) {
-                        return <span className="badge badge-outline">No Stage</span>;
-                      }
-                      const stageStr = String(stage);
-                      const stageName = getStageName(stageStr);
-                      const stageColour = getStageColour(stageStr);
-                      const badgeTextColour = getContrastingTextColor(stageColour);
-                      const backgroundColor = stageColour || '#3f28cd';
-                      const textColor = stageColour ? badgeTextColour : '#ffffff';
-
-                      return (
-                        <span
-                          className="badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
-                          style={{
-                            backgroundColor,
-                            borderColor: backgroundColor,
-                            color: textColor,
-                            whiteSpace: 'nowrap',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            display: 'inline-block',
-                          }}
-                          title={stageName}
-                        >
-                          {stageName}
-                        </span>
-                      );
-                    };
-
-                    // Helper to get status icon
-                    const getStatusIcon = (status: string | number | null, leadType: 'new' | 'legacy') => {
-                      const isInactive = leadType === 'legacy'
-                        ? (status === 10 || status === '10' || Number(status) === 10)
-                        : (status === 'inactive');
-
-                      if (isInactive) {
-                        return <XCircleIcon className="h-7 w-7 text-error" title="Inactive" />;
-                      } else {
-                        return <CheckCircleIcon className="h-7 w-7 text-success" title="Active" />;
-                      }
-                    };
-
-                    // Check if lead is inactive for styling
-                    const isInactive = dup.leadType === 'legacy'
-                      ? (dup.status === 10 || dup.status === '10' || Number(dup.status) === 10)
-                      : (dup.status === 'inactive');
-
-                    const cardClasses = [
-                      'card',
-                      'shadow-lg',
-                      'hover:shadow-2xl',
-                      'transition-all',
-                      'duration-300',
-                      'ease-in-out',
-                      'transform',
-                      'hover:-translate-y-1',
-                      'cursor-pointer',
-                      'group',
-                      'border',
-                      isInactive ? 'bg-red-50 border-red-200' : 'bg-base-100 border-base-200',
-                    ].join(' ');
-
-                    return (
-                      <div key={`${dup.contactId}-${dup.leadId}-${idx}`} className="flex-shrink-0 w-80 md:w-auto md:flex-shrink">
-                        <div
-                          className={cardClasses}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigate(`/clients/${dup.leadNumber}`);
-                            setIsDuplicateModalOpen(false);
-                          }}
-                        >
-                          <div className="card-body p-5 relative">
-                            <div className="flex flex-col md:flex-row md:justify-between md:items-start mb-2 gap-2">
-                              <div className="flex items-center gap-2 order-2 md:order-1">
-                                <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors truncate">
-                                  {dup.leadName}
-                                </h2>
-                              </div>
-                              <div className="flex items-center gap-2 flex-shrink-0 order-1 md:order-2">
-                                {getStageBadgeForDuplicate(dup.stage)}
-                                {getStatusIcon(dup.status, dup.leadType)}
-                              </div>
-                            </div>
-
-                            <p className="text-sm text-base-content/60 font-mono mb-4">
-                              #{dup.leadNumber}
-                            </p>
-
-                            <div className="text-sm text-base-content/80 mb-3">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="font-semibold">Contact:</span>
-                                <span className="truncate font-medium">{dup.contactName}</span>
-                              </div>
-                            </div>
-
-                            <div className="divider my-0"></div>
-
-                            {(dup.category || dup.topic || dup.source) && (
-                              <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
-                                {dup.category && (
-                                  <div className="flex items-center gap-2" title="Category">
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                                    </svg>
-                                    <span className="truncate">{dup.category}</span>
-                                  </div>
-                                )}
-                                {dup.topic && (
-                                  <div className="flex items-center gap-2" title="Topic">
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-                                    </svg>
-                                    <span className="truncate">{dup.topic}</span>
-                                  </div>
-                                )}
-                                {dup.source && (
-                                  <div className="flex items-center gap-2" title="Source">
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                                    </svg>
-                                    <span className="truncate">{dup.source}</span>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-
-                            <div className="flex flex-col gap-2 mt-4 pt-4 border-t border-base-200/50 flex-1">
-                              <div className="mb-2">
-                                <span className="badge badge-success text-xs">match</span>
-                              </div>
-                              <div className="grid grid-cols-1 gap-3 text-lg">
-                                {dup.contactEmail && (
-                                  <div className="flex items-center gap-3 min-w-0 p-3 rounded-lg bg-base-200/50 hover:bg-base-200 transition-colors" title="Email">
-                                    <EnvelopeIcon className="h-6 w-6 text-primary flex-shrink-0" />
-                                    <span className="truncate font-semibold">{dup.contactEmail}</span>
-                                  </div>
-                                )}
-                                {dup.contactPhone && (
-                                  <div className="flex items-center gap-3 min-w-0 p-3 rounded-lg bg-base-200/50 hover:bg-base-200 transition-colors" title="Phone">
-                                    <PhoneIcon className="h-6 w-6 text-primary flex-shrink-0" />
-                                    <span className="truncate font-semibold">{dup.contactPhone}</span>
-                                  </div>
-                                )}
-                                {dup.contactMobile && (
-                                  <div className="flex items-center gap-3 min-w-0 p-3 rounded-lg bg-base-200/50 hover:bg-base-200 transition-colors" title="Mobile">
-                                    <PhoneIcon className="h-6 w-6 text-primary flex-shrink-0" />
-                                    <span className="truncate font-semibold">{dup.contactMobile}</span>
-                                  </div>
-                                )}
-                                {dup.contactCountry && (
-                                  <div className="flex items-center gap-3 min-w-0 p-3 rounded-lg bg-base-200/50 hover:bg-base-200 transition-colors" title="Country">
-                                    <MapPinIcon className="h-6 w-6 text-primary flex-shrink-0" />
-                                    <span className="truncate font-semibold">{dup.contactCountry}</span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex gap-3 justify-end mt-6 pt-4 border-t border-gray-200">
-              <button
-                className="btn btn-outline"
-                onClick={() => setIsDuplicateModalOpen(false)}
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Reschedule Meeting Drawer */}
-      {showRescheduleDrawer && (
-        <div className="fixed inset-0 z-[60] flex">
-          <div
-            className="fixed inset-0 bg-black/30"
-            onClick={() => {
-              setShowRescheduleDrawer(false);
-              setNotifyClientOnReschedule(false); // Reset to default
-              setMeetingToDelete(null);
-              setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
-              setRescheduleOption('cancel');
-              setNotifyClientOnReschedule(false); // Reset to default
-            }}
-          />
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
-            {/* Fixed Header */}
-            <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
-              <h3 className="text-2xl font-bold">Reschedule Meeting</h3>
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={() => {
-                  setShowRescheduleDrawer(false);
-                  setNotifyClientOnReschedule(false); // Reset to default
-                  setMeetingToDelete(null);
-                  setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
-                  setRescheduleOption('cancel');
-                  setNotifyClientOnReschedule(false); // Reset to default
-                }}
-              >
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-
-            {/* Scrollable Content */}
-            <div className="flex-1 overflow-y-auto p-8 pt-4">
-              {/* Notify Client Toggle */}
-              <div className="mb-6 flex items-center justify-between">
-                <label className="block font-semibold text-base">Notify Client</label>
-                <input
-                  type="checkbox"
-                  className="toggle toggle-primary"
-                  checked={notifyClientOnReschedule}
-                  onChange={(e) => setNotifyClientOnReschedule(e.target.checked)}
-                />
-              </div>
-
-              <div className="flex flex-col gap-4">
-                {/* Select Meeting - Optional for stage 21 */}
-                {(() => {
-                  const currentStage = typeof selectedClient?.stage === 'number' ? selectedClient.stage :
-                    (selectedClient?.stage ? parseInt(String(selectedClient.stage), 10) : null);
-                  const isStage21 = currentStage === 21;
-                  const showMeetingSelection = rescheduleMeetings.length > 0 && (rescheduleOption === 'cancel' || !isStage21);
-
-                  if (!showMeetingSelection) return null;
-
-                  return (
-                    <div>
-                      <label className="block font-semibold mb-1">
-                        Select Meeting {isStage21 && rescheduleOption === 'reschedule' ? '(Optional)' : ''}
-                      </label>
-                      <select
-                        className="select select-bordered w-full"
-                        value={meetingToDelete || ''}
-                        onChange={(e) => {
-                          const meetingId = e.target.value ? parseInt(e.target.value) : null;
-                          setMeetingToDelete(meetingId);
-                          // Pre-fill form with selected meeting data
-                          const selectedMeeting = rescheduleMeetings.find(m => m.id === meetingId);
-                          if (selectedMeeting) {
-                            setRescheduleFormData({
-                              date: selectedMeeting.meeting_date || getTomorrowDate(),
-                              time: selectedMeeting.meeting_time ? selectedMeeting.meeting_time.substring(0, 5) : '09:00',
-                              location: selectedMeeting.meeting_location || 'Teams',
-                              calendar: selectedMeeting.calendar_type === 'active_client' ? 'active_client' : 'current',
-                              manager: selectedMeeting.meeting_manager || '',
-                              helper: selectedMeeting.helper || '',
-                              amount: selectedMeeting.meeting_amount?.toString() || '',
-                              currency: selectedMeeting.meeting_currency || 'NIS',
-                              attendance_probability: selectedMeeting.attendance_probability || 'Medium',
-                              complexity: selectedMeeting.complexity || 'Simple',
-                              car_number: selectedMeeting.car_number || '',
-                            });
-                          }
-                        }}
-                        required={rescheduleOption === 'cancel' || (rescheduleOption === 'reschedule' && !isStage21)}
-                      >
-                        <option value="">Select a meeting...</option>
-                        {rescheduleMeetings.map((meeting) => (
-                          <option key={meeting.id} value={meeting.id}>
-                            {meeting.meeting_date} {meeting.meeting_time ? meeting.meeting_time.substring(0, 5) : ''} - {meeting.meeting_location || 'Teams'}
-                          </option>
-                        ))}
-                      </select>
-                      {isStage21 && rescheduleOption === 'reschedule' && (
-                        <p className="text-sm text-gray-500 mt-1">
-                          In stage 21, you can reschedule without canceling an existing meeting.
-                        </p>
-                      )}
-                    </div>
-                  );
-                })()}
-
-                {/* Reschedule Options */}
-                <div>
-                  <label className="block font-semibold mb-2">Action</label>
-                  <div className="flex gap-3">
-                    <button
-                      type="button"
-                      className={`btn flex-1 ${rescheduleOption === 'cancel' ? 'btn-primary' : 'btn-outline'}`}
-                      onClick={() => setRescheduleOption('cancel')}
-                    >
-                      Cancel Meeting
-                    </button>
-                    <button
-                      type="button"
-                      className={`btn flex-1 ${rescheduleOption === 'reschedule' ? 'btn-primary' : 'btn-outline'}`}
-                      onClick={() => setRescheduleOption('reschedule')}
-                    >
-                      Reschedule Meeting
-                    </button>
-                  </div>
-                  <p className="text-sm text-gray-500 mt-2">
-                    {rescheduleOption === 'cancel'
-                      ? 'Cancel the meeting and send cancellation email to client.'
-                      : 'Cancel the previous meeting and create a new one. Client will be notified of both actions.'}
-                  </p>
-                </div>
-
-                {/* Form fields - only show when reschedule option is selected */}
-                {rescheduleOption === 'reschedule' && (
-                  <>
-                    {/* Location */}
-                    <div>
-                      <label className="block font-semibold mb-1">Location</label>
-                      <select
-                        className="select select-bordered w-full"
-                        value={rescheduleFormData.location}
-                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, location: e.target.value }))}
-                      >
-                        {meetingLocations.map((location) => (
-                          <option key={location.id} value={location.name}>
-                            {location.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    {/* Calendar */}
-                    <div>
-                      <label className="block font-semibold mb-1">Calendar</label>
-                      <select
-                        className="select select-bordered w-full"
-                        value={rescheduleFormData.calendar}
-                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, calendar: e.target.value }))}
-                      >
-                        <option value="current">Potential Client</option>
-                      </select>
-                    </div>
-
-                    {/* Date */}
-                    <div>
-                      <label className="block font-semibold mb-1">New Date</label>
-                      <input
-                        type="date"
-                        className="input input-bordered w-full"
-                        value={rescheduleFormData.date}
-                        onChange={(e) => {
-                          setRescheduleFormData((prev: any) => ({ ...prev, date: e.target.value }));
-                          // Reset meeting counts when date changes
-                          setRescheduleMeetingCountsByTime({});
-                        }}
-                        required
-                        min={new Date().toISOString().split('T')[0]}
-                      />
-                    </div>
-
-                    {/* Time */}
-                    <TimePicker
-                      value={rescheduleFormData.time}
-                      onChange={(time) => setRescheduleFormData((prev: any) => ({ ...prev, time }))}
-                      meetingCounts={rescheduleMeetingCountsByTime}
-                      label="New Time"
-                    />
-
-                    {/* Manager (Optional) */}
-                    <div>
-                      <label className="block font-semibold mb-1">Manager (Optional)</label>
-                      <input
-                        type="text"
-                        className="input input-bordered w-full"
-                        placeholder="Select a manager..."
-                        list="reschedule-meeting-manager-options"
-                        value={rescheduleFormData.manager}
-                        onChange={(e) =>
-                          setRescheduleFormData((prev: any) => ({ ...prev, manager: e.target.value }))
-                        }
-                      />
-                      <datalist id="reschedule-meeting-manager-options">
-                        {allEmployees.map(emp => (
-                          <option key={emp.id} value={emp.display_name} />
-                        ))}
-                      </datalist>
-                    </div>
-
-                    {/* Helper (Optional) */}
-                    <div>
-                      <label className="block font-semibold mb-1">Helper (Optional)</label>
-                      <input
-                        type="text"
-                        className="input input-bordered w-full"
-                        placeholder="Select a helper..."
-                        list="reschedule-meeting-helper-options"
-                        value={rescheduleFormData.helper}
-                        onChange={(e) =>
-                          setRescheduleFormData((prev: any) => ({ ...prev, helper: e.target.value }))
-                        }
-                      />
-                      <datalist id="reschedule-meeting-helper-options">
-                        {allEmployees.map(emp => (
-                          <option key={emp.id} value={emp.display_name} />
-                        ))}
-                      </datalist>
-                    </div>
-
                     {/* Meeting Attendance Probability */}
                     <div>
                       <label className="block font-semibold mb-1">Meeting Attendance Probability</label>
                       <select
                         className="select select-bordered w-full"
-                        value={rescheduleFormData.attendance_probability || 'Medium'}
-                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, attendance_probability: e.target.value }))}
+                        value={meetingFormData.attendance_probability}
+                        onChange={(e) => setMeetingFormData(prev => ({ ...prev, attendance_probability: e.target.value }))}
                       >
                         <option value="Low">Low</option>
                         <option value="Medium">Medium</option>
@@ -16982,8 +13542,8 @@ const Clients: React.FC<ClientsProps> = ({
                       <label className="block font-semibold mb-1">Meeting Complexity</label>
                       <select
                         className="select select-bordered w-full"
-                        value={rescheduleFormData.complexity || 'Simple'}
-                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, complexity: e.target.value }))}
+                        value={meetingFormData.complexity}
+                        onChange={(e) => setMeetingFormData(prev => ({ ...prev, complexity: e.target.value }))}
                       >
                         <option value="Simple">Simple</option>
                         <option value="Complex">Complex</option>
@@ -16992,89 +13552,2165 @@ const Clients: React.FC<ClientsProps> = ({
 
                     {/* Meeting Car Number */}
                     <div>
-                      <label className="block font-semibold mb-1">Meeting Car Number</label>
+                      <label htmlFor="car-number" className="block font-semibold mb-1">Meeting Car Number</label>
                       <input
+                        id="car-number"
                         type="text"
                         className="input input-bordered w-full"
-                        value={rescheduleFormData.car_number || ''}
-                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, car_number: e.target.value }))}
+                        value={meetingFormData.car_number}
+                        onChange={(e) => setMeetingFormData(prev => ({ ...prev, car_number: e.target.value }))}
                         placeholder="Enter car number..."
                       />
                     </div>
-                  </>
-                )}
+                  </div>
+                </div>
+
+                {/* Fixed Footer */}
+                <div className="p-8 pt-4 border-t border-base-300 bg-base-100">
+                  <div className="flex justify-end">
+                    <button
+                      className="btn btn-primary px-8"
+                      onClick={handleScheduleMeeting}
+                      disabled={!meetingFormData.date || !meetingFormData.time || isCreatingMeeting}
+                    >
+                      {isCreatingMeeting ? (
+                        <>
+                          <span className="loading loading-spinner loading-sm"></span>
+                          Creating Meeting...
+                        </>
+                      ) : (
+                        'Create Meeting'
+                      )}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
+          )}
 
-            {/* Fixed Footer */}
-            <div className="p-8 pt-4 border-t border-base-300 bg-base-100">
-              <div className="flex justify-end gap-3">
-                <button
-                  className="btn btn-ghost"
-                  onClick={() => {
-                    setShowRescheduleDrawer(false);
-                    setNotifyClientOnReschedule(false); // Reset to default
-                    setMeetingToDelete(null);
-                    setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
-                    setRescheduleOption('cancel');
-                  }}
-                >
-                  Cancel
-                </button>
-                {rescheduleOption === 'cancel' ? (
-                  <button
-                    className="btn btn-primary px-8"
-                    onClick={handleCancelMeeting}
-                    disabled={!meetingToDelete}
-                  >
-                    Cancel Meeting
+          {/* Update Lead Drawer */}
+          {showUpdateDrawer && (
+            <div className="fixed inset-0 z-50 flex">
+              {/* Overlay */}
+              <div
+                className="fixed inset-0 bg-black/30"
+                onClick={() => setShowUpdateDrawer(false)}
+              />
+              {/* Drawer */}
+              <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}>
+                {/* Header */}
+                <div className="flex items-center justify-between p-6 pb-4 flex-shrink-0 border-b border-base-300">
+                  <h3 className="text-2xl font-bold">Update Lead</h3>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setShowUpdateDrawer(false)}>
+                    <XMarkIcon className="w-6 h-6" />
                   </button>
-                ) : (
+                </div>
+                {/* Scrollable Content */}
+                <div className="flex-1 overflow-y-auto p-6 pt-4">
+                  <div className="flex flex-col gap-4">
+                    <div>
+                      <label htmlFor="meeting-notes" className="block font-semibold mb-1">Meeting scheduling notes:</label>
+                      <textarea
+                        id="meeting-notes"
+                        name="meeting-notes"
+                        className="textarea textarea-bordered w-full min-h-[120px]"
+                        value={meetingNotes}
+                        onChange={e => setMeetingNotes(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold mb-1">Next followup:</label>
+                      <input
+                        type="date"
+                        className="input input-bordered w-full"
+                        value={nextFollowup}
+                        onChange={e => setNextFollowup(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="followup-notes" className="block font-semibold mb-1">Followup:</label>
+                      <textarea
+                        id="followup-notes"
+                        name="followup-notes"
+                        className="textarea textarea-bordered w-full min-h-[120px]"
+                        value={followup}
+                        onChange={e => setFollowup(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold mb-1">Potential applicants:</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        value={potentialApplicants}
+                        onChange={e => setPotentialApplicants(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </div>
+                {/* Fixed Save Button */}
+                <div className="p-6 pt-4 border-t border-base-300 flex-shrink-0 bg-base-100" style={{ paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom, 0))' }}>
                   <button
-                    className="btn btn-primary px-8"
-                    onClick={handleRescheduleMeeting}
-                    disabled={!rescheduleFormData.date || !rescheduleFormData.time || isReschedulingMeeting}
+                    className="btn btn-primary w-full text-lg font-semibold"
+                    onClick={handleSaveUpdateDrawer}
+                    disabled={isSavingUpdate}
                   >
-                    {isReschedulingMeeting ? (
-                      <>
-                        <span className="loading loading-spinner loading-sm"></span>
-                        Rescheduling...
-                      </>
+                    {isSavingUpdate ? 'Saving...' : 'Save'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Meeting Ended Drawer */}
+          {showMeetingEndedDrawer && (
+            <div className="fixed inset-0 z-[60] flex">
+              <div
+                className="fixed inset-0 bg-black/30"
+                onClick={() => setShowMeetingEndedDrawer(false)}
+              />
+              <div className="ml-auto w-full max-w-lg bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50 overflow-y-auto">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-2xl font-bold">Update Lead</h3>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setShowMeetingEndedDrawer(false)}>
+                    <XMarkIcon className="w-6 h-6" />
+                  </button>
+                </div>
+                <div className="flex flex-col gap-4 flex-1">
+                  {/* Probability */}
+                  <div>
+                    <label className="block font-semibold mb-1">Probability: {meetingEndedData.probability}%</label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={meetingEndedData.probability}
+                      onChange={e => handleMeetingEndedChange('probability', Number(e.target.value))}
+                      className="range range-primary"
+                    />
+                  </div>
+                  {/* Meeting Brief */}
+                  <div>
+                    <label className="block font-semibold mb-1">Meeting Brief:</label>
+                    <textarea
+                      className="textarea textarea-bordered w-full min-h-[120px]"
+                      value={meetingEndedData.meetingBrief}
+                      onChange={e => handleMeetingEndedChange('meetingBrief', e.target.value)}
+                    />
+                  </div>
+                  {/* Number of applicants */}
+                  <div>
+                    <label className="block font-semibold mb-1">Number of applicants:</label>
+                    <input
+                      type="number"
+                      className="input input-bordered w-full"
+                      value={meetingEndedData.numberOfApplicants}
+                      onChange={e => handleMeetingEndedChange('numberOfApplicants', Number(e.target.value))}
+                    />
+                  </div>
+                  {/* Proposal Total */}
+                  <div>
+                    <label className="block font-semibold mb-1">Proposal Total:</label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      value={meetingEndedData.proposalTotal}
+                      onFocus={(e) => e.target.select()}
+                      onChange={e => {
+                        // Only allow numbers and decimal point
+                        let value = e.target.value.replace(/[^0-9.]/g, '');
+                        // Prevent multiple decimal points
+                        const parts = value.split('.');
+                        if (parts.length > 2) {
+                          value = parts[0] + '.' + parts.slice(1).join('');
+                        }
+                        handleMeetingEndedChange('proposalTotal', value);
+                      }}
+                    />
+                  </div>
+                  {/* Currency */}
+                  <div>
+                    <label className="block font-semibold mb-1">Currency:</label>
+                    <select
+                      className="select select-bordered w-full"
+                      value={meetingEndedData.proposalCurrency}
+                      onChange={e => handleMeetingEndedChange('proposalCurrency', e.target.value)}
+                    >
+                      {currencies.length > 0 ? (
+                        currencies.map((currency) => (
+                          <option key={currency.id} value={currency.iso_code || currency.name}>
+                            {currency.name || currency.iso_code}
+                          </option>
+                        ))
+                      ) : (
+                        <>
+                          <option>NIS</option>
+                          <option>USD</option>
+                          <option>EUR</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
+                  {/* Meeting Total */}
+                  <div>
+                    <label className="block font-semibold mb-1">Meeting Total:</label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      value={meetingEndedData.meetingTotal}
+                      onFocus={(e) => e.target.select()}
+                      onChange={e => {
+                        // Only allow numbers and decimal point
+                        let value = e.target.value.replace(/[^0-9.]/g, '');
+                        // Prevent multiple decimal points
+                        const parts = value.split('.');
+                        if (parts.length > 2) {
+                          value = parts[0] + '.' + parts.slice(1).join('');
+                        }
+                        handleMeetingEndedChange('meetingTotal', value);
+                      }}
+                    />
+                  </div>
+                  {/* Meeting total currency */}
+                  <div>
+                    <label className="block font-semibold mb-1">Meeting total currency:</label>
+                    <select
+                      className="select select-bordered w-full"
+                      value={meetingEndedData.meetingTotalCurrency}
+                      onChange={e => handleMeetingEndedChange('meetingTotalCurrency', e.target.value)}
+                    >
+                      {currencies.length > 0 ? (
+                        currencies.map((currency) => (
+                          <option key={currency.id} value={currency.iso_code || currency.name}>
+                            {currency.name || currency.iso_code}
+                          </option>
+                        ))
+                      ) : (
+                        <>
+                          <option>NIS</option>
+                          <option>USD</option>
+                          <option>EUR</option>
+                        </>
+                      )}
+                    </select>
+                  </div>
+                  {/* Meeting Payment form */}
+                  <div>
+                    <label className="block font-semibold mb-1">Meeting Payment form:</label>
+                    <select
+                      className="select select-bordered w-full"
+                      value={meetingEndedData.meetingPaymentForm}
+                      onChange={e => handleMeetingEndedChange('meetingPaymentForm', e.target.value)}
+                    >
+                      <option value="">---------</option>
+                      <option value="Credit Card">Credit Card</option>
+                      <option value="Bank Transfer">Bank Transfer</option>
+                      <option value="Cash">Cash</option>
+                    </select>
+                  </div>
+                  {/* Special notes */}
+                  <div>
+                    <label className="block font-semibold mb-1">Special notes:</label>
+                    <textarea
+                      className="textarea textarea-bordered w-full min-h-[120px]"
+                      value={meetingEndedData.specialNotes}
+                      onChange={e => handleMeetingEndedChange('specialNotes', e.target.value)}
+                    />
+                  </div>
+                  {/* Potential applicants */}
+                  <div>
+                    <label className="block font-semibold mb-1">Potential applicants:</label>
+                    <input
+                      type="number"
+                      className="input input-bordered w-full"
+                      value={meetingEndedData.potentialApplicants}
+                      onChange={e => handleMeetingEndedChange('potentialApplicants', Number(e.target.value))}
+                    />
+                  </div>
+
+                  {/* Action Buttons */}
+                  <div className="flex justify-between items-center mt-6">
+                    <button
+                      className="btn btn-error gap-2"
+                      onClick={handleMeetingIrrelevant}
+                      disabled={isSavingMeetingEnded}
+                    >
+                      <HandThumbDownIcon className="w-5 h-5" />
+                      Meeting Irrelevant
+                    </button>
+                    <button
+                      className="btn btn-success gap-2"
+                      onClick={handleSendPriceOffer}
+                      disabled={isSavingMeetingEnded}
+                    >
+                      {isSavingMeetingEnded ? (
+                        <span className="loading loading-spinner loading-sm" />
+                      ) : (
+                        <DocumentCheckIcon className="w-5 h-5" />
+                      )}
+                      I have to send Price offer
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          {showMeetingIrrelevantModal && (
+            <div className="fixed inset-0 z-[70] flex items-center justify-center">
+              <div
+                className="fixed inset-0 bg-black/50"
+                onClick={() => {
+                  if (!isProcessingMeetingIrrelevant) {
+                    handleCancelMeetingIrrelevant();
+                  }
+                }}
+              />
+              <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-lg w-full mx-4 z-10">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="flex items-center gap-3 text-2xl font-bold text-gray-900">
+                    <ExclamationTriangleIcon className="w-7 h-7 text-red-500" />
+                    Mark Lead as Irrelevant
+                  </h3>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={handleCancelMeetingIrrelevant}
+                    disabled={isProcessingMeetingIrrelevant}
+                  >
+                    <XMarkIcon className="w-6 h-6" />
+                  </button>
+                </div>
+
+                <div className="space-y-5">
+                  <p className="text-sm text-red-600 leading-relaxed">
+                    Marking this lead as irrelevant should only be done when you are certain there is no legal eligibility. If you are unsure, please click cancel.
+                  </p>
+
+                  <div>
+                    <label className="block font-semibold mb-2 text-gray-900">Reason for this action</label>
+                    <textarea
+                      className="textarea textarea-bordered w-full min-h-[120px]"
+                      placeholder="Provide details about why this lead is irrelevant..."
+                      value={meetingIrrelevantReason}
+                      onChange={(e) => setMeetingIrrelevantReason(e.target.value)}
+                      disabled={isProcessingMeetingIrrelevant}
+                    />
+                    <p className="text-xs text-gray-500 mt-2">
+                      This reason will be saved to the lead history for future reference.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-3 mt-6">
+                  <button
+                    className="btn btn-outline"
+                    onClick={handleCancelMeetingIrrelevant}
+                    disabled={isProcessingMeetingIrrelevant}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="btn btn-error"
+                    onClick={handleConfirmMeetingIrrelevant}
+                    disabled={isProcessingMeetingIrrelevant || !meetingIrrelevantReason.trim()}
+                  >
+                    {isProcessingMeetingIrrelevant ? (
+                      <span className="loading loading-spinner loading-sm" />
                     ) : (
-                      'Reschedule Meeting'
+                      'Confirm'
                     )}
                   </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Client Signed Drawer (New) */}
+          {showSuccessDrawer && (
+            <div className="fixed inset-0 z-[60] flex">
+              <div
+                className="fixed inset-0 bg-black/30"
+                onClick={() => setShowSuccessDrawer(false)}
+              />
+              <div className="ml-auto w-full max-w-lg bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
+                <div className="flex items-start justify-between mb-6">
+                  <div>
+                    <h3 className="text-3xl font-black tracking-tight text-primary">Client signed !!!!</h3>
+                    <p className="mt-2 text-lg font-semibold text-base-content">
+                      Name: <span className="font-bold">{selectedClient?.name || '—'}</span>
+                    </p>
+                    <p className="text-lg font-semibold text-base-content">
+                      Topic: <span className="font-bold">{selectedClient?.topic || '—'}</span>
+                    </p>
+                  </div>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setShowSuccessDrawer(false)}
+                  >
+                    <XMarkIcon className="w-6 h-6" />
+                  </button>
+                </div>
+
+                <div className="flex flex-col gap-5 flex-1 overflow-y-auto">
+                  <div>
+                    <label className="block font-semibold mb-1">File ID</label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      value={successForm.fileId}
+                      onChange={e => handleSuccessFieldChange('fileId', e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1">Case handler</label>
+                    <div ref={handlerSearchContainerRef} className="relative">
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Type case handler name or choose from suggestions..."
+                        value={handlerSearchTerm}
+                        onChange={e => {
+                          const value = e.target.value;
+                          setHandlerSearchTerm(value);
+                          setShowHandlerSearchDropdown(true);
+                          setSuccessForm(prev => ({
+                            ...prev,
+                            handler: value,
+                            handlerId: '',
+                          }));
+                        }}
+                        onFocus={() => {
+                          setShowHandlerSearchDropdown(true);
+                          setFilteredHandlerSearchOptions(handlerOptions);
+                        }}
+                        autoComplete="off"
+                      />
+                      {showHandlerSearchDropdown && (
+                        <div className="absolute z-30 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                          <button
+                            type="button"
+                            className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                            onClick={() => {
+                              setSuccessForm(prev => ({
+                                ...prev,
+                                handlerId: '',
+                                handler: '',
+                              }));
+                              setHandlerSearchTerm('');
+                              setShowHandlerSearchDropdown(false);
+                            }}
+                          >
+                            ---------
+                          </button>
+                          {filteredHandlerSearchOptions.length > 0 ? (
+                            filteredHandlerSearchOptions.map(option => (
+                              <button
+                                type="button"
+                                key={option.id}
+                                className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                                onClick={() => {
+                                  setSuccessForm(prev => ({
+                                    ...prev,
+                                    handlerId: option.id,
+                                    handler: option.label,
+                                  }));
+                                  setHandlerSearchTerm(option.label);
+                                  setShowHandlerSearchDropdown(false);
+                                }}
+                              >
+                                {option.label}
+                              </button>
+                            ))
+                          ) : (
+                            <div className="px-4 py-3 text-sm text-base-content/60">
+                              No handlers found
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1">Currency</label>
+                    <select
+                      className="select select-bordered w-full"
+                      value={successForm.currency}
+                      onChange={e => handleSuccessFieldChange('currency', e.target.value)}
+                    >
+                      {currencyOptions.map(currency => (
+                        <option key={currency.value} value={currency.value}>
+                          {currency.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1">Number of applicants</label>
+                    <input
+                      type="number"
+                      min="0"
+                      className="input input-bordered w-full"
+                      value={successForm.numApplicants}
+                      onChange={e => handleSuccessFieldChange('numApplicants', e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1">Proposal Total</label>
+                    <input
+                      type="number"
+                      className="input input-bordered w-full"
+                      value={successForm.proposal}
+                      onChange={e => handleSuccessFieldChange('proposal', e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold mb-1">Potential Value</label>
+                    <input
+                      type="number"
+                      className="input input-bordered w-full"
+                      value={successForm.potentialValue}
+                      onChange={e => handleSuccessFieldChange('potentialValue', e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-6 flex items-center justify-end gap-3">
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => setShowSuccessDrawer(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="btn btn-primary px-8"
+                    onClick={handleSaveSuccessDrawer}
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Client Signed Drawer */}
+          {showSignedDrawer && (
+            <div className="fixed inset-0 z-[60] flex">
+              <div className="fixed inset-0 bg-black/30" onClick={() => setShowSignedDrawer(false)} />
+              <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-2xl font-bold">Client Signed Agreement</h3>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setShowSignedDrawer(false)}>
+                    <XMarkIcon className="w-6 h-6" />
+                  </button>
+                </div>
+                <div className="flex flex-col gap-4 flex-1">
+                  <div>
+                    <label className="block font-semibold mb-1">Date Signed</label>
+                    <input type="date" className="input input-bordered w-full" value={signedDate} onChange={e => setSignedDate(e.target.value)} />
+                  </div>
+                </div>
+                <div className="mt-6 flex justify-end">
+                  <button className="btn btn-primary px-8" onClick={handleSaveSignedDrawer}>
+                    Save
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Client Declined Drawer */}
+          {showDeclinedDrawer && (
+            <div className="fixed inset-0 z-[60] flex">
+              <div className="fixed inset-0 bg-black/30" onClick={() => setShowDeclinedDrawer(false)} />
+              <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-2xl font-bold">Client Declined</h3>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setShowDeclinedDrawer(false)}>
+                    <XMarkIcon className="w-6 h-6" />
+                  </button>
+                </div>
+                <div className="flex flex-col gap-6 flex-1">
+                  {isSuperuser ? (
+                    <>
+                      <div className="alert alert-warning">
+                        <ExclamationTriangleIcon className="w-6 h-6" />
+                        <div>
+                          <h4 className="font-bold">Important Notice</h4>
+                          <p>Please contact your supervisor before choosing this option.</p>
+                        </div>
+                      </div>
+                      <div className="text-base-content/80">
+                        <p>Are you sure you want to mark this client as declined?</p>
+                        <p className="mt-2 text-sm">This action will change the lead stage to "Client declined".</p>
+                      </div>
+                      {!isAdmin && !isAdminLoading && (
+                        <div className="alert alert-error">
+                          <ExclamationTriangleIcon className="w-6 h-6" />
+                          <div>
+                            <h4 className="font-bold">Access Restricted</h4>
+                            <p>Only administrators can decline clients. Please contact your supervisor.</p>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="alert alert-warning">
+                      <ExclamationTriangleIcon className="w-6 h-6" />
+                      <div>
+                        <h4 className="font-bold">Access Restricted</h4>
+                        <p>You do not have access to perform this action. Please contact a manager or admin for assistance.</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {isSuperuser && (
+                  <div className="mt-6 flex gap-3 justify-end">
+                    <button className="btn btn-ghost" onClick={() => setShowDeclinedDrawer(false)}>
+                      Cancel
+                    </button>
+                    {isAdmin && (
+                      <button className="btn btn-error" onClick={handleConfirmDeclined}>
+                        Yes, decline client
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
-          </div>
-        </div>
-      )}
+          )}
 
-      {/* Balance Edit Modal */}
-      <BalanceEditModal
-        isOpen={isBalanceModalOpen}
-        onClose={() => setIsBalanceModalOpen(false)}
-        selectedClient={selectedClient}
-        onUpdate={async (clientId) => {
-          isBalanceUpdatingRef.current = true;
-          console.log('🔒 Setting balance update flag to prevent onClientUpdate');
-          try {
-            await refreshClientData(clientId || selectedClient?.id);
-            // Wait longer for state to fully propagate and UI to update
-            await new Promise(resolve => setTimeout(resolve, 500));
-            console.log('✅ Balance update complete, UI should be updated');
-          } catch (error) {
-            console.error('❌ Error in balance update:', error);
-          } finally {
-            // Clear the flag after a longer delay to ensure all updates are done
-            setTimeout(() => {
-              isBalanceUpdatingRef.current = false;
-              console.log('🔓 Clearing balance update flag');
-            }, 1500);
-          }
-        }}
-      />
+          {/* Delete Lead Confirmation Modal */}
+          {showDeleteModal && (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center">
+              <div className="fixed inset-0 bg-black/50" onClick={() => !isDeletingLead && setShowDeleteModal(false)} />
+              <div className="relative bg-base-100 rounded-xl shadow-2xl p-8 max-w-md w-full mx-4 z-50">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-2xl font-bold text-error">Delete Lead</h3>
+                  <button
+                    className="btn btn-ghost btn-sm btn-circle"
+                    onClick={() => setShowDeleteModal(false)}
+                    disabled={isDeletingLead}
+                  >
+                    <XMarkIcon className="w-5 h-5" />
+                  </button>
+                </div>
+                <div className="flex flex-col gap-4">
+                  <div className="alert alert-error">
+                    <ExclamationTriangleIcon className="w-6 h-6" />
+                    <div>
+                      <h4 className="font-bold">Warning: This action cannot be undone!</h4>
+                      <p>Are you sure you want to delete this lead? This will permanently remove the lead and all associated data.</p>
+                    </div>
+                  </div>
+                  {selectedClient && (
+                    <div className="bg-base-200 rounded-lg p-4">
+                      <p className="font-semibold">Lead: {selectedClient.lead_number || selectedClient.id}</p>
+                      <p className="text-base-content/70">Name: {selectedClient.name || '---'}</p>
+                    </div>
+                  )}
+                </div>
+                <div className="mt-6 flex gap-3 justify-end">
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => setShowDeleteModal(false)}
+                    disabled={isDeletingLead}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="btn btn-error"
+                    onClick={handleDeleteLead}
+                    disabled={isDeletingLead}
+                  >
+                    {isDeletingLead ? (
+                      <>
+                        <span className="loading loading-spinner loading-sm"></span>
+                        Deleting...
+                      </>
+                    ) : (
+                      'Yes, delete lead'
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Edit Lead Drawer */}
+          {showEditLeadDrawer && (
+            <div className="fixed inset-0 z-50 flex">
+              {/* Overlay */}
+              <div className="fixed inset-0 bg-black/30" onClick={() => setShowEditLeadDrawer(false)} />
+              {/* Drawer */}
+              <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-2xl font-bold">Edit Lead</h3>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setShowEditLeadDrawer(false)}>
+                    <XMarkIcon className="w-6 h-6" />
+                  </button>
+                </div>
+                <div className="flex flex-col gap-4 flex-1 overflow-y-auto">
+                  <div>
+                    <label className="block font-semibold mb-1">Tags</label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      placeholder="Search or select tags..."
+                      value={editLeadData.tags}
+                      onChange={e => handleEditLeadChange('tags', e.target.value)}
+                      list="tags-options"
+                    />
+                    <datalist id="tags-options">
+                      {tagsList.map((name, index) => (
+                        <option key={`${name}-${index}`} value={name} />
+                      ))}
+                    </datalist>
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Source</label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      placeholder="Search or select a source..."
+                      value={editLeadData.source}
+                      onChange={e => handleEditLeadChange('source', e.target.value)}
+                      list="source-options"
+                    />
+                    <datalist id="source-options">
+                      {sources.map((name, index) => (
+                        <option key={`${name}-${index}`} value={name} />
+                      ))}
+                    </datalist>
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Client Name</label>
+                    <input type="text" className="input input-bordered w-full" value={editLeadData.name} onChange={e => handleEditLeadChange('name', e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Language</label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      placeholder="Search or select a language..."
+                      value={editLeadData.language}
+                      onChange={e => handleEditLeadChange('language', e.target.value)}
+                      list="language-options"
+                    />
+                    <datalist id="language-options">
+                      {languagesList.map((name, index) => (
+                        <option key={`${name}-${index}`} value={name} />
+                      ))}
+                    </datalist>
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Category</label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      placeholder="Search or select a category..."
+                      value={editLeadData.category}
+                      onChange={e => handleEditLeadChange('category', e.target.value)}
+                      list="category-options"
+                    />
+                    <datalist id="category-options">
+                      {mainCategories.map((name, index) => (
+                        <option key={`${name}-${index}`} value={name} />
+                      ))}
+                    </datalist>
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Topic</label>
+                    <input type="text" className="input input-bordered w-full" value={editLeadData.topic} onChange={e => handleEditLeadChange('topic', e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Special Notes</label>
+                    <textarea className="textarea textarea-bordered w-full min-h-[60px]" value={editLeadData.special_notes} onChange={e => handleEditLeadChange('special_notes', e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Probability</label>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        className="range range-primary flex-1"
+                        value={editLeadData.probability || 0}
+                        onChange={e => handleEditLeadChange('probability', parseInt(e.target.value))}
+                      />
+                      <span className="text-sm font-medium text-gray-700 min-w-[50px] text-right">
+                        {editLeadData.probability || 0}%
+                      </span>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Number of Applicants</label>
+                    <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.number_of_applicants_meeting} onChange={e => handleEditLeadChange('number_of_applicants_meeting', e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Potential Applicants</label>
+                    <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.potential_applicants_meeting} onChange={e => handleEditLeadChange('potential_applicants_meeting', e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Balance (Amount)</label>
+                    <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.balance} onChange={e => handleEditLeadChange('balance', e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Follow Up Date</label>
+                    <input type="date" className="input input-bordered w-full" value={editLeadData.next_followup} onChange={e => handleEditLeadChange('next_followup', e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Balance Currency</label>
+                    <select className="select select-bordered w-full" value={editLeadData.balance_currency} onChange={e => handleEditLeadChange('balance_currency', e.target.value)}>
+                      {currencies.length > 0 ? (
+                        <>
+                          {/* Show current currency first */}
+                          {currencies
+                            .filter(currency => currency.name === editLeadData.balance_currency)
+                            .map((currency) => (
+                              <option key={`current-${currency.id}`} value={currency.name}>
+                                {currency.name} ({currency.iso_code})
+                              </option>
+                            ))
+                          }
+                          {/* Show other currencies */}
+                          {currencies
+                            .filter(currency => currency.name !== editLeadData.balance_currency)
+                            .map((currency) => (
+                              <option key={currency.id} value={currency.name}>
+                                {currency.name} ({currency.iso_code})
+                              </option>
+                            ))
+                          }
+                        </>
+                      ) : (
+                        <option value="">Loading currencies...</option>
+                      )}
+                    </select>
+                  </div>
+                </div>
+                <div className="mt-6 flex justify-end">
+                  <button className="btn btn-primary px-8" onClick={handleSaveEditLead}>
+                    Save
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <LeadSummaryDrawer isOpen={showLeadSummaryDrawer} onClose={() => setShowLeadSummaryDrawer(false)} client={selectedClient} />
+          {/* Price Offer Choice Modal */}
+          {showPriceOfferChoiceModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+              <div className="bg-base-100 rounded-xl shadow-xl p-6 max-w-md w-full mx-4">
+                <h3 className="text-lg font-semibold mb-4">Send Price Offer</h3>
+                <p className="text-base-content/70 mb-6">How would you like to send the price offer?</p>
+                <div className="flex flex-col gap-3">
+                  <button
+                    className="btn btn-primary w-full"
+                    onClick={() => handlePriceOfferChoice('automated')}
+                  >
+                    Automated Email
+                  </button>
+                  <button
+                    className="btn btn-outline w-full"
+                    onClick={() => handlePriceOfferChoice('manual')}
+                  >
+                    Manual Price Offer
+                  </button>
+                  <button
+                    className="btn btn-ghost w-full mt-2"
+                    onClick={() => setShowPriceOfferChoiceModal(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Manual Price Offer Modal */}
+          {showManualPriceOfferModal && (
+            <div className="fixed inset-0 z-[10000] md:flex md:items-center md:justify-center md:bg-black/30" style={{ zIndex: 10000 }}>
+              <div className="bg-base-100 h-full w-full flex flex-col p-6 md:h-auto md:rounded-xl md:shadow-xl md:max-w-2xl md:w-full md:mx-4 md:max-h-[90vh] relative" style={{ zIndex: 10001 }}>
+                <h3 className="text-lg font-semibold mb-4">Manual Price Offer</h3>
+                <textarea
+                  className="textarea textarea-bordered w-full flex-1 min-h-[300px] mb-4"
+                  placeholder="Enter price offer text..."
+                  value={manualPriceOfferText}
+                  onChange={(e) => setManualPriceOfferText(e.target.value)}
+                />
+                <div className="flex gap-3 justify-end">
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => {
+                      setShowManualPriceOfferModal(false);
+                      setManualPriceOfferText('');
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="btn btn-primary"
+                    onClick={handleSaveManualPriceOffer}
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <SendPriceOfferModal
+            isOpen={Boolean(showSendOfferModal && selectedClient)}
+            onClose={() => setShowSendOfferModal(false)}
+            client={selectedClient}
+            msalInstance={instance}
+            loginRequest={loginRequest}
+            onOfferSent={onClientUpdate}
+          />
+          {/* Loading overlay spinner */}
+          {localLoading && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/60">
+              <span className="loading loading-spinner loading-lg text-primary"></span>
+            </div>
+          )}
+          {showSubLeadDrawer && (
+            <div className="fixed inset-0 z-50 flex">
+              <div
+                className="fixed inset-0 bg-black/30"
+                onClick={() => {
+                  setShowSubLeadDrawer(false);
+                  setSubLeadStep('initial');
+                  setIsSavingSubLead(false);
+                  setSelectedContractContactId(null);
+                  setSelectedContractId(null);
+                }}
+              />
+              <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
+                {/* Fixed Header */}
+                <div className="flex items-center justify-between p-8 pb-6 border-b border-base-300">
+                  <h3 className="text-2xl font-bold">Create Sub-Lead</h3>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => {
+                      setShowSubLeadDrawer(false);
+                      setIsSavingSubLead(false);
+                      setSubLeadStep('initial');
+                      setSelectedContractContactId(null);
+                      setSelectedContractId(null);
+                    }}
+                  >
+                    <XMarkIcon className="w-6 h-6" />
+                  </button>
+                </div>
+                {/* Scrollable Content Area */}
+                <div className="flex-1 overflow-y-auto p-8 pt-6">
+                  <div className="flex flex-col gap-4">
+                    {subLeadStep === 'initial' && (
+                      <>
+                        <button
+                          className="btn btn-primary mb-4"
+                          onClick={() => {
+                            prefillSubLeadFormFromClient();
+                            setSubLeadStep('newProcedure');
+                          }}
+                        >
+                          New Procedure (Same Contact)
+                        </button>
+                        <button
+                          className="btn btn-outline"
+                          onClick={() => {
+                            // Pre-fill category, topic, facts, and special notes from existing client
+                            const baseCategoryId = selectedClient?.category_id != null ? String(selectedClient.category_id) : '';
+                            const categoryOption = baseCategoryId ? categoryOptionsMap.get(baseCategoryId) : undefined;
+
+                            setSubLeadForm({
+                              name: '',
+                              email: '',
+                              phone: '',
+                              mobile: '',
+                              country: '',
+                              countryId: '',
+                              category: categoryOption?.label || selectedClient?.category || '',
+                              categoryId: baseCategoryId || '',
+                              topic: selectedClient?.topic || '',
+                              special_notes: selectedClient?.special_notes || '',
+                              source: '',
+                              language: '',
+                              tags: '',
+                              facts: selectedClient?.facts || '',
+                              handler: '',
+                              handlerId: '',
+                              currency: 'NIS',
+                              numApplicants: '',
+                              proposal: '',
+                              potentialValue: '',
+                            });
+                            setSubLeadStep('newContact');
+                          }}
+                        >
+                          Add New Contact
+                        </button>
+                        {/* Same Contract buttons - one for each contact with a contract */}
+                        {contactsWithContracts.map((item) => (
+                          <button
+                            key={item.contactId}
+                            className="btn btn-outline btn-success"
+                            onClick={() => {
+                              setSelectedContractContactId(item.contactId);
+                              setSelectedContractId(item.contractId);
+                              // Pre-fill form with client data
+                              const baseCategoryId = selectedClient?.category_id != null ? String(selectedClient.category_id) : '';
+                              const countryIdValue = item.contactCountryId ?? selectedClient?.country_id ?? '';
+                              const countryIdString =
+                                countryIdValue !== null && countryIdValue !== undefined ? String(countryIdValue) : '';
+                              setSubLeadForm({
+                                name: item.contactName,
+                                email: item.contactEmail || selectedClient?.email || '',
+                                phone: item.contactPhone || selectedClient?.phone || '',
+                                mobile: item.contactMobile || selectedClient?.mobile || '',
+                                country: '',
+                                countryId: countryIdString,
+                                category: selectedClient?.category || '',
+                                categoryId: baseCategoryId || '',
+                                topic: selectedClient?.topic || '',
+                                special_notes: selectedClient?.special_notes || '',
+                                source: '',
+                                language: selectedClient?.language || '',
+                                tags: '',
+                                facts: selectedClient?.facts || '',
+                                handler: '',
+                                handlerId: '',
+                                currency: 'NIS',
+                                numApplicants: '',
+                                proposal: '',
+                                potentialValue: '',
+                              });
+                              setSubLeadStep('sameContract');
+                            }}
+                          >
+                            Same Contract - {item.contactName}
+                          </button>
+                        ))}
+                      </>
+                    )}
+                    {subLeadStep === 'newContact' && (
+                      <>
+                        <label className="block font-semibold mb-1">Category</label>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            className="input input-bordered w-full pr-10"
+                            value={subLeadForm.category}
+                            onChange={e => {
+                              const value = e.target.value;
+                              setSubLeadForm(f => ({ ...f, category: value, categoryId: '' }));
+                            }}
+                            placeholder="Type to search categories..."
+                          />
+                          {subLeadForm.category && (
+                            <button
+                              type="button"
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                              onClick={() => setSubLeadForm(f => ({ ...f, category: '', categoryId: '' }))}
+                            >
+                              ✕
+                            </button>
+                          )}
+                          {subLeadForm.category && !subLeadForm.categoryId && (
+                            <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                              {categoryOptions
+                                .filter(opt => opt.label.toLowerCase().includes(subLeadForm.category.toLowerCase()))
+                                .slice(0, 10)
+                                .map(opt => (
+                                  <button
+                                    key={opt.id}
+                                    type="button"
+                                    className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                                    onClick={() => {
+                                      setSubLeadForm(f => ({
+                                        ...f,
+                                        categoryId: opt.id,
+                                        category: opt.label
+                                      }));
+                                    }}
+                                  >
+                                    {opt.label}
+                                  </button>
+                                ))}
+                            </div>
+                          )}
+                        </div>
+                        <label className="block font-semibold mb-1 mt-4">Topic</label>
+                        <input
+                          className="input input-bordered w-full"
+                          value={subLeadForm.topic}
+                          onChange={e => setSubLeadForm(f => ({ ...f, topic: e.target.value }))}
+                          placeholder="Enter topic"
+                        />
+                        <label className="block font-semibold mb-1">Client Name</label>
+                        <input
+                          className="input input-bordered w-full"
+                          value={subLeadForm.name}
+                          onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
+                          placeholder="Enter client name"
+                        />
+                        <label className="block font-semibold mb-1">Language</label>
+                        <select
+                          className="select select-bordered w-full"
+                          value={subLeadForm.language}
+                          onChange={e => setSubLeadForm(f => ({ ...f, language: e.target.value }))}
+                        >
+                          <option value="">Select language...</option>
+                          {allLanguages.map(lang => (
+                            <option key={lang.id} value={lang.name || ''}>
+                              {lang.name || 'Unknown'}
+                            </option>
+                          ))}
+                        </select>
+                        <label className="block font-semibold mb-1">Facts of Case</label>
+                        <textarea
+                          className="textarea textarea-bordered w-full"
+                          value={subLeadForm.facts}
+                          onChange={e => setSubLeadForm(f => ({ ...f, facts: e.target.value }))}
+                          placeholder="Enter facts of the case"
+                          rows={4}
+                        />
+                        <label className="block font-semibold mb-1">Special Notes</label>
+                        <textarea
+                          className="textarea textarea-bordered w-full"
+                          value={subLeadForm.special_notes}
+                          onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))}
+                          placeholder="Enter special notes"
+                          rows={4}
+                        />
+                      </>
+                    )}
+                    {subLeadStep === 'newContactDetails' && (
+                      <>
+                        <label className="block font-semibold mb-1">Name *</label>
+                        <input
+                          className="input input-bordered w-full"
+                          value={subLeadForm.name}
+                          onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
+                          placeholder="Enter contact name"
+                        />
+                        <label className="block font-semibold mb-1">Mobile</label>
+                        <div className="flex gap-2">
+                          <select
+                            className="select select-bordered w-40"
+                            value={parsePhoneNumber(subLeadForm.mobile).countryCode}
+                            onChange={(e) => {
+                              const currentMobile = subLeadForm.mobile || '';
+                              const currentParsed = parsePhoneNumber(currentMobile);
+                              const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
+                              setSubLeadForm(f => ({ ...f, mobile: newNumber }));
+                            }}
+                          >
+                            {countryCodes.map((code) => (
+                              <option key={`${code.code}-${code.country}`} value={code.code}>
+                                {code.code} {code.name}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            type="tel"
+                            placeholder="Enter mobile number"
+                            className="input input-bordered flex-1"
+                            value={parsePhoneNumber(subLeadForm.mobile).number}
+                            onChange={(e) => {
+                              const { countryCode } = parsePhoneNumber(subLeadForm.mobile);
+                              setSubLeadForm(f => ({ ...f, mobile: formatPhoneNumber(countryCode, e.target.value) }));
+                            }}
+                          />
+                        </div>
+                        <label className="block font-semibold mb-1">Phone</label>
+                        <div className="flex gap-2">
+                          <select
+                            className="select select-bordered w-40"
+                            value={parsePhoneNumber(subLeadForm.phone).countryCode}
+                            onChange={(e) => {
+                              const currentPhone = subLeadForm.phone || '';
+                              const currentParsed = parsePhoneNumber(currentPhone);
+                              const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
+                              setSubLeadForm(f => ({ ...f, phone: newNumber }));
+                            }}
+                          >
+                            {countryCodes.map((code) => (
+                              <option key={`${code.code}-${code.country}`} value={code.code}>
+                                {code.code} {code.name}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            type="tel"
+                            placeholder="Enter phone number"
+                            className="input input-bordered flex-1"
+                            value={parsePhoneNumber(subLeadForm.phone).number}
+                            onChange={(e) => {
+                              const { countryCode } = parsePhoneNumber(subLeadForm.phone);
+                              setSubLeadForm(f => ({ ...f, phone: formatPhoneNumber(countryCode, e.target.value) }));
+                            }}
+                          />
+                        </div>
+                        <label className="block font-semibold mb-1">Email</label>
+                        <input
+                          className="input input-bordered w-full"
+                          value={subLeadForm.email}
+                          onChange={e => setSubLeadForm(f => ({ ...f, email: e.target.value }))}
+                          placeholder="Enter email address"
+                          type="email"
+                        />
+                        <label className="block font-semibold mb-1">Country</label>
+                        <select
+                          className="select select-bordered w-full"
+                          value={subLeadForm.country}
+                          onChange={e => {
+                            const countryName = e.target.value;
+                            const countryId = allCountries.find(c => c.name === countryName)?.id || '';
+                            setSubLeadForm(f => ({ ...f, country: countryName, countryId: countryId.toString() }));
+                          }}
+                        >
+                          <option value="">Select country...</option>
+                          {allCountries.map(country => (
+                            <option key={country.id} value={country.name}>
+                              {country.name}
+                            </option>
+                          ))}
+                        </select>
+                      </>
+                    )}
+                    {subLeadStep === 'sameContract' && (
+                      <>
+                        <div className="mb-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                          <p className="text-sm text-blue-800">
+                            <strong>Contract:</strong> {contactContracts[selectedContractContactId || 0]?.contractName || 'Contract'} - {contactContracts[selectedContractContactId || 0]?.contactName || 'Contact'}
+                          </p>
+                        </div>
+                        <label className="block font-semibold mb-1">Category</label>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            className="input input-bordered w-full pr-10"
+                            value={subLeadForm.category}
+                            onChange={e => {
+                              const value = e.target.value;
+                              setSubLeadForm(f => ({ ...f, category: value, categoryId: '' }));
+                            }}
+                            placeholder="Type to search categories..."
+                          />
+                          {subLeadForm.category && (
+                            <button
+                              type="button"
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                              onClick={() => setSubLeadForm(f => ({ ...f, category: '', categoryId: '' }))}
+                            >
+                              ✕
+                            </button>
+                          )}
+                          {subLeadForm.category && !subLeadForm.categoryId && (
+                            <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                              {categoryOptions
+                                .filter(opt => opt.label.toLowerCase().includes(subLeadForm.category.toLowerCase()))
+                                .slice(0, 10)
+                                .map(opt => (
+                                  <button
+                                    key={opt.id}
+                                    type="button"
+                                    className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                                    onClick={() => {
+                                      setSubLeadForm(f => ({
+                                        ...f,
+                                        categoryId: opt.id,
+                                        category: opt.label
+                                      }));
+                                    }}
+                                  >
+                                    {opt.label}
+                                  </button>
+                                ))}
+                            </div>
+                          )}
+                        </div>
+                        <label className="block font-semibold mb-1">Name</label>
+                        <input
+                          className="input input-bordered w-full"
+                          value={subLeadForm.name}
+                          onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
+                          placeholder="Enter client name"
+                        />
+                        <label className="block font-semibold mb-1">Language</label>
+                        <select
+                          className="select select-bordered w-full"
+                          value={subLeadForm.language}
+                          onChange={e => setSubLeadForm(f => ({ ...f, language: e.target.value }))}
+                        >
+                          <option value="">Select language...</option>
+                          {allLanguages.map(lang => (
+                            <option key={lang.id} value={lang.name || ''}>
+                              {lang.name || 'Unknown'}
+                            </option>
+                          ))}
+                        </select>
+                        <label className="block font-semibold mb-1">Facts of Case</label>
+                        <textarea
+                          className="textarea textarea-bordered w-full"
+                          value={subLeadForm.facts}
+                          onChange={e => setSubLeadForm(f => ({ ...f, facts: e.target.value }))}
+                          placeholder="Enter facts of the case"
+                          rows={4}
+                        />
+                        <label className="block font-semibold mb-1">Special Notes</label>
+                        <textarea
+                          className="textarea textarea-bordered w-full"
+                          value={subLeadForm.special_notes}
+                          onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))}
+                          placeholder="Enter special notes"
+                          rows={4}
+                        />
+                      </>
+                    )}
+                    {subLeadStep === 'newProcedure' && (
+                      <>
+                        <label className="block font-semibold mb-1">Category</label>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            className="input input-bordered w-full pr-10"
+                            value={subLeadForm.category}
+                            onChange={e => {
+                              const value = e.target.value;
+                              setSubLeadForm(f => ({ ...f, category: value, categoryId: '' }));
+                            }}
+                            placeholder="Type to search categories..."
+                          />
+                          {subLeadForm.category && (
+                            <button
+                              type="button"
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                              onClick={() => setSubLeadForm(f => ({ ...f, category: '', categoryId: '' }))}
+                            >
+                              ✕
+                            </button>
+                          )}
+                          {subLeadForm.category && !subLeadForm.categoryId && (
+                            <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                              {categoryOptions
+                                .filter(opt => opt.label.toLowerCase().includes(subLeadForm.category.toLowerCase()))
+                                .slice(0, 10)
+                                .map(opt => (
+                                  <button
+                                    key={opt.id}
+                                    type="button"
+                                    className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                                    onClick={() => {
+                                      setSubLeadForm(f => ({
+                                        ...f,
+                                        categoryId: opt.id,
+                                        category: opt.label
+                                      }));
+                                    }}
+                                  >
+                                    {opt.label}
+                                  </button>
+                                ))}
+                            </div>
+                          )}
+                        </div>
+                        <label className="block font-semibold mb-1 mt-4">Topic</label>
+                        <input
+                          className="input input-bordered w-full"
+                          value={subLeadForm.topic}
+                          onChange={e => setSubLeadForm(f => ({ ...f, topic: e.target.value }))}
+                          placeholder="Enter topic"
+                        />
+                        <label className="block font-semibold mb-1">Client Name</label>
+                        <input
+                          className="input input-bordered w-full"
+                          value={subLeadForm.name}
+                          onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
+                          placeholder="Enter client name"
+                        />
+                        <label className="block font-semibold mb-1">Language</label>
+                        <select
+                          className="select select-bordered w-full"
+                          value={subLeadForm.language}
+                          onChange={e => setSubLeadForm(f => ({ ...f, language: e.target.value }))}
+                        >
+                          <option value="">Select language...</option>
+                          {allLanguages.map(lang => (
+                            <option key={lang.id} value={lang.name || ''}>
+                              {lang.name || 'Unknown'}
+                            </option>
+                          ))}
+                        </select>
+                        <label className="block font-semibold mb-1">Facts of Case</label>
+                        <textarea
+                          className="textarea textarea-bordered w-full"
+                          value={subLeadForm.facts}
+                          onChange={e => setSubLeadForm(f => ({ ...f, facts: e.target.value }))}
+                          placeholder="Enter facts of the case"
+                          rows={4}
+                        />
+                        <label className="block font-semibold mb-1">Special Notes</label>
+                        <textarea
+                          className="textarea textarea-bordered w-full"
+                          value={subLeadForm.special_notes}
+                          onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))}
+                          placeholder="Enter special notes"
+                          rows={4}
+                        />
+                      </>
+                    )}
+                    {subLeadStep === 'details' && (
+                      <>
+                        <label className="block font-semibold mb-1">Handler</label>
+                        <select
+                          className="select select-bordered w-full"
+                          value={subLeadForm.handlerId}
+                          onChange={e => {
+                            const value = e.target.value;
+                            setSubLeadForm(f => ({
+                              ...f,
+                              handlerId: value,
+                              handler: handlerOptionsMap.get(value) || '',
+                            }));
+                          }}
+                        >
+                          <option value="">Select handler...</option>
+                          {handlerOptions.map(opt => (
+                            <option key={opt.id} value={opt.id}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                        <label className="block font-semibold mb-1">Currency</label>
+                        <select className="select select-bordered w-full" value={subLeadForm.currency} onChange={e => setSubLeadForm(f => ({ ...f, currency: e.target.value }))}>
+                          <option value="NIS">NIS</option>
+                          <option value="USD">USD</option>
+                          <option value="EUR">EUR</option>
+                        </select>
+                        <label className="block font-semibold mb-1">Number of Applicants</label>
+                        <input className="input input-bordered w-full" value={subLeadForm.numApplicants} onChange={e => setSubLeadForm(f => ({ ...f, numApplicants: e.target.value }))} />
+                        <label className="block font-semibold mb-1">Proposal (Amount Total)</label>
+                        <input className="input input-bordered w-full" value={subLeadForm.proposal} onChange={e => setSubLeadForm(f => ({ ...f, proposal: e.target.value }))} />
+                        <label className="block font-semibold mb-1">Potential Value</label>
+                        <input className="input input-bordered w-full" value={subLeadForm.potentialValue} onChange={e => setSubLeadForm(f => ({ ...f, potentialValue: e.target.value }))} />
+                      </>
+                    )}
+                  </div>
+                </div>
+                {/* Fixed Footer with Action Button */}
+                {subLeadStep === 'newContact' && (
+                  <div className="border-t border-base-300 p-4 bg-base-100">
+                    <button
+                      className="btn btn-primary w-full"
+                      onClick={() => setSubLeadStep('newContactDetails')}
+                    >
+                      Next: Contact Details
+                    </button>
+                  </div>
+                )}
+                {(subLeadStep === 'newContactDetails' || subLeadStep === 'sameContract' || subLeadStep === 'newProcedure' || subLeadStep === 'details') && (
+                  <div className="border-t border-base-300 p-4 bg-base-100">
+                    <button
+                      className="btn btn-primary w-full"
+                      onClick={handleSaveSubLead}
+                      disabled={isSavingSubLead}
+                    >
+                      {isSavingSubLead
+                        ? (subLeadStep === 'details' ? 'Saving...' : 'Creating...')
+                        : (subLeadStep === 'details' ? 'Save Sub-Lead' : 'Create Sub-Lead')
+                      }
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Activation Modal */}
+          {showActivationModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center">
+              <div className="fixed inset-0 bg-black/50" onClick={() => setShowActivationModal(false)} />
+              <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 z-10">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-2xl font-bold text-gray-900">Activate Lead</h3>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setShowActivationModal(false)}
+                  >
+                    <XMarkIcon className="w-6 h-6" />
+                  </button>
+                </div>
+
+                <div className="space-y-6">
+                  <div>
+                    <p className="text-gray-600 mb-4">
+                      Are you sure you want to activate <strong>{selectedClient?.name}</strong> (Lead #{selectedClient?.lead_number})?
+                    </p>
+
+                    <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                      <div className="flex items-center gap-2">
+                        <CheckCircleIcon className="w-5 h-5 text-green-500" />
+                        <span className="text-green-700 font-medium">
+                          This will restore the lead to its previous stage: <strong>{selectedClient?.previous_stage ? getStageName(selectedClient.previous_stage) : 'Created'}</strong>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3 justify-end">
+                    <button
+                      className="btn btn-outline"
+                      onClick={() => setShowActivationModal(false)}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="btn btn-success"
+                      onClick={handleActivation}
+                    >
+                      Activate Lead
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          {/* Unactivation Modal */}
+          {showUnactivationModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center">
+              <div className="fixed inset-0 bg-black/50" onClick={() => {
+                setShowUnactivationModal(false);
+                setUnactivationReason('');
+                setDeactivateNotesDescription('');
+              }} />
+              <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 z-10">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-2xl font-bold text-gray-900">Unactivate Lead</h3>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => {
+                      setShowUnactivationModal(false);
+                      setUnactivationReason('');
+                      setDeactivateNotesDescription('');
+                    }}
+                  >
+                    <XMarkIcon className="w-6 h-6" />
+                  </button>
+                </div>
+
+                <div className="space-y-6">
+                  <div>
+                    <p className="text-gray-600 mb-4">
+                      Are you sure you want to unactivate <strong>{selectedClient?.name}</strong> (Lead #{selectedClient?.lead_number})?
+                    </p>
+
+                    <label className="block font-semibold mb-2 text-gray-900">Reason for Unactivation</label>
+                    <select
+                      className="select select-bordered w-full mb-4"
+                      value={unactivationReason}
+                      onChange={(e) => setUnactivationReason(e.target.value)}
+                    >
+                      <option value="">Select a reason...</option>
+                      <option value="test">test</option>
+                      <option value="spam">spam</option>
+                      <option value="double - same source">double - same source</option>
+                      <option value="double -diff. source">double -diff. source</option>
+                      <option value="no intent">no intent</option>
+                      <option value="non active category">non active category</option>
+                      <option value="IrrelevantBackground">IrrelevantBackground</option>
+                      <option value="incorrect contact">incorrect contact</option>
+                      <option value="no legal eligibility">no legal eligibility</option>
+                      <option value="no profitability">no profitability</option>
+                      <option value="can't be reached">can't be reached</option>
+                      <option value="expired">expired</option>
+                    </select>
+
+                    <label className="block font-semibold mb-2 text-gray-900">Description</label>
+                    <textarea
+                      className="textarea textarea-bordered w-full min-h-[100px]"
+                      placeholder="Enter description for deactivation..."
+                      value={deactivateNotesDescription}
+                      onChange={(e) => setDeactivateNotesDescription(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="flex gap-3 justify-end">
+                    <button
+                      className="btn btn-outline"
+                      onClick={() => {
+                        setShowUnactivationModal(false);
+                        setUnactivationReason('');
+                        setDeactivateNotesDescription('');
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="btn btn-error"
+                      onClick={handleUnactivation}
+                      disabled={!unactivationReason.trim() || !deactivateNotesDescription.trim()}
+                    >
+                      Unactivate Lead
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Duplicate Contacts Modal */}
+          {isDuplicateModalOpen && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center p-0">
+              <div
+                className="fixed inset-0 bg-black/50"
+                onClick={() => setIsDuplicateModalOpen(false)}
+              />
+              <div className="bg-white rounded-none shadow-2xl p-4 md:p-8 w-full h-full z-10 overflow-y-auto">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-xl md:text-2xl font-bold text-gray-900">Duplicate Contacts</h3>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setIsDuplicateModalOpen(false)}
+                  >
+                    <XMarkIcon className="w-6 h-6" />
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  <p className="text-sm md:text-base text-gray-600 mb-4">
+                    The following contacts have matching data (email, phone, or mobile) and are associated with other leads:
+                  </p>
+
+                  {/* Mobile: horizontal scroll, Desktop: 3-column grid */}
+                  <div className="overflow-x-auto md:overflow-x-visible -mx-2 sm:-mx-4 md:-mx-0 px-2 sm:px-4 md:px-0">
+                    <div className="flex md:grid md:grid-cols-3 gap-3 sm:gap-4 min-w-max md:min-w-0 pb-4">
+                      {duplicateContacts.map((dup, idx) => {
+                        // Helper to get stage badge
+                        const getStageBadgeForDuplicate = (stage: string | number | null) => {
+                          if (!stage && stage !== 0) {
+                            return <span className="badge badge-outline">No Stage</span>;
+                          }
+                          const stageStr = String(stage);
+                          const stageName = getStageName(stageStr);
+                          const stageColour = getStageColour(stageStr);
+                          const badgeTextColour = getContrastingTextColor(stageColour);
+                          const backgroundColor = stageColour || '#3f28cd';
+                          const textColor = stageColour ? badgeTextColour : '#ffffff';
+
+                          return (
+                            <span
+                              className="badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
+                              style={{
+                                backgroundColor,
+                                borderColor: backgroundColor,
+                                color: textColor,
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                display: 'inline-block',
+                              }}
+                              title={stageName}
+                            >
+                              {stageName}
+                            </span>
+                          );
+                        };
+
+                        // Helper to get status icon
+                        const getStatusIcon = (status: string | number | null, leadType: 'new' | 'legacy') => {
+                          const isInactive = leadType === 'legacy'
+                            ? (status === 10 || status === '10' || Number(status) === 10)
+                            : (status === 'inactive');
+
+                          if (isInactive) {
+                            return <XCircleIcon className="h-7 w-7 text-error" title="Inactive" />;
+                          } else {
+                            return <CheckCircleIcon className="h-7 w-7 text-success" title="Active" />;
+                          }
+                        };
+
+                        // Check if lead is inactive for styling
+                        const isInactive = dup.leadType === 'legacy'
+                          ? (dup.status === 10 || dup.status === '10' || Number(dup.status) === 10)
+                          : (dup.status === 'inactive');
+
+                        const cardClasses = [
+                          'card',
+                          'shadow-lg',
+                          'hover:shadow-2xl',
+                          'transition-all',
+                          'duration-300',
+                          'ease-in-out',
+                          'transform',
+                          'hover:-translate-y-1',
+                          'cursor-pointer',
+                          'group',
+                          'border',
+                          isInactive ? 'bg-red-50 border-red-200' : 'bg-base-100 border-base-200',
+                        ].join(' ');
+
+                        return (
+                          <div key={`${dup.contactId}-${dup.leadId}-${idx}`} className="flex-shrink-0 w-80 md:w-auto md:flex-shrink">
+                            <div
+                              className={cardClasses}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigate(`/clients/${dup.leadNumber}`);
+                                setIsDuplicateModalOpen(false);
+                              }}
+                            >
+                              <div className="card-body p-5 relative">
+                                <div className="flex flex-col md:flex-row md:justify-between md:items-start mb-2 gap-2">
+                                  <div className="flex items-center gap-2 order-2 md:order-1">
+                                    <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors truncate">
+                                      {dup.leadName}
+                                    </h2>
+                                  </div>
+                                  <div className="flex items-center gap-2 flex-shrink-0 order-1 md:order-2">
+                                    {getStageBadgeForDuplicate(dup.stage)}
+                                    {getStatusIcon(dup.status, dup.leadType)}
+                                  </div>
+                                </div>
+
+                                <p className="text-sm text-base-content/60 font-mono mb-4">
+                                  #{dup.leadNumber}
+                                </p>
+
+                                <div className="text-sm text-base-content/80 mb-3">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="font-semibold">Contact:</span>
+                                    <span className="truncate font-medium">{dup.contactName}</span>
+                                  </div>
+                                </div>
+
+                                <div className="divider my-0"></div>
+
+                                {(dup.category || dup.topic || dup.source) && (
+                                  <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
+                                    {dup.category && (
+                                      <div className="flex items-center gap-2" title="Category">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                                        </svg>
+                                        <span className="truncate">{dup.category}</span>
+                                      </div>
+                                    )}
+                                    {dup.topic && (
+                                      <div className="flex items-center gap-2" title="Topic">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+                                        </svg>
+                                        <span className="truncate">{dup.topic}</span>
+                                      </div>
+                                    )}
+                                    {dup.source && (
+                                      <div className="flex items-center gap-2" title="Source">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                                        </svg>
+                                        <span className="truncate">{dup.source}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                <div className="flex flex-col gap-2 mt-4 pt-4 border-t border-base-200/50 flex-1">
+                                  <div className="mb-2">
+                                    <span className="badge badge-success text-xs">match</span>
+                                  </div>
+                                  <div className="grid grid-cols-1 gap-3 text-lg">
+                                    {dup.contactEmail && (
+                                      <div className="flex items-center gap-3 min-w-0 p-3 rounded-lg bg-base-200/50 hover:bg-base-200 transition-colors" title="Email">
+                                        <EnvelopeIcon className="h-6 w-6 text-primary flex-shrink-0" />
+                                        <span className="truncate font-semibold">{dup.contactEmail}</span>
+                                      </div>
+                                    )}
+                                    {dup.contactPhone && (
+                                      <div className="flex items-center gap-3 min-w-0 p-3 rounded-lg bg-base-200/50 hover:bg-base-200 transition-colors" title="Phone">
+                                        <PhoneIcon className="h-6 w-6 text-primary flex-shrink-0" />
+                                        <span className="truncate font-semibold">{dup.contactPhone}</span>
+                                      </div>
+                                    )}
+                                    {dup.contactMobile && (
+                                      <div className="flex items-center gap-3 min-w-0 p-3 rounded-lg bg-base-200/50 hover:bg-base-200 transition-colors" title="Mobile">
+                                        <PhoneIcon className="h-6 w-6 text-primary flex-shrink-0" />
+                                        <span className="truncate font-semibold">{dup.contactMobile}</span>
+                                      </div>
+                                    )}
+                                    {dup.contactCountry && (
+                                      <div className="flex items-center gap-3 min-w-0 p-3 rounded-lg bg-base-200/50 hover:bg-base-200 transition-colors" title="Country">
+                                        <MapPinIcon className="h-6 w-6 text-primary flex-shrink-0" />
+                                        <span className="truncate font-semibold">{dup.contactCountry}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex gap-3 justify-end mt-6 pt-4 border-t border-gray-200">
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => setIsDuplicateModalOpen(false)}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Reschedule Meeting Drawer */}
+          {showRescheduleDrawer && (
+            <div className="fixed inset-0 z-[60] flex">
+              <div
+                className="fixed inset-0 bg-black/30"
+                onClick={() => {
+                  setShowRescheduleDrawer(false);
+                  setNotifyClientOnReschedule(false); // Reset to default
+                  setMeetingToDelete(null);
+                  setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+                  setRescheduleOption('cancel');
+                  setNotifyClientOnReschedule(false); // Reset to default
+                }}
+              />
+              <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
+                {/* Fixed Header */}
+                <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
+                  <h3 className="text-2xl font-bold">Reschedule Meeting</h3>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => {
+                      setShowRescheduleDrawer(false);
+                      setNotifyClientOnReschedule(false); // Reset to default
+                      setMeetingToDelete(null);
+                      setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+                      setRescheduleOption('cancel');
+                      setNotifyClientOnReschedule(false); // Reset to default
+                    }}
+                  >
+                    <XMarkIcon className="w-6 h-6" />
+                  </button>
+                </div>
+
+                {/* Scrollable Content */}
+                <div className="flex-1 overflow-y-auto p-8 pt-4">
+                  {/* Notify Client Toggle */}
+                  <div className="mb-6 flex items-center justify-between">
+                    <label className="block font-semibold text-base">Notify Client</label>
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-primary"
+                      checked={notifyClientOnReschedule}
+                      onChange={(e) => setNotifyClientOnReschedule(e.target.checked)}
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-4">
+                    {/* Select Meeting - Optional for stage 21 */}
+                    {(() => {
+                      const currentStage = typeof selectedClient?.stage === 'number' ? selectedClient.stage :
+                        (selectedClient?.stage ? parseInt(String(selectedClient.stage), 10) : null);
+                      const isStage21 = currentStage === 21;
+                      const showMeetingSelection = rescheduleMeetings.length > 0 && (rescheduleOption === 'cancel' || !isStage21);
+
+                      if (!showMeetingSelection) return null;
+
+                      return (
+                        <div>
+                          <label className="block font-semibold mb-1">
+                            Select Meeting {isStage21 && rescheduleOption === 'reschedule' ? '(Optional)' : ''}
+                          </label>
+                          <select
+                            className="select select-bordered w-full"
+                            value={meetingToDelete || ''}
+                            onChange={(e) => {
+                              const meetingId = e.target.value ? parseInt(e.target.value) : null;
+                              setMeetingToDelete(meetingId);
+                              // Pre-fill form with selected meeting data
+                              const selectedMeeting = rescheduleMeetings.find(m => m.id === meetingId);
+                              if (selectedMeeting) {
+                                setRescheduleFormData({
+                                  date: selectedMeeting.meeting_date || getTomorrowDate(),
+                                  time: selectedMeeting.meeting_time ? selectedMeeting.meeting_time.substring(0, 5) : '09:00',
+                                  location: selectedMeeting.meeting_location || 'Teams',
+                                  calendar: selectedMeeting.calendar_type === 'active_client' ? 'active_client' : 'current',
+                                  manager: selectedMeeting.meeting_manager || '',
+                                  helper: selectedMeeting.helper || '',
+                                  amount: selectedMeeting.meeting_amount?.toString() || '',
+                                  currency: selectedMeeting.meeting_currency || 'NIS',
+                                  attendance_probability: selectedMeeting.attendance_probability || 'Medium',
+                                  complexity: selectedMeeting.complexity || 'Simple',
+                                  car_number: selectedMeeting.car_number || '',
+                                });
+                              }
+                            }}
+                            required={rescheduleOption === 'cancel' || (rescheduleOption === 'reschedule' && !isStage21)}
+                          >
+                            <option value="">Select a meeting...</option>
+                            {rescheduleMeetings.map((meeting) => (
+                              <option key={meeting.id} value={meeting.id}>
+                                {meeting.meeting_date} {meeting.meeting_time ? meeting.meeting_time.substring(0, 5) : ''} - {meeting.meeting_location || 'Teams'}
+                              </option>
+                            ))}
+                          </select>
+                          {isStage21 && rescheduleOption === 'reschedule' && (
+                            <p className="text-sm text-gray-500 mt-1">
+                              In stage 21, you can reschedule without canceling an existing meeting.
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Reschedule Options */}
+                    <div>
+                      <label className="block font-semibold mb-2">Action</label>
+                      <div className="flex gap-3">
+                        <button
+                          type="button"
+                          className={`btn flex-1 ${rescheduleOption === 'cancel' ? 'btn-primary' : 'btn-outline'}`}
+                          onClick={() => setRescheduleOption('cancel')}
+                        >
+                          Cancel Meeting
+                        </button>
+                        <button
+                          type="button"
+                          className={`btn flex-1 ${rescheduleOption === 'reschedule' ? 'btn-primary' : 'btn-outline'}`}
+                          onClick={() => setRescheduleOption('reschedule')}
+                        >
+                          Reschedule Meeting
+                        </button>
+                      </div>
+                      <p className="text-sm text-gray-500 mt-2">
+                        {rescheduleOption === 'cancel'
+                          ? 'Cancel the meeting and send cancellation email to client.'
+                          : 'Cancel the previous meeting and create a new one. Client will be notified of both actions.'}
+                      </p>
+                    </div>
+
+                    {/* Form fields - only show when reschedule option is selected */}
+                    {rescheduleOption === 'reschedule' && (
+                      <>
+                        {/* Location */}
+                        <div>
+                          <label className="block font-semibold mb-1">Location</label>
+                          <select
+                            className="select select-bordered w-full"
+                            value={rescheduleFormData.location}
+                            onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, location: e.target.value }))}
+                          >
+                            {meetingLocations.map((location) => (
+                              <option key={location.id} value={location.name}>
+                                {location.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* Calendar */}
+                        <div>
+                          <label className="block font-semibold mb-1">Calendar</label>
+                          <select
+                            className="select select-bordered w-full"
+                            value={rescheduleFormData.calendar}
+                            onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, calendar: e.target.value }))}
+                          >
+                            <option value="current">Potential Client</option>
+                          </select>
+                        </div>
+
+                        {/* Date */}
+                        <div>
+                          <label className="block font-semibold mb-1">New Date</label>
+                          <input
+                            type="date"
+                            className="input input-bordered w-full"
+                            value={rescheduleFormData.date}
+                            onChange={(e) => {
+                              setRescheduleFormData((prev: any) => ({ ...prev, date: e.target.value }));
+                              // Reset meeting counts when date changes
+                              setRescheduleMeetingCountsByTime({});
+                            }}
+                            required
+                            min={new Date().toISOString().split('T')[0]}
+                          />
+                        </div>
+
+                        {/* Time */}
+                        <TimePicker
+                          value={rescheduleFormData.time}
+                          onChange={(time) => setRescheduleFormData((prev: any) => ({ ...prev, time }))}
+                          meetingCounts={rescheduleMeetingCountsByTime}
+                          label="New Time"
+                        />
+
+                        {/* Manager (Optional) */}
+                        <div>
+                          <label className="block font-semibold mb-1">Manager (Optional)</label>
+                          <input
+                            type="text"
+                            className="input input-bordered w-full"
+                            placeholder="Select a manager..."
+                            list="reschedule-meeting-manager-options"
+                            value={rescheduleFormData.manager}
+                            onChange={(e) =>
+                              setRescheduleFormData((prev: any) => ({ ...prev, manager: e.target.value }))
+                            }
+                          />
+                          <datalist id="reschedule-meeting-manager-options">
+                            {allEmployees.map(emp => (
+                              <option key={emp.id} value={emp.display_name} />
+                            ))}
+                          </datalist>
+                        </div>
+
+                        {/* Helper (Optional) */}
+                        <div>
+                          <label className="block font-semibold mb-1">Helper (Optional)</label>
+                          <input
+                            type="text"
+                            className="input input-bordered w-full"
+                            placeholder="Select a helper..."
+                            list="reschedule-meeting-helper-options"
+                            value={rescheduleFormData.helper}
+                            onChange={(e) =>
+                              setRescheduleFormData((prev: any) => ({ ...prev, helper: e.target.value }))
+                            }
+                          />
+                          <datalist id="reschedule-meeting-helper-options">
+                            {allEmployees.map(emp => (
+                              <option key={emp.id} value={emp.display_name} />
+                            ))}
+                          </datalist>
+                        </div>
+
+                        {/* Meeting Attendance Probability */}
+                        <div>
+                          <label className="block font-semibold mb-1">Meeting Attendance Probability</label>
+                          <select
+                            className="select select-bordered w-full"
+                            value={rescheduleFormData.attendance_probability || 'Medium'}
+                            onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, attendance_probability: e.target.value }))}
+                          >
+                            <option value="Low">Low</option>
+                            <option value="Medium">Medium</option>
+                            <option value="High">High</option>
+                            <option value="Very High">Very High</option>
+                          </select>
+                        </div>
+
+                        {/* Meeting Complexity */}
+                        <div>
+                          <label className="block font-semibold mb-1">Meeting Complexity</label>
+                          <select
+                            className="select select-bordered w-full"
+                            value={rescheduleFormData.complexity || 'Simple'}
+                            onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, complexity: e.target.value }))}
+                          >
+                            <option value="Simple">Simple</option>
+                            <option value="Complex">Complex</option>
+                          </select>
+                        </div>
+
+                        {/* Meeting Car Number */}
+                        <div>
+                          <label className="block font-semibold mb-1">Meeting Car Number</label>
+                          <input
+                            type="text"
+                            className="input input-bordered w-full"
+                            value={rescheduleFormData.car_number || ''}
+                            onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, car_number: e.target.value }))}
+                            placeholder="Enter car number..."
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Fixed Footer */}
+                <div className="p-8 pt-4 border-t border-base-300 bg-base-100">
+                  <div className="flex justify-end gap-3">
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() => {
+                        setShowRescheduleDrawer(false);
+                        setNotifyClientOnReschedule(false); // Reset to default
+                        setMeetingToDelete(null);
+                        setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+                        setRescheduleOption('cancel');
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    {rescheduleOption === 'cancel' ? (
+                      <button
+                        className="btn btn-primary px-8"
+                        onClick={handleCancelMeeting}
+                        disabled={!meetingToDelete}
+                      >
+                        Cancel Meeting
+                      </button>
+                    ) : (
+                      <button
+                        className="btn btn-primary px-8"
+                        onClick={handleRescheduleMeeting}
+                        disabled={!rescheduleFormData.date || !rescheduleFormData.time || isReschedulingMeeting}
+                      >
+                        {isReschedulingMeeting ? (
+                          <>
+                            <span className="loading loading-spinner loading-sm"></span>
+                            Rescheduling...
+                          </>
+                        ) : (
+                          'Reschedule Meeting'
+                        )}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Balance Edit Modal */}
+          <BalanceEditModal
+            isOpen={isBalanceModalOpen}
+            onClose={() => setIsBalanceModalOpen(false)}
+            selectedClient={selectedClient}
+            onUpdate={async (clientId) => {
+              isBalanceUpdatingRef.current = true;
+              console.log('🔒 Setting balance update flag to prevent onClientUpdate');
+              try {
+                await refreshClientData(clientId || selectedClient?.id);
+                // Wait longer for state to fully propagate and UI to update
+                await new Promise(resolve => setTimeout(resolve, 500));
+                console.log('✅ Balance update complete, UI should be updated');
+              } catch (error) {
+                console.error('❌ Error in balance update:', error);
+              } finally {
+                // Clear the flag after a longer delay to ensure all updates are done
+                setTimeout(() => {
+                  isBalanceUpdatingRef.current = false;
+                  console.log('🔓 Clearing balance update flag');
+                }, 1500);
+              }
+            }}
+          />
 
           {/* Mobile Tabs Navigation - Bottom of page, horizontal oval box, horizontally scrollable */}
           <div className="md:hidden fixed bottom-0 left-0 right-0 z-50 pb-safe">

@@ -5233,7 +5233,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   };
 
   const handleSearchResultClick = (lead: CombinedLead) => {
-    navigate(`/clients/${lead.lead_number}`);
+    // Use the same logic as MasterLeadPage and LeadSearchPage
+    // For legacy leads: use numeric id from leads_lead table (same as MasterLeadPage route: /clients/${lead.id})
+    // For new leads: use lead_number
+    let path = '';
+    if (lead.lead_type === 'legacy') {
+      // Legacy leads: use numeric id (same as MasterLeadPage)
+      path = `/clients/${encodeURIComponent(lead.id)}`;
+    } else {
+      // New leads: use lead_number
+      path = `/clients/${encodeURIComponent(lead.lead_number)}`;
+    }
+    navigate(path);
     closeSearchBar();
   };
 

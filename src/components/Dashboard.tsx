@@ -7,7 +7,7 @@ import WaitingForPriceOfferMyLeadsWidget from './WaitingForPriceOfferMyLeadsWidg
 import ClosedDealsWithoutPaymentPlanWidget from './ClosedDealsWithoutPaymentPlanWidget';
 import UnavailableEmployeesModal from './UnavailableEmployeesModal';
 import ClockInBox from './ClockInBox';
-import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
 import { supabase, isAuthError, sessionManager, handleSessionExpiration } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
 import { useExternalUser } from '../hooks/useExternalUser';
@@ -7635,575 +7635,216 @@ const Dashboard: React.FC = () => {
               </div>
             </div>
 
-            {/* Employee Cards - Grouped by Type */}
+            {/* Employee List - Grouped by Type */}
             {unavailableEmployeesLoading ? (
               <div className="flex justify-center items-center py-8 px-6">
                 <div className="loading loading-spinner loading-lg text-gray-600"></div>
               </div>
             ) : (groupedUnavailableData.sick_days.length > 0 || groupedUnavailableData.vacation.length > 0 || groupedUnavailableData.general.length > 0) ? (
-              <div className="px-6 pb-6 pt-6 min-w-0 overflow-hidden">
+              <div className="pb-6 pt-4">
                 {(() => {
                   const hasSickDays = groupedUnavailableData.sick_days.length > 0;
                   const hasVacation = groupedUnavailableData.vacation.length > 0;
                   const hasGeneral = groupedUnavailableData.general.length > 0;
 
+                  // Helper function to render employee list rows
+                  const renderEmployeeRow = (item: any, badgeColor: string, badgeText: string) => {
+                    const employeeInitials = item.employeeName
+                      .split(' ')
+                      .map((n: string) => n[0])
+                      .join('')
+                      .toUpperCase()
+                      .slice(0, 2);
+
+                    return (
+                      <>
+                        <div
+                          key={item.id}
+                          className="flex items-center gap-4 px-6 py-3 hover:bg-gray-50 transition-colors border-b border-gray-100 last:border-b-0"
+                        >
+                          {/* Avatar */}
+                          <div className="flex-shrink-0">
+                            {item.photo_url ? (
+                              <img
+                                src={item.photo_url}
+                                alt={item.employeeName}
+                                className="w-12 h-12 rounded-full object-cover"
+                                onError={(e) => {
+                                  const target = e.target as HTMLImageElement;
+                                  const targetParent = target.parentElement;
+                                  if (targetParent) {
+                                    target.style.display = 'none';
+                                    const fallback = document.createElement('div');
+                                    fallback.className = 'w-12 h-12 rounded-full flex items-center justify-center bg-gradient-to-br from-blue-500 to-purple-600 text-white text-sm font-bold';
+                                    fallback.textContent = employeeInitials;
+                                    targetParent.insertBefore(fallback, target);
+                                  }
+                                }}
+                              />
+                            ) : (
+                              <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gradient-to-br from-blue-500 to-purple-600 text-white text-sm font-bold">
+                                {employeeInitials}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Name and Department */}
+                          <div className="flex-1 min-w-0">
+                            <div className="font-semibold text-gray-900 truncate">{item.employeeName}</div>
+                            <div className="text-sm text-gray-500 truncate">{item.department || 'N/A'}</div>
+                          </div>
+
+                          {/* Status Badge with Custom Reason */}
+                          <div className="flex-shrink-0">
+                            <span className={`px-3 py-1 rounded-full text-sm font-semibold ${badgeColor}`}>
+                              {item.reason || badgeText}
+                            </span>
+                          </div>
+
+                          {/* Time - Always Display */}
+                          <div className="flex-shrink-0 text-right min-w-[100px]">
+                            <div className="font-semibold text-gray-900">
+                              {item.time && item.time !== 'All Day'
+                                ? item.time.includes(' - ')
+                                  ? item.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
+                                  : formatTimeString(item.time)
+                                : 'All Day'}
+                            </div>
+                            {item.date && item.date.includes('to') && (
+                              <div className="text-xs text-gray-500 mt-1">{item.date}</div>
+                            )}
+                          </div>
+
+                          {/* Expand button for multiple unavailabilities */}
+                          {item.allUnavailabilities && item.allUnavailabilities.length > 1 && (
+                            <div className="flex-shrink-0 flex items-center gap-1">
+                              <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${badgeColor}`}>
+                                +{item.allUnavailabilities.length - 1}
+                              </span>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setExpandedEmployeeCards(prev => {
+                                    const newSet = new Set(prev);
+                                    if (newSet.has(item.employeeId)) {
+                                      newSet.delete(item.employeeId);
+                                    } else {
+                                      newSet.add(item.employeeId);
+                                    }
+                                    return newSet;
+                                  });
+                                }}
+                                className="btn btn-sm btn-ghost btn-circle"
+                                title={`${item.allUnavailabilities.length - 1} more`}
+                              >
+                                {expandedEmployeeCards.has(item.employeeId) ? (
+                                  <ChevronUpIcon className="w-4 h-4" />
+                                ) : (
+                                  <ChevronDownIcon className="w-4 h-4" />
+                                )}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Expandable section for additional unavailabilities */}
+                        {item.allUnavailabilities && item.allUnavailabilities.length > 1 && expandedEmployeeCards.has(item.employeeId) && (
+                          <div className="bg-gray-50 border-b border-gray-100">
+                            {item.allUnavailabilities.slice(1).map((unav: any, idx: number) => {
+                              const formattedTime = unav.time && unav.time !== 'All Day' && unav.time.includes(':')
+                                ? unav.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
+                                : unav.time !== 'All Day' ? unav.time : 'All Day';
+                              return (
+                                <div
+                                  key={unav.id || idx}
+                                  className="flex items-center gap-4 px-6 py-3 hover:bg-gray-100 transition-colors"
+                                >
+                                  {/* Empty space for avatar alignment */}
+                                  <div className="flex-shrink-0 w-12"></div>
+
+                                  {/* Empty space for name/department alignment */}
+                                  <div className="flex-1 min-w-0"></div>
+
+                                  {/* Status Badge with Custom Reason - aligned with main row */}
+                                  <div className="flex-shrink-0">
+                                    <span className={`px-3 py-1 rounded-full text-sm font-semibold ${badgeColor}`}>
+                                      {unav.reason || badgeText}
+                                    </span>
+                                  </div>
+
+                                  {/* Time - aligned with main row */}
+                                  <div className="flex-shrink-0 text-right min-w-[100px]">
+                                    <div className="font-semibold text-gray-900">
+                                      {formattedTime}
+                                    </div>
+                                    {unav.date && unav.date.includes('to') && (
+                                      <div className="text-xs text-gray-500 mt-1">{unav.date}</div>
+                                    )}
+                                  </div>
+
+                                  {/* Empty space for expand button alignment */}
+                                  <div className="flex-shrink-0 w-8"></div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </>
+                    );
+                  };
+
                   return (
-                    <div className="flex flex-col gap-6">
-                      {/* Sick Days Row */}
+                    <div className="flex flex-col gap-8">
+                      {/* Sick Days Section */}
                       {hasSickDays && (
-                        <div className="flex flex-col min-w-0">
-                          <h3 className="text-lg font-semibold text-gray-900 mb-4 px-2">Sick Days</h3>
-                          <div className="flex overflow-x-auto gap-4 pb-4 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 min-w-0">
+                        <div className="flex flex-col">
+                          <h3 className="text-base font-semibold text-gray-700 mb-3 px-6 flex items-center gap-2">
+                            <FaceFrownIcon className="w-5 h-5 text-orange-500" />
+                            Sick Days
+                          </h3>
+                          <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
                             {groupedUnavailableData.sick_days
                               .filter((item) => {
                                 if (!departmentFilter.trim()) return true;
                                 return item.department?.toLowerCase().includes(departmentFilter.toLowerCase());
                               })
-                              .map((item) => {
-                                const employeeInitials = item.employeeName
-                                  .split(' ')
-                                  .map((n: string) => n[0])
-                                  .join('')
-                                  .toUpperCase()
-                                  .slice(0, 2);
-
-                                const roleInitials = item.role
-                                  ? item.role
-                                    .split(' ')
-                                    .map((n: string) => n[0])
-                                    .join('')
-                                    .toUpperCase()
-                                    .slice(0, 2)
-                                  : '';
-
-                                return (
-                                  <div
-                                    key={item.id}
-                                    className="relative overflow-hidden rounded-xl border-2 border-gray-300 bg-white min-h-[200px] w-[240px] flex-shrink-0 flex flex-col"
-                                    style={{
-                                      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
-                                    }}
-                                  >
-                                    {/* Background Image with Overlay - Covers entire card including department area */}
-                                    {item.photo && (
-                                      <div
-                                        className="absolute inset-0 bg-cover bg-center bg-no-repeat"
-                                        style={{
-                                          backgroundImage: `url(${item.photo})`
-                                        }}
-                                      >
-                                        <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/70"></div>
-                                      </div>
-                                    )}
-
-                                    {/* Employee Name and Department Box - Top of Card with glassy blur showing background image */}
-                                    <div
-                                      className={`relative z-30 w-full py-2 px-3 text-sm font-medium backdrop-blur-md flex items-center justify-between ${item.photo
-                                        ? 'text-white bg-white/10 border-b border-white/20'
-                                        : 'text-gray-900 bg-white/80 border-b border-gray-200/50'
-                                        }`}
-                                    >
-                                      <span className="text-xs truncate flex-1 min-w-0">{item.employeeName}</span>
-                                      {item.department && (
-                                        <span className="text-xs ml-2 flex-shrink-0">{item.department}</span>
-                                      )}
-                                    </div>
-
-                                    {/* Content */}
-                                    <div className={`relative z-10 p-3 flex flex-col h-full ${item.photo ? 'text-white' : 'text-gray-900'}`}>
-                                      {/* Profile Image - Centered */}
-                                      <div className="flex justify-center mb-2">
-                                        {/* Profile Image or Initials Circle */}
-                                        {item.photo_url ? (
-                                          <img
-                                            src={item.photo_url}
-                                            alt={item.employeeName}
-                                            className="w-20 h-20 rounded-full object-cover shadow-lg"
-                                            onError={(e) => {
-                                              const target = e.target as HTMLImageElement;
-                                              const targetParent = target.parentElement;
-                                              if (targetParent) {
-                                                target.style.display = 'none';
-                                                const fallback = document.createElement('div');
-                                                fallback.className = `w-20 h-20 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`;
-                                                fallback.textContent = employeeInitials;
-                                                targetParent.insertBefore(fallback, target);
-                                              }
-                                            }}
-                                          />
-                                        ) : (
-                                          <div className={`w-20 h-20 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`}>
-                                            {employeeInitials}
-                                          </div>
-                                        )}
-                                      </div>
-
-                                      {/* Center: Time Range - Moved lower */}
-                                      <div className="flex-1 text-center px-2 mb-3">
-                                        {item.time && item.time !== 'All Day' && (
-                                          <div className={`text-lg font-bold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
-                                            {item.time.includes(' - ')
-                                              ? item.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
-                                              : formatTimeString(item.time)}
-                                          </div>
-                                        )}
-                                        {/* Date Range - only if it's a range */}
-                                        {item.date && item.date.includes('to') && (
-                                          <div className={`text-base font-bold mt-1 ${item.photo ? 'text-white' : 'text-gray-800'}`}>
-                                            {item.date}
-                                          </div>
-                                        )}
-                                      </div>
-
-                                      {/* Reason */}
-                                      <div className={`border-t-2 pt-3 mt-auto ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
-                                        {item.reason && (
-                                          <div className={`text-sm text-center px-2 py-2.5 rounded-md min-h-[3rem] flex items-center justify-center ${item.photo ? 'text-white/90 bg-white/20' : 'text-gray-600 bg-gray-100'}`} title={item.reason}>
-                                            <span className="line-clamp-2 break-words">{item.reason}</span>
-                                          </div>
-                                        )}
-                                      </div>
-
-                                      {/* Collapsible Additional Unavailabilities - Only show if there are multiple */}
-                                      {item.allUnavailabilities && item.allUnavailabilities.length > 1 && (
-                                        <div className={`border-t-2 pt-2 mt-2 ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
-                                          <button
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              setExpandedEmployeeCards(prev => {
-                                                const newSet = new Set(prev);
-                                                if (newSet.has(item.employeeId)) {
-                                                  newSet.delete(item.employeeId);
-                                                } else {
-                                                  newSet.add(item.employeeId);
-                                                }
-                                                return newSet;
-                                              });
-                                            }}
-                                            className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${item.photo
-                                              ? 'text-white/90 bg-white/10 hover:bg-white/20'
-                                              : 'text-gray-700 bg-gray-100 hover:bg-gray-200'
-                                              }`}
-                                          >
-                                            <span>
-                                              {(() => {
-                                                const moreCount = item.allUnavailabilities.length - 1;
-                                                const isExpanded = expandedEmployeeCards.has(item.employeeId);
-
-                                                // When collapsed, only show count. When expanded, show nothing (or could show count, but items are visible)
-                                                if (isExpanded) {
-                                                  return `${moreCount} more`;
-                                                }
-                                                return `${moreCount} more`;
-                                              })()}
-                                            </span>
-                                            {expandedEmployeeCards.has(item.employeeId) ? (
-                                              <ChevronUpIcon className="w-4 h-4" />
-                                            ) : (
-                                              <ChevronDownIcon className="w-4 h-4" />
-                                            )}
-                                          </button>
-
-                                          {expandedEmployeeCards.has(item.employeeId) && (
-                                            <div className="mt-2 space-y-2">
-                                              {item.allUnavailabilities.slice(1).map((unav: any, idx: number) => {
-                                                // Format time to remove seconds if present
-                                                const formattedTime = unav.time && unav.time !== 'All Day' && unav.time.includes(':')
-                                                  ? unav.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
-                                                  : unav.time !== 'All Day' ? unav.time : null;
-                                                return (
-                                                  <div
-                                                    key={unav.id || idx}
-                                                    className={`px-2 py-2 rounded-md text-xs ${item.photo
-                                                      ? 'bg-white/10 text-white/90'
-                                                      : 'bg-gray-50 text-gray-700'
-                                                      }`}
-                                                  >
-                                                    {formattedTime && (
-                                                      <div className={`font-semibold mb-1 ${item.photo ? 'text-white' : 'text-gray-900'}`}>
-                                                        {formattedTime}
-                                                      </div>
-                                                    )}
-                                                    <div className={`text-xs ${item.photo ? 'text-white/80' : 'text-gray-600'}`}>
-                                                      {unav.reason}
-                                                    </div>
-                                                  </div>
-                                                );
-                                              })}
-                                            </div>
-                                          )}
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-                                );
-                              })}
+                              .map((item) => renderEmployeeRow(item, 'bg-orange-100 text-orange-700', 'Sick Day'))}
                           </div>
                         </div>
                       )}
 
-                      {/* Vacation Row */}
+                      {/* Vacation Section */}
                       {hasVacation && (
-                        <div className="flex flex-col min-w-0">
-                          <h3 className="text-lg font-semibold text-gray-900 mb-4 px-2">Vacation</h3>
-                          <div className="flex overflow-x-auto gap-4 pb-4 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 min-w-0">
+                        <div className="flex flex-col">
+                          <h3 className="text-base font-semibold text-gray-700 mb-3 px-6 flex items-center gap-2">
+                            <SunIcon className="w-5 h-5 text-green-500" />
+                            Vacation
+                          </h3>
+                          <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
                             {groupedUnavailableData.vacation
                               .filter((item) => {
                                 if (!departmentFilter.trim()) return true;
                                 return item.department?.toLowerCase().includes(departmentFilter.toLowerCase());
                               })
-                              .map((item) => {
-                                const employeeInitials = item.employeeName
-                                  .split(' ')
-                                  .map((n: string) => n[0])
-                                  .join('')
-                                  .toUpperCase()
-                                  .slice(0, 2);
-
-                                const roleInitials = item.role
-                                  ? item.role
-                                    .split(' ')
-                                    .map((n: string) => n[0])
-                                    .join('')
-                                    .toUpperCase()
-                                    .slice(0, 2)
-                                  : '';
-
-                                return (
-                                  <div
-                                    key={item.id}
-                                    className="relative overflow-hidden rounded-xl border-2 border-gray-300 bg-white min-h-[200px] w-[240px] flex-shrink-0 flex flex-col"
-                                    style={{
-                                      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
-                                    }}
-                                  >
-                                    {/* Background Image with Overlay */}
-                                    {item.photo && (
-                                      <div
-                                        className="absolute inset-0 bg-cover bg-center bg-no-repeat"
-                                        style={{
-                                          backgroundImage: `url(${item.photo})`
-                                        }}
-                                      >
-                                        <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/70"></div>
-                                      </div>
-                                    )}
-
-                                    {/* Employee Name and Department Box */}
-                                    <div
-                                      className={`relative z-30 w-full py-2 px-3 text-sm font-medium backdrop-blur-md flex items-center justify-between ${item.photo
-                                        ? 'text-white bg-white/10 border-b border-white/20'
-                                        : 'text-gray-900 bg-white/80 border-b border-gray-200/50'
-                                        }`}
-                                    >
-                                      <span>{item.employeeName}</span>
-                                      {item.department && (
-                                        <span className="text-xs">{item.department}</span>
-                                      )}
-                                    </div>
-
-                                    {/* Content */}
-                                    <div className={`relative z-10 p-3 flex flex-col h-full ${item.photo ? 'text-white' : 'text-gray-900'}`}>
-                                      {/* Profile Image - Centered */}
-                                      <div className="flex justify-center mb-2">
-                                        {/* Profile Image or Initials Circle */}
-                                        {item.photo_url ? (
-                                          <img
-                                            src={item.photo_url}
-                                            alt={item.employeeName}
-                                            className="w-20 h-20 rounded-full object-cover shadow-lg"
-                                            onError={(e) => {
-                                              const target = e.target as HTMLImageElement;
-                                              const targetParent = target.parentElement;
-                                              if (targetParent) {
-                                                target.style.display = 'none';
-                                                const fallback = document.createElement('div');
-                                                fallback.className = `w-20 h-20 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`;
-                                                fallback.textContent = employeeInitials;
-                                                targetParent.insertBefore(fallback, target);
-                                              }
-                                            }}
-                                          />
-                                        ) : (
-                                          <div className={`w-20 h-20 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`}>
-                                            {employeeInitials}
-                                          </div>
-                                        )}
-                                      </div>
-
-                                      {/* Time Range */}
-                                      <div className="flex-1 text-center px-2 mb-3">
-                                        {item.time && item.time !== 'All Day' && (
-                                          <div className={`text-lg font-bold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
-                                            {item.time.includes(' - ')
-                                              ? item.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
-                                              : formatTimeString(item.time)}
-                                          </div>
-                                        )}
-                                        {item.date && item.date.includes('to') && (
-                                          <div className={`text-base font-bold mt-1 ${item.photo ? 'text-white' : 'text-gray-800'}`}>
-                                            {item.date}
-                                          </div>
-                                        )}
-                                      </div>
-
-                                      {/* Reason */}
-                                      <div className={`border-t-2 pt-3 mt-auto ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
-                                        {item.reason && (
-                                          <div className={`text-sm text-center px-2 py-2.5 rounded-md min-h-[3rem] flex items-center justify-center ${item.photo ? 'text-white/90 bg-white/20' : 'text-gray-600 bg-gray-100'}`} title={item.reason}>
-                                            <span className="line-clamp-2 break-words">{item.reason}</span>
-                                          </div>
-                                        )}
-                                      </div>
-
-                                      {/* Collapsible Additional Unavailabilities */}
-                                      {item.allUnavailabilities && item.allUnavailabilities.length > 1 && (
-                                        <div className={`border-t-2 pt-2 mt-2 ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
-                                          <button
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              setExpandedEmployeeCards(prev => {
-                                                const newSet = new Set(prev);
-                                                if (newSet.has(item.employeeId)) {
-                                                  newSet.delete(item.employeeId);
-                                                } else {
-                                                  newSet.add(item.employeeId);
-                                                }
-                                                return newSet;
-                                              });
-                                            }}
-                                            className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${item.photo
-                                              ? 'text-white/90 bg-white/10 hover:bg-white/20'
-                                              : 'text-gray-700 bg-gray-100 hover:bg-gray-200'
-                                              }`}
-                                          >
-                                            <span>
-                                              {(() => {
-                                                const moreCount = item.allUnavailabilities.length - 1;
-                                                return `${moreCount} more`;
-                                              })()}
-                                            </span>
-                                            {expandedEmployeeCards.has(item.employeeId) ? (
-                                              <ChevronUpIcon className="w-4 h-4" />
-                                            ) : (
-                                              <ChevronDownIcon className="w-4 h-4" />
-                                            )}
-                                          </button>
-
-                                          {expandedEmployeeCards.has(item.employeeId) && (
-                                            <div className="mt-2 space-y-2">
-                                              {item.allUnavailabilities.slice(1).map((unav: any, idx: number) => {
-                                                const formattedTime = unav.time && unav.time.includes(':')
-                                                  ? unav.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
-                                                  : unav.time;
-                                                return (
-                                                  <div
-                                                    key={unav.id || idx}
-                                                    className={`px-2 py-2 rounded-md text-xs ${item.photo
-                                                      ? 'bg-white/10 text-white/90'
-                                                      : 'bg-gray-50 text-gray-700'
-                                                      }`}
-                                                  >
-                                                    <div className={`font-semibold mb-1 ${item.photo ? 'text-white' : 'text-gray-900'}`}>
-                                                      {formattedTime}
-                                                    </div>
-                                                    <div className={`text-xs ${item.photo ? 'text-white/80' : 'text-gray-600'}`}>
-                                                      {unav.reason}
-                                                    </div>
-                                                  </div>
-                                                );
-                                              })}
-                                            </div>
-                                          )}
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-                                );
-                              })}
+                              .map((item) => renderEmployeeRow(item, 'bg-green-100 text-green-700', 'Vacation'))}
                           </div>
                         </div>
                       )}
 
-                      {/* General Row */}
+                      {/* General Section */}
                       {hasGeneral && (
-                        <div className="flex flex-col min-w-0">
-                          <h3 className="text-lg font-semibold text-gray-900 mb-4 px-2">General</h3>
-                          <div className="flex overflow-x-auto gap-4 pb-4 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100 min-w-0">
+                        <div className="flex flex-col">
+                          <h3 className="text-base font-semibold text-gray-700 mb-3 px-6 flex items-center gap-2">
+                            <CalendarDaysIcon className="w-5 h-5 text-gray-500" />
+                            General
+                          </h3>
+                          <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
                             {groupedUnavailableData.general
                               .filter((item) => {
                                 if (!departmentFilter.trim()) return true;
                                 return item.department?.toLowerCase().includes(departmentFilter.toLowerCase());
                               })
-                              .map((item) => {
-                                const employeeInitials = item.employeeName
-                                  .split(' ')
-                                  .map((n: string) => n[0])
-                                  .join('')
-                                  .toUpperCase()
-                                  .slice(0, 2);
-
-                                const roleInitials = item.role
-                                  ? item.role
-                                    .split(' ')
-                                    .map((n: string) => n[0])
-                                    .join('')
-                                    .toUpperCase()
-                                    .slice(0, 2)
-                                  : '';
-
-                                return (
-                                  <div
-                                    key={item.id}
-                                    className="relative overflow-hidden rounded-xl border-2 border-gray-300 bg-white min-h-[200px] w-[240px] flex-shrink-0 flex flex-col"
-                                    style={{
-                                      boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
-                                    }}
-                                  >
-                                    {/* Background Image with Overlay */}
-                                    {item.photo && (
-                                      <div
-                                        className="absolute inset-0 bg-cover bg-center bg-no-repeat"
-                                        style={{
-                                          backgroundImage: `url(${item.photo})`
-                                        }}
-                                      >
-                                        <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/70"></div>
-                                      </div>
-                                    )}
-
-                                    {/* Employee Name and Department Box */}
-                                    <div
-                                      className={`relative z-30 w-full py-2 px-3 text-sm font-medium backdrop-blur-md flex items-center justify-between ${item.photo
-                                        ? 'text-white bg-white/10 border-b border-white/20'
-                                        : 'text-gray-900 bg-white/80 border-b border-gray-200/50'
-                                        }`}
-                                    >
-                                      <span>{item.employeeName}</span>
-                                      {item.department && (
-                                        <span className="text-xs">{item.department}</span>
-                                      )}
-                                    </div>
-
-                                    {/* Content */}
-                                    <div className={`relative z-10 p-3 flex flex-col h-full ${item.photo ? 'text-white' : 'text-gray-900'}`}>
-                                      {/* Profile Image - Centered */}
-                                      <div className="flex justify-center mb-2">
-                                        {/* Profile Image or Initials Circle */}
-                                        {item.photo_url ? (
-                                          <img
-                                            src={item.photo_url}
-                                            alt={item.employeeName}
-                                            className="w-20 h-20 rounded-full object-cover shadow-lg"
-                                            onError={(e) => {
-                                              const target = e.target as HTMLImageElement;
-                                              const targetParent = target.parentElement;
-                                              if (targetParent) {
-                                                target.style.display = 'none';
-                                                const fallback = document.createElement('div');
-                                                fallback.className = `w-20 h-20 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`;
-                                                fallback.textContent = employeeInitials;
-                                                targetParent.insertBefore(fallback, target);
-                                              }
-                                            }}
-                                          />
-                                        ) : (
-                                          <div className={`w-20 h-20 rounded-full flex items-center justify-center shadow-lg ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`}>
-                                            {employeeInitials}
-                                          </div>
-                                        )}
-                                      </div>
-
-                                      {/* Time Range */}
-                                      <div className="flex-1 text-center px-2 mb-3">
-                                        {item.time && item.time !== 'All Day' && (
-                                          <div className={`text-lg font-bold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
-                                            {item.time.includes(' - ')
-                                              ? item.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
-                                              : formatTimeString(item.time)}
-                                          </div>
-                                        )}
-                                        {item.date && item.date.includes('to') && (
-                                          <div className={`text-base font-bold mt-1 ${item.photo ? 'text-white' : 'text-gray-800'}`}>
-                                            {item.date}
-                                          </div>
-                                        )}
-                                      </div>
-
-                                      {/* Reason */}
-                                      <div className={`border-t-2 pt-3 mt-auto ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
-                                        {item.reason && (
-                                          <div className={`text-sm text-center px-2 py-2.5 rounded-md min-h-[3rem] flex items-center justify-center ${item.photo ? 'text-white/90 bg-white/20' : 'text-gray-600 bg-gray-100'}`} title={item.reason}>
-                                            <span className="line-clamp-2 break-words">{item.reason}</span>
-                                          </div>
-                                        )}
-                                      </div>
-
-                                      {/* Collapsible Additional Unavailabilities */}
-                                      {item.allUnavailabilities && item.allUnavailabilities.length > 1 && (
-                                        <div className={`border-t-2 pt-2 mt-2 ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
-                                          <button
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              setExpandedEmployeeCards(prev => {
-                                                const newSet = new Set(prev);
-                                                if (newSet.has(item.employeeId)) {
-                                                  newSet.delete(item.employeeId);
-                                                } else {
-                                                  newSet.add(item.employeeId);
-                                                }
-                                                return newSet;
-                                              });
-                                            }}
-                                            className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${item.photo
-                                              ? 'text-white/90 bg-white/10 hover:bg-white/20'
-                                              : 'text-gray-700 bg-gray-100 hover:bg-gray-200'
-                                              }`}
-                                          >
-                                            <span>
-                                              {(() => {
-                                                const moreCount = item.allUnavailabilities.length - 1;
-                                                return `${moreCount} more`;
-                                              })()}
-                                            </span>
-                                            {expandedEmployeeCards.has(item.employeeId) ? (
-                                              <ChevronUpIcon className="w-4 h-4" />
-                                            ) : (
-                                              <ChevronDownIcon className="w-4 h-4" />
-                                            )}
-                                          </button>
-
-                                          {expandedEmployeeCards.has(item.employeeId) && (
-                                            <div className="mt-2 space-y-2">
-                                              {item.allUnavailabilities.slice(1).map((unav: any, idx: number) => {
-                                                const formattedTime = unav.time && unav.time.includes(':')
-                                                  ? unav.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
-                                                  : unav.time;
-                                                return (
-                                                  <div
-                                                    key={unav.id || idx}
-                                                    className={`px-2 py-2 rounded-md text-xs ${item.photo
-                                                      ? 'bg-white/10 text-white/90'
-                                                      : 'bg-gray-50 text-gray-700'
-                                                      }`}
-                                                  >
-                                                    <div className={`font-semibold mb-1 ${item.photo ? 'text-white' : 'text-gray-900'}`}>
-                                                      {formattedTime}
-                                                    </div>
-                                                    <div className={`text-xs ${item.photo ? 'text-white/80' : 'text-gray-600'}`}>
-                                                      {unav.reason}
-                                                    </div>
-                                                  </div>
-                                                );
-                                              })}
-                                            </div>
-                                          )}
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-                                );
-                              })}
+                              .map((item) => renderEmployeeRow(item, 'bg-gray-100 text-gray-700', 'Unavailable'))}
                           </div>
                         </div>
                       )}
@@ -8362,104 +8003,108 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
       </div>
-      {showLeadsList && (
-        <div className="glass-card mt-6 p-6 shadow-lg rounded-2xl w-full max-w-full animate-fade-in">
-          <div className="font-bold text-lg mb-4 text-base-content/80">My Signed Leads (Last 30 Days)</div>
-          {realLeadsLoading ? (
-            <div className="flex justify-center items-center py-12"><span className="loading loading-spinner loading-lg text-primary"></span></div>
-          ) : realSignedLeads.length === 0 ? (
-            <div className="text-center py-12 text-gray-500">No signed leads found in the last 30 days</div>
-          ) : (
-            <>
-              {/* Desktop Table View */}
-              <div className="hidden md:block overflow-x-auto">
-                <table className="table w-full">
-                  <thead>
-                    <tr>
-                      <th>Lead Number + Client Name</th>
-                      <th>Category</th>
-                      <th>Signed Agreement Date</th>
-                      <th>Applicants</th>
-                      <th>Value (Amount)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {realSignedLeads.map((lead) => (
-                      <tr
-                        key={lead.id}
-                        className="hover:bg-gray-50 cursor-pointer"
-                        onClick={() => window.location.href = `/clients/${lead.lead_number}`}
-                      >
-                        <td>
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
-                            <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                            <span className="font-semibold text-gray-900">{lead.name}</span>
-                          </div>
-                        </td>
-                        <td>{lead.category}</td>
-                        <td>{lead.signed_date ? new Date(lead.signed_date).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A'}</td>
-                        <td>{lead.applicants}</td>
-                        <td className="font-semibold text-green-600">
-                          {(lead.currency === 'NIS' ? '₪' : (lead.currency || '₪'))}{lead.value ? Number(lead.value).toLocaleString() : '0'}
-                        </td>
+      {
+        showLeadsList && (
+          <div className="glass-card mt-6 p-6 shadow-lg rounded-2xl w-full max-w-full animate-fade-in">
+            <div className="font-bold text-lg mb-4 text-base-content/80">My Signed Leads (Last 30 Days)</div>
+            {realLeadsLoading ? (
+              <div className="flex justify-center items-center py-12"><span className="loading loading-spinner loading-lg text-primary"></span></div>
+            ) : realSignedLeads.length === 0 ? (
+              <div className="text-center py-12 text-gray-500">No signed leads found in the last 30 days</div>
+            ) : (
+              <>
+                {/* Desktop Table View */}
+                <div className="hidden md:block overflow-x-auto">
+                  <table className="table w-full">
+                    <thead>
+                      <tr>
+                        <th>Lead Number + Client Name</th>
+                        <th>Category</th>
+                        <th>Signed Agreement Date</th>
+                        <th>Applicants</th>
+                        <th>Value (Amount)</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {/* Mobile Card View */}
-              <div className="md:hidden flex flex-col gap-4">
-                {realSignedLeads.map((lead) => (
-                  <div
-                    key={lead.id}
-                    className="bg-white rounded-xl p-4 shadow-md border border-gray-100 cursor-pointer hover:shadow-lg transition-shadow"
-                    onClick={() => window.location.href = `/clients/${lead.lead_number}`}
-                  >
-                    <div className="flex items-center gap-2 mb-3">
-                      <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
-                      <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                      <span className="font-semibold text-gray-900 flex-1">{lead.name}</span>
+                    </thead>
+                    <tbody>
+                      {realSignedLeads.map((lead) => (
+                        <tr
+                          key={lead.id}
+                          className="hover:bg-gray-50 cursor-pointer"
+                          onClick={() => window.location.href = `/clients/${lead.lead_number}`}
+                        >
+                          <td>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
+                              <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                              <span className="font-semibold text-gray-900">{lead.name}</span>
+                            </div>
+                          </td>
+                          <td>{lead.category}</td>
+                          <td>{lead.signed_date ? new Date(lead.signed_date).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A'}</td>
+                          <td>{lead.applicants}</td>
+                          <td className="font-semibold text-green-600">
+                            {(lead.currency === 'NIS' ? '₪' : (lead.currency || '₪'))}{lead.value ? Number(lead.value).toLocaleString() : '0'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {/* Mobile Card View */}
+                <div className="md:hidden flex flex-col gap-4">
+                  {realSignedLeads.map((lead) => (
+                    <div
+                      key={lead.id}
+                      className="bg-white rounded-xl p-4 shadow-md border border-gray-100 cursor-pointer hover:shadow-lg transition-shadow"
+                      onClick={() => window.location.href = `/clients/${lead.lead_number}`}
+                    >
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
+                        <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                        <span className="font-semibold text-gray-900 flex-1">{lead.name}</span>
+                      </div>
+                      <div className="space-y-2 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Category:</span>
+                          <span className="font-semibold">{lead.category}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Signed Date:</span>
+                          <span className="font-semibold">{lead.signed_date ? new Date(lead.signed_date).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A'}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Applicants:</span>
+                          <span className="font-semibold">{lead.applicants}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Value:</span>
+                          <span className="font-semibold text-green-600">
+                            {(lead.currency === 'NIS' ? '₪' : (lead.currency || '₪'))}{lead.value ? Number(lead.value).toLocaleString() : '0'}
+                          </span>
+                        </div>
+                      </div>
                     </div>
-                    <div className="space-y-2 text-sm">
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Category:</span>
-                        <span className="font-semibold">{lead.category}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Signed Date:</span>
-                        <span className="font-semibold">{lead.signed_date ? new Date(lead.signed_date).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A'}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Applicants:</span>
-                        <span className="font-semibold">{lead.applicants}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Value:</span>
-                        <span className="font-semibold text-green-600">
-                          {(lead.currency === 'NIS' ? '₪' : (lead.currency || '₪'))}{lead.value ? Number(lead.value).toLocaleString() : '0'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      )}
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )
+      }
 
 
       {/* Floating button to reopen AI container */}
-      {aiContainerCollapsed && (
-        <button
-          onClick={() => setAiContainerCollapsed(false)}
-          className="fixed right-8 top-1/2 transform -translate-y-1/2 z-50 btn btn-circle btn-lg bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 border-none"
-          title="Open AI Assistant"
-        >
-          <ChatBubbleLeftRightIcon className="w-6 h-6" />
-        </button>
-      )}
+      {
+        aiContainerCollapsed && (
+          <button
+            onClick={() => setAiContainerCollapsed(false)}
+            className="fixed right-8 top-1/2 transform -translate-y-1/2 z-50 btn btn-circle btn-lg bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 border-none"
+            title="Open AI Assistant"
+          >
+            <ChatBubbleLeftRightIcon className="w-6 h-6" />
+          </button>
+        )
+      }
 
       {/* AI Suggestions Modal */}
       <AISuggestionsModal
@@ -8474,28 +8119,30 @@ const Dashboard: React.FC = () => {
       />
 
       {/* My Availability Modal - Mobile Only */}
-      {isMyAvailabilityModalOpen && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between z-10">
-              <h2 className="text-xl font-bold text-gray-900">My Availability</h2>
-              <button
-                onClick={() => setIsMyAvailabilityModalOpen(false)}
-                className="btn btn-sm btn-ghost btn-circle"
-                title="Close"
-              >
-                <XMarkIcon className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-6">
-              <MyAvailabilitySection
-                onAvailabilityChange={() => fetchUnavailableEmployeesData(teamAvailabilityDate)}
-                onOpenUploadDocs={() => setIsSickDaysUploadModalOpen(true)}
-              />
+      {
+        isMyAvailabilityModalOpen && (
+          <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+              <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between z-10">
+                <h2 className="text-xl font-bold text-gray-900">My Availability</h2>
+                <button
+                  onClick={() => setIsMyAvailabilityModalOpen(false)}
+                  className="btn btn-sm btn-ghost btn-circle"
+                  title="Close"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-6">
+                <MyAvailabilitySection
+                  onAvailabilityChange={() => fetchUnavailableEmployeesData(teamAvailabilityDate)}
+                  onOpenUploadDocs={() => setIsSickDaysUploadModalOpen(true)}
+                />
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )
+      }
 
       {/* Sick Days Document Upload Modal */}
       <SickDaysDocumentUploadModal
@@ -8507,7 +8154,7 @@ const Dashboard: React.FC = () => {
         }}
       />
 
-    </div>
+    </div >
   );
 };
 

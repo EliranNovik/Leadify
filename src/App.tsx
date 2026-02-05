@@ -243,16 +243,39 @@ const AppContentInner: React.FC = () => {
           console.log('⚠️ App.tsx - No language_id in legacy lead, language_id:', legacyLead.language_id);
         }
 
+        // Fetch category name if category_id exists
+        let categoryName = '';
+        if (legacyLead.category_id) {
+          try {
+            const { data: categoryData, error: categoryError } = await supabase
+              .from('misc_category')
+              .select('name')
+              .eq('id', legacyLead.category_id)
+              .maybeSingle();
+
+            if (!categoryError && categoryData?.name) {
+              categoryName = categoryData.name;
+              console.log('✅ App.tsx - Fetched category name:', { category_id: legacyLead.category_id, categoryName });
+            } else {
+              console.warn('⚠️ App.tsx - Could not fetch category name for category_id:', legacyLead.category_id, categoryError);
+            }
+          } catch (catError) {
+            console.error('Error fetching category name:', catError);
+          }
+        }
+
         // Preserve existing selectedClient properties that might be computed/derived
         const existingClient = selectedClient;
         // Use fetched language name if available, otherwise preserve existing if it's valid (not empty string), otherwise empty
         const finalLanguage = languageName || (existingClient?.language && existingClient.language.trim() !== '' && existingClient.language !== String(legacyLead.language_id || '') ? existingClient.language : '');
+        // Use fetched category name if available, otherwise preserve existing if it's valid
+        const finalCategory = categoryName || (existingClient?.category && existingClient.category.trim() !== '' && existingClient.category !== String(legacyLead.category_id || '') ? existingClient.category : '');
 
         const preservedProperties = {
           // Use fetched language name, or preserve existing if it exists and is valid, otherwise use empty string
           language: finalLanguage,
           // Preserve category name if it exists (it's computed from category_id)
-          category: existingClient?.category || String(legacyLead.category_id || legacyLead.category || ''),
+          category: finalCategory,
           // Preserve other computed properties - use database values as source of truth (database is authoritative)
           total_base: legacyLead.total_base !== null && legacyLead.total_base !== undefined ? legacyLead.total_base : existingClient?.total_base,
           total: legacyLead.total !== null && legacyLead.total !== undefined ? legacyLead.total : existingClient?.total,
@@ -417,6 +440,8 @@ const AppContentInner: React.FC = () => {
           // Compute currency symbols for backward compatibility
           balance_currency: currencySymbol,
           proposal_currency: currencySymbol,
+          // Preserve category name from existing state if available (since DB might only have ID)
+          category: selectedClient?.category || data.category || '',
           // Explicitly spread nested objects/arrays to ensure new references
           emails: data.emails ? [...(Array.isArray(data.emails) ? data.emails : [])] : []
         };
@@ -424,7 +449,8 @@ const AppContentInner: React.FC = () => {
           currency_id: newClientData.currency_id,
           currency_iso_code: currencyData?.iso_code,
           currency_symbol: currencySymbol,
-          balance: newClientData.balance
+          balance: newClientData.balance,
+          category: newClientData.category
         });
         setSelectedClient(newClientData);
         console.log('✅ setSelectedClient called with new data, currency_id:', newClientData.currency_id, 'currency_symbol:', currencySymbol);
