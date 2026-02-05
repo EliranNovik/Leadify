@@ -43,6 +43,65 @@ const PublicProfilePage: React.FC = () => {
         }
     }, [employeeId]);
 
+    const getRoleDisplay = (role: string) => {
+        const roleMap: Record<string, string> = {
+            'c': 'Closer', 's': 'Scheduler', 'h': 'Handler', 'n': 'No role',
+            'e': 'Expert', 'z': 'Manager', 'Z': 'Manager', 'ma': 'Marketing',
+            'p': 'Partner', 'helper-closer': 'Helper Closer', 'pm': 'Project Manager',
+            'se': 'Secretary', 'dv': 'Developer', 'dm': 'Department Manager',
+            'b': 'Book Keeper', 'f': 'Finance'
+        };
+        return roleMap[role] || role;
+    };
+
+    // Update Open Graph meta tags for link preview
+    useEffect(() => {
+        if (profile && employeeId) {
+            const businessCardUrl = `${window.location.origin}/business-card/${employeeId}`;
+            const profileUrl = `${window.location.origin}/my-profile/${employeeId}`;
+            const title = `${profile.official_name} Decker, Pex, Levi Law Offices`;
+            const description = `${getRoleDisplay(profile.bonuses_role)} at ${profile.department_name} Department`;
+
+            // Update or create meta tags
+            const updateMetaTag = (property: string, content: string) => {
+                let meta = document.querySelector(`meta[property="${property}"]`) as HTMLMetaElement;
+                if (!meta) {
+                    meta = document.createElement('meta');
+                    meta.setAttribute('property', property);
+                    document.head.appendChild(meta);
+                }
+                meta.setAttribute('content', content);
+            };
+
+            updateMetaTag('og:title', title);
+            updateMetaTag('og:description', description);
+            updateMetaTag('og:image', businessCardUrl);
+            updateMetaTag('og:url', profileUrl);
+            updateMetaTag('og:type', 'profile');
+            updateMetaTag('og:image:width', '1200');
+            updateMetaTag('og:image:height', '630');
+
+            // Also update standard meta tags
+            const updateStandardMeta = (name: string, content: string) => {
+                let meta = document.querySelector(`meta[name="${name}"]`) as HTMLMetaElement;
+                if (!meta) {
+                    meta = document.createElement('meta');
+                    meta.setAttribute('name', name);
+                    document.head.appendChild(meta);
+                }
+                meta.setAttribute('content', content);
+            };
+
+            updateStandardMeta('description', description);
+            document.title = title;
+        }
+
+        // Cleanup function
+        return () => {
+            // Optionally remove meta tags on unmount
+        };
+    }, [profile, employeeId]);
+
     const fetchProfile = async () => {
         try {
             setLoading(true);
@@ -116,17 +175,6 @@ const PublicProfilePage: React.FC = () => {
         } finally {
             setLoading(false);
         }
-    };
-
-    const getRoleDisplay = (role: string) => {
-        const roleMap: Record<string, string> = {
-            'c': 'Closer', 's': 'Scheduler', 'h': 'Handler', 'n': 'No role',
-            'e': 'Expert', 'z': 'Manager', 'Z': 'Manager', 'ma': 'Marketing',
-            'p': 'Partner', 'helper-closer': 'Helper Closer', 'pm': 'Project Manager',
-            'se': 'Secretary', 'dv': 'Developer', 'dm': 'Department Manager',
-            'b': 'Book Keeper', 'f': 'Finance'
-        };
-        return roleMap[role] || role;
     };
 
     if (loading) {

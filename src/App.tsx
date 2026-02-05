@@ -82,6 +82,7 @@ import SchedulerToolPage from './pages/SchedulerToolPage';
 import SignedSalesReportPage from './pages/SignedSalesReportPage';
 import MyProfilePage from './pages/MyProfilePage';
 import PublicProfilePage from './pages/PublicProfilePage';
+import BusinessCardPage from './pages/BusinessCardPage';
 import { AuthProvider, useAuthContext } from './contexts/AuthContext';
 const AppContentInner: React.FC = () => {
   const { accounts, instance } = useMsal();
@@ -498,6 +499,7 @@ const AppContentInner: React.FC = () => {
       <Route path="/payment/:token" element={<PaymentPage />} />
       <Route path="/cti/pop" element={<CTIPopupPage />} />
       <Route path="/my-profile/:employeeId" element={<PublicProfilePage />} />
+      <Route path="/business-card/:employeeId" element={<BusinessCardPage />} />
       <Route path="/documents" element={
         <div className="flex h-screen bg-white">
           <div className="flex-1 flex flex-col overflow-hidden">

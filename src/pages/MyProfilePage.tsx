@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { supabase } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
 import {
@@ -249,6 +250,7 @@ const MyProfilePage: React.FC = () => {
         try {
             const linkPath = `my-profile/${profile.id}`;
             const fullUrl = `${window.location.origin}/${linkPath}`;
+            const linkText = `${profile.official_name} Decker, Pex, Levi Law Offices`;
 
             // Save the link to the database
             const { error: updateError } = await supabase
@@ -258,12 +260,25 @@ const MyProfilePage: React.FC = () => {
 
             if (updateError) throw updateError;
 
-            // Copy to clipboard
+            // Copy just the URL - the Open Graph tags will handle the preview
             await navigator.clipboard.writeText(fullUrl);
             toast.success('Profile link copied to clipboard!');
         } catch (error) {
             console.error('Error sharing profile:', error);
             toast.error('Failed to generate share link');
+        }
+    };
+
+    const handleShareBusinessCard = async () => {
+        if (!profile) return;
+
+        try {
+            const businessCardUrl = `${window.location.origin}/business-card/${profile.id}`;
+            await navigator.clipboard.writeText(businessCardUrl);
+            toast.success('Business card link copied to clipboard!');
+        } catch (error) {
+            console.error('Error sharing business card:', error);
+            toast.error('Failed to copy business card link');
         }
     };
 
@@ -330,6 +345,14 @@ const MyProfilePage: React.FC = () => {
                             >
                                 <ShareIcon className="w-4 h-4" />
                                 Share
+                            </button>
+                            <button
+                                onClick={handleShareBusinessCard}
+                                className="btn btn-sm btn-ghost bg-black/40 text-white hover:bg-black/60 backdrop-blur-md border-0 gap-2"
+                                title="Share Business Card"
+                            >
+                                <ShareIcon className="w-4 h-4" />
+                                Share Card
                             </button>
                             <button
                                 onClick={() => setIsEditing(true)}
@@ -429,20 +452,10 @@ const MyProfilePage: React.FC = () => {
                                         <AcademicCapIcon className="w-5 h-5 text-black" />
                                     </div>
                                     <div className="flex-1 pt-1">
-                                        {isEditing ? (
-                                            <input
-                                                type="text"
-                                                placeholder="Add a school"
-                                                className="input input-sm input-bordered w-full max-w-xs"
-                                                value={formData.school}
-                                                onChange={(e) => setFormData({ ...formData, school: e.target.value })}
-                                            />
+                                        {profile.school ? (
+                                            <p className="text-gray-900 font-medium">Studied at <span className="font-bold">{profile.school}</span></p>
                                         ) : (
-                                            profile.school ? (
-                                                <p className="text-gray-900 font-medium">Studied at <span className="font-bold">{profile.school}</span></p>
-                                            ) : (
-                                                <p className="text-gray-400 italic">No school added</p>
-                                            )
+                                            <p className="text-gray-400 italic">No school added</p>
                                         )}
                                     </div>
                                 </div>
@@ -453,20 +466,10 @@ const MyProfilePage: React.FC = () => {
                                         <BuildingOfficeIcon className="w-5 h-5 text-black" />
                                     </div>
                                     <div className="flex-1 pt-1">
-                                        {isEditing ? (
-                                            <input
-                                                type="text"
-                                                placeholder="Add a diplom"
-                                                className="input input-sm input-bordered w-full max-w-xs"
-                                                value={formData.diplom}
-                                                onChange={(e) => setFormData({ ...formData, diplom: e.target.value })}
-                                            />
+                                        {profile.diplom ? (
+                                            <p className="text-gray-900 font-medium">Holds a <span className="font-bold">{profile.diplom}</span></p>
                                         ) : (
-                                            profile.diplom ? (
-                                                <p className="text-gray-900 font-medium">Holds a <span className="font-bold">{profile.diplom}</span></p>
-                                            ) : (
-                                                <p className="text-gray-400 italic">No diplom added</p>
-                                            )
+                                            <p className="text-gray-400 italic">No diplom added</p>
                                         )}
                                     </div>
                                 </div>
@@ -496,22 +499,12 @@ const MyProfilePage: React.FC = () => {
                                             <DevicePhoneMobileIcon className="w-4 h-4 md:w-5 md:h-5 text-black" />
                                         </div>
                                         <div className="flex-1 pt-1">
-                                            {isEditing ? (
-                                                <input
-                                                    type="text"
-                                                    className="input input-sm input-bordered w-full"
-                                                    value={formData.mobile}
-                                                    onChange={(e) => setFormData({ ...formData, mobile: e.target.value })}
-                                                    placeholder="Mobile number"
-                                                />
+                                            {profile.mobile ? (
+                                                <a href={`tel:${profile.mobile}`} className="text-sm md:text-base text-gray-900 font-medium hover:text-blue-600 hover:underline transition-colors">
+                                                    {profile.mobile}
+                                                </a>
                                             ) : (
-                                                profile.mobile ? (
-                                                    <a href={`tel:${profile.mobile}`} className="text-sm md:text-base text-gray-900 font-medium hover:text-blue-600 hover:underline transition-colors">
-                                                        {profile.mobile}
-                                                    </a>
-                                                ) : (
-                                                    <p className="text-gray-400 italic text-sm md:text-base">Not set</p>
-                                                )
+                                                <p className="text-gray-400 italic text-sm md:text-base">Not set</p>
                                             )}
                                             <p className="text-xs md:text-sm text-gray-500">Mobile</p>
                                         </div>
@@ -523,34 +516,15 @@ const MyProfilePage: React.FC = () => {
                                             <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 text-black" />
                                         </div>
                                         <div className="flex-1 pt-1">
-                                            {isEditing ? (
-                                                <div className="flex gap-2">
-                                                    <input
-                                                        type="text"
-                                                        className="input input-sm input-bordered flex-1"
-                                                        value={formData.phone}
-                                                        onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                                                        placeholder="Office Phone"
-                                                    />
-                                                    <input
-                                                        type="text"
-                                                        className="input input-sm input-bordered w-24"
-                                                        value={formData.phone_ext}
-                                                        onChange={(e) => setFormData({ ...formData, phone_ext: e.target.value })}
-                                                        placeholder="Ext"
-                                                    />
+                                            {profile.phone ? (
+                                                <div className="text-sm md:text-base text-gray-900 font-medium">
+                                                    <a href={`tel:${profile.phone}`} className="hover:text-blue-600 hover:underline transition-colors">
+                                                        {profile.phone}
+                                                    </a>
+                                                    {profile.phone_ext && <span className="text-gray-400 font-normal ml-2">Ext: {profile.phone_ext}</span>}
                                                 </div>
                                             ) : (
-                                                profile.phone ? (
-                                                    <div className="text-sm md:text-base text-gray-900 font-medium">
-                                                        <a href={`tel:${profile.phone}`} className="hover:text-blue-600 hover:underline transition-colors">
-                                                            {profile.phone}
-                                                        </a>
-                                                        {profile.phone_ext && <span className="text-gray-400 font-normal ml-2">Ext: {profile.phone_ext}</span>}
-                                                    </div>
-                                                ) : (
-                                                    <p className="text-gray-400 italic text-sm md:text-base">Not set</p>
-                                                )
+                                                <p className="text-gray-400 italic text-sm md:text-base">Not set</p>
                                             )}
                                             <p className="text-xs md:text-sm text-gray-500">Office Phone</p>
                                         </div>
@@ -562,22 +536,12 @@ const MyProfilePage: React.FC = () => {
                                             <FaLinkedin className="w-4 h-4 md:w-5 md:h-5 text-black" />
                                         </div>
                                         <div className="flex-1 pt-1">
-                                            {isEditing ? (
-                                                <input
-                                                    type="text"
-                                                    className="input input-sm input-bordered w-full"
-                                                    value={formData.linkedin_url}
-                                                    onChange={(e) => setFormData({ ...formData, linkedin_url: e.target.value })}
-                                                    placeholder="https://linkedin.com/in/..."
-                                                />
+                                            {profile.linkedin_url ? (
+                                                <a href={profile.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-sm md:text-base text-blue-600 hover:underline font-medium">
+                                                    View linkedin profile
+                                                </a>
                                             ) : (
-                                                profile.linkedin_url ? (
-                                                    <a href={profile.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-sm md:text-base text-blue-600 hover:underline font-medium break-all">
-                                                        {profile.linkedin_url}
-                                                    </a>
-                                                ) : (
-                                                    <p className="text-gray-400 italic text-sm md:text-base">No LinkedIn profile</p>
-                                                )
+                                                <p className="text-gray-400 italic text-sm md:text-base">No LinkedIn profile</p>
                                             )}
                                             <p className="text-xs md:text-sm text-gray-500">LinkedIn</p>
                                         </div>
@@ -683,6 +647,181 @@ const MyProfilePage: React.FC = () => {
                     </div>
                 )}
             </div>
+
+            {/* Edit Profile Modal */}
+            {isEditing && typeof window !== 'undefined' && createPortal(
+                <div
+                    className={`fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm transition-opacity duration-300 ${isEditing ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+                    onClick={() => {
+                        setIsEditing(false);
+                        setFormData({
+                            mobile: profile.mobile,
+                            phone: profile.phone,
+                            phone_ext: profile.phone_ext,
+                            display_name: profile.display_name,
+                            official_name: profile.official_name,
+                            school: profile.school || '',
+                            diplom: profile.diplom || '',
+                            linkedin_url: profile.linkedin_url || ''
+                        });
+                    }}
+                >
+                    <div
+                        className={`bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto m-4 transform transition-all duration-300 ${isEditing ? 'scale-100 opacity-100' : 'scale-95 opacity-0'}`}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {/* Modal Header */}
+                        <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between z-10">
+                            <h2 className="text-2xl font-bold text-gray-900">Edit Profile</h2>
+                            <button
+                                onClick={() => {
+                                    setIsEditing(false);
+                                    setFormData({
+                                        mobile: profile.mobile,
+                                        phone: profile.phone,
+                                        phone_ext: profile.phone_ext,
+                                        display_name: profile.display_name,
+                                        official_name: profile.official_name,
+                                        school: profile.school || '',
+                                        diplom: profile.diplom || '',
+                                        linkedin_url: profile.linkedin_url || ''
+                                    });
+                                }}
+                                className="btn btn-ghost btn-sm btn-circle"
+                            >
+                                <XMarkIcon className="w-5 h-5" />
+                            </button>
+                        </div>
+
+                        {/* Modal Content */}
+                        <div className="p-6 space-y-6">
+                            {/* Work & Education Section */}
+                            <div>
+                                <h3 className="text-lg font-semibold text-gray-800 mb-4">Work & Education</h3>
+                                <div className="space-y-4">
+                                    {/* School */}
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                                            School
+                                        </label>
+                                        <input
+                                            type="text"
+                                            className="input input-bordered w-full"
+                                            placeholder="Add a school"
+                                            value={formData.school}
+                                            onChange={(e) => setFormData({ ...formData, school: e.target.value })}
+                                        />
+                                    </div>
+
+                                    {/* Diploma */}
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                                            Diploma
+                                        </label>
+                                        <input
+                                            type="text"
+                                            className="input input-bordered w-full"
+                                            placeholder="Add a diplom"
+                                            value={formData.diplom}
+                                            onChange={(e) => setFormData({ ...formData, diplom: e.target.value })}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Contact Information Section */}
+                            <div>
+                                <h3 className="text-lg font-semibold text-gray-800 mb-4">Contact Information</h3>
+                                <div className="space-y-4">
+                                    {/* Mobile */}
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                                            Mobile
+                                        </label>
+                                        <input
+                                            type="text"
+                                            className="input input-bordered w-full"
+                                            placeholder="Mobile number"
+                                            value={formData.mobile}
+                                            onChange={(e) => setFormData({ ...formData, mobile: e.target.value })}
+                                        />
+                                    </div>
+
+                                    {/* Phone */}
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                                            Office Phone
+                                        </label>
+                                        <div className="flex gap-2">
+                                            <input
+                                                type="text"
+                                                className="input input-bordered flex-1"
+                                                placeholder="Office Phone"
+                                                value={formData.phone}
+                                                onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                                            />
+                                            <input
+                                                type="text"
+                                                className="input input-bordered w-24"
+                                                placeholder="Ext"
+                                                value={formData.phone_ext}
+                                                onChange={(e) => setFormData({ ...formData, phone_ext: e.target.value })}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {/* LinkedIn */}
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                                            LinkedIn URL
+                                        </label>
+                                        <input
+                                            type="text"
+                                            className="input input-bordered w-full"
+                                            placeholder="https://linkedin.com/in/..."
+                                            value={formData.linkedin_url}
+                                            onChange={(e) => setFormData({ ...formData, linkedin_url: e.target.value })}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Modal Footer with Cancel and Save Buttons */}
+                        <div className="sticky bottom-0 bg-white border-t border-gray-200 px-6 py-4 flex items-center justify-end gap-3">
+                            <button
+                                onClick={() => {
+                                    setIsEditing(false);
+                                    setFormData({
+                                        mobile: profile.mobile,
+                                        phone: profile.phone,
+                                        phone_ext: profile.phone_ext,
+                                        display_name: profile.display_name,
+                                        official_name: profile.official_name,
+                                        school: profile.school || '',
+                                        diplom: profile.diplom || '',
+                                        linkedin_url: profile.linkedin_url || ''
+                                    });
+                                }}
+                                className="btn btn-ghost"
+                                disabled={uploading}
+                            >
+                                <XMarkIcon className="w-5 h-5 mr-2" />
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleSave}
+                                className="btn btn-primary"
+                                disabled={uploading}
+                            >
+                                <CheckIcon className="w-5 h-5 mr-2" />
+                                Save Changes
+                            </button>
+                        </div>
+                    </div>
+                </div>,
+                document.body
+            )}
         </div>
     );
 };
