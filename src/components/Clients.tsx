@@ -9926,7 +9926,7 @@ const Clients: React.FC<ClientsProps> = ({
           // Query leads table with UUID
           const { data, error } = await supabase
             .from('leads')
-            .select('lead_number')
+            .select('lead_number, manual_id, id')
             .eq('id', masterId)
             .single();
 
@@ -9934,24 +9934,38 @@ const Clients: React.FC<ClientsProps> = ({
             console.error('Error fetching master lead number from leads table:', error);
             throw error;
           }
-          leadNumber = data?.lead_number || null;
+          // Use lead_number, fallback to manual_id, fallback to id
+          leadNumber = data?.lead_number || data?.manual_id || (data?.id ? String(data.id) : null);
         } else {
-          // master_id is numeric, so it's a legacy lead ID
-          // Query leads_lead table and use the ID as lead_number
-          const numericId = parseInt(String(masterId), 10);
-          if (!isNaN(numericId)) {
-            const { data, error } = await supabase
-              .from('leads_lead')
-              .select('id')
-              .eq('id', numericId)
-              .single();
+          // master_id is numeric - could be pointing to a new lead or legacy lead
+          // Since this is a new lead sublead, try to find the master in leads table first
+          const numericId = String(masterId).trim();
+          
+          // Try to find by lead_number (e.g., "L210456" or "210456")
+          const { data: leadByNumber, error: leadByNumberError } = await supabase
+            .from('leads')
+            .select('lead_number, manual_id, id')
+            .or(`lead_number.eq.${numericId},lead_number.eq.L${numericId},lead_number.eq.C${numericId},manual_id.eq.${numericId}`)
+            .maybeSingle();
 
-            if (error) {
-              console.error('Error fetching master lead number from leads_lead table:', error);
-              throw error;
+          if (!leadByNumberError && leadByNumber) {
+            // Found in leads table - use lead_number, fallback to manual_id, fallback to id
+            leadNumber = leadByNumber.lead_number || leadByNumber.manual_id || (leadByNumber.id ? String(leadByNumber.id) : null);
+          } else {
+            // Not found in leads table, try leads_lead table (legacy lead)
+            const parsedNumericId = parseInt(numericId, 10);
+            if (!isNaN(parsedNumericId)) {
+              const { data: legacyLead, error: legacyError } = await supabase
+                .from('leads_lead')
+                .select('id')
+                .eq('id', parsedNumericId)
+                .maybeSingle();
+
+              if (!legacyError && legacyLead) {
+                // For legacy leads, the lead_number is just the ID
+                leadNumber = legacyLead.id ? String(legacyLead.id) : null;
+              }
             }
-            // For legacy leads, the lead_number is just the ID
-            leadNumber = data?.id ? String(data.id) : null;
           }
         }
 
@@ -10045,6 +10059,7 @@ const Clients: React.FC<ClientsProps> = ({
     let baseLeadMasterId: string | null | undefined = undefined;
     let baseLeadManualId: string | null | undefined = undefined;
     let foundBaseLead = false;
+    let baseLeadId: string | null = null; // Store the base lead's ID (UUID for new leads, numeric for legacy)
 
     // Determine if this is a legacy lead based on selectedClient
     // If selectedClient is a legacy lead, the base lead is also a legacy lead
@@ -10064,6 +10079,7 @@ const Clients: React.FC<ClientsProps> = ({
           if (!legacyError && legacyBaseLead) {
             baseLeadMasterId = legacyBaseLead.master_id;
             baseLeadManualId = legacyBaseLead.manual_id;
+            baseLeadId = numericId.toString();
             foundBaseLead = true;
           }
         }
@@ -10071,17 +10087,37 @@ const Clients: React.FC<ClientsProps> = ({
         console.error('Error checking legacy lead master_id/manual_id:', error);
       }
     } else {
-      // For new leads, ONLY query leads table by lead_number
+      // For new leads, query leads table by lead_number or id (if it's a UUID)
       try {
-        const { data: newBaseLead, error: newLeadError } = await supabase
-          .from('leads')
-          .select('master_id, manual_id')
-          .eq('lead_number', normalizedBase)
-          .maybeSingle();
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(normalizedBase);
+        
+        let newBaseLead: any = null;
+        let newLeadError: any = null;
+
+        if (isUUID) {
+          // If normalizedBase is a UUID, query by id
+          const { data, error } = await supabase
+            .from('leads')
+            .select('id, master_id, manual_id, lead_number')
+            .eq('id', normalizedBase)
+            .maybeSingle();
+          newBaseLead = data;
+          newLeadError = error;
+        } else {
+          // Query by lead_number
+          const { data, error } = await supabase
+            .from('leads')
+            .select('id, master_id, manual_id, lead_number')
+            .or(`lead_number.eq.${normalizedBase},lead_number.eq.L${normalizedBase},lead_number.eq.C${normalizedBase}`)
+            .maybeSingle();
+          newBaseLead = data;
+          newLeadError = error;
+        }
 
         if (!newLeadError && newBaseLead) {
           baseLeadMasterId = newBaseLead.master_id;
           baseLeadManualId = newBaseLead.manual_id;
+          baseLeadId = newBaseLead.id; // Store the UUID for querying subleads
           foundBaseLead = true;
         }
       } catch (error) {
@@ -10106,41 +10142,89 @@ const Clients: React.FC<ClientsProps> = ({
     const allSubLeads: any[] = [];
 
     try {
-      // Fetch new leads (from 'leads' table) with pattern matching
-      const { data: newLeads, error: newLeadsError } = await supabase
-        .from('leads')
-        .select('lead_number, name, stage, manual_id, master_id')
-        .like('lead_number', `${normalizedBase}/%`)
-        .order('lead_number', { ascending: true });
-
-      if (newLeadsError) {
-        console.error('Error fetching new sub-leads:', newLeadsError);
-      } else if (newLeads && newLeads.length > 0) {
-        // Filter to only include leads that match the pattern
-        // For new leads, we rely on lead_number pattern matching (e.g., "L209667/1")
-        const validNewSubLeads = newLeads.filter(lead => {
-          const leadNumberValue = lead.lead_number || '';
-          const hasValidLeadNumber = !!leadNumberValue && leadNumberValue.includes('/');
-
-          if (!hasValidLeadNumber) {
-            return false;
-          }
-
-          // If master_id exists, it should match the base lead (or base without prefix)
-          // But don't exclude if master_id is not set - pattern matching is sufficient
-          if (lead.master_id && String(lead.master_id).trim() !== '') {
-            const masterIdStr = String(lead.master_id).trim();
-            const baseWithoutPrefix = normalizedBase.replace(/^C/, '').replace(/^L/, '');
-            const normalizedBaseClean = normalizedBase.replace(/^C/, '').replace(/^L/, '');
-            const masterMatchesBase = masterIdStr === normalizedBase || masterIdStr === normalizedBaseClean || masterIdStr === baseWithoutPrefix;
-            if (!masterMatchesBase) {
-              return false; // master_id doesn't point to this base lead
+      // For new leads, use the baseLeadId we already found (UUID) or try to find it
+      // For legacy leads, we'll query by master_id (numeric)
+      if (!isLegacyLead) {
+        let masterLeadId: string | null = baseLeadId;
+        
+        // If we didn't find baseLeadId in the initial check, try to find it now
+        if (!masterLeadId) {
+          const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(normalizedBase);
+          
+          if (isUUID) {
+            // If base is a UUID, use it directly
+            masterLeadId = normalizedBase;
+          } else {
+            // Try to find the master lead by lead_number
+            const { data: masterLead, error: masterError } = await supabase
+              .from('leads')
+              .select('id, lead_number')
+              .or(`lead_number.eq.${normalizedBase},lead_number.eq.L${normalizedBase},lead_number.eq.C${normalizedBase}`)
+              .maybeSingle();
+            
+            if (!masterError && masterLead) {
+              masterLeadId = masterLead.id;
             }
           }
+        }
+        
+        // Fetch new leads subleads by master_id (for new leads, subleads have master_id pointing to master's UUID)
+        if (masterLeadId) {
+          const { data: newLeadsByMasterId, error: newLeadsByMasterIdError } = await supabase
+            .from('leads')
+            .select('lead_number, name, stage, manual_id, master_id, id')
+            .eq('master_id', masterLeadId)
+            .not('master_id', 'is', null)
+            .order('lead_number', { ascending: true });
 
-          return true;
-        });
-        allSubLeads.push(...validNewSubLeads);
+          if (newLeadsByMasterIdError) {
+            console.error('Error fetching new sub-leads by master_id:', newLeadsByMasterIdError);
+          } else if (newLeadsByMasterId && newLeadsByMasterId.length > 0) {
+            console.log('✅ Found new leads subleads by master_id:', newLeadsByMasterId.length);
+            allSubLeads.push(...newLeadsByMasterId);
+          }
+        }
+
+        // Also fetch new leads with pattern matching (for backward compatibility)
+        const { data: newLeads, error: newLeadsError } = await supabase
+          .from('leads')
+          .select('lead_number, name, stage, manual_id, master_id, id')
+          .like('lead_number', `${normalizedBase}/%`)
+          .order('lead_number', { ascending: true });
+
+        if (newLeadsError) {
+          console.error('Error fetching new sub-leads by pattern:', newLeadsError);
+        } else if (newLeads && newLeads.length > 0) {
+          // Filter to only include leads that match the pattern and haven't been added already
+          const validNewSubLeads = newLeads.filter(lead => {
+            const leadNumberValue = lead.lead_number || '';
+            const hasValidLeadNumber = !!leadNumberValue && leadNumberValue.includes('/');
+
+            if (!hasValidLeadNumber) {
+              return false;
+            }
+
+            // Check if this lead is already in allSubLeads (by id)
+            const alreadyAdded = allSubLeads.some(existing => existing.id === lead.id);
+            if (alreadyAdded) {
+              return false;
+            }
+
+            // If master_id exists, it should match the master lead ID we found
+            if (lead.master_id && String(lead.master_id).trim() !== '' && masterLeadId) {
+              const masterIdStr = String(lead.master_id).trim();
+              if (masterIdStr !== masterLeadId) {
+                return false; // master_id doesn't point to this base lead
+              }
+            }
+
+            return true;
+          });
+          if (validNewSubLeads.length > 0) {
+            console.log('✅ Found new leads subleads by pattern:', validNewSubLeads.length);
+            allSubLeads.push(...validNewSubLeads);
+          }
+        }
       }
 
       // Also check for legacy leads with master_id pointing to this base lead
@@ -10306,12 +10390,14 @@ const Clients: React.FC<ClientsProps> = ({
         subLeadBase = selectedClient.id.toString().replace('legacy_', '');
       }
     } else {
-      // For new leads, use lead_number or id
-      if (selectedClient?.lead_number && String(selectedClient.lead_number).trim() !== '') {
+      // For new leads, use id (UUID) if available, otherwise use lead_number
+      // For new leads, subleads have master_id pointing to the master's UUID, so we should use UUID
+      if (selectedClient?.id && !selectedClient.id.toString().startsWith('legacy_')) {
+        // Use the UUID directly for new leads
+        subLeadBase = selectedClient.id.toString();
+      } else if (selectedClient?.lead_number && String(selectedClient.lead_number).trim() !== '') {
         const trimmed = String(selectedClient.lead_number).trim();
         subLeadBase = trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
-      } else if (selectedClient?.id) {
-        subLeadBase = selectedClient.id.toString();
       }
     }
 

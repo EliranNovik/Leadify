@@ -188,11 +188,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     };
 
     // Helper function to format role display value
-    const formatRoleDisplay = (value: string | null | undefined): string => {
-        if (!value || value === '---' || value === '--' || value === 'Not assigned' || value === 'Unassigned' || value.trim() === '') {
+    const formatRoleDisplay = (value: string | number | null | undefined): string => {
+        // Convert to string first to handle numbers and other types
+        const stringValue = value != null ? String(value) : '';
+
+        if (!stringValue || stringValue === '---' || stringValue === '--' || stringValue === 'Not assigned' || stringValue === 'Unassigned' || stringValue.trim() === '') {
             return '---';
         }
-        return value;
+        return stringValue;
     };
 
     // Component to render employee avatar (matching CalendarPage logic)
@@ -1013,7 +1016,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             </button>
                         )}
 
-                        {/* Another meeting Stage */}
+                        {/* Another meeting Stage - Check this first to avoid duplicates */}
                         {areStagesEquivalent(currentStageName, 'another_meeting') && (
                             <>
                                 {setShowRescheduleDrawer && (
@@ -1037,10 +1040,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             </>
                         )}
 
-                        {/* Meeting scheduled / Meeting rescheduling Stages */}
-                        {(areStagesEquivalent(currentStageName, 'meeting_scheduled') ||
-                            areStagesEquivalent(currentStageName, 'Meeting rescheduling') ||
-                            (isStageNumeric && (stageNumeric === 55 || stageNumeric === 21))) && (
+                        {/* Meeting scheduled / Meeting rescheduling Stages - Exclude another_meeting to avoid duplicates */}
+                        {!areStagesEquivalent(currentStageName, 'another_meeting') &&
+                            (areStagesEquivalent(currentStageName, 'meeting_scheduled') ||
+                                areStagesEquivalent(currentStageName, 'Meeting rescheduling') ||
+                                (isStageNumeric && (stageNumeric === 55 || stageNumeric === 21))) && (
                                 <>
                                     {/* Schedule Meeting button - only for stage 55, not for "Meeting scheduled" or "Meeting rescheduled" */}
                                     {!areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
@@ -1064,8 +1068,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             Meeting ReScheduling
                                         </button>
                                     )}
-                                    {/* Meeting Ended - only show for stage 21 if there are upcoming meetings */}
+                                    {/* Meeting Ended - only show for stage 21 if there are upcoming meetings, and exclude another_meeting */}
                                     {handleStageUpdate &&
+                                        !areStagesEquivalent(currentStageName, 'another_meeting') &&
                                         (!(areStagesEquivalent(currentStageName, 'Meeting rescheduling') || (isStageNumeric && stageNumeric === 21)) || hasScheduledMeetings) && (
                                             <button
                                                 onClick={() => handleStageUpdate('Meeting Ended')}
@@ -1147,11 +1152,24 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         )}
 
                         {/* General stages - Schedule Meeting and Communication Started */}
+                        {/* Only show for stages that haven't been handled by specific sections above */}
                         {selectedClient &&
-                            !['Success', 'handler_assigned', 'meeting_scheduled', 'another_meeting', 'waiting_for_mtng_sum', 'client_signed', 'client signed agreement', 'Client signed agreement', 'communication_started', 'Meeting rescheduling', 'Mtng sum+Agreement sent'].some(
-                                stage => areStagesEquivalent(currentStageName, stage)
-                            ) &&
-                            !(isStageNumeric && stageNumeric === 21) && (
+                            !areStagesEquivalent(currentStageName, 'Handler Set') &&
+                            !areStagesEquivalent(currentStageName, 'Handler Started') &&
+                            !areStagesEquivalent(currentStageName, 'Application submitted') &&
+                            !areStagesEquivalent(currentStageName, 'payment_request_sent') &&
+                            !areStagesEquivalent(currentStageName, 'another_meeting') &&
+                            !areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
+                            !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
+                            !areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') &&
+                            !areStagesEquivalent(currentStageName, 'Communication started') &&
+                            !areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') &&
+                            !areStagesEquivalent(currentStageName, 'Success') &&
+                            !areStagesEquivalent(currentStageName, 'handler_assigned') &&
+                            !areStagesEquivalent(currentStageName, 'client_signed') &&
+                            !areStagesEquivalent(currentStageName, 'client signed agreement') &&
+                            !areStagesEquivalent(currentStageName, 'Client signed agreement') &&
+                            !(isStageNumeric && (stageNumeric === 21 || stageNumeric === 55)) && (
                                 <>
                                     {handleScheduleMenuClick && scheduleMenuLabel && (
                                         <button
@@ -1162,19 +1180,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             {scheduleMenuLabel}
                                         </button>
                                     )}
-                                    {!['meeting_scheduled', 'another_meeting', 'waiting_for_mtng_sum', 'client_signed', 'client signed agreement', 'Client signed agreement', 'communication_started', 'Success', 'handler_assigned', 'Meeting rescheduling'].some(
-                                        stage => areStagesEquivalent(currentStageName, stage)
-                                    ) &&
-                                        !(isStageNumeric && stageNumeric === 21) &&
-                                        handleStageUpdate && (
-                                            <button
-                                                onClick={() => handleStageUpdate('Communication Started')}
-                                                className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
-                                            >
-                                                <ChatBubbleLeftRightIcon className="w-5 h-5" />
-                                                Communication Started
-                                            </button>
-                                        )}
+                                    {handleStageUpdate && (
+                                        <button
+                                            onClick={() => handleStageUpdate('Communication Started')}
+                                            className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                        >
+                                            <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                                            Communication Started
+                                        </button>
+                                    )}
                                 </>
                             )}
                     </div>
