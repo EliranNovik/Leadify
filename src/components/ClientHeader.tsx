@@ -32,6 +32,7 @@ import toast from 'react-hot-toast';
 import { getStageName, getStageColour, areStagesEquivalent } from '../lib/stageUtils';
 import { addToHighlights, removeFromHighlights } from '../lib/highlightsUtils';
 import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
+import CallOptionsModal from './CallOptionsModal';
 
 // Helper to get contrasting text color
 const getContrastingTextColor = (hexColor?: string | null) => {
@@ -255,6 +256,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [isLoadingCategories, setIsLoadingCategories] = useState(false);
     const [allSources, setAllSources] = useState<Array<{ id: number | string, name: string }>>([]);
     const [showStageDropdown, setShowStageDropdown] = useState(false);
+    const [isCallModalOpen, setIsCallModalOpen] = useState(false);
+    const [callPhoneNumber, setCallPhoneNumber] = useState('');
+    const [callContactName, setCallContactName] = useState('');
 
     // Persisted contact info state (ported from ClientInformationBox)
     const [legacyContactInfo, setLegacyContactInfo] = useState<{ email: string | null, phone: string | null }>({
@@ -673,7 +677,31 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 <div className="flex flex-col">
                                     <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold">Phone</p>
                                     <p className="text-base font-medium text-gray-900 dark:text-gray-100">
-                                        {displayPhone ? <a href={`tel:${displayPhone}`} className="hover:text-indigo-600 transition-colors">{displayPhone}</a> : '---'}
+                                        {displayPhone ? (
+                                            <button
+                                                onClick={() => {
+                                                    // Show modal for US (+1), Australia (+61), UK (+44), and South Africa (+27) numbers
+                                                    const normalizedPhone = displayPhone.replace(/[\s\-\(\)]/g, '');
+                                                    const isSupportedCountry =
+                                                        normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10) || // US/Canada
+                                                        normalizedPhone.startsWith('+61') || (normalizedPhone.startsWith('61') && normalizedPhone.length >= 10) || // Australia
+                                                        normalizedPhone.startsWith('+44') || (normalizedPhone.startsWith('44') && normalizedPhone.length >= 10) || // UK
+                                                        normalizedPhone.startsWith('+27') || (normalizedPhone.startsWith('27') && normalizedPhone.length >= 10); // South Africa
+
+                                                    if (isSupportedCountry) {
+                                                        setCallPhoneNumber(displayPhone);
+                                                        setCallContactName(selectedClient?.name || '');
+                                                        setIsCallModalOpen(true);
+                                                    } else {
+                                                        // For other countries, call directly
+                                                        window.open(`tel:${displayPhone}`, '_self');
+                                                    }
+                                                }}
+                                                className="hover:text-indigo-600 transition-colors cursor-pointer text-left"
+                                            >
+                                                {displayPhone}
+                                            </button>
+                                        ) : '---'}
                                     </p>
                                 </div>
                             </div>
@@ -1409,6 +1437,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     </div>
                 )
             }
+
+            {/* Call Options Modal */}
+            <CallOptionsModal
+                isOpen={isCallModalOpen}
+                onClose={() => setIsCallModalOpen(false)}
+                phoneNumber={callPhoneNumber}
+                leadName={callContactName}
+            />
         </div >
     );
 };

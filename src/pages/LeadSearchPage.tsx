@@ -267,8 +267,41 @@ const MultiSelectInput = ({
   // Ensure values is always an array
   const safeValues = Array.isArray(values) ? values : [];
 
+  // Helper function to check if option matches search term (with country aliases)
+  const matchesSearch = (option: string, searchTerm: string, fieldName: string): boolean => {
+    const optionLower = option.toLowerCase();
+    const searchLower = searchTerm.toLowerCase().trim();
+
+    // If search is empty, show all options
+    if (!searchLower) return true;
+
+    // Special handling for country field with aliases
+    if (fieldName === 'country') {
+      // United States aliases - match if search is "us", "usa", or "america"
+      if (optionLower.includes('united states')) {
+        if (searchLower === 'us' || searchLower === 'usa' || searchLower === 'america' ||
+          searchLower.startsWith('us ') || searchLower.startsWith('usa ') ||
+          searchLower.startsWith('america ')) {
+          return true;
+        }
+      }
+
+      // United Kingdom aliases - match if search is "uk", "england", "britain", or "gb"
+      if (optionLower.includes('united kingdom')) {
+        if (searchLower === 'uk' || searchLower === 'england' || searchLower === 'britain' || searchLower === 'gb' ||
+          searchLower.startsWith('uk ') || searchLower.startsWith('england ') ||
+          searchLower.startsWith('britain ') || searchLower.startsWith('gb ')) {
+          return true;
+        }
+      }
+    }
+
+    // Standard matching: check if option contains search term
+    return optionLower.includes(searchLower);
+  };
+
   const filteredOptions = options.filter(option =>
-    option.toLowerCase().includes(inputValue.toLowerCase()) &&
+    matchesSearch(option, inputValue, field) &&
     !safeValues.includes(option)
   );
 
@@ -897,6 +930,7 @@ const LeadSearchPage: React.FC = () => {
     closer: [] as string[],
     case_handler: [] as string[],
     expert_examination: [] as string[],
+    country: [] as string[],
   }, {
     storage: 'sessionStorage',
   });
@@ -916,6 +950,7 @@ const LeadSearchPage: React.FC = () => {
   const [reasonOptions, setReasonOptions] = useState<string[]>([]);
   const [tagOptions, setTagOptions] = useState<string[]>([]);
   const [roleOptions, setRoleOptions] = useState<string[]>([]);
+  const [countryOptions, setCountryOptions] = useState<string[]>([]);
   const [showTopicDropdown, setShowTopicDropdown] = useState(false);
   const [filteredTopicOptions, setFilteredTopicOptions] = useState<string[]>([]);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
@@ -942,7 +977,9 @@ const LeadSearchPage: React.FC = () => {
   const [showExpertDropdown, setShowExpertDropdown] = useState(false);
   const [showCloserDropdown, setShowCloserDropdown] = useState(false);
   const [showCaseHandlerDropdown, setShowCaseHandlerDropdown] = useState(false);
+  const [showCountryDropdown, setShowCountryDropdown] = useState(false);
   const [filteredRoleOptions, setFilteredRoleOptions] = useState<string[]>([]);
+  const [filteredCountryOptions, setFilteredCountryOptions] = useState<string[]>([]);
   const [viewMode, setViewMode] = usePersistedState<'cards' | 'table'>('leadSearchPage_viewMode', 'cards', {
     storage: 'sessionStorage',
   });
@@ -1297,6 +1334,33 @@ const LeadSearchPage: React.FC = () => {
     fetchRoleOptions();
   }, []);
 
+  // Fetch country options from misc_country table
+  useEffect(() => {
+    const fetchCountryOptions = async () => {
+      try {
+        const { data: countriesData, error } = await supabase
+          .from('misc_country')
+          .select('id, name, iso_code')
+          .order('name', { ascending: true });
+
+        if (error) {
+          console.error('Error fetching country options:', error);
+          return;
+        }
+
+        if (countriesData) {
+          const countryNames = countriesData.map(country => country.name).filter(Boolean);
+          setCountryOptions(countryNames);
+          setFilteredCountryOptions(countryNames);
+        }
+      } catch (error) {
+        console.error('Error fetching country options:', error);
+      }
+    };
+
+    fetchCountryOptions();
+  }, []);
+
   // Initialize filtered options when data is loaded
   useEffect(() => {
     setFilteredTopicOptions(topicOptions);
@@ -1376,6 +1440,11 @@ const LeadSearchPage: React.FC = () => {
     setFilteredRoleOptions(roleOptions);
   }, [roleOptions]);
 
+  // Country filtering is now handled by MultiSelectInput component
+  useEffect(() => {
+    setFilteredCountryOptions(countryOptions);
+  }, [countryOptions]);
+
   const handleFilterChange = (field: string, value: any) => {
     // For multi-select fields, don't update the filter directly - 
     // the MultiSelectInput component handles its own input state
@@ -1395,6 +1464,7 @@ const LeadSearchPage: React.FC = () => {
       'closer',
       'case_handler',
       'expert_examination',
+      'country',
     ];
     if (multiSelectFields.includes(field)) {
       // Do nothing - MultiSelectInput handles its own input state
@@ -1511,6 +1581,7 @@ const LeadSearchPage: React.FC = () => {
       case 'expert': setShowExpertDropdown(true); break;
       case 'closer': setShowCloserDropdown(true); break;
       case 'case_handler': setShowCaseHandlerDropdown(true); break;
+      case 'country': setShowCountryDropdown(true); break;
       case 'columns': setShowColumnSelector(true); break;
     }
   };
@@ -1533,6 +1604,7 @@ const LeadSearchPage: React.FC = () => {
       case 'expert': setShowExpertDropdown(false); break;
       case 'closer': setShowCloserDropdown(false); break;
       case 'case_handler': setShowCaseHandlerDropdown(false); break;
+      case 'country': setShowCountryDropdown(false); break;
       case 'columns': setShowColumnSelector(false); break;
     }
   };
@@ -2296,6 +2368,32 @@ const LeadSearchPage: React.FC = () => {
         console.log('✅ Adding eligibility filter for new leads');
         newLeadsQuery = newLeadsQuery.eq('eligible', true);
       }
+      if (filters.country && filters.country.length > 0) {
+        console.log('🌍 Adding country filter for new leads:', filters.country);
+        try {
+          // Look up country IDs for selected country names
+          const { data: countryData, error: countryError } = await supabase
+            .from('misc_country')
+            .select('id, name')
+            .in('name', filters.country);
+
+          if (countryError) {
+            console.error('Error looking up country IDs:', countryError);
+          } else if (countryData && countryData.length > 0) {
+            const countryIds = countryData.map(c => c.id);
+            if (countryIds.length === 1) {
+              newLeadsQuery = newLeadsQuery.eq('country_id', countryIds[0]);
+            } else {
+              newLeadsQuery = newLeadsQuery.in('country_id', countryIds);
+            }
+            console.log('🌍 Applied country_id filter:', countryIds);
+          } else {
+            console.log('⚠️ No country IDs found for selected countries');
+          }
+        } catch (error) {
+          console.error('Error applying country filter for new leads:', error);
+        }
+      }
 
       // Search legacy leads table with joins for language only (source and stage lookup done manually)
       let legacyLeadsQuery = supabase
@@ -2714,6 +2812,10 @@ const LeadSearchPage: React.FC = () => {
           legacyLeadsQuery = legacyLeadsQuery.in('expert_examination', numericValues);
         }
       }
+      // Note: Country filter for legacy leads is handled client-side after fetching
+      // because country is stored in leads_contact table, not directly in leads_lead
+      // Initialize country map for legacy leads (will be populated if country filter is active)
+      let legacyCountryMap = new Map<string, string>(); // lead_id -> country name
 
       // If tags filter is applied, prefetch lead IDs from leads_lead_tags
       // Use string-based sets to avoid bigint/Number precision issues
@@ -2783,6 +2885,45 @@ const LeadSearchPage: React.FC = () => {
           if (categoryId !== undefined) {
             legacyCategoryIds.push(categoryId);
           }
+        }
+      }
+
+      // If country filter is applied for legacy leads, prefetch country data from contacts
+      if (filters.country && filters.country.length > 0) {
+        try {
+          console.log('🌍 Fetching country data for legacy leads from contacts...');
+          // Fetch country data for all legacy leads (we'll filter client-side after mapping)
+          const { data: legacyCountryResult, error: countryError } = await supabase
+            .from('lead_leadcontact')
+            .select(`
+              lead_id,
+              main,
+              leads_contact (
+                country_id,
+                misc_country (
+                  id,
+                  name
+                )
+              )
+            `)
+            .eq('main', true); // Only main contacts
+
+          if (countryError) {
+            console.error('Error fetching country data for legacy leads:', countryError);
+          } else if (legacyCountryResult) {
+            legacyCountryResult.forEach((item: any) => {
+              if (item.leads_contact && (item.leads_contact as any).misc_country) {
+                const leadId = String(item.lead_id);
+                const countryName = ((item.leads_contact as any).misc_country as any).name;
+                if (countryName) {
+                  legacyCountryMap.set(leadId, countryName);
+                }
+              }
+            });
+            console.log('🌍 Loaded country data for', legacyCountryMap.size, 'legacy leads');
+          }
+        } catch (error) {
+          console.error('Error fetching country data for legacy leads:', error);
         }
       }
 
@@ -3458,7 +3599,7 @@ const LeadSearchPage: React.FC = () => {
 
           // Additional Info
           desired_location: legacyLead.desired_location,
-          client_country: legacyLead.client_country,
+          client_country: legacyCountryMap.get(String(legacyLead.id)) || null, // Get country from contact mapping
           language_preference: legacyLead.language_preference,
           onedrive_folder_link: legacyLead.onedrive_folder_link,
           docs_url: legacyLead.docs_url,
@@ -3538,6 +3679,19 @@ const LeadSearchPage: React.FC = () => {
           balance: mappedLegacyLeads[0].balance
         });
         console.log('🔍 All mapped legacy lead fields:', Object.keys(mappedLegacyLeads[0]));
+      }
+
+      // Apply country filter for legacy leads (client-side, since country is in contacts table)
+      if (filters.country && filters.country.length > 0) {
+        console.log('🌍 Applying country filter to legacy leads (client-side)...');
+        const beforeCountryFilter = mappedLegacyLeads.length;
+        mappedLegacyLeads = mappedLegacyLeads.filter((lead: any) => {
+          const leadId = String(lead.id);
+          const leadCountry = legacyCountryMap.get(leadId);
+          // Check if lead's country matches any of the selected countries
+          return leadCountry && filters.country.includes(leadCountry);
+        });
+        console.log(`🌍 Country filter for legacy leads: ${beforeCountryFilter} → ${mappedLegacyLeads.length}`);
       }
 
       console.log('📊 Final mapping results:', {
@@ -3956,6 +4110,19 @@ const LeadSearchPage: React.FC = () => {
             placeholder="Type case handler name or choose from suggestions..."
             options={filteredRoleOptions}
             showDropdown={showCaseHandlerDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+          />
+          <MultiSelectInput
+            label="Country"
+            field="country"
+            values={filters.country}
+            placeholder="Type country name or choose from suggestions..."
+            options={filteredCountryOptions}
+            showDropdown={showCountryDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
             onFilterChange={handleFilterChange}

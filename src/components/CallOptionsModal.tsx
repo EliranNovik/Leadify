@@ -21,11 +21,11 @@ const CallOptionsModal: React.FC<CallOptionsModalProps> = ({
   useEffect(() => {
     const fetchOnecomCode = async () => {
       if (!isOpen) return;
-      
+
       try {
         setLoading(true);
         const { data: { user } } = await supabase.auth.getUser();
-        
+
         if (!user?.email) {
           setLoading(false);
           return;
@@ -47,10 +47,10 @@ const CallOptionsModal: React.FC<CallOptionsModalProps> = ({
           .single();
 
         if (!userError && userData?.tenants_employee) {
-          const empData = Array.isArray(userData.tenants_employee) 
-            ? userData.tenants_employee[0] 
+          const empData = Array.isArray(userData.tenants_employee)
+            ? userData.tenants_employee[0]
             : userData.tenants_employee;
-          
+
           if (empData?.onecom_code) {
             setOnecomCode(empData.onecom_code);
           }
@@ -67,16 +67,16 @@ const CallOptionsModal: React.FC<CallOptionsModalProps> = ({
 
   const formatPhoneNumber = (phone: string, useOnecomCode: boolean): string => {
     if (!phone) return '';
-    
+
     // Normalize phone: remove spaces, dashes, parentheses
     const normalized = phone.replace(/[\s\-\(\)]/g, '');
-    
+
     // If phone already starts with +, extract country code and number
     if (normalized.startsWith('+')) {
       // Find where country code ends (usually 1-3 digits after +)
       // Common patterns: +1 (US/Canada), +44 (UK), +972 (Israel), +33 (France), +49 (Germany), etc.
       let countryCodeEnd = 1;
-      
+
       // Check for known 3-digit country codes first
       if (normalized.length > 4) {
         const threeDigit = normalized.substring(1, 4);
@@ -85,28 +85,28 @@ const CallOptionsModal: React.FC<CallOptionsModalProps> = ({
           countryCodeEnd = 4; // +XXX
         }
       }
-      
+
       // Check for 2-digit country codes
       if (countryCodeEnd === 1 && normalized.length > 3) {
         const twoDigit = normalized.substring(1, 3);
-        // Common 2-digit country codes: 44 (UK), 33 (France), 49 (Germany), 39 (Italy), etc.
-        if (/^[3-9][0-9]$/.test(twoDigit)) {
+        // Common 2-digit country codes: 44 (UK), 61 (Australia), 27 (South Africa), 33 (France), 49 (Germany), 39 (Italy), etc.
+        if (/^[2-9][0-9]$/.test(twoDigit)) {
           countryCodeEnd = 3; // +XX
         }
       }
-      
+
       // US/Canada: +1
       if (normalized.startsWith('+1') && normalized.length > 2) {
         countryCodeEnd = 2; // +1
       }
-      
+
       // Extract country code digits (without the +)
       const countryCodeDigits = normalized.substring(1, countryCodeEnd + 1);
       const restOfNumber = normalized.substring(countryCodeEnd + 1);
-      
+
       // Convert country code to 00 format (e.g., +1 -> 001, +44 -> 0044, +972 -> 00972)
       const countryCodeWith00 = `00${countryCodeDigits}`;
-      
+
       if (useOnecomCode && onecomCode) {
         // Place onecom_code BEFORE the country code
         return `${onecomCode}${countryCodeWith00}${restOfNumber}`;
@@ -114,7 +114,7 @@ const CallOptionsModal: React.FC<CallOptionsModalProps> = ({
       // If not using onecom_code, convert + to 00 format
       return `${countryCodeWith00}${restOfNumber}`;
     }
-    
+
     // If phone doesn't start with +, assume it's a local number
     // In this case, we can't reliably add onecom_code without country code
     return phone;
@@ -131,11 +131,11 @@ const CallOptionsModal: React.FC<CallOptionsModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       {/* Backdrop */}
-      <div 
+      <div
         className="absolute inset-0 bg-black/50 backdrop-blur-sm"
         onClick={onClose}
       />
-      
+
       {/* Modal */}
       <div className="relative bg-base-100 rounded-lg shadow-xl p-6 w-full max-w-md mx-4 z-10">
         <div className="flex items-center justify-between mb-4">

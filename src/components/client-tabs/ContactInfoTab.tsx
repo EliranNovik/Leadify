@@ -3653,16 +3653,20 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           ) : contact.mobile && contact.mobile !== '---' ? (
                             <button
                               onClick={() => {
-                                // Only show modal for US numbers (country code +1)
+                                // Show modal for US (+1), Australia (+61), UK (+44), and South Africa (+27) numbers
                                 const normalizedPhone = contact.mobile.replace(/[\s\-\(\)]/g, '');
-                                const isUSNumber = normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10);
+                                const isSupportedCountry = 
+                                  normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10) || // US/Canada
+                                  normalizedPhone.startsWith('+61') || (normalizedPhone.startsWith('61') && normalizedPhone.length >= 10) || // Australia
+                                  normalizedPhone.startsWith('+44') || (normalizedPhone.startsWith('44') && normalizedPhone.length >= 10) || // UK
+                                  normalizedPhone.startsWith('+27') || (normalizedPhone.startsWith('27') && normalizedPhone.length >= 10); // South Africa
                                 
-                                if (isUSNumber) {
+                                if (isSupportedCountry) {
                                   setCallPhoneNumber(contact.mobile);
                                   setCallContactName(contact.name || '');
                                   setIsCallModalOpen(true);
                                 } else {
-                                  // For non-US countries, call directly
+                                  // For other countries, call directly
                                   window.open(`tel:${contact.mobile}`, '_self');
                                 }
                               }}
@@ -3818,16 +3822,20 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           ) : contact.phone && contact.phone !== '---' ? (
                             <button
                               onClick={() => {
-                                // Only show modal for US numbers (country code +1)
+                                // Show modal for US (+1), Australia (+61), UK (+44), and South Africa (+27) numbers
                                 const normalizedPhone = contact.phone.replace(/[\s\-\(\)]/g, '');
-                                const isUSNumber = normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10);
+                                const isSupportedCountry = 
+                                  normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10) || // US/Canada
+                                  normalizedPhone.startsWith('+61') || (normalizedPhone.startsWith('61') && normalizedPhone.length >= 10) || // Australia
+                                  normalizedPhone.startsWith('+44') || (normalizedPhone.startsWith('44') && normalizedPhone.length >= 10) || // UK
+                                  normalizedPhone.startsWith('+27') || (normalizedPhone.startsWith('27') && normalizedPhone.length >= 10); // South Africa
                                 
-                                if (isUSNumber) {
+                                if (isSupportedCountry) {
                                   setCallPhoneNumber(contact.phone);
                                   setCallContactName(contact.name || '');
                                   setIsCallModalOpen(true);
                                 } else {
-                                  // For non-US countries, call directly
+                                  // For other countries, call directly
                                   window.open(`tel:${contact.phone}`, '_self');
                                 }
                               }}
