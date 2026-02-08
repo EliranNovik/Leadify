@@ -9940,7 +9940,7 @@ const Clients: React.FC<ClientsProps> = ({
           // master_id is numeric - could be pointing to a new lead or legacy lead
           // Since this is a new lead sublead, try to find the master in leads table first
           const numericId = String(masterId).trim();
-          
+
           // Try to find by lead_number (e.g., "L210456" or "210456")
           const { data: leadByNumber, error: leadByNumberError } = await supabase
             .from('leads')
@@ -10060,6 +10060,7 @@ const Clients: React.FC<ClientsProps> = ({
     let baseLeadManualId: string | null | undefined = undefined;
     let foundBaseLead = false;
     let baseLeadId: string | null = null; // Store the base lead's ID (UUID for new leads, numeric for legacy)
+    let newBaseLead: any = null; // Declare at function scope so it's accessible later
 
     // Determine if this is a legacy lead based on selectedClient
     // If selectedClient is a legacy lead, the base lead is also a legacy lead
@@ -10090,8 +10091,7 @@ const Clients: React.FC<ClientsProps> = ({
       // For new leads, query leads table by lead_number or id (if it's a UUID)
       try {
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(normalizedBase);
-        
-        let newBaseLead: any = null;
+
         let newLeadError: any = null;
 
         if (isUUID) {
@@ -10104,11 +10104,26 @@ const Clients: React.FC<ClientsProps> = ({
           newBaseLead = data;
           newLeadError = error;
         } else {
-          // Query by lead_number
+          // Query by lead_number - handle cases where normalizedBase already has L/C prefix
+          // Build OR conditions properly - don't add prefix if it already exists
+          const orConditions: string[] = [];
+          orConditions.push(`lead_number.eq.${normalizedBase}`);
+
+          // Only add L/C prefixes if normalizedBase doesn't already start with them
+          if (!normalizedBase.startsWith('L') && !normalizedBase.startsWith('C')) {
+            orConditions.push(`lead_number.eq.L${normalizedBase}`);
+            orConditions.push(`lead_number.eq.C${normalizedBase}`);
+          }
+
+          // Also try by manual_id if normalizedBase is numeric
+          if (/^\d+$/.test(normalizedBase)) {
+            orConditions.push(`manual_id.eq.${normalizedBase}`);
+          }
+
           const { data, error } = await supabase
             .from('leads')
             .select('id, master_id, manual_id, lead_number')
-            .or(`lead_number.eq.${normalizedBase},lead_number.eq.L${normalizedBase},lead_number.eq.C${normalizedBase}`)
+            .or(orConditions.join(','))
             .maybeSingle();
           newBaseLead = data;
           newLeadError = error;
@@ -10119,6 +10134,18 @@ const Clients: React.FC<ClientsProps> = ({
           baseLeadManualId = newBaseLead.manual_id;
           baseLeadId = newBaseLead.id; // Store the UUID for querying subleads
           foundBaseLead = true;
+          console.log('🔍 Clients.tsx - Found base lead:', {
+            id: newBaseLead.id,
+            lead_number: newBaseLead.lead_number,
+            master_id: newBaseLead.master_id,
+            baseLeadId
+          });
+        } else {
+          console.log('🔍 Clients.tsx - Base lead not found:', {
+            normalizedBase,
+            error: newLeadError,
+            isUUID: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(normalizedBase)
+          });
         }
       } catch (error) {
         console.error('Error checking new lead master_id/manual_id:', error);
@@ -10146,43 +10173,85 @@ const Clients: React.FC<ClientsProps> = ({
       // For legacy leads, we'll query by master_id (numeric)
       if (!isLegacyLead) {
         let masterLeadId: string | null = baseLeadId;
-        
+
         // If we didn't find baseLeadId in the initial check, try to find it now
         if (!masterLeadId) {
           const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(normalizedBase);
-          
+
           if (isUUID) {
             // If base is a UUID, use it directly
             masterLeadId = normalizedBase;
           } else {
-            // Try to find the master lead by lead_number
+            // Try to find the master lead by lead_number - handle cases where normalizedBase already has L/C prefix
+            const orConditions: string[] = [];
+            orConditions.push(`lead_number.eq.${normalizedBase}`);
+
+            // Only add L/C prefixes if normalizedBase doesn't already start with them
+            if (!normalizedBase.startsWith('L') && !normalizedBase.startsWith('C')) {
+              orConditions.push(`lead_number.eq.L${normalizedBase}`);
+              orConditions.push(`lead_number.eq.C${normalizedBase}`);
+            }
+
+            // Also try by manual_id if normalizedBase is numeric
+            if (/^\d+$/.test(normalizedBase)) {
+              orConditions.push(`manual_id.eq.${normalizedBase}`);
+            }
+
             const { data: masterLead, error: masterError } = await supabase
               .from('leads')
               .select('id, lead_number')
-              .or(`lead_number.eq.${normalizedBase},lead_number.eq.L${normalizedBase},lead_number.eq.C${normalizedBase}`)
+              .or(orConditions.join(','))
               .maybeSingle();
-            
+
             if (!masterError && masterLead) {
               masterLeadId = masterLead.id;
             }
           }
         }
-        
+
         // Fetch new leads subleads by master_id (for new leads, subleads have master_id pointing to master's UUID)
+        // Also check for numeric master_id values (for backward compatibility)
         if (masterLeadId) {
+          console.log('🔍 Clients.tsx - Querying subleads by master_id:', masterLeadId);
+
+          // Build OR conditions: check both UUID and numeric master_id
+          const orConditions: string[] = [];
+          orConditions.push(`master_id.eq.${masterLeadId}`);
+
+          // Also check for numeric master_id if normalizedBase is numeric or has numeric part
+          const numericBase = normalizedBase.replace(/^[LC]/i, ''); // Remove L/C prefix
+          if (/^\d+$/.test(numericBase)) {
+            orConditions.push(`master_id.eq.${numericBase}`);
+          }
+
+          // Also check if master_id matches the lead_number pattern (without prefix)
+          if (newBaseLead?.lead_number) {
+            const leadNumberBase = newBaseLead.lead_number.replace(/^[LC]/i, '');
+            if (/^\d+$/.test(leadNumberBase) && leadNumberBase !== numericBase) {
+              orConditions.push(`master_id.eq.${leadNumberBase}`);
+              console.log('🔍 Clients.tsx - Also checking lead_number base master_id:', leadNumberBase);
+            }
+          }
+
+          console.log('🔍 Clients.tsx - OR conditions for master_id query:', orConditions);
           const { data: newLeadsByMasterId, error: newLeadsByMasterIdError } = await supabase
             .from('leads')
             .select('lead_number, name, stage, manual_id, master_id, id')
-            .eq('master_id', masterLeadId)
+            .or(orConditions.join(','))
             .not('master_id', 'is', null)
             .order('lead_number', { ascending: true });
 
           if (newLeadsByMasterIdError) {
             console.error('Error fetching new sub-leads by master_id:', newLeadsByMasterIdError);
           } else if (newLeadsByMasterId && newLeadsByMasterId.length > 0) {
-            console.log('✅ Found new leads subleads by master_id:', newLeadsByMasterId.length);
+            console.log('✅ Found new leads subleads by master_id:', newLeadsByMasterId.length, newLeadsByMasterId);
             allSubLeads.push(...newLeadsByMasterId);
+          } else {
+            console.log('🔍 Clients.tsx - No subleads found by master_id. Query conditions:', orConditions);
+            console.log('🔍 Clients.tsx - Will try pattern matching next...');
           }
+        } else {
+          console.log('🔍 Clients.tsx - masterLeadId is null, cannot query subleads');
         }
 
         // Also fetch new leads with pattern matching (for backward compatibility)
@@ -10210,11 +10279,47 @@ const Clients: React.FC<ClientsProps> = ({
               return false;
             }
 
-            // If master_id exists, it should match the master lead ID we found
+            // Extract base part of lead_number (before the '/')
+            const leadNumberBase = leadNumberValue.split('/')[0];
+            const normalizedBaseClean = normalizedBase.replace(/^[LC]/i, '');
+            const leadNumberBaseClean = leadNumberBase.replace(/^[LC]/i, '');
+
+            // Check if the base part of lead_number matches (with or without prefix)
+            const baseMatches = leadNumberBase === normalizedBase ||
+              leadNumberBaseClean === normalizedBaseClean ||
+              leadNumberBase === normalizedBase.replace(/^[LC]/i, '') ||
+              leadNumberBase.replace(/^[LC]/i, '') === normalizedBase.replace(/^[LC]/i, '');
+
+            if (!baseMatches) {
+              console.log('🔍 Clients.tsx - Pattern match sublead filtered out - base mismatch:', {
+                lead_number: lead.lead_number,
+                leadNumberBase,
+                normalizedBase
+              });
+              return false;
+            }
+
+            // If master_id exists, prefer it to match, but don't require it if lead_number pattern matches
             if (lead.master_id && String(lead.master_id).trim() !== '' && masterLeadId) {
               const masterIdStr = String(lead.master_id).trim();
-              if (masterIdStr !== masterLeadId) {
-                return false; // master_id doesn't point to this base lead
+              const numericBase = normalizedBase.replace(/^[LC]/i, '');
+
+              // Accept if master_id matches UUID, numeric base, or lead_number base
+              const matchesUUID = masterIdStr === masterLeadId;
+              const matchesNumeric = /^\d+$/.test(numericBase) && masterIdStr === numericBase;
+              const matchesLeadNumberBase = newBaseLead?.lead_number &&
+                /^\d+$/.test(newBaseLead.lead_number.replace(/^[LC]/i, '')) &&
+                masterIdStr === newBaseLead.lead_number.replace(/^[LC]/i, '');
+
+              // If master_id doesn't match, log but still include if base matches (pattern matching takes precedence)
+              if (!matchesUUID && !matchesNumeric && !matchesLeadNumberBase) {
+                console.log('🔍 Clients.tsx - Pattern match sublead has non-matching master_id but lead_number matches:', {
+                  lead_number: lead.lead_number,
+                  master_id: masterIdStr,
+                  masterLeadId,
+                  numericBase,
+                  including: true
+                });
               }
             }
 
@@ -10393,11 +10498,13 @@ const Clients: React.FC<ClientsProps> = ({
       // For new leads, use id (UUID) if available, otherwise use lead_number
       // For new leads, subleads have master_id pointing to the master's UUID, so we should use UUID
       if (selectedClient?.id && !selectedClient.id.toString().startsWith('legacy_')) {
-        // Use the UUID directly for new leads
+        // Use the UUID directly for new leads - this is the most reliable way to find subleads
         subLeadBase = selectedClient.id.toString();
+        console.log('🔍 Clients.tsx - Using UUID for sublead base:', subLeadBase);
       } else if (selectedClient?.lead_number && String(selectedClient.lead_number).trim() !== '') {
         const trimmed = String(selectedClient.lead_number).trim();
         subLeadBase = trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
+        console.log('🔍 Clients.tsx - Using lead_number for sublead base:', subLeadBase);
       }
     }
 
@@ -12172,6 +12279,120 @@ const Clients: React.FC<ClientsProps> = ({
                 </div>
               </div>
 
+              {/* Case unactivated Badge - Above Balance Badge */}
+              {(() => {
+                const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                // Only show unactivated badge for new leads (not legacy leads)
+                const isUnactivated = !isLegacy && (selectedClient.status === 'inactive');
+                if (!isUnactivated) return null;
+
+                // Get unactivation reason
+                let unactivationReason = selectedClient.unactivation_reason;
+                if (isLegacy && !unactivationReason) {
+                  const reasonId = (selectedClient as any).reason_id;
+                  if (reasonId) {
+                    const reasonFromId = getUnactivationReasonFromId(reasonId);
+                    if (reasonFromId) {
+                      unactivationReason = reasonFromId;
+                    }
+                  }
+                }
+
+                return (
+                  <div className="flex items-center justify-center pt-2 pb-2">
+                    <span className="badge badge-lg px-4 py-2 bg-red-100 text-red-800 border border-red-300 font-semibold">
+                      Case unactivated
+                      {unactivationReason && (
+                        <span className="ml-2 text-xs font-normal">
+                          ({unactivationReason})
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                );
+              })()}
+
+              {/* Unactivation Details - Only for new leads (not legacy) - Above Balance Badge */}
+              {(() => {
+                const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                // Only show unactivated box for new leads (not legacy leads)
+                const isUnactivated = !isLegacy && (selectedClient.status === 'inactive');
+                return isUnactivated;
+              })() && (
+                  <div className="pt-3 pb-2 border-t border-base-300 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <NoSymbolIcon className="w-4 h-4 text-error" />
+                      <span className="text-sm text-error font-medium">
+                        {(() => {
+                          const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                          // For legacy leads, use unactivation_reason (not deactivate_note which doesn't exist in leads_lead table)
+                          let unactivationReason = selectedClient.unactivation_reason;
+
+                          // For legacy leads, if no unactivation_reason, try to get it from reason_id
+                          if (isLegacy && !unactivationReason) {
+                            const reasonId = (selectedClient as any).reason_id;
+                            if (reasonId) {
+                              const reasonFromId = getUnactivationReasonFromId(reasonId);
+                              if (reasonFromId) {
+                                unactivationReason = reasonFromId;
+                              }
+                            }
+                          }
+
+                          // Return the reason exactly as stored in the database or from reason_id mapping
+                          return unactivationReason ? (
+                            `Reason: ${unactivationReason}`
+                          ) : (
+                            'No reason added'
+                          );
+                        })()}
+                      </span>
+                    </div>
+                    {/* Show deactivate_notes for new leads */}
+                    {(selectedClient as any).deactivate_notes && (
+                      <div className="flex items-start gap-2">
+                        <DocumentTextIcon className="w-4 h-4 text-base-content/60 mt-0.5 flex-shrink-0" />
+                        <span
+                          className="text-sm text-base-content/80 flex-1"
+                          dir={/[\u0590-\u05FF]/.test((selectedClient as any).deactivate_notes) ? 'rtl' : 'ltr'}
+                          style={{
+                            textAlign: /[\u0590-\u05FF]/.test((selectedClient as any).deactivate_notes) ? 'right' : 'left',
+                            whiteSpace: 'pre-wrap'
+                          }}
+                        >
+                          {(selectedClient as any).deactivate_notes}
+                        </span>
+                      </div>
+                    )}
+                    {(selectedClient.unactivated_by || selectedClient.unactivated_at) && (
+                      <div className="flex items-center gap-4 flex-wrap">
+                        {selectedClient.unactivated_by && (
+                          <div className="flex items-center gap-2">
+                            <UserIcon className="w-4 h-4 text-base-content/60" />
+                            <span className="text-sm text-base-content/80">
+                              Unactivated by: {selectedClient.unactivated_by}
+                            </span>
+                          </div>
+                        )}
+                        {selectedClient.unactivated_at && (
+                          <div className="flex items-center gap-2">
+                            <CalendarIcon className="w-4 h-4 text-base-content/60" />
+                            <span className="text-sm text-base-content/80">
+                              Unactivated: {new Date(selectedClient.unactivated_at).toLocaleDateString('en-US', {
+                                year: 'numeric',
+                                month: 'short',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
               {/* Value (Balance) Badge */}
               {(() => {
                 const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
@@ -12250,87 +12471,6 @@ const Clients: React.FC<ClientsProps> = ({
                 }
                 return null;
               })()}
-
-              {/* Unactivation Details - Only for new leads (not legacy) */}
-              {(() => {
-                const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                // Only show unactivated box for new leads (not legacy leads)
-                const isUnactivated = !isLegacy && (selectedClient.status === 'inactive');
-                return isUnactivated;
-              })() && (
-                  <div className="pt-3 border-t border-base-300 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <NoSymbolIcon className="w-4 h-4 text-error" />
-                      <span className="text-sm text-error font-medium">
-                        {(() => {
-                          const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                          // For legacy leads, use unactivation_reason (not deactivate_note which doesn't exist in leads_lead table)
-                          let unactivationReason = selectedClient.unactivation_reason;
-
-                          // For legacy leads, if no unactivation_reason, try to get it from reason_id
-                          if (isLegacy && !unactivationReason) {
-                            const reasonId = (selectedClient as any).reason_id;
-                            if (reasonId) {
-                              const reasonFromId = getUnactivationReasonFromId(reasonId);
-                              if (reasonFromId) {
-                                unactivationReason = reasonFromId;
-                              }
-                            }
-                          }
-
-                          // Return the reason exactly as stored in the database or from reason_id mapping
-                          return unactivationReason ? (
-                            `Reason: ${unactivationReason}`
-                          ) : (
-                            'No reason added'
-                          );
-                        })()}
-                      </span>
-                    </div>
-                    {/* Show deactivate_notes for new leads */}
-                    {(selectedClient as any).deactivate_notes && (
-                      <div className="flex items-start gap-2">
-                        <DocumentTextIcon className="w-4 h-4 text-base-content/60 mt-0.5 flex-shrink-0" />
-                        <span
-                          className="text-sm text-base-content/80 flex-1"
-                          dir={/[\u0590-\u05FF]/.test((selectedClient as any).deactivate_notes) ? 'rtl' : 'ltr'}
-                          style={{
-                            textAlign: /[\u0590-\u05FF]/.test((selectedClient as any).deactivate_notes) ? 'right' : 'left',
-                            whiteSpace: 'pre-wrap'
-                          }}
-                        >
-                          {(selectedClient as any).deactivate_notes}
-                        </span>
-                      </div>
-                    )}
-                    {(selectedClient.unactivated_by || selectedClient.unactivated_at) && (
-                      <div className="flex items-center gap-4 flex-wrap">
-                        {selectedClient.unactivated_by && (
-                          <div className="flex items-center gap-2">
-                            <UserIcon className="w-4 h-4 text-base-content/60" />
-                            <span className="text-sm text-base-content/80">
-                              Unactivated by: {selectedClient.unactivated_by}
-                            </span>
-                          </div>
-                        )}
-                        {selectedClient.unactivated_at && (
-                          <div className="flex items-center gap-2">
-                            <CalendarIcon className="w-4 h-4 text-base-content/60" />
-                            <span className="text-sm text-base-content/80">
-                              Unactivated: {new Date(selectedClient.unactivated_at).toLocaleDateString('en-US', {
-                                year: 'numeric',
-                                month: 'short',
-                                day: 'numeric',
-                                hour: '2-digit',
-                                minute: '2-digit'
-                              })}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
 
               {/* Click to Expand Hint */}
               <div className="p-3">
@@ -12463,50 +12603,8 @@ const Clients: React.FC<ClientsProps> = ({
                     </div>
                   )}
                   <div className="flex items-center justify-between gap-4 flex-wrap">
-                    {/* Left side: Tab navigation arrows, tab name badge, lead number, name, and next follow-up */}
+                    {/* Left side: Lead number, name, and next follow-up */}
                     <div className="flex items-center gap-3 flex-1 min-w-0">
-                      {/* Tab Navigation Buttons and Tab Name - Desktop Only - On the left */}
-                      <div className="hidden md:flex items-center gap-2">
-                        <button
-                          onClick={() => {
-                            const currentIndex = tabs.findIndex(tab => tab.id === activeTab);
-                            if (currentIndex > 0) {
-                              setActiveTab(tabs[currentIndex - 1].id);
-                            } else {
-                              setActiveTab(tabs[tabs.length - 1].id); // Wrap to last tab
-                            }
-                          }}
-                          className="p-2 rounded-lg hover:bg-base-200 transition-colors"
-                          title="Previous tab"
-                          aria-label="Previous tab"
-                        >
-                          <ChevronLeftIcon className="w-6 h-6" style={{ color: '#4218CC' }} />
-                        </button>
-                        {/* Current Tab Name Badge */}
-                        {(() => {
-                          const currentTab = tabs.find(tab => tab.id === activeTab);
-                          return currentTab ? (
-                            <span className="badge text-sm px-3 py-1.5 font-semibold shadow-sm whitespace-nowrap" style={{ backgroundColor: '#4218CC', color: '#ffffff', borderColor: '#4218CC' }}>
-                              {currentTab.label}
-                            </span>
-                          ) : null;
-                        })()}
-                        <button
-                          onClick={() => {
-                            const currentIndex = tabs.findIndex(tab => tab.id === activeTab);
-                            if (currentIndex < tabs.length - 1) {
-                              setActiveTab(tabs[currentIndex + 1].id);
-                            } else {
-                              setActiveTab(tabs[0].id); // Wrap to first tab
-                            }
-                          }}
-                          className="p-2 rounded-lg hover:bg-base-200 transition-colors"
-                          title="Next tab"
-                          aria-label="Next tab"
-                        >
-                          <ChevronRightIcon className="w-6 h-6" style={{ color: '#4218CC' }} />
-                        </button>
-                      </div>
                       <div className="flex items-center gap-3 min-w-0 flex-wrap">
                         <span className="text-lg font-bold text-base-content whitespace-nowrap">
                           #{selectedClient.lead_number || selectedClient.id}
@@ -12528,6 +12626,39 @@ const Clients: React.FC<ClientsProps> = ({
                         )}
                       </div>
                     </div>
+
+                    {/* Middle: Case is not active Badge with reason */}
+                    {(() => {
+                      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                      // Only show unactivated badge for new leads (not legacy leads)
+                      const isUnactivated = !isLegacy && (selectedClient.status === 'inactive');
+                      if (!isUnactivated) return null;
+
+                      // Get unactivation reason
+                      let unactivationReason = selectedClient.unactivation_reason;
+                      if (isLegacy && !unactivationReason) {
+                        const reasonId = (selectedClient as any).reason_id;
+                        if (reasonId) {
+                          const reasonFromId = getUnactivationReasonFromId(reasonId);
+                          if (reasonFromId) {
+                            unactivationReason = reasonFromId;
+                          }
+                        }
+                      }
+
+                      return (
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <div className="badge badge-lg px-4 py-2 bg-red-100 text-red-800 border border-red-300 font-semibold">
+                            Case unactivated
+                            {unactivationReason && (
+                              <span className="ml-2 text-xs font-normal">
+                                ({unactivationReason})
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {/* Right side: Stage badge and topic */}
                     <div className="flex items-center gap-3 flex-shrink-0">
@@ -12624,8 +12755,8 @@ const Clients: React.FC<ClientsProps> = ({
                 {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
                   <div className="flex flex-col items-start gap-1 w-full">
                     <label className="block text-xs font-semibold text-gray-500 mb-1">Assign case handler</label>
-                    <div ref={successStageHandlerContainerRefDesktop} className="relative w-full flex items-center gap-1">
-                      <div className="relative w-full">
+                    <div ref={successStageHandlerContainerRefDesktop} className="relative w-full flex items-center gap-1" style={{ overflow: 'visible', zIndex: 1 }}>
+                      <div className="relative w-full" style={{ overflow: 'visible', zIndex: 1 }}>
                         <input
                           type="text"
                           className="input input-sm input-bordered w-full"
@@ -12679,7 +12810,7 @@ const Clients: React.FC<ClientsProps> = ({
                         <CheckIcon className="w-5 h-5" />
                       </button>
                       {showSuccessStageHandlerDropdown && (
-                        <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                        <div className="absolute top-full left-0 z-[100] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
                           <button
                             type="button"
                             className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
@@ -13071,7 +13202,7 @@ const Clients: React.FC<ClientsProps> = ({
                 {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
                   <div className="flex flex-col items-start gap-1">
                     <label className="block text-sm font-semibold text-primary mb-1">Assign case handler</label>
-                    <div ref={successStageHandlerContainerRef} className="relative w-full">
+                    <div ref={successStageHandlerContainerRef} className="relative w-full" style={{ overflow: 'visible', zIndex: 1 }}>
                       <input
                         type="text"
                         className="input input-bordered w-full"
@@ -13089,7 +13220,7 @@ const Clients: React.FC<ClientsProps> = ({
                         disabled={isUpdatingSuccessStageHandler}
                       />
                       {showSuccessStageHandlerDropdown && (
-                        <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                        <div className="absolute top-full left-0 z-[100] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
                           <button
                             type="button"
                             className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"

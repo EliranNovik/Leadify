@@ -245,9 +245,26 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
       {
         id: 'closer',
         title: 'Closer',
-        assignee: isLegacyLead
-          ? getEmployeeDisplayName((client as any).closer_id, employeesToUse)
-          : (client.closer || '---'),
+        assignee: (() => {
+          if (isLegacyLead) {
+            return getEmployeeDisplayName((client as any).closer_id, employeesToUse);
+          }
+          // For new leads, closer is saved as display_name (text) or potentially as ID
+          const closer = client.closer;
+          if (!closer || closer === '---' || closer === '--') {
+            return '---';
+          }
+          // If it's numeric, treat as ID and convert to display name
+          if (/^\d+$/.test(String(closer).trim())) {
+            return getEmployeeDisplayName(Number(closer), employeesToUse);
+          }
+          // Otherwise, it's already a display name, but verify it exists in employees
+          const employee = employeesToUse.find((emp: any) => 
+            emp.display_name && emp.display_name.trim() === String(closer).trim()
+          );
+          // If found, return the display name; otherwise return as-is (might be a name not in our list)
+          return employee ? employee.display_name : closer;
+        })(),
         fieldName: 'closer',
         legacyFieldName: 'closer_id'
       },

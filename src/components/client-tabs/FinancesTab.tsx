@@ -11,6 +11,8 @@ import ReactDOM from 'react-dom';
 import { BanknotesIcon as BanknotesIconSolid } from '@heroicons/react/24/solid';
 import { PencilLine, Trash2 } from 'lucide-react';
 import { DocumentTextIcon, Cog6ToothIcon, ChartPieIcon, PlusIcon, ChatBubbleLeftRightIcon, DocumentCheckIcon } from '@heroicons/react/24/outline';
+import EditPaymentModal from '../modals/EditPaymentModal';
+import AddPaymentModal from '../modals/AddPaymentModal';
 
 // Portal dropdown component for admin actions
 const AdminDropdownPortal: React.FC<{
@@ -139,6 +141,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [editingPaymentId, setEditingPaymentId] = useState<string | number | null>(null);
   const [editPaymentData, setEditPaymentData] = useState<any>({});
   const [isSavingPaymentRow, setIsSavingPaymentRow] = useState(false);
+  const [editingPaymentInModal, setEditingPaymentInModal] = useState<PaymentPlan | null>(null);
   const [viewMode, setViewMode] = useState<'table' | 'boxes'>('table');
   const [collapsedContacts, setCollapsedContacts] = useState<{ [key: string]: boolean }>({});
   const [openDropdownPaymentId, setOpenDropdownPaymentId] = useState<string | number | null>(null);
@@ -2622,17 +2625,29 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   };
 
   const handleEditPayment = (row: PaymentPlan) => {
-    setEditingPaymentId(row.id);
-    // Preserve the original values instead of recalculating
-    setEditPaymentData({ ...row });
-    // Set VAT checkbox based on whether VAT value exists and is > 0
-    setEditPaymentIncludeVat((row.valueVat || 0) > 0);
+    // Open modal instead of inline editing
+    setEditingPaymentInModal(row);
   };
 
   const handleCancelEditPayment = () => {
     setEditingPaymentId(null);
     setEditPaymentData({});
     setEditPaymentIncludeVat(true); // Reset to default
+    setEditingPaymentInModal(null); // Close modal
+  };
+
+  const handleCloseEditModal = () => {
+    setEditingPaymentInModal(null);
+  };
+
+  const handleSaveEditPaymentModal = async (paymentData: any, includeVat: boolean) => {
+    // Set the edit payment data and includeVat state
+    setEditPaymentData(paymentData);
+    setEditPaymentIncludeVat(includeVat);
+    // Call the existing save handler
+    await handleSaveEditPayment();
+    // Close modal after save
+    setEditingPaymentInModal(null);
   };
 
   const handleSaveEditPayment = async () => {
@@ -3254,9 +3269,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   };
 
   // Add state for new payment rows
-  const [addingPaymentContact, setAddingPaymentContact] = useState<string | null>(null); // table context
+  const [addingPaymentContact, setAddingPaymentContact] = useState<string | null>(null); // table context (for backward compatibility)
   const [showDrawerNewPayment, setShowDrawerNewPayment] = useState(false); // finance-plan drawer context
-  const [newPaymentData, setNewPaymentData] = useState<any>({});
+  const [newPaymentData, setNewPaymentData] = useState<any>({}); // Keep for backward compatibility
+  const [addingPaymentModalContact, setAddingPaymentModalContact] = useState<string | null>(null); // Modal context
 
   // Add superuser state
   const [isSuperuser, setIsSuperuser] = useState(false);
@@ -3312,8 +3328,31 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Handler to start adding a new payment in the main table for a contact
   const handleAddNewPayment = (contactName: string) => {
-    setAddingPaymentContact(contactName);
-    initNewPaymentData(contactName);
+    // Open modal instead of inline editing
+    setAddingPaymentModalContact(contactName);
+  };
+
+  // Initialize payment data for modal
+  const getDefaultCurrency = (): string => {
+    const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+    if (isLegacyLead) {
+      return client?.balance_currency || '₪';
+    } else {
+      return client?.proposal_currency || '₪';
+    }
+  };
+
+  const getDefaultAmount = (): number => {
+    const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+    if (isLegacyLead && Array.isArray(contracts) && contracts.length > 0) {
+      const legacyContract = contracts.find(c => c.isLegacy);
+      if (legacyContract && legacyContract.total_amount > 0) {
+        return Number(legacyContract.total_amount) || 0;
+      }
+    } else if (!isLegacyLead && typeof client?.balance === 'number' && client.balance > 0) {
+      return Number(client.balance) || 0;
+    }
+    return 0;
   };
 
   // Handler to start adding a new payment from inside the finance-plan drawer
@@ -3336,11 +3375,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     return contract?.client_country || null;
   };
 
-  // Handler to save new payment
-  const handleSaveNewPayment = async () => {
-    // Ensure client is set from context (addingPaymentContact or contactName from the section)
-    const contactForPayment = newPaymentData.client || addingPaymentContact || client?.name || '';
-    if (!newPaymentData.value || !contactForPayment || !newPaymentData.duePercent) {
+  // Handler to save new payment from modal
+  const handleSaveNewPaymentModal = async (paymentData: any, includeVat: boolean) => {
+    const contactForPayment = paymentData.client || addingPaymentModalContact || client?.name || '';
+    if (!paymentData.value || !contactForPayment || !paymentData.duePercent) {
+      toast.error('Please fill in all required fields (Value and Due Percentage)');
+      return;
+    }
+
+    // Use the payment data from modal
+    const dataToSave = { ...paymentData, includeVat };
+    await handleSaveNewPaymentWithData(dataToSave, contactForPayment);
+    setAddingPaymentModalContact(null);
+  };
+
+  // Handler to save new payment (original, now accepts data parameter)
+  const handleSaveNewPaymentWithData = async (dataToSave: any, contactForPayment: string) => {
+    if (!dataToSave.value || !contactForPayment || !dataToSave.duePercent) {
       toast.error('Please fill in all required fields (Value and Due Percentage)');
       return;
     }
@@ -3363,7 +3414,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
         // Determine currency_id based on the payment currency
         let currencyId = 1; // Default to NIS
-        const currency = newPaymentData.currency || '₪';
+        const currency = dataToSave.currency || '₪';
         if (currency) {
           switch (currency) {
             case '₪': currencyId = 1; break;
@@ -3397,18 +3448,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           id: paymentId,
           cdate: new Date().toISOString().split('T')[0], // Current date
           udate: new Date().toISOString().split('T')[0], // Current date
-          date: newPaymentData.dueDate || null, // Set to null if empty
-          value: Number(newPaymentData.value),
-          vat_value: (currency === '₪' && newPaymentData.includeVat !== false) ? Math.round(Number(newPaymentData.value) * 0.18 * 100) / 100 : 0,
+          date: dataToSave.dueDate || null, // Set to null if empty
+          value: Number(dataToSave.value),
+          vat_value: (currency === '₪' && dataToSave.includeVat !== false) ? Math.round(Number(dataToSave.value) * 0.18 * 100) / 100 : 0,
           lead_id: legacyId, // Use numeric lead_id to ensure correct matching for subleads
-          notes: newPaymentData.notes || '',
+          notes: dataToSave.notes || '',
           due_date: null, // MUST be null for legacy leads - only set when marking as ready to pay
           due_percent: (() => {
-            const percent = newPaymentData.duePercent || '0';
+            const percent = dataToSave.duePercent || '0';
             const percentStr = percent.toString();
             return percentStr.includes('%') ? percentStr : percentStr + '%';
           })(), // Store the due percentage as text with % sign
-          order: getOrderNumber(newPaymentData.paymentOrder || 'Intermediate Payment'), // Convert string to numeric
+          order: getOrderNumber(dataToSave.paymentOrder || 'Intermediate Payment'), // Convert string to numeric
           currency_id: currencyId,
           client_id: clientIdForContact, // Set client_id to separate payments by contact
         };
@@ -3422,13 +3473,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       } else {
         // For new leads, save to payment_plans table
         // Get client_id for the contact
-        const contactForPayment = newPaymentData.client || addingPaymentContact || client?.name || '';
         const clientIdForContact = getClientIdForContact(contactForPayment);
 
         // Calculate VAT based on checkbox state (includeVat)
         // If checkbox is checked, calculate VAT; if unchecked, VAT is 0
-        const vatValue = newPaymentData.includeVat !== false
-          ? Math.round(Number(newPaymentData.value) * 0.18 * 100) / 100
+        const vatValue = dataToSave.includeVat !== false
+          ? Math.round(Number(dataToSave.value) * 0.18 * 100) / 100
           : 0;
 
         // Ensure we're using the correct lead_id for this specific lead/sublead
@@ -3439,15 +3489,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
         const paymentData: any = {
           lead_id: leadIdForPayment, // Use the specific lead_id for this lead/sublead
-          due_percent: Number(newPaymentData.duePercent) || Number(100),
-          percent: Number(newPaymentData.duePercent) || Number(100),
-          due_date: newPaymentData.dueDate || null, // Set to null if empty
-          value: Number(newPaymentData.value),
+          due_percent: Number(dataToSave.duePercent) || Number(100),
+          percent: Number(dataToSave.duePercent) || Number(100),
+          due_date: dataToSave.dueDate || null, // Set to null if empty
+          value: Number(dataToSave.value),
           value_vat: vatValue, // Use calculated VAT based on checkbox state
-          client_name: newPaymentData.client || addingPaymentContact || client?.name || '',
-          payment_order: newPaymentData.paymentOrder || 'One-time Payment',
-          notes: newPaymentData.notes || '',
-          currency: newPaymentData.currency || '₪',
+          client_name: contactForPayment,
+          payment_order: dataToSave.paymentOrder || 'One-time Payment',
+          notes: dataToSave.notes || '',
+          currency: dataToSave.currency || '₪',
           created_by: currentUserName,
         };
 
@@ -3468,7 +3518,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       // Payment created successfully
 
       toast.success('Payment plan created successfully');
-      handleCancelNewPayment();
       refreshPaymentPlans();
     } catch (error) {
       console.error('Error creating payment plan:', error);
@@ -3476,6 +3525,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     } finally {
       setIsSavingPaymentRow(false);
     }
+  };
+
+  // Handler to save new payment (backward compatibility - uses state)
+  const handleSaveNewPayment = async () => {
+    const contactForPayment = newPaymentData.client || addingPaymentContact || client?.name || '';
+    await handleSaveNewPaymentWithData(newPaymentData, contactForPayment);
+    handleCancelNewPayment();
   };
 
   // Add handlers for auto plan functionality
@@ -4850,96 +4906,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                       >
                                         {/* Each column in correct order: */}
                                         <td className="font-bold text-lg align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          {editingPaymentId === p.id ? (
-                                            <input
-                                              type="number"
-                                              min={0}
-                                              max={100}
-                                              className="input input-bordered input-lg w-20 text-center font-bold rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
-                                              value={editPaymentData.duePercent}
-                                              onChange={e => {
-                                                const newDuePercent = Number(e.target.value);
-                                                setEditPaymentData((d: any) => ({ ...d, duePercent: newDuePercent }));
-                                              }}
-                                            />
-                                          ) : (
-                                            p.duePercent
-                                          )}
+                                          {p.duePercent}
                                         </td>
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          {editingPaymentId === p.id ? (
-                                            <input
-                                              type="date"
-                                              className="input input-bordered w-48 text-right"
-                                              value={editPaymentData.dueDate ? editPaymentData.dueDate.slice(0, 10) : ''}
-                                              onChange={e => setEditPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))}
-                                              required
-                                            />
-                                          ) : (
-                                            <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
-                                          )}
+                                          <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
                                         </td>
                                         <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          {editingPaymentId === p.id ? (
-                                            <div className="flex items-center gap-2">
-                                              <input
-                                                type="number"
-                                                className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
-                                                value={editPaymentData.value}
-                                                onChange={(e) => {
-                                                  const newValue = Number(e.target.value) || 0;
-                                                  const currency = editPaymentData.currency || p.currency || '₪';
-                                                  // Recalculate VAT based on checkbox state: 18% if includeVat is checked, 0 otherwise
-                                                  const newValueVat = editPaymentIncludeVat ? Math.round(newValue * 0.18 * 100) / 100 : 0;
-                                                  setEditPaymentData((d: any) => ({
-                                                    ...d,
-                                                    value: newValue,
-                                                    valueVat: newValueVat,
-                                                    currency: currency // Explicitly preserve currency
-                                                  }));
-                                                }}
-                                              />
-                                              <span className='text-gray-500 font-bold'>+
-                                                <input
-                                                  type="number"
-                                                  className={`input input-bordered input-lg w-20 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows ${editingValueVatId === p.id ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}`}
-                                                  value={editPaymentData.valueVat || 0}
-                                                  readOnly={editingValueVatId !== p.id}
-                                                  onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value })) : undefined}
-                                                  title={editingValueVatId !== p.id ? 'Click pencil icon to manually edit VAT' : ''}
-                                                />
-                                              </span>
-                                              {editingValueVatId === p.id ? (
-                                                <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(null)} title="Done editing VAT manually">
-                                                  <CheckIcon className="w-4 h-4 text-green-600" />
-                                                </button>
-                                              ) : (
-                                                <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(p.id)} title="Manually edit VAT (overrides auto-calculation)">
-                                                  <PencilIcon className="w-4 h-4 text-blue-600" />
-                                                </button>
-                                              )}
-                                              <label className="label cursor-pointer gap-2 ml-2">
-                                                <input
-                                                  type="checkbox"
-                                                  className="checkbox checkbox-sm checkbox-primary"
-                                                  checked={editPaymentIncludeVat}
-                                                  onChange={(e) => {
-                                                    const includeVat = e.target.checked;
-                                                    setEditPaymentIncludeVat(includeVat);
-                                                    const newValueVat = includeVat ? Math.round(Number(editPaymentData.value || 0) * 0.18 * 100) / 100 : 0;
-                                                    setEditPaymentData((d: any) => ({ ...d, valueVat: newValueVat }));
-                                                  }}
-                                                />
-                                                <span className="label-text text-xs">VAT</span>
-                                              </label>
-                                            </div>
-                                          ) : (
-                                            <span className="text-sm font-bold text-gray-900">
-                                              {getCurrencySymbol(p.currency)}
-                                              {p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                              + {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                            </span>
-                                          )}
+                                          <span className="text-sm font-bold text-gray-900">
+                                            {getCurrencySymbol(p.currency)}
+                                            {p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                            + {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                          </span>
                                         </td>
                                         <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
                                           <span className="text-sm font-bold text-gray-900">{getCurrencySymbol(p.currency)}{(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
@@ -4948,21 +4925,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           {p.paid_at ? new Date(p.paid_at).toLocaleDateString() : '---'}
                                         </td>
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          {editingPaymentId === p.id ? (
-                                            <select
-                                              className="select select-bordered w-full max-w-[200px]"
-                                              value={editPaymentData.order || 'Intermediate Payment'}
-                                              onChange={e => setEditPaymentData((d: any) => ({ ...d, order: e.target.value }))}
-                                            >
-                                              <option value="First Payment">First Payment</option>
-                                              <option value="Intermediate Payment">Intermediate Payment</option>
-                                              <option value="Final Payment">Final Payment</option>
-                                              <option value="Single Payment">Single Payment</option>
-                                              <option value="Expense (no VAT)">Expense (no VAT)</option>
-                                            </select>
-                                          ) : (
-                                            p.order
-                                          )}
+                                          {p.order}
                                         </td>
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
                                           {p.isLegacy ? (
@@ -5029,37 +4992,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           )}
                                         </td>
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          {editingPaymentId === p.id ? (
-                                            <input
-                                              className="input input-bordered w-full max-w-[200px] text-right"
-                                              value={editPaymentData.notes || ''}
-                                              onChange={e => setEditPaymentData((d: any) => ({ ...d, notes: e.target.value }))}
-                                              placeholder="Notes"
-                                            />
-                                          ) : (
-                                            p.notes
-                                          )}
+                                          {p.notes}
                                         </td>
                                         <td className="flex gap-2 justify-end align-middle min-w-[80px] px-4 py-3" style={{ overflow: 'visible', position: 'relative' }}>
                                           {p.id ? (
-                                            editingPaymentId === p.id ? (
-                                              <>
-                                                <button
-                                                  className="btn btn-xs btn-success"
-                                                  onClick={handleSaveEditPayment}
-                                                  disabled={isSavingPaymentRow}
-                                                >
-                                                  <CheckIcon className="w-4 h-4" />
-                                                </button>
-                                                <button
-                                                  className="btn btn-xs btn-ghost"
-                                                  onClick={handleCancelEditPayment}
-                                                  title="Cancel"
-                                                >
-                                                  <XMarkIcon className="w-4 h-4 text-red-500" />
-                                                </button>
-                                              </>
-                                            ) : (
                                               <>
                                                 {/* Payment Link icon - disabled for legacy */}
                                                 {p.proforma && !isPaid && !p.isLegacy && (
@@ -5189,10 +5125,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                   <TrashIcon className="w-5 h-5" />
                                                 </button>
                                               </>
-                                            )
-                                          ) : (
-                                            <span className="text-gray-400">—</span>
-                                          )}
+                                            ) : (
+                                              <span className="text-gray-400">—</span>
+                                            )}
                                         </td>
                                       </tr>
                                     );
@@ -5566,138 +5501,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                         <span className="absolute top-4 right-4 bg-yellow-400 text-white font-bold px-4 py-1 rounded-full shadow-lg text-xs z-20 animate-pulse">Due</span>
                                       )}
                                       {/* Card content */}
-                                      {editingPaymentId === p.id ? (
-                                        <div className="flex flex-col gap-0 divide-y divide-base-200">
-                                          <div className="flex items-center justify-between py-3">
-                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due %</span>
-                                            <input className="input input-bordered w-40 text-right" value={editPaymentData.duePercent} onChange={e => setEditPaymentData((d: any) => ({ ...d, duePercent: e.target.value }))} />
-                                          </div>
-                                          <div className="flex items-center justify-between py-3">
-                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due Date</span>
-                                            {editingPaymentId === p.id ? (
-                                              <input
-                                                type="date"
-                                                className="input input-bordered w-48 text-right"
-                                                value={editPaymentData.dueDate ? editPaymentData.dueDate.slice(0, 10) : ''}
-                                                onChange={e => setEditPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))}
-                                                required
-                                              />
-                                            ) : (
-                                              <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
-                                            )}
-                                          </div>
-                                          <div className="flex items-center justify-between py-3">
-                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Value</span>
-                                            <div className="flex items-center gap-2">
-                                              <input
-                                                type="number"
-                                                className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
-                                                value={editPaymentData.value}
-                                                onChange={(e) => {
-                                                  const newValue = Number(e.target.value) || 0;
-                                                  const currency = editPaymentData.currency || p.currency || '₪';
-                                                  // Recalculate VAT based on checkbox state: 18% if includeVat is checked, 0 otherwise
-                                                  const newValueVat = editPaymentIncludeVat ? Math.round(newValue * 0.18 * 100) / 100 : 0;
-                                                  setEditPaymentData((d: any) => ({
-                                                    ...d,
-                                                    value: newValue,
-                                                    valueVat: newValueVat,
-                                                    currency: currency // Explicitly preserve currency
-                                                  }));
-                                                }}
-                                              />
-                                              <span className='text-gray-500 font-bold'>+</span>
-                                              <input
-                                                type="number"
-                                                className={`input input-bordered input-lg w-20 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows ${editingValueVatId === p.id ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}`}
-                                                value={editPaymentData.valueVat || 0}
-                                                readOnly={editingValueVatId !== p.id}
-                                                onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value })) : undefined}
-                                                title={editingValueVatId !== p.id ? 'Click pencil icon to manually edit VAT' : ''}
-                                              />
-                                              {editingValueVatId === p.id ? (
-                                                <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(null)} title="Done editing VAT manually">
-                                                  <CheckIcon className="w-4 h-4 text-green-600" />
-                                                </button>
-                                              ) : (
-                                                <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(p.id)} title="Manually edit VAT (overrides auto-calculation)">
-                                                  <PencilIcon className="w-4 h-4 text-blue-600" />
-                                                </button>
-                                              )}
-                                              <label className="label cursor-pointer gap-2 ml-2">
-                                                <input
-                                                  type="checkbox"
-                                                  className="checkbox checkbox-sm checkbox-primary"
-                                                  checked={editPaymentIncludeVat}
-                                                  onChange={(e) => {
-                                                    const includeVat = e.target.checked;
-                                                    setEditPaymentIncludeVat(includeVat);
-                                                    const newValueVat = includeVat ? Math.round(Number(editPaymentData.value || 0) * 0.18 * 100) / 100 : 0;
-                                                    setEditPaymentData((d: any) => ({ ...d, valueVat: newValueVat }));
-                                                  }}
-                                                />
-                                                <span className="label-text text-xs">VAT</span>
-                                              </label>
-                                            </div>
-                                          </div>
-                                          <div className="flex items-center justify-between py-3">
-                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Total</span>
-                                            <div className="flex items-center gap-2">
-                                              <input
-                                                type="number"
-                                                className="input input-bordered input-lg w-28 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows bg-gray-100 text-gray-500 cursor-not-allowed"
-                                                value={Number(editPaymentData.value || 0) + Number(editPaymentData.valueVat || 0)}
-                                                readOnly={true}
-                                              />
-                                              <span className="text-xs text-gray-500">(auto)</span>
-                                            </div>
-                                          </div>
-                                          <div className="flex items-center justify-between py-3">
-                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Client</span>
-                                            <input className="input input-bordered w-48 text-right" value={editPaymentData.client} onChange={e => setEditPaymentData((d: any) => ({ ...d, client: e.target.value }))} />
-                                          </div>
-                                          <div className="flex items-center justify-between py-3">
-                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Order</span>
-                                            <select
-                                              className="select select-bordered w-48"
-                                              value={editPaymentData.order || 'Intermediate Payment'}
-                                              onChange={e => setEditPaymentData((d: any) => ({ ...d, order: e.target.value }))}
-                                            >
-                                              <option value="First Payment">First Payment</option>
-                                              <option value="Intermediate Payment">Intermediate Payment</option>
-                                              <option value="Final Payment">Final Payment</option>
-                                              <option value="Single Payment">Single Payment</option>
-                                              <option value="Expense (no VAT)">Expense (no VAT)</option>
-                                            </select>
-                                          </div>
-                                          <div className="flex flex-col py-3">
-                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Notes</span>
-                                            <textarea
-                                              className="textarea textarea-bordered w-full resize-none overflow-hidden"
-                                              value={editPaymentData.notes || ''}
-                                              onChange={(e) => {
-                                                const target = e.target as HTMLTextAreaElement;
-                                                setEditPaymentData((d: any) => ({ ...d, notes: target.value }));
-                                                // Auto-expand textarea
-                                                target.style.height = 'auto';
-                                                target.style.height = target.scrollHeight + 'px';
-                                              }}
-                                              onFocus={(e) => {
-                                                // Initialize height on focus
-                                                const target = e.target as HTMLTextAreaElement;
-                                                target.style.height = 'auto';
-                                                target.style.height = target.scrollHeight + 'px';
-                                              }}
-                                              rows={1}
-                                              style={{ minHeight: '2.5rem' }}
-                                            />
-                                          </div>
-                                          <div className="flex gap-2 justify-end pt-4">
-                                            <button className="btn btn-xs btn-success" onClick={handleSaveEditPayment} disabled={isSavingPaymentRow}>Save</button>
-                                            <button className="btn btn-xs btn-ghost" onClick={handleCancelEditPayment}>Cancel</button>
-                                          </div>
-                                        </div>
-                                      ) : (
                                         <div className="flex flex-col gap-0 divide-y divide-base-200">
                                           {/* Improved purple row: order left, percent center, actions right (icons black on white circle) */}
                                           <div className="flex items-center bg-white text-primary rounded-t-2xl px-5 py-3" style={{ minHeight: '64px' }}>
@@ -5971,7 +5774,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             </button>
                                           </div>
                                         </div>
-                                      )}
                                     </div>
                                   );
                                 })}
@@ -6903,6 +6705,29 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         </div>
       )}
 
+      {/* Edit Payment Modal */}
+      <EditPaymentModal
+        isOpen={!!editingPaymentInModal}
+        onClose={handleCloseEditModal}
+        onSave={handleSaveEditPaymentModal}
+        payment={editingPaymentInModal}
+        isSaving={isSavingPaymentRow}
+        availableContacts={getAllAvailableContacts()}
+        availableCurrencies={availableCurrencies}
+      />
+
+      {/* Add Payment Modal */}
+      <AddPaymentModal
+        isOpen={!!addingPaymentModalContact}
+        onClose={() => setAddingPaymentModalContact(null)}
+        onSave={handleSaveNewPaymentModal}
+        isSaving={isSavingPaymentRow}
+        contactName={addingPaymentModalContact || ''}
+        availableCurrencies={availableCurrencies}
+        defaultCurrency={getDefaultCurrency()}
+        defaultAmount={getDefaultAmount()}
+        getTotalAmount={getTotalAmount}
+      />
     </>
   );
 };

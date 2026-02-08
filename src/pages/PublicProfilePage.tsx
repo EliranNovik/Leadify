@@ -8,8 +8,10 @@ import {
     PhoneIcon,
     EnvelopeIcon,
     DevicePhoneMobileIcon,
+    ShareIcon,
 } from '@heroicons/react/24/outline';
 import { FaLinkedin, FaWhatsapp, FaEnvelope } from 'react-icons/fa';
+import { toast } from 'react-hot-toast';
 
 // Default images if none provided
 const DEFAULT_BANNER = 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?ixlib=rb-4.0.3&auto=format&fit=crop&w=2070&q=80';
@@ -52,6 +54,43 @@ const PublicProfilePage: React.FC = () => {
             'b': 'Book Keeper', 'f': 'Finance'
         };
         return roleMap[role] || role;
+    };
+
+    const handleShare = async () => {
+        if (!profile || !employeeId) return;
+
+        try {
+            const linkPath = `my-profile/${employeeId}`;
+            const fullUrl = `${window.location.origin}/${linkPath}`;
+
+            // Save the link to the database
+            const { error: updateError } = await supabase
+                .from('tenants_employee')
+                .update({ open_link: linkPath })
+                .eq('id', profile.id);
+
+            if (updateError) throw updateError;
+
+            // Copy just the URL - the Open Graph tags will handle the preview
+            await navigator.clipboard.writeText(fullUrl);
+            toast.success('Profile link copied to clipboard!');
+        } catch (error) {
+            console.error('Error sharing profile:', error);
+            toast.error('Failed to generate share link');
+        }
+    };
+
+    const handleShareBusinessCard = async () => {
+        if (!profile || !employeeId) return;
+
+        try {
+            const businessCardUrl = `${window.location.origin}/business-card/${employeeId}`;
+            await navigator.clipboard.writeText(businessCardUrl);
+            toast.success('Business card link copied to clipboard!');
+        } catch (error) {
+            console.error('Error sharing business card:', error);
+            toast.error('Failed to copy business card link');
+        }
     };
 
     // Update Open Graph meta tags for link preview
@@ -216,6 +255,26 @@ const PublicProfilePage: React.FC = () => {
                         alt="DPL Logo"
                         className="h-14 md:h-20 drop-shadow-lg"
                     />
+                </div>
+
+                {/* Share Buttons - TOP RIGHT of banner */}
+                <div className="absolute top-4 right-4 flex items-center gap-2 z-20">
+                    <button
+                        onClick={handleShare}
+                        className="btn btn-sm btn-ghost bg-black/40 text-white hover:bg-black/60 backdrop-blur-md border-0 gap-2"
+                        title="Share Profile"
+                    >
+                        <ShareIcon className="w-4 h-4" />
+                        Share
+                    </button>
+                    <button
+                        onClick={handleShareBusinessCard}
+                        className="btn btn-sm btn-ghost bg-black/40 text-white hover:bg-black/60 backdrop-blur-md border-0 gap-2"
+                        title="Share Business Card"
+                    >
+                        <ShareIcon className="w-4 h-4" />
+                        Share Card
+                    </button>
                 </div>
 
                 {/* Profile Header Content - Avatar overlaps banner and white bg */}

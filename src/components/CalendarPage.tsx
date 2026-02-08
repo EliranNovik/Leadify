@@ -1861,7 +1861,7 @@ const CalendarPage: React.FC = () => {
             const { data: newLeadsData } = await supabase
               .from('leads')
               .select(`
-                id, name, lead_number, master_id, onedrive_folder_link, stage, manager, helper, scheduler, category, category_id,
+                id, name, lead_number, manual_id, master_id, onedrive_folder_link, stage, manager, helper, scheduler, category, category_id,
                 balance, balance_currency, currency_id, expert_notes, expert, probability, phone, email, language, language_id,
                 meeting_confirmation, meeting_confirmation_by, eligibility_status,
                 manual_interactions, number_of_applicants_meeting, meeting_collection_id,
@@ -2137,14 +2137,19 @@ const CalendarPage: React.FC = () => {
                     displayLeadNumber = displayLeadNumber;
                   } else {
                     // Find master lead number to format properly
+                    // For new leads subleads, use manual_id first, then lead_number, then master_id
                     const masterLead = newLeadsMap.get(meeting.lead.master_id);
-                    const masterLeadNumber = masterLead?.lead_number || meeting.lead.master_id?.toString() || '';
+                    const masterLeadNumber = masterLead?.manual_id || masterLead?.lead_number || meeting.lead.master_id?.toString() || '';
                     displayLeadNumber = `${masterLeadNumber}/2`; // Default to /2
                   }
                 }
 
+                // Get full lead data from newLeadsMap to ensure we have manual_id
+                const fullLeadData = newLeadsMap.get(meeting.lead.id) || meeting.lead;
+
                 leadData = {
                   ...meeting.lead,
+                  ...fullLeadData, // Merge full data to ensure manual_id is included
                   lead_type: 'new',
                   // Store original IDs for employee lookup (for avatars)
                   manager_id: meeting.lead.meeting_manager_id || meeting.lead.manager,
@@ -2623,12 +2628,21 @@ const CalendarPage: React.FC = () => {
     if (lead.lead_type === 'new' && lead.lead_number) {
       const isSubLead = lead.lead_number.includes('/');
       if (isSubLead) {
-        // Sublead: extract base lead_number (before '/') for path, use full lead_number in query
-        const baseLeadNumber = lead.lead_number.split('/')[0];
-        return `/clients/${encodeURIComponent(baseLeadNumber)}?lead=${encodeURIComponent(lead.lead_number)}`;
+        // Sublead: use manual_id first if available, otherwise use base lead_number
+        // For new leads subleads, prefer manual_id over lead_number for the path
+        const manualId = lead.manual_id || null;
+        if (manualId) {
+          // Sublead with manual_id: use query parameter format like /clients/2104625?lead=L210764%2F3
+          return `/clients/${encodeURIComponent(manualId)}?lead=${encodeURIComponent(lead.lead_number)}`;
+        } else {
+          // Sublead without manual_id: extract base from lead_number
+          const baseLeadNumber = lead.lead_number.split('/')[0];
+          return `/clients/${encodeURIComponent(baseLeadNumber)}?lead=${encodeURIComponent(lead.lead_number)}`;
+        }
       } else {
-        // Regular new lead: just use lead_number
-        return `/clients/${encodeURIComponent(lead.lead_number)}`;
+        // Regular new lead: use manual_id if available, otherwise use lead_number
+        const identifier = lead.manual_id || lead.lead_number || '';
+        return `/clients/${encodeURIComponent(identifier)}`;
       }
     }
     // For legacy leads

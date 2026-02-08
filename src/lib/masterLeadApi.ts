@@ -394,6 +394,12 @@ export const fetchNewMasterLead = async (
         }
       }
 
+      // For master leads, use simple lead_number (without /1) for the route
+      // For subleads, use the full lead_number with suffix
+      const routeLeadNumber = isMaster 
+        ? (lead.lead_number || baseLeadNumber) // Use base lead_number without /1 suffix
+        : leadNumberValue; // Use full lead_number with suffix for subleads
+
       return {
         id: String(lead.id),
         lead_number: leadNumberValue,
@@ -414,7 +420,7 @@ export const fetchNewMasterLead = async (
         handler: handlerName,
         master_id: lead.master_id || baseLeadNumber,
         isMaster,
-        route: buildClientRoute(manualValue, leadNumberValue),
+        route: buildClientRoute(manualValue, routeLeadNumber),
       };
     };
 

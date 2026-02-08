@@ -31,6 +31,7 @@ import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
 import { getStageName, getStageColour, areStagesEquivalent } from '../lib/stageUtils';
 import { addToHighlights, removeFromHighlights } from '../lib/highlightsUtils';
+import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
 
 // Helper to get contrasting text color
 const getContrastingTextColor = (hexColor?: string | null) => {
@@ -534,6 +535,62 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         </div>
                     </div>
 
+                    {/* Case unactivated Badge - Between client name and stage badge */}
+                    {(() => {
+                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                        const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
+                        if (!isUnactivated) return null;
+
+                        // Get unactivation reason
+                        let unactivationReason = selectedClient?.unactivation_reason;
+                        if (isLegacy && !unactivationReason) {
+                            const reasonId = (selectedClient as any)?.reason_id;
+                            if (reasonId) {
+                                const reasonFromId = getUnactivationReasonFromId(reasonId);
+                                if (reasonFromId) {
+                                    unactivationReason = reasonFromId;
+                                }
+                            }
+                        }
+
+                        return (
+                            <div className="flex flex-col items-center gap-2.5">
+                                <div className="bg-red-100 text-red-800 rounded-lg px-4 py-3 border border-red-300">
+                                    <div className="whitespace-nowrap text-base">
+                                        Case unactivated
+                                        {unactivationReason && (
+                                            <span className="ml-2 text-sm font-normal">
+                                                ({unactivationReason})
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                                {(selectedClient as any)?.deactivate_notes && (
+                                    <div className="text-sm font-normal break-words max-w-full px-3 leading-relaxed text-gray-700">
+                                        {(selectedClient as any).deactivate_notes}
+                                    </div>
+                                )}
+                                {(selectedClient?.unactivated_by || selectedClient?.unactivated_at) && (
+                                    <div className="backdrop-blur-md bg-white/30 bg-opacity-30 rounded-lg px-3 py-1.5 border border-white/20">
+                                        <div className="text-xs font-normal text-center text-gray-700">
+                                            by {selectedClient.unactivated_by || '---'}
+                                            {selectedClient.unactivated_by && selectedClient.unactivated_at && ' / '}
+                                            {selectedClient.unactivated_at && (
+                                                <>at {new Date(selectedClient.unactivated_at).toLocaleDateString('en-US', {
+                                                    year: 'numeric',
+                                                    month: 'short',
+                                                    day: 'numeric',
+                                                    hour: '2-digit',
+                                                    minute: '2-digit'
+                                                })}</>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })()}
+
                     <div className="flex items-center gap-3">
                         {/* Stage Badge */}
                         <div className="flex items-center gap-2">
@@ -825,89 +882,107 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             {(() => {
                                 const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
 
-                                // Helper to get employee ID for each role
+                                // Helper to get employee ID for each role - always returns ID, never display name
                                 const getCloserId = () => {
                                     if (isLegacyLead) {
-                                        return (selectedClient as any).closer_id;
+                                        return (selectedClient as any).closer_id || null;
                                     }
+                                    // For new leads, closer is saved as display_name (text)
                                     const closer = selectedClient.closer;
-                                    if (closer && /^\d+$/.test(String(closer).trim())) {
-                                        return closer;
+                                    if (!closer || closer === '---' || closer === '--') {
+                                        return null;
                                     }
-                                    // Try to find by name
-                                    const employee = allEmployees.find((emp: any) => emp.display_name === closer);
+                                    // If it's numeric, treat as ID
+                                    if (/^\d+$/.test(String(closer).trim())) {
+                                        return Number(closer);
+                                    }
+                                    // Otherwise, find by display name
+                                    const employee = allEmployees.find((emp: any) =>
+                                        emp.display_name && emp.display_name.trim() === String(closer).trim()
+                                    );
                                     return employee?.id || null;
                                 };
 
                                 const getExpertId = () => {
                                     if (isLegacyLead) {
-                                        return (selectedClient as any).expert_id;
+                                        return (selectedClient as any).expert_id || null;
                                     }
+                                    // For new leads, expert might be saved as ID (numeric) or display_name
                                     const expert = (selectedClient as any).expert;
-                                    if (expert && /^\d+$/.test(String(expert).trim())) {
-                                        return expert;
+                                    if (!expert || expert === '---' || expert === '--') {
+                                        return null;
                                     }
-                                    // Try to find by name
-                                    const employee = allEmployees.find((emp: any) => emp.display_name === expert);
+                                    // If it's numeric, treat as ID
+                                    if (/^\d+$/.test(String(expert).trim())) {
+                                        return Number(expert);
+                                    }
+                                    // Otherwise, find by display name
+                                    const employee = allEmployees.find((emp: any) =>
+                                        emp.display_name && emp.display_name.trim() === String(expert).trim()
+                                    );
                                     return employee?.id || null;
                                 };
 
                                 const getHandlerId = () => {
-                                    const handler = selectedClient.handler;
-                                    if (handler && /^\d+$/.test(String(handler).trim())) {
-                                        return handler;
-                                    }
+                                    // For new leads, handler is saved as display_name (text)
+                                    // But also check case_handler_id which might be numeric
                                     if (selectedClient.case_handler_id) {
                                         return selectedClient.case_handler_id;
                                     }
-                                    // Try to find by name
-                                    if (handler) {
-                                        const employee = allEmployees.find((emp: any) => emp.display_name === handler);
-                                        return employee?.id || null;
+                                    const handler = selectedClient.handler;
+                                    if (!handler || handler === '---' || handler === '--') {
+                                        return null;
                                     }
-                                    return null;
+                                    // If it's numeric, treat as ID
+                                    if (/^\d+$/.test(String(handler).trim())) {
+                                        return Number(handler);
+                                    }
+                                    // Otherwise, find by display name
+                                    const employee = allEmployees.find((emp: any) =>
+                                        emp.display_name && emp.display_name.trim() === String(handler).trim()
+                                    );
+                                    return employee?.id || null;
                                 };
 
                                 const getSchedulerId = () => {
                                     if (isLegacyLead) {
-                                        return (selectedClient as any).meeting_scheduler_id;
+                                        return (selectedClient as any).meeting_scheduler_id || null;
                                     }
+                                    // For new leads, scheduler is saved as display_name (text)
                                     const scheduler = selectedClient.scheduler;
-                                    if (scheduler && /^\d+$/.test(String(scheduler).trim())) {
-                                        return scheduler;
+                                    if (!scheduler || scheduler === '---' || scheduler === '--') {
+                                        return null;
                                     }
-                                    // Try to find by name
-                                    if (scheduler) {
-                                        const employee = allEmployees.find((emp: any) => emp.display_name === scheduler);
-                                        return employee?.id || null;
+                                    // If it's numeric, treat as ID
+                                    if (/^\d+$/.test(String(scheduler).trim())) {
+                                        return Number(scheduler);
                                     }
-                                    return null;
+                                    // Otherwise, find by display name
+                                    const employee = allEmployees.find((emp: any) =>
+                                        emp.display_name && emp.display_name.trim() === String(scheduler).trim()
+                                    );
+                                    return employee?.id || null;
                                 };
 
-                                // Get display names
+                                // Get display names - always use ID lookup to ensure consistent mapping
+                                const closerId = getCloserId();
                                 const closerDisplay = formatRoleDisplay(
-                                    isLegacyLead
-                                        ? getEmployeeDisplayName((selectedClient as any).closer_id)
-                                        : selectedClient.closer || getEmployeeDisplayName((selectedClient as any).closer_id)
+                                    closerId ? getEmployeeDisplayName(closerId) : null
                                 );
+
+                                const expertId = getExpertId();
                                 const expertDisplay = formatRoleDisplay(
-                                    isLegacyLead
-                                        ? getEmployeeDisplayName((selectedClient as any).expert_id)
-                                        : getEmployeeDisplayName((selectedClient as any).expert)
+                                    expertId ? getEmployeeDisplayName(expertId) : null
                                 );
+
+                                const handlerId = getHandlerId();
                                 const handlerDisplay = formatRoleDisplay(
-                                    (() => {
-                                        const handler = selectedClient.handler;
-                                        if (handler && /^\d+$/.test(String(handler).trim())) {
-                                            return getEmployeeDisplayName(handler);
-                                        }
-                                        return handler || getEmployeeDisplayName(selectedClient.case_handler_id);
-                                    })()
+                                    handlerId ? getEmployeeDisplayName(handlerId) : null
                                 );
+
+                                const schedulerId = getSchedulerId();
                                 const schedulerDisplay = formatRoleDisplay(
-                                    isLegacyLead
-                                        ? getEmployeeDisplayName((selectedClient as any).meeting_scheduler_id)
-                                        : selectedClient.scheduler || getEmployeeDisplayName((selectedClient as any).meeting_scheduler_id)
+                                    schedulerId ? getEmployeeDisplayName(schedulerId) : null
                                 );
 
                                 return (
@@ -963,256 +1038,299 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                     {/* Right side: Stage Logic Buttons (Quick Actions) */}
                     <div className="flex items-center gap-3 flex-wrap">
-                        {/* Handler Set Stage */}
-                        {areStagesEquivalent(currentStageName, 'Handler Set') && (
-                            <button
-                                onClick={handleStartCase}
-                                className="btn btn-primary rounded-full px-6 shadow-lg shadow-indigo-100 hover:shadow-indigo-200 text-white gap-2 text-base transition-all hover:scale-105"
-                            >
-                                <PlayIcon className="w-5 h-5" />
-                                Start Case
-                            </button>
-                        )}
+                        {/* Check if case is unactivated - show message instead of buttons */}
+                        {(() => {
+                            const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                            const isUnactivated = isLegacy
+                                ? (selectedClient?.status === 10)
+                                : (selectedClient?.status === 'inactive');
 
-                        {/* Handler Started Stage */}
-                        {areStagesEquivalent(currentStageName, 'Handler Started') && (
-                            <>
-                                <button
-                                    onClick={() => updateLeadStage('Application submitted')}
-                                    className="btn btn-success text-white rounded-full px-5 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 transition-all hover:scale-105"
-                                >
-                                    <DocumentCheckIcon className="w-5 h-5" />
-                                    Application Submitted
-                                </button>
-                                <button
-                                    onClick={() => updateLeadStage('Case Closed')}
-                                    className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
-                                >
-                                    <CheckCircleIcon className="w-5 h-5" />
-                                    Close Case
-                                </button>
-                            </>
-                        )}
+                            if (isUnactivated) {
+                                return (
+                                    <div className="px-4 py-2 text-sm text-gray-600">
+                                        Please activate lead in actions first to see the stage buttons.
+                                    </div>
+                                );
+                            }
+                            return null;
+                        })()}
 
-                        {/* Application submitted Stage */}
-                        {areStagesEquivalent(currentStageName, 'Application submitted') && (
-                            <button
-                                onClick={() => updateLeadStage('Case Closed')}
-                                className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
-                            >
-                                <CheckCircleIcon className="w-5 h-5" />
-                                Close Case
-                            </button>
-                        )}
+                        {/* Stage buttons - only show if case is activated */}
+                        {(() => {
+                            const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                            const isUnactivated = isLegacy
+                                ? (selectedClient?.status === 10)
+                                : (selectedClient?.status === 'inactive');
 
-                        {/* Payment request sent Stage */}
-                        {areStagesEquivalent(currentStageName, 'payment_request_sent') && handlePaymentReceivedNewClient && (
-                            <button
-                                onClick={handlePaymentReceivedNewClient}
-                                className="btn btn-success text-white rounded-full px-5 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 transition-all hover:scale-105"
-                            >
-                                <CheckCircleIcon className="w-5 h-5" />
-                                Payment Received - new Client !!!
-                            </button>
-                        )}
+                            if (isUnactivated) {
+                                return null; // Don't show any stage buttons if unactivated
+                            }
 
-                        {/* Another meeting Stage - Check this first to avoid duplicates */}
-                        {areStagesEquivalent(currentStageName, 'another_meeting') && (
-                            <>
-                                {setShowRescheduleDrawer && (
-                                    <button
-                                        onClick={() => setShowRescheduleDrawer(true)}
-                                        className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
-                                    >
-                                        <ArrowPathIcon className="w-5 h-5" />
-                                        Meeting ReScheduling
-                                    </button>
-                                )}
-                                {handleStageUpdate && (
-                                    <button
-                                        onClick={() => handleStageUpdate('Meeting Ended')}
-                                        className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
-                                    >
-                                        <CheckCircleIcon className="w-5 h-5" />
-                                        Meeting Ended
-                                    </button>
-                                )}
-                            </>
-                        )}
+                            // Check if case is closed - show "No action available" message
+                            if (selectedClient && areStagesEquivalent(currentStageName, 'Case Closed')) {
+                                return (
+                                    <div className="px-4 py-2 text-sm text-gray-600">
+                                        No action available
+                                    </div>
+                                );
+                            }
 
-                        {/* Meeting scheduled / Meeting rescheduling Stages - Exclude another_meeting to avoid duplicates */}
-                        {!areStagesEquivalent(currentStageName, 'another_meeting') &&
-                            (areStagesEquivalent(currentStageName, 'meeting_scheduled') ||
-                                areStagesEquivalent(currentStageName, 'Meeting rescheduling') ||
-                                (isStageNumeric && (stageNumeric === 55 || stageNumeric === 21))) && (
+                            return (
                                 <>
-                                    {/* Schedule Meeting button - only for stage 55, not for "Meeting scheduled" or "Meeting rescheduled" */}
-                                    {!areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
-                                        !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
-                                        handleScheduleMenuClick &&
-                                        scheduleMenuLabel && (
-                                            <button
-                                                onClick={handleScheduleMenuClick}
-                                                className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
-                                            >
-                                                <CalendarDaysIcon className="w-5 h-5" />
-                                                {scheduleMenuLabel}
-                                            </button>
-                                        )}
-                                    {setShowRescheduleDrawer && (
+                                    {/* Handler Set Stage */}
+                                    {areStagesEquivalent(currentStageName, 'Handler Set') && (
                                         <button
-                                            onClick={() => setShowRescheduleDrawer(true)}
-                                            className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                            onClick={handleStartCase}
+                                            className="btn btn-primary rounded-full px-6 shadow-lg shadow-indigo-100 hover:shadow-indigo-200 text-white gap-2 text-base transition-all hover:scale-105"
                                         >
-                                            <ArrowPathIcon className="w-5 h-5" />
-                                            Meeting ReScheduling
+                                            <PlayIcon className="w-5 h-5" />
+                                            Start Case
                                         </button>
                                     )}
-                                    {/* Meeting Ended - only show for stage 21 if there are upcoming meetings, and exclude another_meeting */}
-                                    {handleStageUpdate &&
-                                        !areStagesEquivalent(currentStageName, 'another_meeting') &&
-                                        (!(areStagesEquivalent(currentStageName, 'Meeting rescheduling') || (isStageNumeric && stageNumeric === 21)) || hasScheduledMeetings) && (
+
+                                    {/* Handler Started Stage */}
+                                    {areStagesEquivalent(currentStageName, 'Handler Started') && (
+                                        <>
                                             <button
-                                                onClick={() => handleStageUpdate('Meeting Ended')}
+                                                onClick={() => updateLeadStage('Application submitted')}
+                                                className="btn btn-success text-white rounded-full px-5 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 transition-all hover:scale-105"
+                                            >
+                                                <DocumentCheckIcon className="w-5 h-5" />
+                                                Application Submitted
+                                            </button>
+                                            <button
+                                                onClick={() => updateLeadStage('Case Closed')}
                                                 className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
                                             >
                                                 <CheckCircleIcon className="w-5 h-5" />
-                                                Meeting Ended
+                                                Close Case
                                             </button>
-                                        )}
-                                </>
-                            )}
+                                        </>
+                                    )}
 
-                        {/* Waiting for meeting summary Stage */}
-                        {areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') && openSendOfferModal && (
-                            <button
-                                onClick={openSendOfferModal}
-                                className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
-                            >
-                                <DocumentCheckIcon className="w-5 h-5" />
-                                Send Price Offer
-                            </button>
-                        )}
-
-                        {/* Communication Started Stage */}
-                        {areStagesEquivalent(currentStageName, 'Communication started') && (
-                            <>
-                                {handleScheduleMenuClick && scheduleMenuLabel && (
-                                    <button
-                                        onClick={handleScheduleMenuClick}
-                                        className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
-                                    >
-                                        <CalendarDaysIcon className="w-5 h-5" />
-                                        {scheduleMenuLabel}
-                                    </button>
-                                )}
-                            </>
-                        )}
-
-                        {/* Meeting summary + Agreement sent Stage */}
-                        {areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') && (
-                            <>
-                                {handleScheduleMenuClick && scheduleMenuLabel && (
-                                    <button
-                                        onClick={handleScheduleMenuClick}
-                                        className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
-                                    >
-                                        <CalendarDaysIcon className="w-5 h-5" />
-                                        {scheduleMenuLabel}
-                                    </button>
-                                )}
-                                {handleOpenSignedDrawer && (
-                                    <button
-                                        onClick={handleOpenSignedDrawer}
-                                        className="btn btn-success text-white rounded-full px-5 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 transition-all hover:scale-105"
-                                    >
-                                        <HandThumbUpIcon className="w-5 h-5" />
-                                        Client signed
-                                    </button>
-                                )}
-                                {handleOpenDeclinedDrawer && (
-                                    <button
-                                        onClick={handleOpenDeclinedDrawer}
-                                        className="btn btn-error text-white rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
-                                    >
-                                        <HandThumbDownIcon className="w-5 h-5" />
-                                        Client declined
-                                    </button>
-                                )}
-                                {openSendOfferModal && (
-                                    <button
-                                        onClick={openSendOfferModal}
-                                        className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
-                                    >
-                                        <PencilSquareIcon className="w-5 h-5" />
-                                        Revised price offer
-                                    </button>
-                                )}
-                            </>
-                        )}
-
-                        {/* General stages - Schedule Meeting and Communication Started */}
-                        {/* Only show for stages that haven't been handled by specific sections above */}
-                        {selectedClient &&
-                            !areStagesEquivalent(currentStageName, 'Handler Set') &&
-                            !areStagesEquivalent(currentStageName, 'Handler Started') &&
-                            !areStagesEquivalent(currentStageName, 'Application submitted') &&
-                            !areStagesEquivalent(currentStageName, 'payment_request_sent') &&
-                            !areStagesEquivalent(currentStageName, 'another_meeting') &&
-                            !areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
-                            !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
-                            !areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') &&
-                            !areStagesEquivalent(currentStageName, 'Communication started') &&
-                            !areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') &&
-                            !areStagesEquivalent(currentStageName, 'Success') &&
-                            !areStagesEquivalent(currentStageName, 'handler_assigned') &&
-                            !areStagesEquivalent(currentStageName, 'client_signed') &&
-                            !areStagesEquivalent(currentStageName, 'client signed agreement') &&
-                            !areStagesEquivalent(currentStageName, 'Client signed agreement') &&
-                            !(isStageNumeric && (stageNumeric === 21 || stageNumeric === 55)) && (
-                                <>
-                                    {handleScheduleMenuClick && scheduleMenuLabel && (
+                                    {/* Application submitted Stage */}
+                                    {areStagesEquivalent(currentStageName, 'Application submitted') && (
                                         <button
-                                            onClick={handleScheduleMenuClick}
+                                            onClick={() => updateLeadStage('Case Closed')}
+                                            className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                        >
+                                            <CheckCircleIcon className="w-5 h-5" />
+                                            Close Case
+                                        </button>
+                                    )}
+
+                                    {/* Payment request sent Stage */}
+                                    {areStagesEquivalent(currentStageName, 'payment_request_sent') && handlePaymentReceivedNewClient && (
+                                        <button
+                                            onClick={handlePaymentReceivedNewClient}
+                                            className="btn btn-success text-white rounded-full px-5 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 transition-all hover:scale-105"
+                                        >
+                                            <CheckCircleIcon className="w-5 h-5" />
+                                            Payment Received - new Client !!!
+                                        </button>
+                                    )}
+
+                                    {/* Another meeting Stage - Check this first to avoid duplicates */}
+                                    {areStagesEquivalent(currentStageName, 'another_meeting') && (
+                                        <>
+                                            {setShowRescheduleDrawer && (
+                                                <button
+                                                    onClick={() => setShowRescheduleDrawer(true)}
+                                                    className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                >
+                                                    <ArrowPathIcon className="w-5 h-5" />
+                                                    Meeting ReScheduling
+                                                </button>
+                                            )}
+                                            {handleStageUpdate && (
+                                                <button
+                                                    onClick={() => handleStageUpdate('Meeting Ended')}
+                                                    className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                >
+                                                    <CheckCircleIcon className="w-5 h-5" />
+                                                    Meeting Ended
+                                                </button>
+                                            )}
+                                        </>
+                                    )}
+
+                                    {/* Meeting scheduled / Meeting rescheduling Stages - Exclude another_meeting to avoid duplicates */}
+                                    {!areStagesEquivalent(currentStageName, 'another_meeting') &&
+                                        (areStagesEquivalent(currentStageName, 'meeting_scheduled') ||
+                                            areStagesEquivalent(currentStageName, 'Meeting rescheduling') ||
+                                            (isStageNumeric && (stageNumeric === 55 || stageNumeric === 21))) && (
+                                            <>
+                                                {/* Schedule Meeting button - only for stage 55, not for "Meeting scheduled" or "Meeting rescheduled" */}
+                                                {!areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
+                                                    !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
+                                                    handleScheduleMenuClick &&
+                                                    scheduleMenuLabel && (
+                                                        <button
+                                                            onClick={handleScheduleMenuClick}
+                                                            className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                        >
+                                                            <CalendarDaysIcon className="w-5 h-5" />
+                                                            {scheduleMenuLabel}
+                                                        </button>
+                                                    )}
+                                                {setShowRescheduleDrawer && (
+                                                    <button
+                                                        onClick={() => setShowRescheduleDrawer(true)}
+                                                        className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                    >
+                                                        <ArrowPathIcon className="w-5 h-5" />
+                                                        Meeting ReScheduling
+                                                    </button>
+                                                )}
+                                                {/* Meeting Ended - only show for stage 21 if there are upcoming meetings, and exclude another_meeting */}
+                                                {handleStageUpdate &&
+                                                    !areStagesEquivalent(currentStageName, 'another_meeting') &&
+                                                    (!(areStagesEquivalent(currentStageName, 'Meeting rescheduling') || (isStageNumeric && stageNumeric === 21)) || hasScheduledMeetings) && (
+                                                        <button
+                                                            onClick={() => handleStageUpdate('Meeting Ended')}
+                                                            className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                        >
+                                                            <CheckCircleIcon className="w-5 h-5" />
+                                                            Meeting Ended
+                                                        </button>
+                                                    )}
+                                            </>
+                                        )}
+
+                                    {/* Waiting for meeting summary Stage */}
+                                    {areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') && openSendOfferModal && (
+                                        <button
+                                            onClick={openSendOfferModal}
                                             className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
                                         >
-                                            <CalendarDaysIcon className="w-5 h-5" />
-                                            {scheduleMenuLabel}
+                                            <DocumentCheckIcon className="w-5 h-5" />
+                                            Send Price Offer
                                         </button>
                                     )}
-                                    {handleStageUpdate && (
-                                        <button
-                                            onClick={() => handleStageUpdate('Communication Started')}
-                                            className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
-                                        >
-                                            <ChatBubbleLeftRightIcon className="w-5 h-5" />
-                                            Communication Started
-                                        </button>
+
+                                    {/* Communication Started Stage */}
+                                    {areStagesEquivalent(currentStageName, 'Communication started') && (
+                                        <>
+                                            {handleScheduleMenuClick && scheduleMenuLabel && (
+                                                <button
+                                                    onClick={handleScheduleMenuClick}
+                                                    className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                >
+                                                    <CalendarDaysIcon className="w-5 h-5" />
+                                                    {scheduleMenuLabel}
+                                                </button>
+                                            )}
+                                        </>
                                     )}
+
+                                    {/* Meeting summary + Agreement sent Stage */}
+                                    {areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') && (
+                                        <>
+                                            {handleScheduleMenuClick && scheduleMenuLabel && (
+                                                <button
+                                                    onClick={handleScheduleMenuClick}
+                                                    className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                >
+                                                    <CalendarDaysIcon className="w-5 h-5" />
+                                                    {scheduleMenuLabel}
+                                                </button>
+                                            )}
+                                            {handleOpenSignedDrawer && (
+                                                <button
+                                                    onClick={handleOpenSignedDrawer}
+                                                    className="btn btn-success text-white rounded-full px-5 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 transition-all hover:scale-105"
+                                                >
+                                                    <HandThumbUpIcon className="w-5 h-5" />
+                                                    Client signed
+                                                </button>
+                                            )}
+                                            {handleOpenDeclinedDrawer && (
+                                                <button
+                                                    onClick={handleOpenDeclinedDrawer}
+                                                    className="btn btn-error text-white rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                >
+                                                    <HandThumbDownIcon className="w-5 h-5" />
+                                                    Client declined
+                                                </button>
+                                            )}
+                                            <button
+                                                onClick={() => updateLeadStage('payment_request_sent')}
+                                                className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                            >
+                                                <CurrencyDollarIcon className="w-5 h-5" />
+                                                Payment request sent
+                                            </button>
+                                            {openSendOfferModal && (
+                                                <button
+                                                    onClick={openSendOfferModal}
+                                                    className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                >
+                                                    <PencilSquareIcon className="w-5 h-5" />
+                                                    Revised price offer
+                                                </button>
+                                            )}
+                                        </>
+                                    )}
+
+                                    {/* Client signed agreement Stage */}
+                                    {(areStagesEquivalent(currentStageName, 'Client signed agreement') ||
+                                        areStagesEquivalent(currentStageName, 'client signed agreement') ||
+                                        areStagesEquivalent(currentStageName, 'client_signed')) && (
+                                            <button
+                                                onClick={() => updateLeadStage('payment_request_sent')}
+                                                className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                            >
+                                                <CurrencyDollarIcon className="w-5 h-5" />
+                                                Payment request sent
+                                            </button>
+                                        )}
+
+                                    {/* General stages - Schedule Meeting and Communication Started */}
+                                    {/* Only show for stages that haven't been handled by specific sections above */}
+                                    {selectedClient &&
+                                        !areStagesEquivalent(currentStageName, 'Handler Set') &&
+                                        !areStagesEquivalent(currentStageName, 'Handler Started') &&
+                                        !areStagesEquivalent(currentStageName, 'Application submitted') &&
+                                        !areStagesEquivalent(currentStageName, 'payment_request_sent') &&
+                                        !areStagesEquivalent(currentStageName, 'another_meeting') &&
+                                        !areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
+                                        !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
+                                        !areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') &&
+                                        !areStagesEquivalent(currentStageName, 'Communication started') &&
+                                        !areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') &&
+                                        !areStagesEquivalent(currentStageName, 'Success') &&
+                                        !areStagesEquivalent(currentStageName, 'handler_assigned') &&
+                                        !areStagesEquivalent(currentStageName, 'client_signed') &&
+                                        !areStagesEquivalent(currentStageName, 'client signed agreement') &&
+                                        !areStagesEquivalent(currentStageName, 'Client signed agreement') &&
+                                        !(isStageNumeric && (stageNumeric === 21 || stageNumeric === 55)) && (
+                                            <>
+                                                {handleScheduleMenuClick && scheduleMenuLabel && (
+                                                    <button
+                                                        onClick={handleScheduleMenuClick}
+                                                        className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                    >
+                                                        <CalendarDaysIcon className="w-5 h-5" />
+                                                        {scheduleMenuLabel}
+                                                    </button>
+                                                )}
+                                                {handleStageUpdate && (
+                                                    <button
+                                                        onClick={() => handleStageUpdate('Communication Started')}
+                                                        className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                    >
+                                                        <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                                                        Communication Started
+                                                    </button>
+                                                )}
+                                            </>
+                                        )}
                                 </>
-                            )}
+                            );
+                        })()}
                     </div>
                 </div>
 
-                {/* Unactivation Warning */}
-                {
-                    (() => {
-                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                        const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
-                        if (isUnactivated && (selectedClient as any).deactivate_notes) {
-                            return (
-                                <div className="mt-6 bg-red-50 border border-red-100 rounded-xl p-4 flex items-start gap-3">
-                                    <ExclamationTriangleIcon className="w-5 h-5 text-red-600 mt-0.5 flex-shrink-0" />
-                                    <div>
-                                        <h4 className="text-sm font-bold text-red-800 mb-1">Case is not active</h4>
-                                        <p className="text-sm text-red-700 leading-relaxed">{(selectedClient as any).deactivate_notes}</p>
-                                    </div>
-                                </div>
-                            );
-                        }
-                        return null;
-                    })()
-                }
 
             </div >
 

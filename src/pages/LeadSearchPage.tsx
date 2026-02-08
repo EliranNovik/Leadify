@@ -990,7 +990,7 @@ const LeadSearchPage: React.FC = () => {
       // New leads: use buildClientRoute logic
       // Check if it's a sublead (contains '/')
       const isSubLead = leadNumber.includes('/');
-      
+
       if (isSubLead && manualId) {
         // Sublead with manual_id: use query parameter format like /clients/2104625?lead=L210764%2F3
         path = `/clients/${encodeURIComponent(manualId)}?lead=${encodeURIComponent(leadNumber)}`;
@@ -3321,12 +3321,12 @@ const LeadSearchPage: React.FC = () => {
         const legacyLeadAny = legacyLead as any;
         const masterId = legacyLeadAny.master_id;
         const leadId = String(legacyLead.id);
-        
+
         if (masterId && String(masterId).trim() !== '') {
           // It's a sublead - format as masterId/suffix (same as MasterLeadPage)
           const leadKey = legacyLead.id?.toString();
           const suffix = leadKey ? legacySubLeadSuffixMap.get(leadKey) : undefined;
-          
+
           if (suffix !== undefined) {
             // Use calculated suffix (starts at 2 for first sublead)
             displayLeadNumber = `${masterId}/${suffix}`;
@@ -3339,11 +3339,11 @@ const LeadSearchPage: React.FC = () => {
           // Check if this lead has subleads
           const leadIdStr = legacyLead.id?.toString();
           const hasSubLeads = leadIdStr && legacyMasterIdsWithSubLeads.has(leadIdStr);
-          
+
           // Use leadId (numeric ID) as base, add /1 if has subleads (same as MasterLeadPage)
           displayLeadNumber = hasSubLeads ? `${leadId}/1` : leadId;
         }
-        
+
         // Add "C" prefix for legacy leads with stage "100" (Success) - same as MasterLeadPage
         if (legacyLead.stage === 100 || legacyLead.stage === '100') {
           displayLeadNumber = `C${displayLeadNumber}`;
@@ -3607,6 +3607,12 @@ const LeadSearchPage: React.FC = () => {
     const isLegacyInactive =
       anyLead.lead_type === 'legacy' && anyLead.status && Number(anyLead.status) === 10;
 
+    // New lead highlighting: unactivated_at IS NOT NULL = Not active
+    const isNewInactive =
+      anyLead.lead_type === 'new' && anyLead.unactivated_at !== null && anyLead.unactivated_at !== undefined;
+
+    const isInactive = isLegacyInactive || isNewInactive;
+
     const cardClasses = [
       'card',
       'shadow-lg',
@@ -3619,8 +3625,8 @@ const LeadSearchPage: React.FC = () => {
       'cursor-pointer',
       'group',
       'border',
-      // Bring back soft red highlight for inactive legacy leads
-      isLegacyInactive ? 'bg-red-50 border-red-200' : 'bg-base-100 border-base-200',
+      // Grey background with red border for inactive leads (both legacy and new)
+      isInactive ? 'bg-gray-100 border-red-400' : 'bg-base-100 border-base-200',
     ].join(' ');
 
     // Ensure category is always shown as "Subcategory (Main Category)" when possible
@@ -3652,11 +3658,6 @@ const LeadSearchPage: React.FC = () => {
         }}
       >
         <div className="card-body p-5 relative">
-          {isLegacyInactive && (
-            <span className="badge badge-xs absolute top-1 left-3 bg-white border-red-400 text-red-500 shadow-sm">
-              Not active
-            </span>
-          )}
           <div className="flex justify-between items-start mb-2">
             <div className="flex items-center gap-2">
               <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors">
