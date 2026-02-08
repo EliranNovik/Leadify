@@ -3981,8 +3981,39 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   useEffect(() => {
     // Fetch the current user's name and employee data from Supabase
     const fetchUserData = async () => {
+      // Check cache first
+      const cacheKey = 'header_userData';
+      const cacheTimestampKey = 'header_userData_timestamp';
+      const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+      
+      try {
+        const cachedData = sessionStorage.getItem(cacheKey);
+        const cachedTimestamp = sessionStorage.getItem(cacheTimestampKey);
+        
+        if (cachedData && cachedTimestamp) {
+          const age = Date.now() - parseInt(cachedTimestamp, 10);
+          if (age < CACHE_DURATION) {
+            // Use cached data
+            const data = JSON.parse(cachedData);
+            setUserFullName(data.userFullName || '');
+            setIsSuperUser(data.isSuperUser || false);
+            if (data.currentUser) setCurrentUser(data.currentUser);
+            if (data.currentUserEmployee) setCurrentUserEmployee(data.currentUserEmployee);
+            if (data.allEmployees) setAllEmployees(data.allEmployees);
+            console.log('✅ Header: User data loaded from cache');
+            return; // Skip fetch - use cache
+          }
+        }
+      } catch (error) {
+        console.error('Error reading header user data cache:', error);
+      }
+
       const { data: { user } } = await supabase.auth.getUser();
       if (user && user.email) {
+        // Declare variables at function scope for caching
+        let fullNameValue = '';
+        let isSuperUserValue = false;
+        
         // Fetch user name
         const { data, error } = await supabase
           .from('users')
@@ -3991,22 +4022,26 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           .single();
         if (!error && data) {
           // Set superuser status
-          setIsSuperUser(data.is_superuser === true || data.is_superuser === 'true' || data.is_superuser === 1);
+          isSuperUserValue = data.is_superuser === true || data.is_superuser === 'true' || data.is_superuser === 1;
+          setIsSuperUser(isSuperUserValue);
 
           // Use first_name + last_name if available, otherwise fall back to full_name
           if (data.first_name && data.last_name && data.first_name.trim() && data.last_name.trim()) {
-            const fullName = `${data.first_name.trim()} ${data.last_name.trim()}`;
-            setUserFullName(fullName);
+            fullNameValue = `${data.first_name.trim()} ${data.last_name.trim()}`;
+            setUserFullName(fullNameValue);
           } else if (data.full_name && data.full_name.trim()) {
-            setUserFullName(data.full_name.trim());
+            fullNameValue = data.full_name.trim();
+            setUserFullName(fullNameValue);
           } else {
             // Fallback to email if no name is available
-            setUserFullName(user.email);
+            fullNameValue = user.email || '';
+            setUserFullName(fullNameValue);
           }
         } else {
           // Try to get name from auth user metadata as fallback
           if (user.user_metadata?.first_name || user.user_metadata?.full_name) {
             const authName = user.user_metadata.first_name || user.user_metadata.full_name;
+            fullNameValue = authName;
             setUserFullName(authName);
 
             // Try to sync user to custom table
@@ -4019,7 +4054,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               // Silent error handling
             }
           } else {
-            setUserFullName(user.email);
+            fullNameValue = user.email || '';
+            setUserFullName(fullNameValue);
           }
         }
 
@@ -4139,10 +4175,62 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 });
                 const uniqueEmployees = Array.from(uniqueEmployeesMap.values());
                 setAllEmployees(uniqueEmployees);
+                
+                // Cache the complete data after all state is set
+                setTimeout(() => {
+                  try {
+                    const finalIsSuperUser = userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1;
+                    const finalFullName = fullNameValue || userData.full_name || user.email || '';
+                    const finalCurrentUserEmployee = {
+                      ...empData,
+                      department: (empData as any).tenant_departement?.name || 'General',
+                      email: userData.email,
+                      is_active: true,
+                      performance_metrics: {
+                        total_meetings: 0,
+                        completed_meetings: 0,
+                        total_revenue: 0,
+                        average_rating: 0,
+                        last_activity: 'No activity'
+                      }
+                    };
+                    const dataToCache = {
+                      userFullName: finalFullName,
+                      isSuperUser: finalIsSuperUser,
+                      currentUser: userData,
+                      currentUserEmployee: finalCurrentUserEmployee,
+                      allEmployees: uniqueEmployees,
+                    };
+                    sessionStorage.setItem('header_userData', JSON.stringify(dataToCache));
+                    sessionStorage.setItem('header_userData_timestamp', Date.now().toString());
+                    console.log('✅ Header: User data cached');
+                  } catch (cacheError) {
+                    console.error('Error caching header user data:', cacheError);
+                  }
+                }, 100);
               }
             } else {
               // Set current user even if no employee data
               setCurrentUser(userData);
+              
+              // Cache basic user data
+              setTimeout(() => {
+                try {
+                  const finalIsSuperUser = userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1;
+                  const finalFullName = fullNameValue || userData.full_name || user.email || '';
+                  const dataToCache = {
+                    userFullName: finalFullName,
+                    isSuperUser: finalIsSuperUser,
+                    currentUser: userData,
+                    currentUserEmployee: null,
+                    allEmployees: [],
+                  };
+                  sessionStorage.setItem('header_userData', JSON.stringify(dataToCache));
+                  sessionStorage.setItem('header_userData_timestamp', Date.now().toString());
+                } catch (cacheError) {
+                  console.error('Error caching header user data:', cacheError);
+                }
+              }, 100);
             }
           } else {
             // Set current user even if no employee data
@@ -4153,6 +4241,25 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               if (userDataWithSuperuser.is_superuser !== undefined) {
                 setIsSuperUser(userDataWithSuperuser.is_superuser === true || userDataWithSuperuser.is_superuser === 'true' || userDataWithSuperuser.is_superuser === 1);
               }
+              
+              // Cache basic user data
+              setTimeout(() => {
+                try {
+                  const finalIsSuperUser = userDataWithSuperuser.is_superuser === true || userDataWithSuperuser.is_superuser === 'true' || userDataWithSuperuser.is_superuser === 1;
+                  const finalFullName = fullNameValue || userData.full_name || user.email || '';
+                  const dataToCache = {
+                    userFullName: finalFullName,
+                    isSuperUser: finalIsSuperUser,
+                    currentUser: userData,
+                    currentUserEmployee: null,
+                    allEmployees: [],
+                  };
+                  sessionStorage.setItem('header_userData', JSON.stringify(dataToCache));
+                  sessionStorage.setItem('header_userData_timestamp', Date.now().toString());
+                } catch (cacheError) {
+                  console.error('Error caching header user data:', cacheError);
+                }
+              }, 100);
             }
           }
         } catch (error) {

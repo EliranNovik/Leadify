@@ -14,6 +14,14 @@ interface AddPaymentModalProps {
   getTotalAmount?: () => number; // Function to get total amount for percentage calculation
 }
 
+// Helper function to detect Hebrew text and return RTL direction
+const getTextDirection = (text: string): 'rtl' | 'ltr' => {
+  if (!text) return 'ltr';
+  // Check if text contains Hebrew characters (Unicode range 0590-05FF)
+  const hebrewRegex = /[\u0590-\u05FF]/;
+  return hebrewRegex.test(text) ? 'rtl' : 'ltr';
+};
+
 const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
   isOpen,
   onClose,
@@ -39,6 +47,7 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
     currencyId: defaultCurrency === '₪' ? 1 : defaultCurrency === '€' ? 2 : defaultCurrency === '$' ? 3 : defaultCurrency === '£' ? 4 : 1,
   });
   const [editingValueVatId, setEditingValueVatId] = useState<string | number | null>(null);
+  const [notesDirection, setNotesDirection] = useState<'rtl' | 'ltr'>('ltr');
 
   // Reset form when modal closes
   useEffect(() => {
@@ -56,8 +65,14 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
         currencyId: defaultCurrency === '₪' ? 1 : defaultCurrency === '€' ? 2 : defaultCurrency === '$' ? 3 : defaultCurrency === '£' ? 4 : 1,
       });
       setEditingValueVatId(null);
+      setNotesDirection('ltr');
     }
   }, [isOpen, contactName, defaultCurrency, defaultAmount]);
+
+  // Update notes direction when notes change
+  useEffect(() => {
+    setNotesDirection(getTextDirection(newPaymentData.notes || ''));
+  }, [newPaymentData.notes]);
 
   if (!isOpen) return null;
 
@@ -294,6 +309,8 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
               value={newPaymentData.notes || ''}
               onChange={e => setNewPaymentData((d: any) => ({ ...d, notes: e.target.value }))}
               placeholder="Enter notes (optional)"
+              dir={notesDirection}
+              style={{ textAlign: notesDirection === 'rtl' ? 'right' : 'left' }}
             />
           </div>
         </div>

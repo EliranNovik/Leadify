@@ -182,6 +182,33 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
     }
 
     const fetchUserInfo = async (retryCount = 0) => {
+      // Check cache first
+      const cacheKey = 'sidebar_userData';
+      const cacheTimestampKey = 'sidebar_userData_timestamp';
+      const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+
+      try {
+        const cachedData = sessionStorage.getItem(cacheKey);
+        const cachedTimestamp = sessionStorage.getItem(cacheTimestampKey);
+
+        if (cachedData && cachedTimestamp) {
+          const age = Date.now() - parseInt(cachedTimestamp, 10);
+          if (age < CACHE_DURATION) {
+            // Use cached data
+            const data = JSON.parse(cachedData);
+            setUserOfficialName(data.userOfficialName || '');
+            setUserRoleFromDB(data.userRoleFromDB || 'User');
+            setUserDepartment(data.userDepartment || 'General');
+            setIsSuperUser(data.isSuperUser || false);
+            setIsLoadingUserInfo(false);
+            console.log('✅ Sidebar: User data loaded from cache');
+            return; // Skip fetch - use cache
+          }
+        }
+      } catch (error) {
+        console.error('Error reading sidebar user data cache:', error);
+      }
+
       // Don't set loading to true - run in background to not block UI
       try {
 
@@ -268,7 +295,12 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
 
         if (userData) {
           // Set superuser status
-          setIsSuperUser(userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1);
+          const isSuperUserValue = userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1;
+          setIsSuperUser(isSuperUserValue);
+
+          let officialName = '';
+          let roleDisplay = 'User';
+          let deptName = 'General';
 
           if (userData.tenants_employee) {
             // Handle both array and single object responses
@@ -276,32 +308,64 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
 
             if (empData) {
               // Set official name (use official_name if available, fallback to display_name or full_name)
-              const officialName = empData.official_name || empData.display_name || userData.full_name || user.email || '';
+              officialName = empData.official_name || empData.display_name || userData.full_name || user.email || '';
               setUserOfficialName(officialName);
 
               // Set role with proper mapping
-              const roleDisplay = getRoleDisplayName(empData.bonuses_role || '');
+              roleDisplay = getRoleDisplayName(empData.bonuses_role || '');
               setUserRoleFromDB(roleDisplay);
 
               // Set department
               const deptData = Array.isArray(empData.tenant_departement) ? empData.tenant_departement[0] : empData.tenant_departement;
-              const deptName = deptData?.name || 'General';
+              deptName = deptData?.name || 'General';
               setUserDepartment(deptName);
             } else {
               // No employee data, use basic user info
-              setUserOfficialName(userData.full_name || user.email || '');
+              officialName = userData.full_name || user.email || '';
+              setUserOfficialName(officialName);
               setUserRoleFromDB('User');
             }
           } else {
             // No employee relationship, use basic user info
-            setUserOfficialName(userData.full_name || user.email || '');
+            officialName = userData.full_name || user.email || '';
+            setUserOfficialName(officialName);
             setUserRoleFromDB('User');
+          }
+
+          // Cache the data
+          try {
+            const dataToCache = {
+              userOfficialName: officialName,
+              userRoleFromDB: roleDisplay,
+              userDepartment: deptName,
+              isSuperUser: isSuperUserValue,
+            };
+            sessionStorage.setItem('sidebar_userData', JSON.stringify(dataToCache));
+            sessionStorage.setItem('sidebar_userData_timestamp', Date.now().toString());
+            console.log('✅ Sidebar: User data cached');
+          } catch (cacheError) {
+            console.error('Error caching sidebar user data:', cacheError);
           }
         } else {
           // User not found in database, use auth user info
           console.warn('User not found in database, using auth user info');
-          setUserOfficialName(user.email || '');
+          const officialName = user.email || '';
+          setUserOfficialName(officialName);
           setUserRoleFromDB('User');
+
+          // Cache basic data
+          try {
+            const dataToCache = {
+              userOfficialName: officialName,
+              userRoleFromDB: 'User',
+              userDepartment: 'General',
+              isSuperUser: false,
+            };
+            sessionStorage.setItem('sidebar_userData', JSON.stringify(dataToCache));
+            sessionStorage.setItem('sidebar_userData_timestamp', Date.now().toString());
+          } catch (cacheError) {
+            console.error('Error caching sidebar user data:', cacheError);
+          }
         }
       } catch (error) {
         console.error('Error fetching user info:', error);

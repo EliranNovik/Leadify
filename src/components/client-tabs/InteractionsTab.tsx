@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, Fragment, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, Fragment, useMemo, useRef } from 'react';
 import { ClientTabProps, ClientInteractionsCache } from '../../types/client';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
 import EmojiPicker from 'emoji-picker-react';
@@ -37,7 +37,6 @@ import { createPortal } from 'react-dom';
 import AISummaryPanel from './AISummaryPanel';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
-import { useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import sanitizeHtml from 'sanitize-html';
 import { buildApiUrl } from '../../lib/api';
@@ -929,6 +928,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   interactionsCache,
   onInteractionsCacheUpdate,
   onInteractionCountUpdate,
+  allEmployees: allEmployeesProp = [],
 }) => {
   if (!client) {
     return <div className="flex justify-center items-center h-32"><span className="loading loading-spinner loading-md text-primary"></span></div>;
@@ -937,9 +937,167 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   // Determine if this is a legacy lead
   const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
   
-  const [interactions, setInteractions] = useState<Interaction[]>([]);
+  // Use local state for interactions - initialize from cache, persisted state, or empty
+  // Direct sessionStorage access (more reliable than usePersistedState for this use case)
+  const [interactions, setInteractions] = useState<Interaction[]>(() => {
+    if (!client?.id) return [];
+    
+    // Priority: 1. Cache, 2. Persisted state from sessionStorage, 3. Empty array
+    if (interactionsCache && interactionsCache.leadId === client.id) {
+      return interactionsCache.interactions || [];
+    }
+    
+    // Check sessionStorage for persisted interactions
+    try {
+      const persistedKey = `interactions_${client.id}`;
+      const persisted = sessionStorage.getItem(persistedKey);
+      if (persisted) {
+        try {
+          const parsed = JSON.parse(persisted);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            console.log(`✅ Initializing interactions from sessionStorage for client ${client.id} (${parsed.length} interactions)`);
+            return parsed;
+          }
+        } catch (e) {
+          console.warn('Failed to parse persisted interactions on init:', e);
+        }
+      }
+    } catch (e) {
+      // sessionStorage might not be available
+    }
+    
+    return [];
+  });
+  
+  // Update interactions when cache changes (but only if we don't already have interactions)
+  useEffect(() => {
+    if (interactionsCache && interactionsCache.leadId === client?.id) {
+      const cachedInteractions = interactionsCache.interactions || [];
+      // Only update if we don't have interactions or if cache has more interactions
+      if (cachedInteractions.length > 0 && (interactions.length === 0 || cachedInteractions.length > interactions.length)) {
+        setInteractions(cachedInteractions);
+        // Update count when loading from cache
+        if (onInteractionCountUpdate) {
+          const cachedCount = interactionsCache.count ?? cachedInteractions.length;
+          onInteractionCountUpdate(cachedCount);
+        }
+      }
+    }
+  }, [interactionsCache, client?.id, onInteractionCountUpdate]);
+  
+  // Track if we've updated the count on initial load for the current client
+  const hasUpdatedInitialCountRef = useRef<string | null>(null);
+  
+  // Reset the flag when client changes
+  useEffect(() => {
+    if (client?.id && hasUpdatedInitialCountRef.current !== client.id) {
+      hasUpdatedInitialCountRef.current = null;
+    }
+  }, [client?.id]);
+  
+  // Update count on initial mount if interactions were loaded from sessionStorage or cache
+  useEffect(() => {
+    if (!client?.id) return;
+    if (hasUpdatedInitialCountRef.current === client.id) return; // Already updated for this client
+    
+    if (interactions.length > 0 && onInteractionCountUpdate) {
+      // Check if these interactions are from sessionStorage (initial load)
+      try {
+        const persistedKey = `interactions_${client.id}`;
+        const persisted = sessionStorage.getItem(persistedKey);
+        if (persisted) {
+          try {
+            const parsed = JSON.parse(persisted);
+            if (Array.isArray(parsed) && parsed.length === interactions.length) {
+              // These are from sessionStorage, update count
+              console.log(`✅ Updating count from initial sessionStorage load: ${interactions.length}`);
+              onInteractionCountUpdate(interactions.length);
+              hasUpdatedInitialCountRef.current = client.id;
+              return;
+            }
+          } catch (e) {
+            // Continue to update count
+          }
+        }
+        
+        // Also check cache
+        if (interactionsCache && interactionsCache.leadId === client.id) {
+          const cachedCount = interactionsCache.count ?? interactions.length;
+          console.log(`✅ Updating count from initial cache load: ${cachedCount}`);
+          onInteractionCountUpdate(cachedCount);
+          hasUpdatedInitialCountRef.current = client.id;
+          return;
+        }
+        
+        // Fallback: update count from interactions length
+        console.log(`✅ Updating count from initial interactions: ${interactions.length}`);
+        onInteractionCountUpdate(interactions.length);
+        hasUpdatedInitialCountRef.current = client.id;
+      } catch (e) {
+        // sessionStorage not available, but still update count
+        if (onInteractionCountUpdate && interactions.length > 0) {
+          onInteractionCountUpdate(interactions.length);
+          hasUpdatedInitialCountRef.current = client.id;
+        }
+      }
+    }
+  }, [interactions.length, client?.id, onInteractionCountUpdate, interactionsCache]);
+  
+  // Persist interactions to sessionStorage whenever they change (for tab switching)
+  // Also update the client ID ref to track which client these interactions belong to
+  useEffect(() => {
+    if (interactions.length > 0 && client?.id) {
+      interactionsClientIdRef.current = client.id.toString();
+      try {
+        const persistedKey = `interactions_${client.id}`;
+        sessionStorage.setItem(persistedKey, JSON.stringify(interactions));
+      } catch (e) {
+        console.warn('Failed to persist interactions to sessionStorage:', e);
+      }
+    } else if (!client?.id || interactions.length === 0) {
+      interactionsClientIdRef.current = null;
+    }
+  }, [interactions, client?.id]);
+  
   const [employeePhoneMap, setEmployeePhoneMap] = useState<Map<string, string>>(new Map()); // phone/ext -> display_name
   const [employeePhotoMap, setEmployeePhotoMap] = useState<Map<string, string>>(new Map()); // display_name -> photo_url
+  
+  // Use employees from prop (loaded in parent) or fallback to local state
+  const [allEmployees, setAllEmployees] = useState<any[]>(allEmployeesProp);
+  
+  // Update local employees state when prop changes (employees are loaded in parent)
+  useEffect(() => {
+    if (allEmployeesProp && allEmployeesProp.length > 0) {
+      setAllEmployees(allEmployeesProp);
+    }
+  }, [allEmployeesProp]);
+
+  // Helper function to get employee display name from ID (similar to RolesTab)
+  const getEmployeeDisplayName = useMemo(() => {
+    return (employeeId: string | number | null | undefined, employees: any[] = allEmployees) => {
+      if (!employeeId || employeeId === '---' || employeeId === null || employeeId === undefined) return '---';
+
+      // Convert employeeId to number for comparison
+      const idAsNumber = typeof employeeId === 'string' ? parseInt(employeeId, 10) : Number(employeeId);
+
+      if (isNaN(idAsNumber)) {
+        // If not a number, assume it's already a display name
+        return String(employeeId);
+      }
+
+      // Find employee by ID - try both string and number comparison
+      const employee = employees.find((emp: any) => {
+        const empId = typeof emp.id === 'string' ? parseInt(emp.id, 10) : Number(emp.id);
+        return !isNaN(empId) && empId === idAsNumber;
+      });
+
+      if (employee && employee.display_name) {
+        return employee.display_name;
+      }
+
+      return '---';
+    };
+  }, [allEmployees]);
   const [editIndex, setEditIndex] = useState<number|null>(null);
   const [editData, setEditData] = useState({ date: '', time: '', content: '', observation: '', length: '', direction: 'out' as 'in' | 'out' });
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -2634,6 +2792,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   // Replace whatsAppChatMessages with whatsAppMessages in the modal rendering
   // 5. In the timeline, merge WhatsApp messages from DB with other interactions
   // In fetchAndCombineInteractions, fetch WhatsApp messages from DB and merge with manual_interactions and emails
+  // Guard to prevent multiple simultaneous fetches
+  const isFetchingInteractionsRef = useRef(false);
+  
   const fetchInteractions = useCallback(
     async (options?: { bypassCache?: boolean }) => {
       // Don't fetch if no client
@@ -2644,6 +2805,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         setInteractionsLoading(false);
         return;
       }
+      
+      // Prevent multiple simultaneous fetches
+      if (isFetchingInteractionsRef.current && !options?.bypassCache) {
+        console.log('⚠️ InteractionsTab: Already fetching, skipping duplicate request');
+        return;
+      }
+      
+      isFetchingInteractionsRef.current = true;
 
       const cacheForLead: ClientInteractionsCache | null =
         interactionsCache && interactionsCache.leadId === client.id ? interactionsCache : null;
@@ -2747,11 +2916,21 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         
         if (!isMountedRef.current) return;
         setInteractions(cachedInteractions);
+        interactionsClientIdRef.current = client?.id?.toString() || null; // Track that these interactions belong to this client
+        // Persist cached interactions to sessionStorage for tab switching
+        if (client?.id && cachedInteractions.length > 0) {
+          try {
+            sessionStorage.setItem(`interactions_${client.id}`, JSON.stringify(cachedInteractions));
+          } catch (e) {
+            console.warn('Failed to persist cached interactions to sessionStorage:', e);
+          }
+        }
         setEmails(cacheForLead.emails || []);
         setInteractionsLoading(false);
         const cachedCount =
           cacheForLead.count ?? (cacheForLead.interactions ? cacheForLead.interactions.length : 0);
         onInteractionCountUpdate?.(cachedCount);
+        isFetchingInteractionsRef.current = false;
         return;
       }
 
@@ -4080,6 +4259,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           console.log(`✅ Processed ${whatsappCount} WhatsApp messages in interactions timeline`);
         }
         
+        // Persist interactions to sessionStorage for tab switching
+        if (client?.id && sorted.length > 0) {
+          try {
+            sessionStorage.setItem(`interactions_${client.id}`, JSON.stringify(sorted));
+          } catch (e) {
+            console.warn('Failed to persist interactions to sessionStorage:', e);
+          }
+        }
+        
         const formattedEmailsForModal = sortedEmails.slice(0, EMAIL_MODAL_LIMIT).map((e: any) => {
           const previewSource = e.body_html || e.body_preview || e.subject || '';
           // Use formatEmailHtmlForDisplay to preserve line breaks and apply RTL
@@ -4113,6 +4301,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         }
         
         setInteractions(sorted as Interaction[]);
+        interactionsClientIdRef.current = client?.id?.toString() || null; // Track that these interactions belong to this client
+        // Persist interactions to sessionStorage for tab switching
+        if (client?.id && sorted.length > 0) {
+          try {
+            sessionStorage.setItem(`interactions_${client.id}`, JSON.stringify(sorted));
+          } catch (e) {
+            console.warn('Failed to persist interactions to sessionStorage:', e);
+          }
+        }
         
         const endTime = performance.now();
         const duration = Math.round(endTime - startTime);
@@ -4142,31 +4339,98 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           fetchedAt: new Date().toISOString(),
         });
       } finally {
+        isFetchingInteractionsRef.current = false;
         if (isMountedRef.current) setInteractionsLoading(false);
       }
     },
     [
-      client,
+      client?.id, // Only depend on client.id, not the whole client object
       leadContacts, // Include contacts so we can match emails by contact email addresses
       interactionsCache,
       currentUserFullName,
       onInteractionCountUpdate,
       onInteractionsCacheUpdate,
-      whatsAppTemplates, // Include templates so messages are reprocessed when templates load
-      employeePhoneMap, // Include employee phone map so we can match phone numbers to names
+      // Removed whatsAppTemplates and employeePhoneMap from dependencies - they're used directly in the function
+      // This prevents unnecessary re-creation of fetchInteractions when these change
     ]
   );
 
   // Use ref to track last client ID to prevent infinite loops
   const lastClientIdRef = useRef<string | null>(null);
   const isFetchingRef = useRef<boolean>(false);
+  const interactionsClientIdRef = useRef<string | null>(null); // Track which client ID the current interactions belong to
   
   useEffect(() => {
     const currentClientId = client?.id?.toString() || null;
     
+    // If we already have interactions for this client, don't fetch again (tab switching scenario)
+    if (currentClientId && interactionsClientIdRef.current === currentClientId && interactions.length > 0) {
+      console.log(`✅ Already have ${interactions.length} interactions for client ${currentClientId}, skipping fetch (tab switch)`);
+      setInteractionsLoading(false);
+      lastClientIdRef.current = currentClientId;
+      return;
+    }
+    
     // Only fetch if client ID actually changed and we're not already fetching
     if (currentClientId && currentClientId !== lastClientIdRef.current && !isFetchingRef.current) {
-      console.log('🔄 Client changed, fetching fresh interactions (bypassing cache)...', {
+      
+      // Check for persisted state in sessionStorage first
+      let hasPersistedData = false;
+      try {
+        const persistedKey = `interactions_${currentClientId}`;
+        const persisted = sessionStorage.getItem(persistedKey);
+        if (persisted) {
+          try {
+            const parsed = JSON.parse(persisted);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              console.log(`✅ Found persisted interactions for client ${currentClientId} (${parsed.length} interactions), loading from sessionStorage`);
+              setInteractions(parsed);
+              setInteractionsLoading(false);
+              interactionsClientIdRef.current = currentClientId; // Track that these interactions belong to this client
+              // Update cache with persisted data
+              if (onInteractionsCacheUpdate) {
+                onInteractionsCacheUpdate({
+                  leadId: currentClientId,
+                  interactions: parsed,
+                  emails: [],
+                  count: parsed.length,
+                  fetchedAt: new Date().toISOString(),
+                });
+              }
+              if (onInteractionCountUpdate) {
+                onInteractionCountUpdate(parsed.length);
+              }
+              lastClientIdRef.current = currentClientId;
+              hasPersistedData = true;
+            }
+          } catch (e) {
+            console.warn('Failed to parse persisted interactions:', e);
+          }
+        }
+      } catch (e) {
+        // sessionStorage might not be available
+      }
+      
+      // If we have persisted data, don't fetch
+      if (hasPersistedData) {
+        return;
+      }
+      
+      // Check if we have cache for this client
+      if (interactionsCache && interactionsCache.leadId === currentClientId && interactionsCache.interactions && interactionsCache.interactions.length > 0) {
+        console.log(`✅ Using cached interactions for client ${currentClientId} (${interactionsCache.interactions.length} interactions)`);
+        setInteractions(interactionsCache.interactions);
+        setInteractionsLoading(false);
+        interactionsClientIdRef.current = currentClientId; // Track that these interactions belong to this client
+        if (onInteractionCountUpdate) {
+          onInteractionCountUpdate(interactionsCache.count || interactionsCache.interactions.length);
+        }
+        lastClientIdRef.current = currentClientId;
+        return;
+      }
+      
+      // No persisted data or cache, fetch fresh
+      console.log('🔄 Client changed, fetching fresh interactions...', {
         previous: lastClientIdRef.current,
         current: currentClientId,
         isFetching: isFetchingRef.current
@@ -4174,8 +4438,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       lastClientIdRef.current = currentClientId;
       isFetchingRef.current = true;
       
-      // Call fetchInteractions directly - it's a stable useCallback
-      fetchInteractions({ bypassCache: true }).finally(() => {
+      // Call fetchInteractions - it will check cache internally
+      fetchInteractions({ bypassCache: false }).finally(() => {
         isFetchingRef.current = false;
       });
     } else if (!currentClientId) {
@@ -4188,7 +4452,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         setInteractionsLoading(false);
       }
     }
-  }, [client?.id, fetchInteractions]); // Include fetchInteractions in dependencies since it's a stable useCallback
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client?.id]); // Only depend on client.id - interactions are managed separately
 
   // Fetch contacts when client changes
   useEffect(() => {
@@ -4215,18 +4480,29 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     loadContacts();
   }, [client?.id, client?.lead_type]);
 
-  // Fetch employee phone/extension mapping
+  // Fetch employee phone/extension mapping - use allEmployees prop if available
   useEffect(() => {
     const loadEmployeePhoneMap = async () => {
       try {
-        const { data: employees, error } = await supabase
-          .from('tenants_employee')
-          .select('id, display_name, phone_ext, phone, mobile, mobile_ext, onecom_code, photo_url')
-          .not('display_name', 'is', null);
+        // Use employees from prop if available, otherwise fetch
+        let employees: any[] = [];
+        
+        if (allEmployees && allEmployees.length > 0) {
+          // Use employees from prop (already loaded in parent)
+          employees = allEmployees;
+        } else {
+          // Fallback: fetch employees if not provided via prop
+          const { data, error } = await supabase
+            .from('tenants_employee')
+            .select('id, display_name, phone_ext, phone, mobile, mobile_ext, onecom_code, photo_url')
+            .not('display_name', 'is', null);
 
-        if (error) {
-          console.error('Error fetching employees for phone mapping:', error);
-          return;
+          if (error) {
+            console.error('Error fetching employees for phone mapping:', error);
+            return;
+          }
+          
+          employees = data || [];
         }
 
         const phoneMap = new Map<string, string>();
@@ -4334,10 +4610,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     };
 
     loadEmployeePhoneMap();
-  }, []);
+  }, [allEmployees]); // Depend on allEmployees so it rebuilds when employees are loaded
 
   // Re-process interactions when employeePhoneMap becomes available
-  // This ensures employee names are matched correctly even if map loads after initial fetch
+  // Update interactions in place instead of re-fetching to avoid performance issues
   useEffect(() => {
     if (employeePhoneMap.size > 0 && interactions.length > 0 && client?.id) {
       // Check if any call interactions have "Unknown" or suspiciously short employee names
@@ -4353,16 +4629,61 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           const empName = i.employee || '';
           return empName === 'Unknown' || empName === '' || (empName.length <= 2 && empName !== 'AZ');
         }).length;
-        console.log(`🔄 Employee phone map loaded (${employeePhoneMap.size} entries), found ${unknownCount} call(s) with unknown/short employee names, re-processing...`);
-        // Trigger a re-fetch to re-process with the populated map
-        // Use a small delay to avoid race conditions
-        const timeoutId = setTimeout(() => {
-          fetchInteractions({ bypassCache: true });
-        }, 100);
-        return () => clearTimeout(timeoutId);
+        console.log(`🔄 Employee phone map loaded (${employeePhoneMap.size} entries), found ${unknownCount} call(s) with unknown/short employee names, updating in place...`);
+        
+        // Update interactions in place instead of re-fetching
+        const updatedInteractions = interactions.map((interaction: any) => {
+          if (interaction.kind === 'call' && (interaction.employee === 'Unknown' || !interaction.employee || interaction.employee.length <= 2)) {
+            // Re-process this call with the now-available phone map
+            const callLog = interaction.call_log;
+            if (callLog) {
+              const direction = callLog.direction || 'out';
+              const primaryField = direction === 'out' ? callLog.source : callLog.destination;
+              
+              if (primaryField) {
+                const cleaned = String(primaryField).trim();
+                let employeeName: string | null = null;
+                
+                // Try extension matching
+                if (/^\d+$/.test(cleaned) && cleaned.length >= 2 && cleaned.length <= 4) {
+                  employeeName = employeePhoneMap.get(cleaned) || null;
+                } else if (cleaned.includes('-')) {
+                  const numericPart = cleaned.split('-')[0].trim();
+                  if (/^\d+$/.test(numericPart) && numericPart.length >= 2 && numericPart.length <= 4) {
+                    employeeName = employeePhoneMap.get(numericPart) || null;
+                  }
+                }
+                
+                // Try phone matching
+                if (!employeeName && cleaned.length > 4) {
+                  const normalized = cleaned.replace(/[^\d]/g, '');
+                  employeeName = employeePhoneMap.get(normalized) || 
+                                 employeePhoneMap.get(normalized.slice(-9)) || 
+                                 employeePhoneMap.get(normalized.slice(-7)) || 
+                                 null;
+                }
+                
+                if (employeeName) {
+                  console.log(`✅ Updated call ${interaction.id} employee from "${interaction.employee}" to "${employeeName}"`);
+                  return { ...interaction, employee: employeeName };
+                }
+              }
+            }
+          }
+          return interaction;
+        });
+        
+        // Only update if we actually changed something
+        const hasChanges = updatedInteractions.some((updated: any, idx: number) => 
+          updated.employee !== interactions[idx]?.employee
+        );
+        
+        if (hasChanges) {
+          setInteractions(updatedInteractions);
+        }
       }
     }
-  }, [employeePhoneMap.size, client?.id, interactions.length]); // Include interactions.length to check when interactions change
+  }, [employeePhoneMap.size, client?.id]); // Removed interactions.length to prevent loops
 
   // Helper function to match phone number to employee or client name
   const matchPhoneToName = (phoneNumber: string | null | undefined): string | null => {
@@ -4446,14 +4767,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         setWhatsAppTemplates(templates);
         console.log(`✅ Loaded ${templates.length} WhatsApp templates for interactions tab:`, templates.map(t => ({ id: t.id, name: t.title || t.name360, language: t.language })));
         
-        // If interactions are already loaded, trigger a re-fetch to process templates
-        // Use setTimeout to ensure state is updated and ref is available
-        setTimeout(() => {
-          if (interactions.length > 0) {
-            console.log('🔄 Templates loaded, reprocessing interactions to apply template content...');
-            fetchInteractions({ bypassCache: true });
-          }
-        }, 200);
+        // Process templates in place instead of re-fetching
+        // This will be handled by the useEffect below
       } catch (error) {
         console.error('Error fetching WhatsApp templates:', error);
         setWhatsAppTemplates([]);
@@ -4466,6 +4781,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   // Removed fetchInteractionsRef - calling fetchInteractions directly now
 
   // Reprocess interactions when templates become available
+  // Update interactions in place instead of re-fetching to avoid performance issues
   useEffect(() => {
     if (whatsAppTemplates.length > 0 && interactions.length > 0) {
       // Check if any WhatsApp interactions need template processing
@@ -4477,12 +4793,74 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       );
       
       if (needsProcessing) {
-        console.log('🔄 Templates are available, reprocessing WhatsApp interactions to apply template content...');
-        // Use a delay to avoid infinite loops and ensure everything is ready
-        const timeoutId = setTimeout(() => {
-          fetchInteractions({ bypassCache: true });
-        }, 300);
-        return () => clearTimeout(timeoutId);
+        console.log('🔄 Templates are available, updating WhatsApp interactions in place to apply template content...');
+        
+        // Update interactions in place
+        const updatedInteractions = interactions.map((interaction: any) => {
+          if (interaction.kind === 'whatsapp' && interaction.direction === 'out') {
+            const templateId = interaction.template_id;
+            let updatedContent = interaction.content;
+            
+            // Try to match by template_id first
+            if (templateId) {
+              const templateIdNum = Number(templateId);
+              const template = whatsAppTemplates.find(t => Number(t.id) === templateIdNum);
+              if (template && template.content) {
+                if (template.params === '0') {
+                  updatedContent = template.content;
+                } else if (template.params === '1') {
+                  const paramMatch = interaction.content?.match(/\[Template:.*?\]\s*(.+)/);
+                  if (paramMatch && paramMatch[1].trim()) {
+                    updatedContent = paramMatch[1].trim();
+                  } else {
+                    updatedContent = template.content;
+                  }
+                }
+              }
+            }
+            
+            // Fallback to name matching
+            if (updatedContent === interaction.content) {
+              const templateMatch = interaction.content?.match(/\[Template:\s*([^\]]+)\]/) || 
+                                    interaction.content?.match(/Template:\s*(.+)/) ||
+                                    interaction.content?.match(/TEMPLATE_MARKER:(.+)/);
+              
+              if (templateMatch) {
+                const templateTitle = templateMatch[1].trim().replace(/\]$/, '');
+                const template = whatsAppTemplates.find(t => 
+                  t.title.toLowerCase() === templateTitle.toLowerCase() ||
+                  (t.name360 && t.name360.toLowerCase() === templateTitle.toLowerCase())
+                );
+                if (template && template.content) {
+                  if (template.params === '0') {
+                    updatedContent = template.content;
+                  } else if (template.params === '1') {
+                    const paramMatch = interaction.content?.match(/\[Template:.*?\]\s*(.+)/);
+                    if (paramMatch && paramMatch[1].trim()) {
+                      updatedContent = paramMatch[1].trim();
+                    } else {
+                      updatedContent = template.content;
+                    }
+                  }
+                }
+              }
+            }
+            
+            if (updatedContent !== interaction.content) {
+              return { ...interaction, content: updatedContent };
+            }
+          }
+          return interaction;
+        });
+        
+        // Only update if we actually changed something
+        const hasChanges = updatedInteractions.some((updated: any, idx: number) => 
+          updated.content !== interactions[idx]?.content
+        );
+        
+        if (hasChanges) {
+          setInteractions(updatedInteractions);
+        }
       }
     }
   }, [whatsAppTemplates.length]); // Only depend on templates length, not interactions to avoid loops
@@ -6187,7 +6565,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               </div>
               
               {/* AI Smart Recap Button */}
-              <button 
+              {/* <button 
                 className="btn bg-gradient-to-r from-purple-600 to-indigo-600 text-white border-none hover:from-purple-700 hover:to-indigo-700 shadow-lg w-full sm:w-auto lg:ml-auto justify-center"
                 onClick={() => {
                   // Toggle AI summary panel on mobile, or show/hide it on desktop
@@ -6202,7 +6580,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               >
                 <SparklesIcon className="w-5 h-5" />
                 AI Smart Recap
-              </button>
+              </button> */}
               
             </div>
             
@@ -8050,11 +8428,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         document.body
       )}
       {/* AI Smart Recap Drawer for Mobile */}
-      {aiDrawerOpen && createPortal(
+      {/* {aiDrawerOpen && createPortal(
         <div className="fixed inset-0 z-[999] flex lg:hidden">
-          {/* Overlay */}
           <div className="fixed inset-0 bg-black/50" onClick={() => setAiDrawerOpen(false)} />
-          {/* Drawer */}
           <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-[999]">
             <div className="flex items-center justify-between p-6 border-b border-base-300 bg-gradient-to-r from-purple-600 to-indigo-600">
               <div className="flex items-center gap-3">
@@ -8071,7 +8447,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           </div>
         </div>,
         document.body
-      )}
+      )} */}
     </div>
   );
 };

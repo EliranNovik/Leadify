@@ -1160,6 +1160,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [activeTab, setActiveTab] = usePersistedState('clientsPage_activeTab', 'info', {
     storage: 'sessionStorage',
   });
+  const [isTabBarCollapsed, setIsTabBarCollapsed] = useState(false);
   const [isStagesOpen, setIsStagesOpen] = useState(false);
   const [isActionsOpen, setIsActionsOpen] = useState(false);
   const [isBalanceModalOpen, setIsBalanceModalOpen] = useState(false);
@@ -1293,12 +1294,21 @@ const Clients: React.FC<ClientsProps> = ({
   const [showDeclinedDrawer, setShowDeclinedDrawer] = useState(false);
   const [showLeadSummaryDrawer, setShowLeadSummaryDrawer] = useState(false);
   const [showEditLeadDrawer, setShowEditLeadDrawer] = useState(false);
+  // Helper function to get category display name for edit lead drawer
+  const getCategoryDisplayNameForEdit = (categoryId: string | number | null | undefined, fallbackCategory?: string): string => {
+    // Use getCategoryName if allCategories is loaded, otherwise use fallback
+    if (allCategories.length > 0) {
+      return getCategoryName(categoryId, fallbackCategory);
+    }
+    return fallbackCategory || '';
+  };
+
   const [editLeadData, setEditLeadData] = useState({
     tags: selectedClient?.tags || '',
     source: selectedClient?.source || '',
     name: selectedClient?.name || '',
     language: selectedClient?.language || '',
-    category: selectedClient?.category || '',
+    category: getCategoryDisplayNameForEdit(selectedClient?.category_id, selectedClient?.category),
     topic: selectedClient?.topic || '',
     special_notes: selectedClient?.special_notes || '',
     probability: selectedClient?.probability || 0,
@@ -1333,6 +1343,30 @@ const Clients: React.FC<ClientsProps> = ({
   // Fetch all employees, categories, and currencies for name lookup
   useEffect(() => {
     const fetchEmployees = async () => {
+      // Check cache first
+      const cacheKey = 'clientsPage_employeesData';
+      const cacheTimestampKey = 'clientsPage_employeesData_timestamp';
+      const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+
+      try {
+        const cachedData = sessionStorage.getItem(cacheKey);
+        const cachedTimestamp = sessionStorage.getItem(cacheTimestampKey);
+
+        if (cachedData && cachedTimestamp) {
+          const age = Date.now() - parseInt(cachedTimestamp, 10);
+          if (age < CACHE_DURATION) {
+            // Use cached data
+            const data = JSON.parse(cachedData);
+            setAllEmployees(data.employees || []);
+            setEmployeeAvailabilityData(data.availabilityMap || {});
+            console.log('✅ Employees data loaded from cache');
+            return; // Skip fetch - use cache
+          }
+        }
+      } catch (error) {
+        console.error('Error reading employees cache:', error);
+      }
+
       try {
         const { data, error } = await supabase
           .from('tenants_employee')
@@ -1415,6 +1449,15 @@ const Clients: React.FC<ClientsProps> = ({
         });
 
         setEmployeeAvailabilityData(availabilityMap);
+
+        // Cache the data for future use
+        const dataToCache = {
+          employees: mapped,
+          availabilityMap: availabilityMap,
+        };
+        sessionStorage.setItem(cacheKey, JSON.stringify(dataToCache));
+        sessionStorage.setItem(cacheTimestampKey, Date.now().toString());
+        console.log('✅ Employees data loaded and cached');
       } catch (error) {
         console.error('Clients: Error fetching employees:', error);
         setAllEmployees([]);
@@ -3572,6 +3615,9 @@ const Clients: React.FC<ClientsProps> = ({
 
           // Persist client data to sessionStorage (same pattern as MasterLeadPage)
           persistClientData(normalizedClient, effectiveLeadNumber);
+          // Also store timestamp for cache invalidation
+          const timestampKey = `clientsPage_clientData_timestamp_${effectiveLeadNumber}`;
+          sessionStorage.setItem(timestampKey, Date.now().toString());
 
           setLocalLoading(false); // Stop loading immediately - don't wait for anything else
 
@@ -3700,9 +3746,45 @@ const Clients: React.FC<ClientsProps> = ({
     };
   }, [lead_number, fullLeadNumber, requestedLeadNumber, buildClientRoute, droppedStageId, userManuallyExpanded, location.pathname]); // Added location.pathname to ensure refetch on route change
   // Background loading for non-essential data (runs after essential data is loaded)
+  // Cached in sessionStorage to avoid refetching on navigation
   useEffect(() => {
     const loadBackgroundData = async () => {
-      setBackgroundLoading(true);
+      // Check cache first
+      const cacheKey = 'clientsPage_backgroundData';
+      const cacheTimestampKey = 'clientsPage_backgroundData_timestamp';
+      const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+
+      try {
+        const cachedData = sessionStorage.getItem(cacheKey);
+        const cachedTimestamp = sessionStorage.getItem(cacheTimestampKey);
+
+        if (cachedData && cachedTimestamp) {
+          const age = Date.now() - parseInt(cachedTimestamp, 10);
+          if (age < CACHE_DURATION) {
+            // Use cached data
+            const data = JSON.parse(cachedData);
+            setMainCategories(data.categories || []);
+            setSources(data.sources || []);
+            setLanguagesList(data.languages || []);
+            setCurrencies(data.currencies || []);
+            setMeetingLocations(data.meetingLocations || []);
+            setAllTags(data.tags || []);
+            const tagNames = (data.tags || []).map((tag: any) => tag.name);
+            setTagsList(tagNames);
+            console.log('✅ Background data loaded from cache');
+            return; // Skip fetch - use cache
+          }
+        }
+      } catch (error) {
+        console.error('Error reading background data cache:', error);
+      }
+
+      // Only show loading if we don't have cached data
+      const hasCachedData = sessionStorage.getItem(cacheKey);
+      if (!hasCachedData) {
+        setBackgroundLoading(true);
+      }
+
       try {
         // Fetch all non-essential data in parallel for better performance
         const [categoriesResult, sourcesResult, languagesResult, currenciesResult, meetingLocationsResult, tagsResult] = await Promise.all([
@@ -3802,7 +3884,33 @@ const Clients: React.FC<ClientsProps> = ({
           setTagsList(tagNames);
         }
 
-        console.log('✅ Background data loading completed');
+        // Cache the data for future use (use the state values that were just set)
+        const dataToCache = {
+          categories: mainCategories.length > 0 ? mainCategories : (categoriesResult.data ? categoriesResult.data.map((category: any) => {
+            if (category.misc_maincategory) {
+              return `${category.name} (${category.misc_maincategory.name})`;
+            } else {
+              return category.name;
+            }
+          }).filter(Boolean) : []),
+          sources: sources.length > 0 ? sources : (sourcesResult.data ? sourcesResult.data.map((row: any) => row.name).filter(Boolean) : []),
+          languages: languagesList.length > 0 ? languagesList : (languagesResult.data ? languagesResult.data.map((row: any) => row.name).filter(Boolean) : []),
+          currencies: currencies.length > 0 ? currencies : ((currenciesResult.newCurrencies?.data && currenciesResult.newCurrencies.data.length > 0) ? currenciesResult.newCurrencies.data : (currenciesResult.legacyCurrencies?.data ? currenciesResult.legacyCurrencies.data.map((currency: any) => ({
+            id: currency.id.toString(),
+            front_name: currency.iso_code === 'NIS' ? '₪' : currency.iso_code === 'EUR' ? '€' : currency.iso_code === 'USD' ? '$' : currency.iso_code === 'GBP' ? '£' : currency.iso_code,
+            iso_code: currency.iso_code,
+            name: currency.name
+          })) : [])),
+          meetingLocations: meetingLocations.length > 0 ? meetingLocations : (meetingLocationsResult.data ? meetingLocationsResult.data.filter((loc: any) => loc && loc.name).map((loc: any) => ({
+            id: loc.id,
+            name: loc.name,
+            default_link: loc.default_link ?? null,
+          })) : []),
+          tags: allTags.length > 0 ? allTags : (tagsResult.data || []),
+        };
+        sessionStorage.setItem(cacheKey, JSON.stringify(dataToCache));
+        sessionStorage.setItem(cacheTimestampKey, Date.now().toString());
+        console.log('✅ Background data loading completed and cached');
       } catch (error) {
         console.error('Error fetching background data:', error);
       } finally {
@@ -6879,12 +6987,15 @@ const Clients: React.FC<ClientsProps> = ({
         selectedClient?.balance_currency
       );
 
+      // Get the full category display name (subcategory + main category) using category_id
+      const categoryDisplayName = getCategoryName(selectedClient?.category_id, selectedClient?.category);
+
       setEditLeadData({
         tags: selectedClient.tags || '',
         source: selectedClient.source || '',
         name: selectedClient.name || '',
         language: selectedClient.language || '',
-        category: selectedClient.category || '',
+        category: categoryDisplayName,
         topic: selectedClient.topic || '',
         special_notes: selectedClient.special_notes || '',
         probability: selectedClient.probability || 0,
@@ -7159,12 +7270,15 @@ const Clients: React.FC<ClientsProps> = ({
       return prob !== null && prob !== undefined ? Number(prob) : 0;
     })();
 
+    // Get the full category display name (subcategory + main category) using category_id
+    const categoryDisplayName = getCategoryName(selectedClient?.category_id, selectedClient?.category);
+
     setEditLeadData({
       tags: tagsString || selectedClient?.tags || '',
       source: sourceName,
       name: selectedClient?.name || '',
       language: languageName,
-      category: selectedClient?.category || '',
+      category: categoryDisplayName,
       topic: selectedClient?.topic || '',
       special_notes: selectedClient?.special_notes || '',
       probability: probabilityValue,
@@ -9704,6 +9818,46 @@ const Clients: React.FC<ClientsProps> = ({
   const handleInteractionCountUpdate = useCallback((count: number) => {
     setInteractionCount(count);
   }, []);
+
+  // Background loading of interactions when client is selected (similar to employees loading)
+  // Check for persisted interactions in sessionStorage
+  useEffect(() => {
+    if (!selectedClient?.id) return;
+
+    // Skip if we already have cached interactions for this client
+    if (interactionsCache && interactionsCache.leadId === selectedClient.id) {
+      return;
+    }
+
+    // Check if interactions are already persisted in sessionStorage
+    try {
+      const persistedKey = `interactions_${selectedClient.id}`;
+      const persisted = sessionStorage.getItem(persistedKey);
+      if (persisted) {
+        try {
+          const parsed = JSON.parse(persisted);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            console.log(`✅ Found persisted interactions for client ${selectedClient.id} (${parsed.length} interactions), using cached data`);
+            handleInteractionsCacheUpdate({
+              leadId: selectedClient.id,
+              interactions: parsed,
+              emails: [],
+              count: parsed.length,
+              fetchedAt: new Date().toISOString(),
+            });
+            return;
+          }
+        } catch (e) {
+          console.warn('Failed to parse persisted interactions:', e);
+        }
+      }
+    } catch (e) {
+      // sessionStorage might not be available
+    }
+
+    // If no persisted data, InteractionsTab will fetch when it mounts
+    console.log('🔄 Interactions will be loaded when InteractionsTab mounts for client:', selectedClient.id);
+  }, [selectedClient?.id, interactionsCache?.leadId, handleInteractionsCacheUpdate]);
 
   // Handler to open proforma drawer
   const handleOpenProforma = async (payment: any) => {
@@ -12700,13 +12854,13 @@ const Clients: React.FC<ClientsProps> = ({
             </div>
           )}
 
-          {/* Background loading indicator */}
-          {backgroundLoading && (
+          {/* Background loading indicator - Hidden to avoid UI disruption */}
+          {/* {backgroundLoading && (
             <div className="fixed top-4 right-4 z-40 bg-info/20 text-info-content px-3 py-2 rounded-lg shadow-lg flex items-center gap-2 text-sm">
               <div className="loading loading-spinner loading-xs"></div>
               Loading additional data...
             </div>
-          )}
+          )} */}
 
 
 
@@ -12854,7 +13008,7 @@ const Clients: React.FC<ClientsProps> = ({
 
                 {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
                   <div className="relative w-full" data-assign-dropdown="true">
-                    <label className="block text-xs font-medium text-gray-500 mb-1">Assign to</label>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Assign scheduler</label>
                     <div className="flex items-center gap-1">
                       <div className="relative w-full">
                         <input
@@ -12924,47 +13078,159 @@ const Clients: React.FC<ClientsProps> = ({
           />
           {/* Tabs Navigation */}
 
-          {/* Tabs Navigation - Desktop Only (Hidden on Mobile) - Using style tag to ensure it's hidden */}
+          {/* Tabs Navigation - Desktop Only (Hidden on Mobile) - Fixed at bottom with glassy blur effect */}
           <style>{`
         @media (max-width: 1023px) {
           .desktop-tabs-navigation {
             display: none !important;
           }
         }
+        @keyframes fadeInScale {
+          from {
+            opacity: 0;
+            transform: scale(0.8);
+          }
+          to {
+            opacity: 1;
+            transform: scale(1);
+          }
+        }
+        @keyframes fadeOutScale {
+          from {
+            opacity: 1;
+            transform: scale(1);
+          }
+          to {
+            opacity: 0;
+            transform: scale(0.8);
+          }
+        }
+        @keyframes fadeInSlide {
+          from {
+            opacity: 0;
+            transform: translateY(10px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        @keyframes expandWidth {
+          from {
+            width: 56px;
+            opacity: 0;
+          }
+          to {
+            width: auto;
+            opacity: 1;
+          }
+        }
+        @keyframes collapseWidth {
+          from {
+            width: auto;
+            opacity: 1;
+          }
+          to {
+            width: 56px;
+            opacity: 0;
+          }
+        }
       `}</style>
-          <div className="desktop-tabs-navigation hidden lg:block bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mb-6 mx-6">
-            <div className="w-full">
-              {/* Desktop version */}
-              <div className="flex flex-col px-4 py-4 gap-4">
-                <div className="flex items-center gap-4 flex-wrap">
-                  <div ref={desktopTabsRef} className="flex bg-white dark:bg-gray-800 p-1 gap-1 overflow-x-auto flex-1 rounded-lg scrollbar-hide min-w-0" style={{ scrollBehavior: 'smooth' }}>
-                    {tabs.map((tab) => (
-                      <button
-                        key={tab.id}
-                        className={`relative flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm transition-all duration-300 hover:scale-[1.02] whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
-                          ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg transform scale-[1.02]'
-                          : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
-                          }`}
-                        onClick={() => setActiveTab(tab.id)}
-                      >
-                        <tab.icon className={`w-5 h-5 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
-                        <span className={`whitespace-nowrap saira-light font-bold ${activeTab === tab.id ? 'text-white' : 'text-gray-600'}`}>{tab.label}</span>
-                        {tab.id === 'interactions' && tab.badge && (
-                          <div className={`badge badge-sm font-bold ${activeTab === tab.id
-                            ? 'bg-white/20 text-white border-white/30'
-                            : 'bg-purple-100 text-purple-700 border-purple-200'
-                            }`}>
-                            {tab.badge}
+          <div className="desktop-tabs-navigation hidden lg:block fixed bottom-0 left-0 right-0 z-50 pb-safe">
+            <div className="flex justify-center px-4 pb-4">
+              {isTabBarCollapsed ? (
+                // Collapsed state: Single circle with active tab icon
+                <button
+                  onClick={() => setIsTabBarCollapsed(false)}
+                  className="bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-full shadow-2xl border-2 border-white/20 w-14 h-14 flex items-center justify-center transition-all duration-500 ease-in-out hover:scale-110"
+                  title="Click to expand"
+                  style={{
+                    animation: 'fadeInScale 0.5s ease-in-out'
+                  }}
+                >
+                  <div className="relative">
+                    {(() => {
+                      const activeTabData = tabs.find(tab => tab.id === activeTab);
+                      const ActiveIcon = activeTabData?.icon || InformationCircleIcon;
+                      return <ActiveIcon className="w-6 h-6" style={{ animation: 'fadeInScale 0.5s ease-in-out 0.1s both' }} />;
+                    })()}
+                    {(() => {
+                      const activeTabData = tabs.find(tab => tab.id === activeTab);
+                      if (activeTabData?.id === 'interactions' && activeTabData?.badge) {
+                        return (
+                          <div
+                            className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center bg-white/20 text-white"
+                            style={{ animation: 'fadeInScale 0.4s ease-in-out 0.2s both' }}
+                          >
+                            {activeTabData.badge}
                           </div>
-                        )}
-                        {activeTab === tab.id && (
-                          <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
-                        )}
-                      </button>
-                    ))}
+                        );
+                      }
+                      return null;
+                    })()}
                   </div>
+                </button>
+              ) : (
+                // Expanded state: Full tab bar
+                <div className="flex items-center gap-2">
+                  <div
+                    ref={desktopTabsRef}
+                    className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/20 dark:border-gray-700/20 px-4 py-3 overflow-x-auto scrollbar-hide transition-all duration-500 ease-in-out"
+                    style={{
+                      borderRadius: '9999px',
+                      maxWidth: '95vw',
+                      animation: 'fadeInScale 0.5s ease-in-out'
+                    }}
+                  >
+                    <div className="flex items-center gap-2" style={{ scrollBehavior: 'smooth' }}>
+                      {tabs.map((tab, index) => (
+                        <button
+                          key={tab.id}
+                          className={`relative flex flex-col items-center justify-center gap-1 px-4 py-3 rounded-full font-semibold text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
+                            ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg'
+                            : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50/50 dark:hover:bg-gray-700/50'
+                            }`}
+                          style={{
+                            animation: `fadeInSlide 0.4s ease-out ${index * 0.05}s both`
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveTab(tab.id);
+                          }}
+                        >
+                          <div className="relative">
+                            <tab.icon className={`w-5 h-5 flex-shrink-0 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
+                            {tab.id === 'interactions' && tab.badge && (
+                              <div className={`absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center ${activeTab === tab.id
+                                ? 'bg-white/20 text-white'
+                                : 'bg-purple-100 text-purple-700'
+                                }`}>
+                                {tab.badge}
+                              </div>
+                            )}
+                          </div>
+                          <span className={`saira-light font-bold text-xs ${activeTab === tab.id ? 'text-white' : 'text-gray-600'}`}>{tab.label}</span>
+                          {activeTab === tab.id && (
+                            <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Right collapse button */}
+                  <button
+                    onClick={() => setIsTabBarCollapsed(true)}
+                    className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-lg border-2 border-white/20 dark:border-gray-700/20 w-10 h-10 flex items-center justify-center transition-all duration-300 hover:scale-110 hover:bg-white/90 dark:hover:bg-gray-700/90"
+                    title="Collapse tab bar"
+                    style={{
+                      animation: 'fadeInScale 0.4s ease-out 0.1s both'
+                    }}
+                  >
+                    <ChevronDownIcon className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+                  </button>
                 </div>
-              </div>
+              )}
             </div>
           </div>
           {/* Mobile: Edge-positioned arrow buttons */}
@@ -13264,7 +13530,7 @@ const Clients: React.FC<ClientsProps> = ({
 
                 {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
                   <div className="relative" data-assign-dropdown="true">
-                    <label className="block text-sm font-medium text-primary mb-1">Assign to</label>
+                    <label className="block text-sm font-medium text-primary mb-1">Assign scheduler</label>
                     <input
                       type="text"
                       className="input input-bordered w-full"
@@ -15937,22 +16203,24 @@ const Clients: React.FC<ClientsProps> = ({
                   {tabs.map((tab) => (
                     <button
                       key={tab.id}
-                      className={`relative flex items-center justify-center gap-2 px-4 py-3 rounded-full font-semibold text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
+                      className={`relative flex flex-col items-center justify-center gap-1 px-4 py-3 rounded-full font-semibold text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
                         ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg'
                         : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700'
                         }`}
                       onClick={() => setActiveTab(tab.id)}
                     >
-                      <tab.icon className={`w-5 h-5 flex-shrink-0 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
+                      <div className="relative">
+                        <tab.icon className={`w-5 h-5 flex-shrink-0 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
+                        {tab.id === 'interactions' && tab.badge && (
+                          <div className={`absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center ${activeTab === tab.id
+                            ? 'bg-white/20 text-white'
+                            : 'bg-purple-100 text-purple-700'
+                            }`}>
+                            {tab.badge}
+                          </div>
+                        )}
+                      </div>
                       <span className={`saira-light font-bold text-xs ${activeTab === tab.id ? 'text-white' : 'text-gray-600'}`}>{tab.label}</span>
-                      {tab.id === 'interactions' && tab.badge && (
-                        <div className={`badge badge-sm font-bold ${activeTab === tab.id
-                          ? 'bg-white/20 text-white border-white/30'
-                          : 'bg-purple-100 text-purple-700 border-purple-200'
-                          }`}>
-                          {tab.badge}
-                        </div>
-                      )}
                       {activeTab === tab.id && (
                         <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
                       )}

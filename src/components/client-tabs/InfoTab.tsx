@@ -81,6 +81,23 @@ const getTextAlignment = (text: string): string => {
   return hebrewRegex.test(text) ? 'text-right' : 'text-left';
 };
 
+// Helper function to decode URL-encoded text in URLs
+const decodeUrlInText = (text: string): string => {
+  if (!text) return '';
+
+  // Match URLs (http://, https://) and decode URL-encoded parts
+  const urlRegex = /(https?:\/\/[^\s<>]+)/gi;
+  return text.replace(urlRegex, (url) => {
+    try {
+      // Decode the URL to show Hebrew characters properly (decodeURI handles full URLs correctly)
+      return decodeURI(url);
+    } catch (e) {
+      // If decoding fails, return original URL
+      return url;
+    }
+  });
+};
+
 // Helper function to get the correct field value based on lead type
 const getFieldValue = (client: any, fieldName: string, legacyFieldName?: string) => {
   if (client.lead_type === 'legacy') {
@@ -1286,17 +1303,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   onEdit={() => {
                     setIsEditingFacts(true);
                     // Join facts with line breaks, preserving any existing line breaks from "n/" conversion
-                    // Only add "key: " prefix if key is not 'facts' or if there are multiple facts with different keys
-                    const hasMultipleKeys = factsOfCase.length > 1 && new Set(factsOfCase.map(f => f.key)).size > 1;
-                    setEditedFacts(factsOfCase.map(fact => {
-                      // If all facts have the same key 'facts', don't add the prefix
-                      // If there are multiple different keys, add the prefix
-                      if (hasMultipleKeys || (fact.key !== 'facts' && fact.key)) {
-                        return `${fact.key}: ${fact.value}`;
-                      } else {
-                        return fact.value;
-                      }
-                    }).join('\n'));
+                    setEditedFacts(factsOfCase.map(fact => fact.value).join('\n'));
                   }}
                   onSave={async () => {
                     try {
@@ -1348,14 +1355,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       const processedFacts = formattedFacts.replace(/n\//g, '\n');
                       const factsArray = processedFacts.split('\n').filter(fact => fact.trim() !== '').map(line => {
                         const trimmedLine = line.trim();
-                        const colonIndex = trimmedLine.indexOf(':');
-                        if (colonIndex > 0 && colonIndex < trimmedLine.length - 1) {
-                          const key = trimmedLine.substring(0, colonIndex).trim();
-                          const value = trimmedLine.substring(colonIndex + 1).trim();
-                          return { key: key || 'facts', value: value };
-                        } else {
-                          return { key: 'facts', value: trimmedLine };
-                        }
+                        return { key: 'facts', value: trimmedLine };
                       });
 
                       setFactsOfCase(factsArray);
@@ -1393,14 +1393,10 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         // Process facts: HTML tags are already stripped in getFacts(), just format for display
                         const processedFacts = factsOfCase.map((fact, index) => {
                           // Convert "n/" to line break in display (HTML tags already stripped)
-                          const displayValue = typeof fact.value === 'string' ? fact.value.replace(/n\//g, '\n') : String(fact.value || '');
-                          // Only add "key: " prefix if key is not 'facts' or if there are multiple facts with different keys
-                          const hasMultipleKeys = factsOfCase.length > 1 && new Set(factsOfCase.map(f => f.key)).size > 1;
-                          if (hasMultipleKeys || (fact.key !== 'facts' && fact.key)) {
-                            return `${fact.key}: ${displayValue}`;
-                          } else {
-                            return displayValue;
-                          }
+                          let displayValue = typeof fact.value === 'string' ? fact.value.replace(/n\//g, '\n') : String(fact.value || '');
+                          // Decode URL-encoded text in URLs
+                          displayValue = decodeUrlInText(displayValue);
+                          return displayValue;
                         }).join('\n');
 
                         return (

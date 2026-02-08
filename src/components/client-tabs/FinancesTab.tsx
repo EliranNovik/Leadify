@@ -13,6 +13,7 @@ import { PencilLine, Trash2 } from 'lucide-react';
 import { DocumentTextIcon, Cog6ToothIcon, ChartPieIcon, PlusIcon, ChatBubbleLeftRightIcon, DocumentCheckIcon } from '@heroicons/react/24/outline';
 import EditPaymentModal from '../modals/EditPaymentModal';
 import AddPaymentModal from '../modals/AddPaymentModal';
+import NotesModal from '../modals/NotesModal';
 
 // Portal dropdown component for admin actions
 const AdminDropdownPortal: React.FC<{
@@ -108,6 +109,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const year = date.getFullYear();
     return `${day}/${month}/${year}`;
+  };
+
+  // Helper function to detect Hebrew text and return RTL direction
+  const getNotesTextDirection = (text: string | null | undefined): 'rtl' | 'ltr' => {
+    if (!text) return 'ltr';
+    // Check if text contains Hebrew characters (Unicode range 0590-05FF)
+    const hebrewRegex = /[\u0590-\u05FF]/;
+    return hebrewRegex.test(text) ? 'rtl' : 'ltr';
   };
 
   // Helper function to calculate VAT rate based on date for legacy leads
@@ -223,6 +232,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     return 'First Payment';
   };
 
+  // Helper function to check if a payment is "Expense (no VAT)"
+  const isExpenseNoVat = (order: number | string | null | undefined): boolean => {
+    if (typeof order === 'number') {
+      return order === 99;
+    }
+    if (typeof order === 'string') {
+      return order.toLowerCase().includes('expense') && order.toLowerCase().includes('no vat');
+    }
+    return false;
+  };
+
   // Add state for stages dropdown and drawer
   const [showStagesDrawer, setShowStagesDrawer] = useState(false);
   const [autoPlanData, setAutoPlanData] = useState({
@@ -257,6 +277,96 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [showPaidDateModal, setShowPaidDateModal] = useState(false);
   const [selectedPaymentForPaid, setSelectedPaymentForPaid] = useState<string | number | null>(null);
   const [paidDate, setPaidDate] = useState<string>('');
+
+  // Add state for notes modal
+  const [showNotesModal, setShowNotesModal] = useState(false);
+  const [selectedPaymentForNotes, setSelectedPaymentForNotes] = useState<PaymentPlan | null>(null);
+  const [isSavingNotes, setIsSavingNotes] = useState(false);
+
+  // Handler to open notes modal
+  const handleOpenNotesModal = (payment: PaymentPlan) => {
+    setSelectedPaymentForNotes(payment);
+    setShowNotesModal(true);
+  };
+
+  // Handler to save notes
+  const handleSaveNotes = async (notes: string) => {
+    if (!selectedPaymentForNotes) return;
+
+    setIsSavingNotes(true);
+    try {
+      const currentUserName = await getCurrentUserName();
+      const isLegacyPayment = selectedPaymentForNotes.isLegacy;
+
+      // Log history
+      const changes = [];
+      if (selectedPaymentForNotes.notes !== notes) {
+        changes.push({
+          payment_plan_id: selectedPaymentForNotes.id,
+          field_name: 'notes',
+          old_value: selectedPaymentForNotes.notes || '',
+          new_value: notes || '',
+          changed_by: currentUserName,
+          changed_at: new Date().toISOString()
+        });
+      }
+
+      // Save changes to history (only for new payments)
+      if (changes.length > 0 && !isLegacyPayment) {
+        const changesWithLeadId = changes.map(change => ({
+          ...change,
+          lead_id: client?.id // Use UUID for new leads
+        }));
+
+        const { error: historyError } = await supabase
+          .from('payment_plan_changes')
+          .insert(changesWithLeadId);
+
+        if (historyError) {
+          console.error('Error logging notes change:', historyError);
+        }
+      }
+
+      // Update payment notes in database
+      if (isLegacyPayment) {
+        const { error } = await supabase
+          .from('finances_paymentplanrow')
+          .update({ notes: notes || '' })
+          .eq('id', selectedPaymentForNotes.id);
+
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('payment_plans')
+          .update({ notes: notes || '' })
+          .eq('id', selectedPaymentForNotes.id);
+
+        if (error) throw error;
+      }
+
+      // Update local state
+      setFinancePlan((prev: any) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          payments: prev.payments.map((p: PaymentPlan) =>
+            p.id === selectedPaymentForNotes.id
+              ? { ...p, notes: notes || '' }
+              : p
+          )
+        };
+      });
+
+      toast.success('Notes updated successfully!');
+      setShowNotesModal(false);
+      setSelectedPaymentForNotes(null);
+    } catch (error) {
+      console.error('Error saving notes:', error);
+      toast.error('Failed to save notes');
+    } finally {
+      setIsSavingNotes(false);
+    }
+  };
 
 
   // Update autoPlanData currency and contact when client changes
@@ -1406,12 +1516,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               // Get contact name from client_id
               const contactName = getContactNameFromClientId(plan.client_id, currentContacts);
 
-              // Calculate total for this contact's payments
+              // Calculate total for this contact's payments (excluding "Expense (no VAT)" payments)
               const contactPayments = paymentsByContact.get(contactName) || [];
-              const contactTotal = contactPayments.reduce((sum, p) => sum + p.paymentTotal, 0);
+              const contactTotal = contactPayments.reduce((sum, p) => {
+                const orderText = p.plan.order ? getOrderText(p.plan.order) : 'First Payment';
+                // Exclude "Expense (no VAT)" from total calculation
+                if (isExpenseNoVat(p.plan.order) || isExpenseNoVat(orderText)) {
+                  return sum;
+                }
+                return sum + p.paymentTotal;
+              }, 0);
 
               // Calculate percentage based on this contact's total, not the global total
-              const calculatedDuePercent = contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%';
+              // If this payment is "Expense (no VAT)", set duePercent to empty string
+              const orderText = plan.order ? getOrderText(plan.order) : 'First Payment';
+              const calculatedDuePercent = isExpenseNoVat(plan.order) || isExpenseNoVat(orderText)
+                ? ''
+                : (contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%');
 
               // Debug: Log employee data if available
               if (plan.ready_to_pay && plan.ready_to_pay_by) {
@@ -1507,12 +1628,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               // Get contact name
               const contactName = plan.client_name || 'Unknown Contact';
 
-              // Calculate total for this contact's payments
+              // Calculate total for this contact's payments (excluding "Expense (no VAT)" payments)
               const contactPayments = paymentsByContact.get(contactName) || [];
-              const contactTotal = contactPayments.reduce((sum, p) => sum + p.paymentTotal, 0);
+              const contactTotal = contactPayments.reduce((sum, p) => {
+                const orderText = typeof p.plan.payment_order === 'number' ? getOrderText(p.plan.payment_order) : (p.plan.payment_order || 'First Payment');
+                // Exclude "Expense (no VAT)" from total calculation
+                if (isExpenseNoVat(p.plan.payment_order) || isExpenseNoVat(orderText)) {
+                  return sum;
+                }
+                return sum + p.paymentTotal;
+              }, 0);
 
               // Calculate percentage based on this contact's total, not the global total
-              const duePercentStr = contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%';
+              // If this payment is "Expense (no VAT)", set duePercent to empty string
+              const orderText = typeof plan.payment_order === 'number' ? getOrderText(plan.payment_order) : (plan.payment_order || 'First Payment');
+              const duePercentStr = isExpenseNoVat(plan.payment_order) || isExpenseNoVat(orderText)
+                ? ''
+                : (contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%');
 
               return {
                 id: plan.id,
@@ -1925,12 +2057,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             // Get contact name from client_id
             const contactName = getContactNameFromClientId(plan.client_id, currentContacts);
 
-            // Calculate total for this contact's payments
+            // Calculate total for this contact's payments (excluding "Expense (no VAT)" payments)
             const contactPayments = paymentsByContact.get(contactName) || [];
-            const contactTotal = contactPayments.reduce((sum, p) => sum + p.paymentTotal, 0);
+            const contactTotal = contactPayments.reduce((sum, p) => {
+              const orderText = p.plan.order ? getOrderText(p.plan.order) : 'First Payment';
+              // Exclude "Expense (no VAT)" from total calculation
+              if (isExpenseNoVat(p.plan.order) || isExpenseNoVat(orderText)) {
+                return sum;
+              }
+              return sum + p.paymentTotal;
+            }, 0);
 
             // Calculate percentage based on this contact's total, not the global total
-            const calculatedDuePercent = contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%';
+            // If this payment is "Expense (no VAT)", set duePercent to empty string
+            const orderText = plan.order ? getOrderText(plan.order) : 'First Payment';
+            const calculatedDuePercent = isExpenseNoVat(plan.order) || isExpenseNoVat(orderText)
+              ? ''
+              : (contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%');
 
             // For legacy leads: if due_date is set (even without due_by_id), treat as ready_to_pay
             // This is because legacy leads use due_date and due_by_id instead of ready_to_pay flag
@@ -2011,12 +2154,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             // Get contact name
             const contactName = plan.client_name || 'Unknown Contact';
 
-            // Calculate total for this contact's payments
+            // Calculate total for this contact's payments (excluding "Expense (no VAT)" payments)
             const contactPayments = paymentsByContact.get(contactName) || [];
-            const contactTotal = contactPayments.reduce((sum, p) => sum + p.paymentTotal, 0);
+            const contactTotal = contactPayments.reduce((sum, p) => {
+              const orderText = typeof p.plan.payment_order === 'number' ? getOrderText(p.plan.payment_order) : (p.plan.payment_order || 'First Payment');
+              // Exclude "Expense (no VAT)" from total calculation
+              if (isExpenseNoVat(p.plan.payment_order) || isExpenseNoVat(orderText)) {
+                return sum;
+              }
+              return sum + p.paymentTotal;
+            }, 0);
 
             // Calculate percentage based on this contact's total, not the global total
-            const duePercentStr = contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%';
+            // If this payment is "Expense (no VAT)", set duePercent to empty string
+            const orderText = typeof plan.payment_order === 'number' ? getOrderText(plan.payment_order) : (plan.payment_order || 'First Payment');
+            const duePercentStr = isExpenseNoVat(plan.payment_order) || isExpenseNoVat(orderText)
+              ? ''
+              : (contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%');
 
             return {
               id: plan.id,
@@ -2231,8 +2385,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     // Fallback: Use percentage-based calculation
     const totalAmount = getTotalAmount();
 
-    // Calculate total planned amount based on due percentages
+    // Calculate total planned amount based on due percentages (excluding "Expense (no VAT)" payments)
     const totalPlannedPercent = financePlan.payments.reduce((sum, payment) => {
+      // Skip "Expense (no VAT)" payments
+      if (isExpenseNoVat(payment.order)) {
+        return sum;
+      }
       const percent = typeof payment.duePercent === 'string'
         ? parseFloat(payment.duePercent.replace('%', ''))
         : (payment.duePercent || 0);
@@ -4868,7 +5026,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                           {viewMode === 'table' ? (
                             <div className="bg-white rounded-xl p-4 border border-gray-200 overflow-x-auto">
                               <table className="min-w-full rounded-xl overflow-hidden">
-                                <thead className="bg-base-200 sticky top-0 z-10">
+                                <thead className="sticky top-0 z-10">
                                   <tr>
                                     <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due %</th>
                                     <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due Date</th>
@@ -4992,142 +5150,152 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           )}
                                         </td>
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          {p.notes}
+                                          <button
+                                            onClick={() => handleOpenNotesModal(p)}
+                                            className="text-sm text-gray-700 hover:text-indigo-600 transition-colors cursor-pointer max-w-[200px] truncate block mx-auto"
+                                            title={p.notes || 'Click to add notes'}
+                                            dir={getNotesTextDirection(p.notes)}
+                                            style={{ textAlign: getNotesTextDirection(p.notes) === 'rtl' ? 'right' : 'left' }}
+                                          >
+                                            {p.notes && p.notes.length > 20
+                                              ? `${p.notes.substring(0, 20)}...`
+                                              : p.notes || '---'}
+                                          </button>
                                         </td>
                                         <td className="flex gap-2 justify-end align-middle min-w-[80px] px-4 py-3" style={{ overflow: 'visible', position: 'relative' }}>
                                           {p.id ? (
-                                              <>
-                                                {/* Payment Link icon - disabled for legacy */}
-                                                {p.proforma && !isPaid && !p.isLegacy && (
-                                                  <button
-                                                    className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
-                                                    title="Generate Payment Link"
-                                                    onClick={() => handleGeneratePaymentLink(p)}
-                                                    style={{ padding: 0 }}
-                                                  >
-                                                    <LinkIcon className="w-5 h-5" />
-                                                  </button>
-                                                )}
-                                                {/* Ready to Pay button - available for all */}
-                                                {!isPaid && !p.ready_to_pay && (
-                                                  <button
-                                                    className="btn btn-sm btn-circle bg-yellow-100 hover:bg-yellow-200 text-yellow-700 border-yellow-300 border-2 shadow-sm flex items-center justify-center"
-                                                    title="Mark as Ready to Pay"
-                                                    onClick={() => handleMarkAsReadyToPay(p)}
-                                                    style={{ padding: 0 }}
-                                                  >
-                                                    <PaperAirplaneIcon className="w-5 h-5" />
-                                                  </button>
-                                                )}
-                                                {/* Sent to Finances indicator with revert button */}
-                                                {!isPaid && p.ready_to_pay && (
-                                                  <div className="tooltip tooltip-top z-[9999]" data-tip={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Ready to pay - Click to revert'}>
-                                                    <button
-                                                      className="btn btn-sm btn-circle bg-red-100 hover:bg-red-200 text-red-700 border-red-300 border-2 shadow-sm flex items-center justify-center"
-                                                      title={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Revert Ready to Pay'}
-                                                      onClick={() => handleRevertReadyToPay(p)}
-                                                      style={{ padding: 0 }}
-                                                    >
-                                                      <XMarkIcon className="w-5 h-5" />
-                                                    </button>
-                                                  </div>
-                                                )}
-                                                {/* Dollar icon (small) - only for superusers or collection users */}
-                                                {!isPaid && (isSuperuser || isCollection) && (
-                                                  <button
-                                                    className="btn btn-sm btn-circle bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
-                                                    title={p.isLegacy ? "Mark Legacy Payment as Paid" : "Mark as Paid"}
-                                                    onClick={() => handleOpenPaidDateModal(p.id)}
-                                                    style={{ padding: 0 }}
-                                                  >
-                                                    <CurrencyDollarIcon className="w-5 h-5" />
-                                                  </button>
-                                                )}
-                                                {/* Admin dropdown button - only for superusers/collection when paid */}
-                                                {isPaid && (isSuperuser || isCollection) && (
-                                                  <>
-                                                    <button
-                                                      ref={(el) => { dropdownButtonRefs.current[p.id] = el; }}
-                                                      className="btn btn-sm btn-circle bg-purple-100 hover:bg-purple-200 text-purple-700 border-purple-300 border-2 shadow-sm flex items-center justify-center"
-                                                      title="Admin Actions"
-                                                      onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        setOpenDropdownPaymentId(openDropdownPaymentId === p.id ? null : p.id);
-                                                      }}
-                                                      style={{ padding: 0 }}
-                                                    >
-                                                      <Cog6ToothIcon className="w-5 h-5" />
-                                                    </button>
-                                                    <AdminDropdownPortal
-                                                      anchorRef={{ current: dropdownButtonRefs.current[p.id] }}
-                                                      open={openDropdownPaymentId === p.id}
-                                                      onClose={() => setOpenDropdownPaymentId(null)}
-                                                    >
-                                                      <ul className="menu bg-base-100 rounded-box w-52 p-2 shadow-lg border border-gray-200">
-                                                        {(() => {
-                                                          // For legacy leads: don't show if due_date exists
-                                                          // For new leads: don't show if ready_to_pay is TRUE
-                                                          const shouldShowSentToFinance = p.isLegacy
-                                                            ? !(p as any).original_due_date // Legacy: hide if due_date exists
-                                                            : !p.ready_to_pay; // New: hide if ready_to_pay is TRUE
-
-                                                          return shouldShowSentToFinance ? (
-                                                            <li>
-                                                              <button
-                                                                className="text-sm"
-                                                                onClick={(e) => {
-                                                                  e.stopPropagation();
-                                                                  handleSentToFinance(p);
-                                                                  setOpenDropdownPaymentId(null);
-                                                                }}
-                                                              >
-                                                                Sent to Finance
-                                                              </button>
-                                                            </li>
-                                                          ) : null;
-                                                        })()}
-                                                        <li>
-                                                          <button
-                                                            className="text-sm text-red-600"
-                                                            onClick={(e) => {
-                                                              e.stopPropagation();
-                                                              if (window.confirm('Are you sure you want to revert this payment from paid status?')) {
-                                                                handleRevertMarkedAsPaid(p);
-                                                                setOpenDropdownPaymentId(null);
-                                                              }
-                                                            }}
-                                                          >
-                                                            Revert Marked as Paid
-                                                          </button>
-                                                        </li>
-                                                      </ul>
-                                                    </AdminDropdownPortal>
-                                                  </>
-                                                )}
-                                                {/* Edit icon (small) - only for superusers/collection if paid, available for all if not paid */}
-                                                {(!isPaid || isSuperuser || isCollection) && (
-                                                  <button
-                                                    className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                                    title="Edit"
-                                                    onClick={() => handleEditPayment(p)}
-                                                    style={{ padding: 0 }}
-                                                  >
-                                                    <PencilIcon className="w-5 h-5" />
-                                                  </button>
-                                                )}
-                                                {/* Delete icon (small) - available for all users */}
+                                            <>
+                                              {/* Payment Link icon - disabled for legacy */}
+                                              {p.proforma && !isPaid && !p.isLegacy && (
                                                 <button
-                                                  className="btn btn-sm btn-circle bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
-                                                  title="Delete"
-                                                  onClick={() => handleDeletePayment(p)}
+                                                  className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
+                                                  title="Generate Payment Link"
+                                                  onClick={() => handleGeneratePaymentLink(p)}
                                                   style={{ padding: 0 }}
                                                 >
-                                                  <TrashIcon className="w-5 h-5" />
+                                                  <LinkIcon className="w-5 h-5" />
                                                 </button>
-                                              </>
-                                            ) : (
-                                              <span className="text-gray-400">—</span>
-                                            )}
+                                              )}
+                                              {/* Ready to Pay button - available for all */}
+                                              {!isPaid && !p.ready_to_pay && (
+                                                <button
+                                                  className="btn btn-sm btn-circle bg-yellow-100 hover:bg-yellow-200 text-yellow-700 border-yellow-300 border-2 shadow-sm flex items-center justify-center"
+                                                  title="Mark as Ready to Pay"
+                                                  onClick={() => handleMarkAsReadyToPay(p)}
+                                                  style={{ padding: 0 }}
+                                                >
+                                                  <PaperAirplaneIcon className="w-5 h-5" />
+                                                </button>
+                                              )}
+                                              {/* Sent to Finances indicator with revert button */}
+                                              {!isPaid && p.ready_to_pay && (
+                                                <div className="tooltip tooltip-top z-[9999]" data-tip={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Ready to pay - Click to revert'}>
+                                                  <button
+                                                    className="btn btn-sm btn-circle bg-red-100 hover:bg-red-200 text-red-700 border-red-300 border-2 shadow-sm flex items-center justify-center"
+                                                    title={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Revert Ready to Pay'}
+                                                    onClick={() => handleRevertReadyToPay(p)}
+                                                    style={{ padding: 0 }}
+                                                  >
+                                                    <XMarkIcon className="w-5 h-5" />
+                                                  </button>
+                                                </div>
+                                              )}
+                                              {/* Dollar icon (small) - only for superusers or collection users */}
+                                              {!isPaid && (isSuperuser || isCollection) && (
+                                                <button
+                                                  className="btn btn-sm btn-circle bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
+                                                  title={p.isLegacy ? "Mark Legacy Payment as Paid" : "Mark as Paid"}
+                                                  onClick={() => handleOpenPaidDateModal(p.id)}
+                                                  style={{ padding: 0 }}
+                                                >
+                                                  <CurrencyDollarIcon className="w-5 h-5" />
+                                                </button>
+                                              )}
+                                              {/* Admin dropdown button - only for superusers/collection when paid */}
+                                              {isPaid && (isSuperuser || isCollection) && (
+                                                <>
+                                                  <button
+                                                    ref={(el) => { dropdownButtonRefs.current[p.id] = el; }}
+                                                    className="btn btn-sm btn-circle bg-purple-100 hover:bg-purple-200 text-purple-700 border-purple-300 border-2 shadow-sm flex items-center justify-center"
+                                                    title="Admin Actions"
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      setOpenDropdownPaymentId(openDropdownPaymentId === p.id ? null : p.id);
+                                                    }}
+                                                    style={{ padding: 0 }}
+                                                  >
+                                                    <Cog6ToothIcon className="w-5 h-5" />
+                                                  </button>
+                                                  <AdminDropdownPortal
+                                                    anchorRef={{ current: dropdownButtonRefs.current[p.id] }}
+                                                    open={openDropdownPaymentId === p.id}
+                                                    onClose={() => setOpenDropdownPaymentId(null)}
+                                                  >
+                                                    <ul className="menu bg-base-100 rounded-box w-52 p-2 shadow-lg border border-gray-200">
+                                                      {(() => {
+                                                        // For legacy leads: don't show if due_date exists
+                                                        // For new leads: don't show if ready_to_pay is TRUE
+                                                        const shouldShowSentToFinance = p.isLegacy
+                                                          ? !(p as any).original_due_date // Legacy: hide if due_date exists
+                                                          : !p.ready_to_pay; // New: hide if ready_to_pay is TRUE
+
+                                                        return shouldShowSentToFinance ? (
+                                                          <li>
+                                                            <button
+                                                              className="text-sm"
+                                                              onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                handleSentToFinance(p);
+                                                                setOpenDropdownPaymentId(null);
+                                                              }}
+                                                            >
+                                                              Sent to Finance
+                                                            </button>
+                                                          </li>
+                                                        ) : null;
+                                                      })()}
+                                                      <li>
+                                                        <button
+                                                          className="text-sm text-red-600"
+                                                          onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            if (window.confirm('Are you sure you want to revert this payment from paid status?')) {
+                                                              handleRevertMarkedAsPaid(p);
+                                                              setOpenDropdownPaymentId(null);
+                                                            }
+                                                          }}
+                                                        >
+                                                          Revert Marked as Paid
+                                                        </button>
+                                                      </li>
+                                                    </ul>
+                                                  </AdminDropdownPortal>
+                                                </>
+                                              )}
+                                              {/* Edit icon (small) - only for superusers/collection if paid, available for all if not paid */}
+                                              {(!isPaid || isSuperuser || isCollection) && (
+                                                <button
+                                                  className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
+                                                  title="Edit"
+                                                  onClick={() => handleEditPayment(p)}
+                                                  style={{ padding: 0 }}
+                                                >
+                                                  <PencilIcon className="w-5 h-5" />
+                                                </button>
+                                              )}
+                                              {/* Delete icon (small) - available for all users */}
+                                              <button
+                                                className="btn btn-sm btn-circle bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
+                                                title="Delete"
+                                                onClick={() => handleDeletePayment(p)}
+                                                style={{ padding: 0 }}
+                                              >
+                                                <TrashIcon className="w-5 h-5" />
+                                              </button>
+                                            </>
+                                          ) : (
+                                            <span className="text-gray-400">—</span>
+                                          )}
                                         </td>
                                       </tr>
                                     );
@@ -5501,279 +5669,289 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                         <span className="absolute top-4 right-4 bg-yellow-400 text-white font-bold px-4 py-1 rounded-full shadow-lg text-xs z-20 animate-pulse">Due</span>
                                       )}
                                       {/* Card content */}
+                                      <div className="flex flex-col gap-0 divide-y divide-base-200">
+                                        {/* Improved purple row: order left, percent center, actions right (icons black on white circle) */}
+                                        <div className="flex items-center bg-white text-primary rounded-t-2xl px-5 py-3" style={{ minHeight: '64px' }}>
+                                          {/* Order (left) */}
+                                          <span className="text-xs font-bold uppercase tracking-wider text-left truncate" style={{ minWidth: '120px' }}>{p.order}</span>
+                                          {/* Percent (center) */}
+                                          <span className="font-extrabold text-3xl tracking-tight text-center w-24 flex-shrink-0 flex-grow-0">
+                                            {p.duePercent && p.duePercent.includes('%') ? p.duePercent : `${p.duePercent || '0'}%`}
+                                          </span>
+                                          {/* Actions (right) */}
+                                          <div className="flex gap-2 items-center ml-4">
+                                            {p.id ? (
+                                              <>
+                                                {!p.isLegacy && isSuperuser && (
+                                                  <button
+                                                    className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
+                                                    title="Delete"
+                                                    onClick={() => handleDeletePayment(p)}
+                                                    style={{ padding: 0 }}
+                                                  >
+                                                    <TrashIcon className="w-5 h-5" />
+                                                  </button>
+                                                )}
+                                                {!p.isLegacy && (!isPaid || isSuperuser || isCollection) && (
+                                                  <button
+                                                    className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
+                                                    title="Edit"
+                                                    onClick={() => handleEditPayment(p)}
+                                                    style={{ padding: 0 }}
+                                                  >
+                                                    <PencilIcon className="w-5 h-5" />
+                                                  </button>
+                                                )}
+                                              </>
+                                            ) : (
+                                              <span className="text-gray-400">—</span>
+                                            )}
+                                          </div>
+                                        </div>
+
+                                        {/* Payment details */}
                                         <div className="flex flex-col gap-0 divide-y divide-base-200">
-                                          {/* Improved purple row: order left, percent center, actions right (icons black on white circle) */}
-                                          <div className="flex items-center bg-white text-primary rounded-t-2xl px-5 py-3" style={{ minHeight: '64px' }}>
-                                            {/* Order (left) */}
-                                            <span className="text-xs font-bold uppercase tracking-wider text-left truncate" style={{ minWidth: '120px' }}>{p.order}</span>
-                                            {/* Percent (center) */}
-                                            <span className="font-extrabold text-3xl tracking-tight text-center w-24 flex-shrink-0 flex-grow-0">
-                                              {p.duePercent && p.duePercent.includes('%') ? p.duePercent : `${p.duePercent || '0'}%`}
+                                          <div className="flex items-center justify-between py-3">
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">DUE DATE</span>
+                                            <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
+                                          </div>
+                                          <div className="flex items-center justify-between py-3">
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VALUE</span>
+                                            <span className="text-sm font-bold text-gray-900">
+                                              {getCurrencySymbol(p.currency)}
+                                              {p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                              + {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                             </span>
-                                            {/* Actions (right) */}
-                                            <div className="flex gap-2 items-center ml-4">
-                                              {p.id ? (
-                                                <>
-                                                  {!p.isLegacy && isSuperuser && (
-                                                    <button
-                                                      className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                                      title="Delete"
-                                                      onClick={() => handleDeletePayment(p)}
-                                                      style={{ padding: 0 }}
-                                                    >
-                                                      <TrashIcon className="w-5 h-5" />
-                                                    </button>
-                                                  )}
-                                                  {!p.isLegacy && (!isPaid || isSuperuser || isCollection) && (
-                                                    <button
-                                                      className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                                      title="Edit"
-                                                      onClick={() => handleEditPayment(p)}
-                                                      style={{ padding: 0 }}
-                                                    >
-                                                      <PencilIcon className="w-5 h-5" />
-                                                    </button>
-                                                  )}
-                                                </>
+                                          </div>
+                                          <div className="flex items-center justify-between py-3">
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">TOTAL</span>
+                                            <span className="text-sm font-bold text-gray-900">
+                                              {getCurrencySymbol(p.currency)}
+                                              {(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                            </span>
+                                          </div>
+                                          <div className="flex items-center justify-between py-3">
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">CLIENT</span>
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-sm font-bold text-gray-900">{p.client}</span>
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center justify-between py-3">
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">PAYMENT DATE</span>
+                                            <span className="text-sm font-bold text-gray-900">
+                                              {p.paid_at ? new Date(p.paid_at).toLocaleDateString() : '---'}
+                                            </span>
+                                          </div>
+                                          <div className="flex items-center justify-between py-3">
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">PROFORMA</span>
+                                            <div className="text-sm">
+                                              {p.isLegacy ? (
+                                                // For legacy leads, show proforma if available
+                                                (() => {
+                                                  // For legacy leads, try to match proformas with specific payment rows
+                                                  // Only show proformas that are specifically linked to this payment row
+                                                  const paymentProformas = legacyProformas.filter(proforma =>
+                                                    proforma.ppr_id === p.id
+                                                  );
+
+                                                  if (paymentProformas.length > 0) {
+                                                    return (
+                                                      <div className="flex flex-col gap-1">
+                                                        {paymentProformas.slice(0, 1).map((proforma, idx) => (
+                                                          <button
+                                                            key={proforma.id}
+                                                            className="btn btn-sm btn-outline btn-success border-success/40 text-xs font-medium"
+                                                            title={`View Proforma ${proforma.id}`}
+                                                            onClick={e => { e.preventDefault(); navigate(`/proforma-legacy/${proforma.id}`); }}
+                                                          >
+                                                            Proforma {proforma.id}
+                                                          </button>
+                                                        ))}
+                                                        {paymentProformas.length > 1 && (
+                                                          <span className="text-xs text-gray-500">+{paymentProformas.length - 1} more</span>
+                                                        )}
+                                                      </div>
+                                                    );
+                                                  } else {
+                                                    return (
+                                                      <button
+                                                        className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
+                                                        title="Create Proforma"
+                                                        onClick={e => { e.preventDefault(); navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}`); }}
+                                                        style={{ padding: 0 }}
+                                                      >
+                                                        <PlusIcon className="w-5 h-5" />
+                                                      </button>
+                                                    );
+                                                  }
+                                                })()
+                                              ) : p.proforma && p.proforma.trim() !== '' ? (
+                                                <button
+                                                  className="btn btn-sm btn-outline btn-success text-xs font-medium border-success/40"
+                                                  title="View Proforma"
+                                                  onClick={e => { e.preventDefault(); navigate(`/proforma/${p.id}`); }}
+                                                >
+                                                  {getProformaName(p.proforma)}
+                                                </button>
                                               ) : (
-                                                <span className="text-gray-400">—</span>
+                                                <button
+                                                  className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
+                                                  title="Create Proforma"
+                                                  onClick={e => { e.preventDefault(); navigate(`/proforma/create/${p.id}`); }}
+                                                  style={{ padding: 0 }}
+                                                >
+                                                  <PlusIcon className="w-5 h-5" />
+                                                </button>
                                               )}
                                             </div>
                                           </div>
-
-                                          {/* Payment details */}
-                                          <div className="flex flex-col gap-0 divide-y divide-base-200">
-                                            <div className="flex items-center justify-between py-3">
-                                              <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">DUE DATE</span>
-                                              <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
-                                            </div>
-                                            <div className="flex items-center justify-between py-3">
-                                              <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VALUE</span>
-                                              <span className="text-sm font-bold text-gray-900">
-                                                {getCurrencySymbol(p.currency)}
-                                                {p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                                + {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                              </span>
-                                            </div>
-                                            <div className="flex items-center justify-between py-3">
-                                              <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">TOTAL</span>
-                                              <span className="text-sm font-bold text-gray-900">
-                                                {getCurrencySymbol(p.currency)}
-                                                {(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                              </span>
-                                            </div>
-                                            <div className="flex items-center justify-between py-3">
-                                              <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">CLIENT</span>
-                                              <div className="flex items-center gap-2">
-                                                <span className="text-sm font-bold text-gray-900">{p.client}</span>
-                                              </div>
-                                            </div>
-                                            <div className="flex items-center justify-between py-3">
-                                              <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">PAYMENT DATE</span>
-                                              <span className="text-sm font-bold text-gray-900">
-                                                {p.paid_at ? new Date(p.paid_at).toLocaleDateString() : '---'}
-                                              </span>
-                                            </div>
-                                            <div className="flex items-center justify-between py-3">
-                                              <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">PROFORMA</span>
-                                              <div className="text-sm">
-                                                {p.isLegacy ? (
-                                                  // For legacy leads, show proforma if available
-                                                  (() => {
-                                                    // For legacy leads, try to match proformas with specific payment rows
-                                                    // Only show proformas that are specifically linked to this payment row
-                                                    const paymentProformas = legacyProformas.filter(proforma =>
-                                                      proforma.ppr_id === p.id
-                                                    );
-
-                                                    if (paymentProformas.length > 0) {
-                                                      return (
-                                                        <div className="flex flex-col gap-1">
-                                                          {paymentProformas.slice(0, 1).map((proforma, idx) => (
-                                                            <button
-                                                              key={proforma.id}
-                                                              className="btn btn-sm btn-outline btn-success border-success/40 text-xs font-medium"
-                                                              title={`View Proforma ${proforma.id}`}
-                                                              onClick={e => { e.preventDefault(); navigate(`/proforma-legacy/${proforma.id}`); }}
-                                                            >
-                                                              Proforma {proforma.id}
-                                                            </button>
-                                                          ))}
-                                                          {paymentProformas.length > 1 && (
-                                                            <span className="text-xs text-gray-500">+{paymentProformas.length - 1} more</span>
-                                                          )}
-                                                        </div>
-                                                      );
-                                                    } else {
-                                                      return (
-                                                        <button
-                                                          className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
-                                                          title="Create Proforma"
-                                                          onClick={e => { e.preventDefault(); navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}`); }}
-                                                          style={{ padding: 0 }}
-                                                        >
-                                                          <PlusIcon className="w-5 h-5" />
-                                                        </button>
-                                                      );
-                                                    }
-                                                  })()
-                                                ) : p.proforma && p.proforma.trim() !== '' ? (
-                                                  <button
-                                                    className="btn btn-sm btn-outline btn-success text-xs font-medium border-success/40"
-                                                    title="View Proforma"
-                                                    onClick={e => { e.preventDefault(); navigate(`/proforma/${p.id}`); }}
-                                                  >
-                                                    {getProformaName(p.proforma)}
-                                                  </button>
-                                                ) : (
-                                                  <button
-                                                    className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
-                                                    title="Create Proforma"
-                                                    onClick={e => { e.preventDefault(); navigate(`/proforma/create/${p.id}`); }}
-                                                    style={{ padding: 0 }}
-                                                  >
-                                                    <PlusIcon className="w-5 h-5" />
-                                                  </button>
-                                                )}
-                                              </div>
-                                            </div>
-                                            <div className="flex items-center justify-between py-3">
-                                              <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">NOTES</span>
-                                              <span className="text-sm font-bold text-gray-900">{p.notes}</span>
-                                            </div>
-                                          </div>
-
-                                          {/* Payment status indicator */}
-                                          <div className="absolute bottom-4 right-4 flex gap-2" style={{ overflow: 'visible', zIndex: 9999 }}>
-                                            {/* Payment Link icon - disabled for legacy */}
-                                            {p.proforma && !isPaid && !p.isLegacy && (
-                                              <button
-                                                className="btn btn-circle btn-md bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
-                                                title="Generate Payment Link"
-                                                onClick={() => handleGeneratePaymentLink(p)}
-                                                style={{ padding: 0 }}
-                                              >
-                                                <LinkIcon className="w-5 h-5" />
-                                              </button>
-                                            )}
-                                            {/* Ready to Pay button - available for all */}
-                                            {!isPaid && !p.ready_to_pay && (
-                                              <button
-                                                className="btn btn-circle btn-md bg-yellow-100 hover:bg-yellow-200 text-yellow-700 border-yellow-300 border-2 shadow-sm flex items-center justify-center"
-                                                title="Mark as Ready to Pay"
-                                                onClick={() => handleMarkAsReadyToPay(p)}
-                                                style={{ padding: 0 }}
-                                              >
-                                                <PaperAirplaneIcon className="w-5 h-5" />
-                                              </button>
-                                            )}
-                                            {/* Sent to Finances indicator with revert button */}
-                                            {!isPaid && p.ready_to_pay && (
-                                              <div className="tooltip tooltip-top z-[9999]" data-tip={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Ready to pay - Click to revert'}>
-                                                <button
-                                                  className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-700 border-red-300 border-2 shadow-sm flex items-center justify-center"
-                                                  title={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Revert Ready to Pay'}
-                                                  onClick={() => handleRevertReadyToPay(p)}
-                                                  style={{ padding: 0 }}
-                                                >
-                                                  <XMarkIcon className="w-5 h-5" />
-                                                </button>
-                                              </div>
-                                            )}
-                                            {/* Dollar icon (small) - only for superusers or collection users */}
-                                            {!isPaid && (isSuperuser || isCollection) && (
-                                              <button
-                                                className="btn btn-circle btn-md bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
-                                                title={p.isLegacy ? "Mark Legacy Payment as Paid" : "Mark as Paid"}
-                                                onClick={() => handleOpenPaidDateModal(p.id)}
-                                                style={{ padding: 0 }}
-                                              >
-                                                <CurrencyDollarIcon className="w-5 h-5" />
-                                              </button>
-                                            )}
-                                            {/* Admin dropdown button - only for superusers/collection when paid */}
-                                            {isPaid && (isSuperuser || isCollection) && (
-                                              <>
-                                                <button
-                                                  ref={(el) => { dropdownButtonRefs.current[p.id] = el; }}
-                                                  className="btn btn-circle btn-md bg-purple-100 hover:bg-purple-200 text-purple-700 border-purple-300 border-2 shadow-sm flex items-center justify-center"
-                                                  title="Admin Actions"
-                                                  onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    setOpenDropdownPaymentId(openDropdownPaymentId === p.id ? null : p.id);
-                                                  }}
-                                                  style={{ padding: 0 }}
-                                                >
-                                                  <Cog6ToothIcon className="w-5 h-5" />
-                                                </button>
-                                                <AdminDropdownPortal
-                                                  anchorRef={{ current: dropdownButtonRefs.current[p.id] }}
-                                                  open={openDropdownPaymentId === p.id}
-                                                  onClose={() => setOpenDropdownPaymentId(null)}
-                                                >
-                                                  <ul className="menu bg-base-100 rounded-box w-52 p-2 shadow-lg border border-gray-200">
-                                                    {(() => {
-                                                      // For legacy leads: don't show if due_date exists
-                                                      // For new leads: don't show if ready_to_pay is TRUE
-                                                      const shouldShowSentToFinance = p.isLegacy
-                                                        ? !(p as any).original_due_date // Legacy: hide if due_date exists
-                                                        : !p.ready_to_pay; // New: hide if ready_to_pay is TRUE
-
-                                                      return shouldShowSentToFinance ? (
-                                                        <li>
-                                                          <button
-                                                            className="text-sm"
-                                                            onClick={(e) => {
-                                                              e.stopPropagation();
-                                                              handleSentToFinance(p);
-                                                              setOpenDropdownPaymentId(null);
-                                                            }}
-                                                          >
-                                                            Sent to Finance
-                                                          </button>
-                                                        </li>
-                                                      ) : null;
-                                                    })()}
-                                                    <li>
-                                                      <button
-                                                        className="text-sm text-red-600"
-                                                        onClick={(e) => {
-                                                          e.stopPropagation();
-                                                          if (window.confirm('Are you sure you want to revert this payment from paid status?')) {
-                                                            handleRevertMarkedAsPaid(p);
-                                                            setOpenDropdownPaymentId(null);
-                                                          }
-                                                        }}
-                                                      >
-                                                        Revert Marked as Paid
-                                                      </button>
-                                                    </li>
-                                                  </ul>
-                                                </AdminDropdownPortal>
-                                              </>
-                                            )}
-                                            {/* Edit icon (small) - only for superusers/collection if paid, available for all if not paid */}
-                                            {(!isPaid || isSuperuser || isCollection) && (
-                                              <button
-                                                className="btn btn-circle btn-md bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                                title="Edit"
-                                                onClick={() => handleEditPayment(p)}
-                                                style={{ padding: 0 }}
-                                              >
-                                                <PencilIcon className="w-5 h-5" />
-                                              </button>
-                                            )}
-                                            {/* Delete icon (small) - available for all users */}
+                                          <div className="flex items-center justify-between py-3">
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">NOTES</span>
                                             <button
-                                              className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
-                                              title="Delete"
-                                              onClick={() => handleDeletePayment(p)}
-                                              style={{ padding: 0 }}
+                                              onClick={() => handleOpenNotesModal(p)}
+                                              className="text-sm font-bold text-gray-900 hover:text-indigo-600 transition-colors cursor-pointer max-w-[200px] truncate"
+                                              title={p.notes || 'Click to add notes'}
+                                              dir={getNotesTextDirection(p.notes)}
+                                              style={{ textAlign: getNotesTextDirection(p.notes) === 'rtl' ? 'right' : 'left' }}
                                             >
-                                              <TrashIcon className="w-5 h-5" />
+                                              {p.notes && p.notes.length > 20
+                                                ? `${p.notes.substring(0, 20)}...`
+                                                : p.notes || '---'}
                                             </button>
                                           </div>
                                         </div>
+
+                                        {/* Payment status indicator */}
+                                        <div className="absolute bottom-4 right-4 flex gap-2" style={{ overflow: 'visible', zIndex: 9999 }}>
+                                          {/* Payment Link icon - disabled for legacy */}
+                                          {p.proforma && !isPaid && !p.isLegacy && (
+                                            <button
+                                              className="btn btn-circle btn-md bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
+                                              title="Generate Payment Link"
+                                              onClick={() => handleGeneratePaymentLink(p)}
+                                              style={{ padding: 0 }}
+                                            >
+                                              <LinkIcon className="w-5 h-5" />
+                                            </button>
+                                          )}
+                                          {/* Ready to Pay button - available for all */}
+                                          {!isPaid && !p.ready_to_pay && (
+                                            <button
+                                              className="btn btn-circle btn-md bg-yellow-100 hover:bg-yellow-200 text-yellow-700 border-yellow-300 border-2 shadow-sm flex items-center justify-center"
+                                              title="Mark as Ready to Pay"
+                                              onClick={() => handleMarkAsReadyToPay(p)}
+                                              style={{ padding: 0 }}
+                                            >
+                                              <PaperAirplaneIcon className="w-5 h-5" />
+                                            </button>
+                                          )}
+                                          {/* Sent to Finances indicator with revert button */}
+                                          {!isPaid && p.ready_to_pay && (
+                                            <div className="tooltip tooltip-top z-[9999]" data-tip={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Ready to pay - Click to revert'}>
+                                              <button
+                                                className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-700 border-red-300 border-2 shadow-sm flex items-center justify-center"
+                                                title={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Revert Ready to Pay'}
+                                                onClick={() => handleRevertReadyToPay(p)}
+                                                style={{ padding: 0 }}
+                                              >
+                                                <XMarkIcon className="w-5 h-5" />
+                                              </button>
+                                            </div>
+                                          )}
+                                          {/* Dollar icon (small) - only for superusers or collection users */}
+                                          {!isPaid && (isSuperuser || isCollection) && (
+                                            <button
+                                              className="btn btn-circle btn-md bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
+                                              title={p.isLegacy ? "Mark Legacy Payment as Paid" : "Mark as Paid"}
+                                              onClick={() => handleOpenPaidDateModal(p.id)}
+                                              style={{ padding: 0 }}
+                                            >
+                                              <CurrencyDollarIcon className="w-5 h-5" />
+                                            </button>
+                                          )}
+                                          {/* Admin dropdown button - only for superusers/collection when paid */}
+                                          {isPaid && (isSuperuser || isCollection) && (
+                                            <>
+                                              <button
+                                                ref={(el) => { dropdownButtonRefs.current[p.id] = el; }}
+                                                className="btn btn-circle btn-md bg-purple-100 hover:bg-purple-200 text-purple-700 border-purple-300 border-2 shadow-sm flex items-center justify-center"
+                                                title="Admin Actions"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setOpenDropdownPaymentId(openDropdownPaymentId === p.id ? null : p.id);
+                                                }}
+                                                style={{ padding: 0 }}
+                                              >
+                                                <Cog6ToothIcon className="w-5 h-5" />
+                                              </button>
+                                              <AdminDropdownPortal
+                                                anchorRef={{ current: dropdownButtonRefs.current[p.id] }}
+                                                open={openDropdownPaymentId === p.id}
+                                                onClose={() => setOpenDropdownPaymentId(null)}
+                                              >
+                                                <ul className="menu bg-base-100 rounded-box w-52 p-2 shadow-lg border border-gray-200">
+                                                  {(() => {
+                                                    // For legacy leads: don't show if due_date exists
+                                                    // For new leads: don't show if ready_to_pay is TRUE
+                                                    const shouldShowSentToFinance = p.isLegacy
+                                                      ? !(p as any).original_due_date // Legacy: hide if due_date exists
+                                                      : !p.ready_to_pay; // New: hide if ready_to_pay is TRUE
+
+                                                    return shouldShowSentToFinance ? (
+                                                      <li>
+                                                        <button
+                                                          className="text-sm"
+                                                          onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            handleSentToFinance(p);
+                                                            setOpenDropdownPaymentId(null);
+                                                          }}
+                                                        >
+                                                          Sent to Finance
+                                                        </button>
+                                                      </li>
+                                                    ) : null;
+                                                  })()}
+                                                  <li>
+                                                    <button
+                                                      className="text-sm text-red-600"
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        if (window.confirm('Are you sure you want to revert this payment from paid status?')) {
+                                                          handleRevertMarkedAsPaid(p);
+                                                          setOpenDropdownPaymentId(null);
+                                                        }
+                                                      }}
+                                                    >
+                                                      Revert Marked as Paid
+                                                    </button>
+                                                  </li>
+                                                </ul>
+                                              </AdminDropdownPortal>
+                                            </>
+                                          )}
+                                          {/* Edit icon (small) - only for superusers/collection if paid, available for all if not paid */}
+                                          {(!isPaid || isSuperuser || isCollection) && (
+                                            <button
+                                              className="btn btn-circle btn-md bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
+                                              title="Edit"
+                                              onClick={() => handleEditPayment(p)}
+                                              style={{ padding: 0 }}
+                                            >
+                                              <PencilIcon className="w-5 h-5" />
+                                            </button>
+                                          )}
+                                          {/* Delete icon (small) - available for all users */}
+                                          <button
+                                            className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
+                                            title="Delete"
+                                            onClick={() => handleDeletePayment(p)}
+                                            style={{ padding: 0 }}
+                                          >
+                                            <TrashIcon className="w-5 h-5" />
+                                          </button>
+                                        </div>
+                                      </div>
                                     </div>
                                   );
                                 })}
@@ -5959,7 +6137,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
                                 {/* Notes */}
                                 <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                  {p.notes || '---'}
+                                  <button
+                                    onClick={() => handleOpenNotesModal(p)}
+                                    className="text-sm text-gray-700 hover:text-indigo-600 transition-colors cursor-pointer max-w-[200px] truncate block mx-auto"
+                                    title={p.notes || 'Click to add notes'}
+                                    dir={getNotesTextDirection(p.notes)}
+                                    style={{ textAlign: getNotesTextDirection(p.notes) === 'rtl' ? 'right' : 'left' }}
+                                  >
+                                    {p.notes && p.notes.length > 20
+                                      ? `${p.notes.substring(0, 20)}...`
+                                      : p.notes || '---'}
+                                  </button>
                                 </td>
 
                                 {/* Deleted Date */}
@@ -6727,6 +6915,19 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         defaultCurrency={getDefaultCurrency()}
         defaultAmount={getDefaultAmount()}
         getTotalAmount={getTotalAmount}
+      />
+
+      {/* Notes Modal */}
+      <NotesModal
+        isOpen={showNotesModal}
+        onClose={() => {
+          setShowNotesModal(false);
+          setSelectedPaymentForNotes(null);
+        }}
+        onSave={handleSaveNotes}
+        notes={selectedPaymentForNotes?.notes || ''}
+        isSaving={isSavingNotes}
+        paymentId={selectedPaymentForNotes?.id}
       />
     </>
   );
