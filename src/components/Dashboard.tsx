@@ -6402,14 +6402,25 @@ const Dashboard: React.FC = () => {
                             <tr
                               key={lead.id}
                               className="cursor-pointer hover:bg-gray-50"
-                              onClick={() => {
+                              onClick={(e) => {
+                                const isCtrlOrCmd = e.ctrlKey || e.metaKey;
+                                let url = '';
+
                                 if (lead.lead_type === 'legacy') {
                                   // For legacy leads, remove "legacy_" prefix and navigate to {id}
                                   const legacyId = lead.id?.toString().replace('legacy_', '');
-                                  navigate(`/clients/${legacyId}`);
+                                  url = `/clients/${legacyId}`;
                                 } else {
                                   // For new leads, use lead_number instead of id
-                                  navigate(`/clients/${lead.lead_number}`);
+                                  url = `/clients/${lead.lead_number}`;
+                                }
+
+                                if (isCtrlOrCmd) {
+                                  // Open in new tab
+                                  window.open(url, '_blank');
+                                } else {
+                                  // Navigate normally
+                                  navigate(url);
                                 }
                               }}
                             >
@@ -6509,14 +6520,25 @@ const Dashboard: React.FC = () => {
                         <div
                           key={lead.id}
                           className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative cursor-pointer"
-                          onClick={() => {
+                          onClick={(e) => {
+                            const isCtrlOrCmd = e.ctrlKey || e.metaKey;
+                            let url = '';
+
                             if (lead.lead_type === 'legacy') {
                               // For legacy leads, remove "legacy_" prefix and navigate to legacy-{id}
                               const legacyId = lead.id?.toString().replace('legacy_', '');
-                              navigate(`/clients/legacy-${legacyId}`);
+                              url = `/clients/legacy-${legacyId}`;
                             } else {
                               // For new leads, use lead_number instead of id
-                              navigate(`/clients/${lead.lead_number}`);
+                              url = `/clients/${lead.lead_number}`;
+                            }
+
+                            if (isCtrlOrCmd) {
+                              // Open in new tab
+                              window.open(url, '_blank');
+                            } else {
+                              // Navigate normally
+                              navigate(url);
                             }
                           }}
                         >

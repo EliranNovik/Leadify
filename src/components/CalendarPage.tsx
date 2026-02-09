@@ -463,7 +463,7 @@ const CalendarPage: React.FC = () => {
   const [meetingLocationNameToId, setMeetingLocationNameToId] = useState<{ [locationName: string]: number }>({});
   // Set of location IDs that should show a meeting link button (from tenants_meetinglocation with default_link)
   const meetingLocationIdsWithLink = new Set([3, 4, 15, 16, 17, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29]);
-  const [dropdownPosition, setDropdownPosition] = useState<{ x: number; y: number; width: number } | null>(null);
+  const [dropdownPosition, setDropdownPosition] = useState<{ x: number; y: number; width: number; openUpward?: boolean } | null>(null);
   const [activeDropdown, setActiveDropdown] = useState<{ meetingId: string | number; type: 'manager' | 'helper' } | null>(null);
   const [dropdownStates, setDropdownStates] = useState<{
     [meetingId: string | number]: {
@@ -3720,10 +3720,21 @@ const CalendarPage: React.FC = () => {
   // Handle dropdown positioning
   const handleDropdownOpen = (meetingId: string | number, type: 'manager' | 'helper', inputRef: HTMLInputElement) => {
     const rect = inputRef.getBoundingClientRect();
+    const viewportHeight = window.innerHeight;
+    const spaceBelow = viewportHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    const estimatedDropdownHeight = 200; // Approximate height of dropdown with max-h-32 (128px) + some padding
+    
+    // If there's not enough space below but enough space above, open upward
+    const openUpward = spaceBelow < estimatedDropdownHeight && spaceAbove > estimatedDropdownHeight;
+    
     setDropdownPosition({
       x: rect.left,
-      y: rect.bottom + window.scrollY,
-      width: rect.width
+      y: openUpward 
+        ? rect.top // For upward: store top position of input (will be used as bottom value)
+        : rect.bottom + window.scrollY, // For downward: use top positioning (distance from top of document)
+      width: rect.width,
+      openUpward: openUpward
     });
     setActiveDropdown({ meetingId, type });
   };
@@ -7015,7 +7026,10 @@ const CalendarPage: React.FC = () => {
           className="fixed z-[9999] max-h-32 overflow-y-auto border border-gray-200 rounded-lg bg-white shadow-lg"
           style={{
             left: dropdownPosition?.x || 0,
-            top: dropdownPosition?.y || 0,
+            ...(dropdownPosition?.openUpward 
+              ? { bottom: window.innerHeight - (dropdownPosition.y || 0), top: 'auto' }
+              : { top: dropdownPosition?.y || 0, bottom: 'auto' }
+            ),
             width: dropdownPosition?.width || 200,
             minWidth: '200px'
           }}

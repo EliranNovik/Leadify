@@ -3985,11 +3985,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       const cacheKey = 'header_userData';
       const cacheTimestampKey = 'header_userData_timestamp';
       const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
-      
+
       try {
         const cachedData = sessionStorage.getItem(cacheKey);
         const cachedTimestamp = sessionStorage.getItem(cacheTimestampKey);
-        
+
         if (cachedData && cachedTimestamp) {
           const age = Date.now() - parseInt(cachedTimestamp, 10);
           if (age < CACHE_DURATION) {
@@ -4013,7 +4013,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         // Declare variables at function scope for caching
         let fullNameValue = '';
         let isSuperUserValue = false;
-        
+
         // Fetch user name
         const { data, error } = await supabase
           .from('users')
@@ -4175,7 +4175,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 });
                 const uniqueEmployees = Array.from(uniqueEmployeesMap.values());
                 setAllEmployees(uniqueEmployees);
-                
+
                 // Cache the complete data after all state is set
                 setTimeout(() => {
                   try {
@@ -4212,7 +4212,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             } else {
               // Set current user even if no employee data
               setCurrentUser(userData);
-              
+
               // Cache basic user data
               setTimeout(() => {
                 try {
@@ -4241,7 +4241,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               if (userDataWithSuperuser.is_superuser !== undefined) {
                 setIsSuperUser(userDataWithSuperuser.is_superuser === true || userDataWithSuperuser.is_superuser === 'true' || userDataWithSuperuser.is_superuser === 1);
               }
-              
+
               // Cache basic user data
               setTimeout(() => {
                 try {
@@ -5345,8 +5345,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     // For new leads: use lead_number
     let path = '';
     if (lead.lead_type === 'legacy') {
-      // Legacy leads: use numeric id (same as MasterLeadPage)
-      path = `/clients/${encodeURIComponent(lead.id)}`;
+      // Legacy leads: use numeric id (remove "legacy_" prefix if present)
+      const legacyId = lead.id.toString().replace(/^legacy_/, '');
+      path = `/clients/${encodeURIComponent(legacyId)}`;
     } else {
       // New leads: use lead_number
       path = `/clients/${encodeURIComponent(lead.lead_number)}`;
