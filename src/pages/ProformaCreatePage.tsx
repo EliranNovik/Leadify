@@ -27,20 +27,65 @@ const ProformaCreatePage: React.FC = () => {
         setLoading(false);
         return;
       }
-      // Fetch client info for email/phone (support both new and legacy leads)
+      // Fetch client info from contact (not lead) - support both new and legacy leads
+      let clientName = data.client_name || 'Client';
       let clientEmail = '';
       let clientPhone = '';
+      
       if (data.lead_id) {
-        // First try new leads table
+        // First try new leads - get contact from contacts table via lead_leadcontact
         const { data: newLeadData } = await supabase
           .from('leads')
-          .select('email, phone')
+          .select('id')
           .eq('id', data.lead_id)
           .single();
         
         if (newLeadData) {
-          clientEmail = newLeadData.email || '';
-          clientPhone = newLeadData.phone || '';
+          // Try to get contact info from contacts table via lead_leadcontact
+          try {
+            // Try to get the main contact
+            const { data: leadContacts, error: leadContactsError } = await supabase
+              .from('lead_leadcontact')
+              .select(`
+                main,
+                contact_id
+              `)
+              .eq('newlead_id', data.lead_id)
+              .eq('main', 'true')
+              .limit(1);
+            
+            let contactId = null;
+            if (!leadContactsError && leadContacts && leadContacts.length > 0) {
+              contactId = leadContacts[0].contact_id;
+            } else {
+              // Fallback: get any contact for this lead
+              const { data: allContacts } = await supabase
+                .from('lead_leadcontact')
+                .select('contact_id')
+                .eq('newlead_id', data.lead_id)
+                .limit(1);
+              
+              if (allContacts && allContacts.length > 0) {
+                contactId = allContacts[0].contact_id;
+              }
+            }
+            
+            if (contactId) {
+              const { data: contactData } = await supabase
+                .from('contacts')
+                .select('name, email, phone')
+                .eq('id', contactId)
+                .single();
+              
+              if (contactData) {
+                clientName = contactData.name || clientName;
+                clientEmail = contactData.email || '';
+                clientPhone = contactData.phone || '';
+              }
+            }
+          } catch (contactError) {
+            // Error handling - contact data will remain empty
+          }
         } else {
           // If not found in new leads, try legacy leads_lead table
           const { data: legacyLeadData } = await supabase
@@ -50,90 +95,98 @@ const ProformaCreatePage: React.FC = () => {
             .single();
           
           if (legacyLeadData) {
-            // Try to get contact info from leads_contact via lead_leadcontact
-            const { data: allContacts } = await supabase
-              .from('lead_leadcontact')
-              .select(`
-                main,
-                contact_id
-              `)
-              .eq('lead_id', data.lead_id);
+            clientName = legacyLeadData.name || 'Client';
             
-            if (allContacts && allContacts.length > 0) {
-              // Try different main field values
-              let leadContacts = null;
-              
-              const { data: contactsTrue } = await supabase
+            // Try to get contact info from leads_contact via lead_leadcontact
+            try {
+              const { data: allContacts } = await supabase
                 .from('lead_leadcontact')
                 .select(`
                   main,
                   contact_id
                 `)
-                .eq('lead_id', data.lead_id)
-                .eq('main', 'true')
-                .limit(1);
+                .eq('lead_id', data.lead_id);
               
-              if (contactsTrue && contactsTrue.length > 0) {
-                leadContacts = contactsTrue;
-              } else {
-                const { data: contactsBool } = await supabase
+              if (allContacts && allContacts.length > 0) {
+                // Try different main field values
+                let leadContacts = null;
+                
+                const { data: contactsTrue } = await supabase
                   .from('lead_leadcontact')
                   .select(`
                     main,
                     contact_id
                   `)
                   .eq('lead_id', data.lead_id)
-                  .eq('main', true)
+                  .eq('main', 'true')
                   .limit(1);
                 
-                if (contactsBool && contactsBool.length > 0) {
-                  leadContacts = contactsBool;
+                if (contactsTrue && contactsTrue.length > 0) {
+                  leadContacts = contactsTrue;
                 } else {
-                  const { data: contactsNum } = await supabase
+                  const { data: contactsBool } = await supabase
                     .from('lead_leadcontact')
                     .select(`
                       main,
                       contact_id
                     `)
                     .eq('lead_id', data.lead_id)
-                    .eq('main', 1)
+                    .eq('main', true)
                     .limit(1);
                   
-                  leadContacts = contactsNum;
+                  if (contactsBool && contactsBool.length > 0) {
+                    leadContacts = contactsBool;
+                  } else {
+                    const { data: contactsNum } = await supabase
+                      .from('lead_leadcontact')
+                      .select(`
+                        main,
+                        contact_id
+                      `)
+                      .eq('lead_id', data.lead_id)
+                      .eq('main', 1)
+                      .limit(1);
+                    
+                    leadContacts = contactsNum;
+                  }
+                }
+                
+                if (leadContacts && leadContacts.length > 0) {
+                  const { data: contactData } = await supabase
+                    .from('leads_contact')
+                    .select('name, email, phone')
+                    .eq('id', leadContacts[0].contact_id)
+                    .single();
+                  
+                  if (contactData) {
+                    clientName = contactData.name || clientName;
+                    clientEmail = contactData.email || '';
+                    clientPhone = contactData.phone || '';
+                  }
+                } else if (allContacts && allContacts.length > 0) {
+                  // Fallback: use first available contact
+                  const { data: contactData } = await supabase
+                    .from('leads_contact')
+                    .select('name, email, phone')
+                    .eq('id', allContacts[0].contact_id)
+                    .single();
+                  
+                  if (contactData) {
+                    clientName = contactData.name || clientName;
+                    clientEmail = contactData.email || '';
+                    clientPhone = contactData.phone || '';
+                  }
                 }
               }
-              
-              if (leadContacts && leadContacts.length > 0) {
-                const { data: contactData } = await supabase
-                  .from('leads_contact')
-                  .select('email, phone')
-                  .eq('id', leadContacts[0].contact_id)
-                  .single();
-                
-                if (contactData) {
-                  clientEmail = contactData.email || '';
-                  clientPhone = contactData.phone || '';
-                }
-              } else if (allContacts && allContacts.length > 0) {
-                // Fallback: use first available contact
-                const { data: contactData } = await supabase
-                  .from('leads_contact')
-                  .select('email, phone')
-                  .eq('id', allContacts[0].contact_id)
-                  .single();
-                
-                if (contactData) {
-                  clientEmail = contactData.email || '';
-                  clientPhone = contactData.phone || '';
-                }
-              }
+            } catch (contactError) {
+              // Error handling - contact data will remain empty
             }
           }
         }
       }
       setPayment(data);
       setProformaData({
-        client: data.client_name,
+        client: clientName,
         clientId: data.lead_id,
         paymentRowId: data.id,
         payment: data.value + data.value_vat,

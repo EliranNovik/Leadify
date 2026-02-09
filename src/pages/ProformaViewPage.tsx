@@ -142,17 +142,64 @@ const ProformaViewPage: React.FC = () => {
       }
       try {
         let parsed = JSON.parse(data.proforma);
-        // Patch: If email/phone/lead_number missing, fetch from leads
-        if ((!parsed.email || !parsed.phone || !parsed.lead_number) && parsed.clientId) {
-          const { data: leadData } = await supabase
-            .from('leads')
-            .select('email, phone, lead_number')
-            .eq('id', parsed.clientId)
-            .single();
-          if (leadData) {
-            if (!parsed.email) parsed.email = leadData.email || '';
-            if (!parsed.phone) parsed.phone = leadData.phone || '';
-            if (!parsed.lead_number) parsed.lead_number = leadData.lead_number || '';
+        // Patch: If email/phone/name missing, fetch from contact (not lead)
+        if ((!parsed.email || !parsed.phone || !parsed.client) && parsed.clientId) {
+          // Try to get contact info from contacts table via lead_leadcontact
+          try {
+            // First, try to get the main contact
+            const { data: leadContacts, error: leadContactsError } = await supabase
+              .from('lead_leadcontact')
+              .select(`
+                main,
+                contact_id
+              `)
+              .eq('newlead_id', parsed.clientId)
+              .eq('main', 'true')
+              .limit(1);
+            
+            let contactId = null;
+            if (!leadContactsError && leadContacts && leadContacts.length > 0) {
+              contactId = leadContacts[0].contact_id;
+            } else {
+              // Fallback: get any contact for this lead
+              const { data: allContacts } = await supabase
+                .from('lead_leadcontact')
+                .select('contact_id')
+                .eq('newlead_id', parsed.clientId)
+                .limit(1);
+              
+              if (allContacts && allContacts.length > 0) {
+                contactId = allContacts[0].contact_id;
+              }
+            }
+            
+            if (contactId) {
+              const { data: contactData } = await supabase
+                .from('contacts')
+                .select('name, email, phone')
+                .eq('id', contactId)
+                .single();
+              
+              if (contactData) {
+                if (!parsed.client) parsed.client = contactData.name || '';
+                if (!parsed.email) parsed.email = contactData.email || '';
+                if (!parsed.phone) parsed.phone = contactData.phone || '';
+              }
+            }
+          } catch (contactError) {
+            // Error handling - contact data will remain null
+          }
+          
+          // Still fetch lead_number from leads table if missing
+          if (!parsed.lead_number) {
+            const { data: leadData } = await supabase
+              .from('leads')
+              .select('lead_number')
+              .eq('id', parsed.clientId)
+              .single();
+            if (leadData) {
+              parsed.lead_number = leadData.lead_number || '';
+            }
           }
         }
         // Patch: If addVat true, currency is NIS/ILS/₪, and vat is 0, recalc vat

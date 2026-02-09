@@ -12686,78 +12686,8 @@ const Clients: React.FC<ClientsProps> = ({
 
                 {/* Desktop View - Full layout with tab navigation */}
                 <div className="hidden md:flex flex-col gap-2">
-                  {/* Duplicate Contacts Badge - Desktop - At the top */}
-                  {duplicateContacts.length > 0 && (
-                    <div className="w-full flex justify-start items-center px-4">
-                      <div className="relative">
-                        {duplicateContacts.length === 1 ? (
-                          <button
-                            onClick={() => setIsDuplicateModalOpen(true)}
-                            className="rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
-                          >
-                            <DocumentDuplicateIcon className="w-4 h-4" />
-                            Duplicate Contact: {duplicateContacts[0].contactName} in Lead {duplicateContacts[0].leadNumber}
-                          </button>
-                        ) : (
-                          <div className="relative">
-                            <button
-                              onClick={() => setIsDuplicateDropdownOpen(!isDuplicateDropdownOpen)}
-                              className="rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
-                            >
-                              <DocumentDuplicateIcon className="w-4 h-4" />
-                              {duplicateContacts.length} Duplicate Contacts
-                              <ChevronDownIcon className={`w-4 h-4 transition-transform ${isDuplicateDropdownOpen ? 'rotate-180' : ''}`} />
-                            </button>
-                            {isDuplicateDropdownOpen && (
-                              <div className="absolute top-full left-0 mt-2 bg-base-100 rounded-lg shadow-xl border border-base-300 z-50 min-w-[300px] max-h-96 overflow-y-auto">
-                                {duplicateContacts.map((dup, idx) => (
-                                  <div
-                                    key={`${dup.contactId}-${dup.leadId}-${idx}`}
-                                    className="p-3 border-b border-base-300 hover:bg-base-200 cursor-pointer"
-                                    onClick={() => {
-                                      navigate(`/clients/${dup.leadNumber}`);
-                                      setIsDuplicateDropdownOpen(false);
-                                    }}
-                                  >
-                                    <div className="font-semibold text-base-content">{dup.contactName}</div>
-                                    <div className="text-sm text-base-content/80">Lead {dup.leadNumber}: {dup.leadName}</div>
-                                    <div className="flex items-center gap-2 mt-1 flex-wrap">
-                                      {dup.stage && (
-                                        <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
-                                          Stage: {dup.stage}
-                                        </span>
-                                      )}
-                                      {dup.category && (
-                                        <span className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded">
-                                          {dup.category}
-                                        </span>
-                                      )}
-                                    </div>
-                                    <div className="text-xs text-base-content/70 mt-1">
-                                      Matches: {dup.matchingFields.join(', ')}
-                                    </div>
-                                  </div>
-                                ))}
-                                <div className="p-3 border-t border-gray-200 bg-gray-50">
-                                  <button
-                                    onClick={() => {
-                                      setIsDuplicateModalOpen(true);
-                                      setIsDuplicateDropdownOpen(false);
-                                    }}
-                                    className="w-full text-sm font-semibold text-orange-600 hover:text-orange-700"
-                                  >
-                                    View All Details
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
                   <div className="flex items-center justify-between gap-4 flex-wrap">
-                    {/* Left side: Lead number, name, and next follow-up */}
+                    {/* Left side: Lead number, name, and duplicate contact badge */}
                     <div className="flex items-center gap-3 flex-1 min-w-0">
                       <div className="flex items-center gap-3 min-w-0 flex-wrap">
                         <span className="text-lg font-bold text-base-content whitespace-nowrap">
@@ -12766,16 +12696,77 @@ const Clients: React.FC<ClientsProps> = ({
                         <span className="text-lg font-semibold text-base-content/90 truncate">
                           {selectedClient.name || 'Unnamed Lead'}
                         </span>
-                        {selectedClient.next_followup && (
-                          <div className="flex items-center gap-1.5 text-sm text-base-content/80 whitespace-nowrap">
-                            <CalendarDaysIcon className="w-4 h-4 flex-shrink-0" />
-                            <span className="font-medium">
-                              {new Date(selectedClient.next_followup).toLocaleDateString('en-US', {
-                                month: 'short',
-                                day: 'numeric',
-                                year: 'numeric'
-                              })}
-                            </span>
+                        {/* Duplicate Contact Badge - Icon and Number Only */}
+                        {duplicateContacts.length > 0 && (
+                          <div className="relative">
+                            {duplicateContacts.length === 1 ? (
+                              <button
+                                onClick={() => setIsDuplicateModalOpen(true)}
+                                className="btn btn-circle btn-warning btn-sm relative"
+                                title={`Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`}
+                              >
+                                <DocumentDuplicateIcon className="w-5 h-5" />
+                                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                                  1
+                                </span>
+                              </button>
+                            ) : (
+                              <div className="relative">
+                                <button
+                                  onClick={() => setIsDuplicateDropdownOpen(!isDuplicateDropdownOpen)}
+                                  className="btn btn-circle btn-warning btn-sm relative"
+                                  title={`${duplicateContacts.length} Duplicate Contacts`}
+                                >
+                                  <DocumentDuplicateIcon className="w-5 h-5" />
+                                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                                    {duplicateContacts.length > 9 ? '9+' : duplicateContacts.length}
+                                  </span>
+                                </button>
+                                {isDuplicateDropdownOpen && (
+                                  <div className="absolute top-full left-0 mt-2 bg-base-100 rounded-lg shadow-xl border border-base-300 z-50 min-w-[300px] max-h-96 overflow-y-auto">
+                                    {duplicateContacts.map((dup, idx) => (
+                                      <div
+                                        key={`${dup.contactId}-${dup.leadId}-${idx}`}
+                                        className="p-3 border-b border-base-300 hover:bg-base-200 cursor-pointer"
+                                        onClick={() => {
+                                          navigate(`/clients/${dup.leadNumber}`);
+                                          setIsDuplicateDropdownOpen(false);
+                                        }}
+                                      >
+                                        <div className="font-semibold text-base-content">{dup.contactName}</div>
+                                        <div className="text-sm text-base-content/80">Lead {dup.leadNumber}: {dup.leadName}</div>
+                                        <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                          {dup.stage && (
+                                            <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
+                                              Stage: {dup.stage}
+                                            </span>
+                                          )}
+                                          {dup.category && (
+                                            <span className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded">
+                                              {dup.category}
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="text-xs text-base-content/70 mt-1">
+                                          Matches: {dup.matchingFields.join(', ')}
+                                        </div>
+                                      </div>
+                                    ))}
+                                    <div className="p-3 border-t border-gray-200 bg-gray-50">
+                                      <button
+                                        onClick={() => {
+                                          setIsDuplicateModalOpen(true);
+                                          setIsDuplicateDropdownOpen(false);
+                                        }}
+                                        className="w-full text-sm font-semibold text-orange-600 hover:text-orange-700"
+                                      >
+                                        View All Details
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>

@@ -147,6 +147,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
       setLead(data);
       
       // Fetch client contact info from leads_contact via lead_leadcontact
+      let clientName = data.name || 'Client';
       let clientEmail = '';
       let clientPhone = '';
       
@@ -207,11 +208,12 @@ const ProformaLegacyCreatePage: React.FC = () => {
           if (leadContacts && leadContacts.length > 0) {
             const { data: contactData } = await supabase
               .from('leads_contact')
-              .select('email, phone')
+              .select('name, email, phone')
               .eq('id', leadContacts[0].contact_id)
               .single();
             
             if (contactData) {
+              clientName = contactData.name || clientName;
               clientEmail = contactData.email || '';
               clientPhone = contactData.phone || '';
             }
@@ -219,11 +221,12 @@ const ProformaLegacyCreatePage: React.FC = () => {
             // Fallback: use first available contact
             const { data: contactData } = await supabase
               .from('leads_contact')
-              .select('email, phone')
+              .select('name, email, phone')
               .eq('id', allContacts[0].contact_id)
               .single();
             
             if (contactData) {
+              clientName = contactData.name || clientName;
               clientEmail = contactData.email || '';
               clientPhone = contactData.phone || '';
             }
@@ -277,7 +280,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
       const paymentPlanDate = pprData?.date || pprData?.due_date || null;
       
       setProformaData({
-        client: data.name || 'Client',
+        client: clientName,
         clientId: data.id,
         leadId: data.id,
         pprId: pprId, // Store the payment plan row ID

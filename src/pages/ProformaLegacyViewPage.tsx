@@ -252,22 +252,9 @@ const ProformaLegacyViewPage: React.FC = () => {
         }
       }
         
-      // If view fetch succeeds, also fetch client data if missing
-      if (!error && data && data.lead_id && (!data.client_email || !data.client_phone)) {
-        
-        // First try to get basic lead info
-        const { data: leadData, error: leadError } = await supabase
-          .from('leads_lead')
-          .select('name')
-          .eq('id', data.lead_id)
-          .single();
-        
-        
-        if (!leadError && leadData) {
-          data.client_name = data.client_name || leadData.name || 'Client';
-        }
-        
-        // Try to get contact info from leads_contact via lead_leadcontact (same as ClientInformationBox)
+      // If view fetch succeeds, also fetch client data from contact
+      if (!error && data && data.lead_id) {
+        // Try to get contact info from leads_contact via lead_leadcontact
         try {
           // First, let's check what contacts exist for this lead
           const { data: allContacts, error: allContactsError } = await supabase
@@ -277,7 +264,6 @@ const ProformaLegacyViewPage: React.FC = () => {
               contact_id
             `)
             .eq('lead_id', data.lead_id);
-          
           
           // Try to get the main contact (try different main values)
           let leadContacts = null;
@@ -327,29 +313,31 @@ const ProformaLegacyViewPage: React.FC = () => {
           }
           
           if (!leadContactsError && leadContacts && leadContacts.length > 0) {
-            // Get the contact details from leads_contact table
+            // Get the contact details from leads_contact table (including name)
             const { data: contactData, error: contactError } = await supabase
               .from('leads_contact')
-              .select('email, phone')
+              .select('name, email, phone')
               .eq('id', leadContacts[0].contact_id)
               .single();
             
             if (!contactError && contactData) {
-              data.client_email = data.client_email || contactData.email || '';
-              data.client_phone = data.client_phone || contactData.phone || '';
+              data.client_name = contactData.name || data.client_name || 'Client';
+              data.client_email = contactData.email || data.client_email || '';
+              data.client_phone = contactData.phone || data.client_phone || '';
             }
           } else {
             // Fallback: try to get any contact for this lead
             if (allContacts && allContacts.length > 0) {
               const { data: contactData, error: contactError } = await supabase
                 .from('leads_contact')
-                .select('email, phone')
+                .select('name, email, phone')
                 .eq('id', allContacts[0].contact_id)
                 .single();
               
               if (!contactError && contactData) {
-                data.client_email = data.client_email || contactData.email || '';
-                data.client_phone = data.client_phone || contactData.phone || '';
+                data.client_name = contactData.name || data.client_name || 'Client';
+                data.client_email = contactData.email || data.client_email || '';
+                data.client_phone = contactData.phone || data.client_phone || '';
               }
             }
           }
@@ -381,24 +369,13 @@ const ProformaLegacyViewPage: React.FC = () => {
           return;
         }
         
-        // Fetch client information from leads_lead table
+        // Fetch client information from contact (not lead)
         let clientName = 'Client';
         let clientEmail = '';
         let clientPhone = '';
         
         if (directData.lead_id) {
-          // First try to get basic lead info
-          const { data: leadData, error: leadError } = await supabase
-            .from('leads_lead')
-            .select('name')
-            .eq('id', directData.lead_id)
-            .single();
-          
-          if (!leadError && leadData) {
-            clientName = leadData.name || 'Client';
-          }
-          
-          // Try to get contact info from leads_contact via lead_leadcontact (same as ClientInformationBox)
+          // Try to get contact info from leads_contact via lead_leadcontact
           try {
             // First, let's check what contacts exist for this lead
             const { data: allContacts, error: allContactsError } = await supabase
@@ -457,14 +434,15 @@ const ProformaLegacyViewPage: React.FC = () => {
             }
             
             if (!leadContactsError && leadContacts && leadContacts.length > 0) {
-              // Get the contact details from leads_contact table
+              // Get the contact details from leads_contact table (including name)
               const { data: contactData, error: contactError } = await supabase
                 .from('leads_contact')
-                .select('email, phone')
+                .select('name, email, phone')
                 .eq('id', leadContacts[0].contact_id)
                 .single();
               
               if (!contactError && contactData) {
+                clientName = contactData.name || 'Client';
                 clientEmail = contactData.email || '';
                 clientPhone = contactData.phone || '';
               }
@@ -473,11 +451,12 @@ const ProformaLegacyViewPage: React.FC = () => {
               if (allContacts && allContacts.length > 0) {
                 const { data: contactData, error: contactError } = await supabase
                   .from('leads_contact')
-                  .select('email, phone')
+                  .select('name, email, phone')
                   .eq('id', allContacts[0].contact_id)
                   .single();
                 
                 if (!contactError && contactData) {
+                  clientName = contactData.name || 'Client';
                   clientEmail = contactData.email || '';
                   clientPhone = contactData.phone || '';
                 }
