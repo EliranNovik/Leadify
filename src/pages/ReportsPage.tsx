@@ -8299,6 +8299,12 @@ const reports: ReportSection[] = [
       { label: 'Employee Salaries', icon: CurrencyDollarIconOutline, route: '/reports/employee-salaries' },
     ],
   },
+  {
+    category: 'Employees',
+    items: [
+      { label: 'Employee Info', icon: UserGroupIcon, route: '/reports/employee-info' },
+    ],
+  },
 ];
 
 export default function ReportsPage() {
@@ -8667,6 +8673,9 @@ export default function ReportsPage() {
                     'Edit Contracts': 'contract-document-edit',
                     'Employee Unavailabilities': 'calendar-unavailable-time-off',
                     'Employee Salaries': 'salary-payment-money',
+                    
+                    // Employees
+                    'Employee Info': 'employee-contact-information',
                   };
 
                   // Check for composite key first (category|label), then just label
@@ -8682,6 +8691,7 @@ export default function ReportsPage() {
                       'Experts': 'expert-professional',
                       'Finances': 'finance-money',
                       'Tools': 'tools-utilities',
+                      'Employees': 'employee-team',
                     };
                     return categoryDefaults[category] || 'business';
                   })();

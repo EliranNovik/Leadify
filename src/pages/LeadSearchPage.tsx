@@ -1334,13 +1334,13 @@ const LeadSearchPage: React.FC = () => {
     fetchRoleOptions();
   }, []);
 
-  // Fetch country options from misc_country table
+  // Fetch country options from misc_country table (with phone_code for phone number matching)
   useEffect(() => {
     const fetchCountryOptions = async () => {
       try {
         const { data: countriesData, error } = await supabase
           .from('misc_country')
-          .select('id, name, iso_code')
+          .select('id, name, iso_code, phone_code')
           .order('name', { ascending: true });
 
         if (error) {
@@ -1352,6 +1352,8 @@ const LeadSearchPage: React.FC = () => {
           const countryNames = countriesData.map(country => country.name).filter(Boolean);
           setCountryOptions(countryNames);
           setFilteredCountryOptions(countryNames);
+          // Store country data with phone codes for filtering
+          // We'll use this in the search function
         }
       } catch (error) {
         console.error('Error fetching country options:', error);
@@ -1635,6 +1637,107 @@ const LeadSearchPage: React.FC = () => {
     // Create employee mappings for role filters
     const nameToIdMapping = new Map<string, number>();
     const idToNameMapping = new Map<number, string>();
+
+    // Fetch countries with phone codes for phone number matching
+    const countryNameToPhoneCodeMap = new Map<string, string>(); // country name -> phone_code (e.g., "+1", "+44")
+    try {
+      const { data: countriesData, error: countriesError } = await supabase
+        .from('misc_country')
+        .select('id, name, phone_code')
+        .not('phone_code', 'is', null);
+
+      if (!countriesError && countriesData) {
+        countriesData.forEach((country: any) => {
+          if (country.name && country.phone_code) {
+            countryNameToPhoneCodeMap.set(country.name, country.phone_code);
+          }
+        });
+        console.log('✅ Loaded country phone code mapping:', countryNameToPhoneCodeMap.size, 'countries');
+      }
+    } catch (error) {
+      console.error('Error fetching country phone codes:', error);
+    }
+
+    // Helper function to extract country code from phone number
+    const extractCountryCodeFromPhone = (phone: string | null | undefined): string | null => {
+      if (!phone) return null;
+
+      // Normalize phone: remove spaces, dashes, parentheses
+      const normalized = phone.replace(/[\s\-\(\)]/g, '');
+
+      // If phone starts with +, extract country code
+      if (normalized.startsWith('+')) {
+        // Check for 3-digit country codes first (e.g., +972, +351, +353)
+        if (normalized.length > 4) {
+          const threeDigit = normalized.substring(1, 4);
+          if (/^97[0-9]$/.test(threeDigit) || /^35[0-9]$/.test(threeDigit) || /^90[0-9]$/.test(threeDigit)) {
+            return `+${threeDigit}`;
+          }
+        }
+
+        // Check for 2-digit country codes (e.g., +44, +61, +27, +33, +49, +39)
+        if (normalized.length > 3) {
+          const twoDigit = normalized.substring(1, 3);
+          if (/^[2-9][0-9]$/.test(twoDigit)) {
+            return `+${twoDigit}`;
+          }
+        }
+
+        // US/Canada: +1
+        if (normalized.startsWith('+1') && normalized.length > 2) {
+          return '+1';
+        }
+      }
+
+      // If phone starts with 00, extract country code (e.g., 0044, 00972)
+      if (normalized.startsWith('00')) {
+        // Check for 3-digit country codes (e.g., 00972)
+        if (normalized.length > 5) {
+          const threeDigit = normalized.substring(2, 5);
+          if (/^97[0-9]$/.test(threeDigit) || /^35[0-9]$/.test(threeDigit) || /^90[0-9]$/.test(threeDigit)) {
+            return `+${threeDigit}`;
+          }
+        }
+
+        // Check for 2-digit country codes (e.g., 0044, 0061, 0027)
+        if (normalized.length > 4) {
+          const twoDigit = normalized.substring(2, 4);
+          if (/^[2-9][0-9]$/.test(twoDigit)) {
+            return `+${twoDigit}`;
+          }
+        }
+
+        // US/Canada: 001
+        if (normalized.startsWith('001') && normalized.length > 3) {
+          return '+1';
+        }
+      }
+
+      // If phone starts with country code without prefix (e.g., 44, 972, 1)
+      // This is less reliable, but we'll try
+      if (normalized.length > 2) {
+        // Check for 3-digit codes
+        const threeDigit = normalized.substring(0, 3);
+        if (/^97[0-9]$/.test(threeDigit) || /^35[0-9]$/.test(threeDigit) || /^90[0-9]$/.test(threeDigit)) {
+          return `+${threeDigit}`;
+        }
+      }
+
+      if (normalized.length > 1) {
+        // Check for 2-digit codes
+        const twoDigit = normalized.substring(0, 2);
+        if (/^[2-9][0-9]$/.test(twoDigit)) {
+          return `+${twoDigit}`;
+        }
+
+        // US/Canada: 1
+        if (normalized.startsWith('1') && normalized.length > 1) {
+          return '+1';
+        }
+      }
+
+      return null;
+    };
 
     // Fetch categories and create reverse mapping (formatted name -> category_id) for filtering
     // This avoids using ilike/eq queries during filtering - we use the mapping directly
@@ -2368,6 +2471,7 @@ const LeadSearchPage: React.FC = () => {
         console.log('✅ Adding eligibility filter for new leads');
         newLeadsQuery = newLeadsQuery.eq('eligible', true);
       }
+      // Country filter for new leads: filter by country_id (database) AND phone number (client-side)
       if (filters.country && filters.country.length > 0) {
         console.log('🌍 Adding country filter for new leads:', filters.country);
         try {
@@ -2812,10 +2916,7 @@ const LeadSearchPage: React.FC = () => {
           legacyLeadsQuery = legacyLeadsQuery.in('expert_examination', numericValues);
         }
       }
-      // Note: Country filter for legacy leads is handled client-side after fetching
-      // because country is stored in leads_contact table, not directly in leads_lead
-      // Initialize country map for legacy leads (will be populated if country filter is active)
-      let legacyCountryMap = new Map<string, string>(); // lead_id -> country name
+      // Note: Country filter for legacy leads is now handled by phone number matching
 
       // If tags filter is applied, prefetch lead IDs from leads_lead_tags
       // Use string-based sets to avoid bigint/Number precision issues
@@ -2888,7 +2989,8 @@ const LeadSearchPage: React.FC = () => {
         }
       }
 
-      // If country filter is applied for legacy leads, prefetch country data from contacts
+      // Country filter for legacy leads: fetch country data from contacts AND match by phone number
+      let legacyCountryMap = new Map<string, string>(); // lead_id -> country name
       if (filters.country && filters.country.length > 0) {
         try {
           console.log('🌍 Fetching country data for legacy leads from contacts...');
@@ -3261,6 +3363,117 @@ const LeadSearchPage: React.FC = () => {
             newSubLeadSuffixMap.set(leadKey, index + 2);
           }
         });
+      }
+
+      // Apply country filter to new leads: combine country_id (already filtered) with phone number matching
+      if (filters.country && filters.country.length > 0) {
+        console.log('🌍 Applying combined country filter (country_id + phone) to new leads:', filters.country);
+        const selectedPhoneCodes = new Set<string>();
+        filters.country.forEach((countryName: string) => {
+          const phoneCode = countryNameToPhoneCodeMap.get(countryName);
+          if (phoneCode) {
+            // Normalize phone code to include + prefix (extractCountryCodeFromPhone returns codes with +)
+            const normalizedCode = phoneCode.startsWith('+') ? phoneCode : `+${phoneCode}`;
+            selectedPhoneCodes.add(normalizedCode);
+          }
+        });
+        console.log('🌍 Selected phone codes:', Array.from(selectedPhoneCodes));
+
+        const beforeCountryFilter = filteredNewLeads.length;
+
+        // Filter: include leads that match by country_id OR by phone number
+        filteredNewLeads = filteredNewLeads.filter((lead: any) => {
+          // Method 1: Check if lead matches by country_id (already filtered by database query)
+          // Since we already filtered by country_id in the query, all leads here match by country_id
+          // But we'll also check explicitly to be safe
+          const matchesCountryId = lead.country_id && filters.country.some((countryName: string) => {
+            // We can't easily check country_id here without a reverse mapping, so we'll rely on the query filter
+            // and just check phone numbers as additional matches
+            return false; // Skip this check, rely on query filter
+          });
+
+          // Method 2: Check if lead matches by phone number country code
+          const phoneCountryCode = extractCountryCodeFromPhone(lead.phone);
+          if (phoneCountryCode && selectedPhoneCodes.has(phoneCountryCode)) {
+            console.log(`✅ New lead phone match: ${lead.phone} → ${phoneCountryCode}`);
+            return true;
+          }
+
+          // Method 3: Check if lead matches by mobile number country code
+          const mobileCountryCode = extractCountryCodeFromPhone(lead.mobile);
+          if (mobileCountryCode && selectedPhoneCodes.has(mobileCountryCode)) {
+            console.log(`✅ New lead mobile match: ${lead.mobile} → ${mobileCountryCode}`);
+            return true;
+          }
+
+          // If we reach here, the lead was already filtered by country_id in the query
+          // So we include it (it matches by country_id)
+          return true;
+        });
+
+        // Now we need to also fetch ALL new leads (without country_id filter) to find phone matches
+        // and combine them with the country_id matches
+        try {
+          // Fetch all new leads to check for phone number matches
+          const { data: allNewLeads, error: allLeadsError } = await supabase
+            .from('leads')
+            .select('id, phone, mobile, country_id')
+            .limit(10000);
+
+          if (!allLeadsError && allNewLeads) {
+            // Find leads that match by phone but might not match by country_id
+            const phoneMatchedLeadIds = new Set<string>();
+            allNewLeads.forEach((lead: any) => {
+              const phoneCountryCode = extractCountryCodeFromPhone(lead.phone);
+              const mobileCountryCode = extractCountryCodeFromPhone(lead.mobile);
+
+              if ((phoneCountryCode && selectedPhoneCodes.has(phoneCountryCode)) ||
+                (mobileCountryCode && selectedPhoneCodes.has(mobileCountryCode))) {
+                phoneMatchedLeadIds.add(lead.id?.toString());
+              }
+            });
+
+            // Get IDs of leads already in filteredNewLeads (matched by country_id)
+            const countryIdMatchedLeadIds = new Set(
+              filteredNewLeads.map((lead: any) => lead.id?.toString()).filter(Boolean)
+            );
+
+            // Combine: include all leads that match by country_id OR by phone
+            const allMatchedLeadIds = new Set([...countryIdMatchedLeadIds, ...phoneMatchedLeadIds]);
+
+            // Re-fetch full lead data for phone-matched leads that aren't already included
+            if (phoneMatchedLeadIds.size > 0) {
+              const phoneOnlyLeadIds = Array.from(phoneMatchedLeadIds).filter(id => !countryIdMatchedLeadIds.has(id));
+              if (phoneOnlyLeadIds.length > 0) {
+                const { data: phoneMatchedLeads, error: phoneLeadsError } = await supabase
+                  .from('leads')
+                  .select(`
+                    *,
+                    misc_category!category_id(
+                      id,
+                      name,
+                      parent_id,
+                      misc_maincategory!parent_id(id, name)
+                    )
+                  `)
+                  .in('id', phoneOnlyLeadIds);
+
+                if (!phoneLeadsError && phoneMatchedLeads) {
+                  // Add phone-matched leads to filteredNewLeads
+                  filteredNewLeads = [...filteredNewLeads, ...phoneMatchedLeads];
+                }
+              }
+            }
+
+            console.log(`🌍 Combined country filter (country_id + phone) for new leads: ${beforeCountryFilter} → ${filteredNewLeads.length}`, {
+              countryIdMatches: countryIdMatchedLeadIds.size,
+              phoneMatches: phoneMatchedLeadIds.size,
+              totalMatches: allMatchedLeadIds.size
+            });
+          }
+        } catch (error) {
+          console.error('Error fetching additional leads for phone-based country filter:', error);
+        }
       }
 
       // Map new leads with proper category formatting and role information
@@ -3681,18 +3894,48 @@ const LeadSearchPage: React.FC = () => {
         console.log('🔍 All mapped legacy lead fields:', Object.keys(mappedLegacyLeads[0]));
       }
 
-      // Apply country filter for legacy leads (client-side, since country is in contacts table)
+      // Apply country filter for legacy leads: combine contact country (client_country) with phone number matching
       if (filters.country && filters.country.length > 0) {
-        console.log('🌍 Applying country filter to legacy leads (client-side)...');
+        console.log('🌍 Applying combined country filter (contact + phone) to mapped legacy leads...');
+        const selectedPhoneCodes = new Set<string>();
+        filters.country.forEach((countryName: string) => {
+          const phoneCode = countryNameToPhoneCodeMap.get(countryName);
+          if (phoneCode) {
+            // Normalize phone code to include + prefix (extractCountryCodeFromPhone returns codes with +)
+            const normalizedCode = phoneCode.startsWith('+') ? phoneCode : `+${phoneCode}`;
+            selectedPhoneCodes.add(normalizedCode);
+          }
+        });
+        console.log('🌍 Selected phone codes for legacy leads:', Array.from(selectedPhoneCodes));
+
         const beforeCountryFilter = mappedLegacyLeads.length;
         mappedLegacyLeads = mappedLegacyLeads.filter((lead: any) => {
+          // Method 1: Check if lead matches by contact country (from legacyCountryMap)
           const leadId = String(lead.id);
           const leadCountry = legacyCountryMap.get(leadId);
-          // Check if lead's country matches any of the selected countries
-          return leadCountry && filters.country.includes(leadCountry);
+          if (leadCountry && filters.country.includes(leadCountry)) {
+            return true;
+          }
+
+          // Method 2: Check if lead matches by phone number country code
+          const phoneCountryCode = extractCountryCodeFromPhone(lead.phone);
+          if (phoneCountryCode && selectedPhoneCodes.has(phoneCountryCode)) {
+            console.log(`✅ Legacy phone match: ${lead.phone} → ${phoneCountryCode}`);
+            return true;
+          }
+
+          // Method 3: Check if lead matches by mobile number country code
+          const mobileCountryCode = extractCountryCodeFromPhone(lead.mobile);
+          if (mobileCountryCode && selectedPhoneCodes.has(mobileCountryCode)) {
+            console.log(`✅ Legacy mobile match: ${lead.mobile} → ${mobileCountryCode}`);
+            return true;
+          }
+
+          return false;
         });
-        console.log(`🌍 Country filter for legacy leads: ${beforeCountryFilter} → ${mappedLegacyLeads.length}`);
+        console.log(`🌍 Combined country filter (contact + phone) for legacy leads: ${beforeCountryFilter} → ${mappedLegacyLeads.length}`);
       }
+      // Country filter for legacy leads is now handled by phone number matching (see above)
 
       console.log('📊 Final mapping results:', {
         newLeadsCount: mappedNewLeads.length,

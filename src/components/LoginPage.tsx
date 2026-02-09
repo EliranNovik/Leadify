@@ -29,7 +29,7 @@ const LoginPage: React.FC = () => {
       // Try to fetch the user's official_name from the tenants_employee table using JOIN
       let name = email;
       let imageUrl = '';
-      
+
       if (data?.user?.email) {
         const { data: userData, error: userError } = await supabase
           .from('users')
@@ -46,23 +46,23 @@ const LoginPage: React.FC = () => {
           `)
           .eq('email', data.user.email)
           .single();
-        
+
         console.log('Login - User data fetched:', userData);
         console.log('Login - User error:', userError);
-        
+
         if (!userError && userData) {
           // Handle both array and single object responses
-          const empData = userData.tenants_employee ? 
-            (Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee) : 
+          const empData = userData.tenants_employee ?
+            (Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee) :
             null;
-          
+
           console.log('Login - Employee data:', empData);
-          
+
           // Set profile image if available
           if (empData?.photo_url) {
             imageUrl = empData.photo_url;
           }
-          
+
           // Priority: official_name > display_name > first_name + last_name > full_name
           if (empData?.official_name && empData.official_name.trim()) {
             name = empData.official_name.trim();
@@ -91,7 +91,13 @@ const LoginPage: React.FC = () => {
       setWelcomeImage(imageUrl);
       setSuccess('Signed in! Redirecting...');
       setShowSuccessAnim(true);
-      
+
+      // Save to session storage that user is signed in - this allows Dashboard to load immediately
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('user_signed_in', 'true');
+        sessionStorage.setItem('user_signed_in_timestamp', Date.now().toString());
+      }
+
       // Pre-check external user status in the background during the delay
       // This runs during the 1 second login screen delay, so the check is ready when dashboard loads
       if (data?.user?.id) {
@@ -99,10 +105,12 @@ const LoginPage: React.FC = () => {
           console.error('Error pre-checking external user:', err);
         });
       }
-      
+
+      // Navigate after showing welcome message for a bit longer
+      // The welcome animation will show for 2.5 seconds
       setTimeout(() => {
         navigate('/', { replace: true });
-      }, 2200); // Wait for the welcome animation to finish before navigating
+      }, 2500); // Show welcome message for 2.5 seconds
     }
     setLoading(false);
   };
@@ -111,15 +119,15 @@ const LoginPage: React.FC = () => {
     setMagicLinkLoading(true);
     setError(null);
     setSuccess(null);
-    
+
     try {
-      const { error } = await supabase.auth.signInWithOtp({ 
+      const { error } = await supabase.auth.signInWithOtp({
         email,
         options: {
           emailRedirectTo: 'https://leadify-crm.onrender.com'
         }
       });
-      
+
       if (error) {
         setError(error.message);
       } else {
@@ -140,298 +148,298 @@ const LoginPage: React.FC = () => {
     <div className="min-h-screen w-full flex relative overflow-hidden">
       {/* Gradient background for entire page */}
       <div className="absolute inset-0 w-full h-full bg-gradient-to-br from-[#0b1e3d] via-[#0f4c75] to-[#06b6d4] z-0" />
-      
+
       {/* Only render login UI if not showing welcome animation */}
       {!showSuccessAnim && (
         <>
           {/* Full width login box */}
           <div className="w-full flex flex-col justify-start items-center min-h-screen relative z-10 pt-16 md:pt-20">
-      {/* Header bar - Mobile */}
-      <div className="md:hidden absolute top-0 left-0 right-0 z-30">
-        <div className="flex items-center justify-between py-4 px-6">
-          {/* Hamburger Menu Button */}
-          <button
-            onClick={() => setIsMenuOpen(!isMenuOpen)}
-            className="text-white hover:text-gray-200 transition-colors duration-200"
-          >
-            {isMenuOpen ? (
-              <XMarkIcon className="w-6 h-6" />
-            ) : (
-              <Bars3Icon className="w-6 h-6" />
-            )}
-          </button>
-          
-          {/* Centered Text */}
-          <div className="flex items-center gap-3">
-            <span className="text-lg font-bold text-white tracking-tight" style={{ letterSpacing: '-0.02em' }}>
-              RMQ 2.0
-            </span>
-          </div>
-          
-        </div>
-        
-        {/* Mobile Menu Overlay */}
-        {isMenuOpen && (
-          <div className="absolute top-full left-0 right-0 shadow-lg z-40 bg-white/10 backdrop-blur-md">
-            <div className="py-2">
-              <button
-                onClick={() => {
-                  navigate('/about');
-                  setIsMenuOpen(false);
-                }}
-                className="w-full text-left px-6 py-3 text-white hover:bg-white/20 transition-colors duration-200"
-              >
-                About Us
-              </button>
-              <button
-                onClick={() => {
-                  navigate('/contact');
-                  setIsMenuOpen(false);
-                }}
-                className="w-full text-left px-6 py-3 text-white hover:bg-white/20 transition-colors duration-200"
-              >
-                Contact
-              </button>
-              <button
-                onClick={() => {
-                  navigate('/how-it-works');
-                  setIsMenuOpen(false);
-                }}
-                className="w-full text-left px-6 py-3 text-white hover:bg-white/20 transition-colors duration-200"
-              >
-                How It Works
-              </button>
+            {/* Header bar - Mobile */}
+            <div className="md:hidden absolute top-0 left-0 right-0 z-30">
+              <div className="flex items-center justify-between py-4 px-6">
+                {/* Hamburger Menu Button */}
+                <button
+                  onClick={() => setIsMenuOpen(!isMenuOpen)}
+                  className="text-white hover:text-gray-200 transition-colors duration-200"
+                >
+                  {isMenuOpen ? (
+                    <XMarkIcon className="w-6 h-6" />
+                  ) : (
+                    <Bars3Icon className="w-6 h-6" />
+                  )}
+                </button>
+
+                {/* Centered Text */}
+                <div className="flex items-center gap-3">
+                  <span className="text-lg font-bold text-white tracking-tight" style={{ letterSpacing: '-0.02em' }}>
+                    RMQ 2.0
+                  </span>
+                </div>
+
+              </div>
+
+              {/* Mobile Menu Overlay */}
+              {isMenuOpen && (
+                <div className="absolute top-full left-0 right-0 shadow-lg z-40 bg-white/10 backdrop-blur-md">
+                  <div className="py-2">
+                    <button
+                      onClick={() => {
+                        navigate('/about');
+                        setIsMenuOpen(false);
+                      }}
+                      className="w-full text-left px-6 py-3 text-white hover:bg-white/20 transition-colors duration-200"
+                    >
+                      About Us
+                    </button>
+                    <button
+                      onClick={() => {
+                        navigate('/contact');
+                        setIsMenuOpen(false);
+                      }}
+                      className="w-full text-left px-6 py-3 text-white hover:bg-white/20 transition-colors duration-200"
+                    >
+                      Contact
+                    </button>
+                    <button
+                      onClick={() => {
+                        navigate('/how-it-works');
+                        setIsMenuOpen(false);
+                      }}
+                      className="w-full text-left px-6 py-3 text-white hover:bg-white/20 transition-colors duration-200"
+                    >
+                      How It Works
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
-        )}
-      </div>
-      
-      {/* Desktop Header */}
-      <div className="hidden md:block absolute top-0 left-0 right-0 z-30">
-        <div className="flex items-center justify-between py-4 px-8">
-          {/* Brand */}
-          <div className="flex items-center gap-3">
-            <span className="text-xl font-extrabold text-white tracking-tight" style={{ letterSpacing: '-0.03em' }}>
-              RMQ 2.0
-            </span>
-          </div>
-          
-          {/* Navigation Links */}
-          <div className="flex items-center gap-8">
-            <button
-              onClick={() => navigate('/about')}
-              className="text-white hover:text-gray-200 transition-colors duration-200 font-medium"
-            >
-              About Us
-            </button>
-            <button
-              onClick={() => navigate('/contact')}
-              className="text-white hover:text-gray-200 transition-colors duration-200 font-medium"
-            >
-              Contact
-            </button>
-            <button
-              onClick={() => navigate('/how-it-works')}
-              className="text-white hover:text-gray-200 transition-colors duration-200 font-medium"
-            >
-              How It Works
-            </button>
-          </div>
-        </div>
-      </div>
+
+            {/* Desktop Header */}
+            <div className="hidden md:block absolute top-0 left-0 right-0 z-30">
+              <div className="flex items-center justify-between py-4 px-8">
+                {/* Brand */}
+                <div className="flex items-center gap-3">
+                  <span className="text-xl font-extrabold text-white tracking-tight" style={{ letterSpacing: '-0.03em' }}>
+                    RMQ 2.0
+                  </span>
+                </div>
+
+                {/* Navigation Links */}
+                <div className="flex items-center gap-8">
+                  <button
+                    onClick={() => navigate('/about')}
+                    className="text-white hover:text-gray-200 transition-colors duration-200 font-medium"
+                  >
+                    About Us
+                  </button>
+                  <button
+                    onClick={() => navigate('/contact')}
+                    className="text-white hover:text-gray-200 transition-colors duration-200 font-medium"
+                  >
+                    Contact
+                  </button>
+                  <button
+                    onClick={() => navigate('/how-it-works')}
+                    className="text-white hover:text-gray-200 transition-colors duration-200 font-medium"
+                  >
+                    How It Works
+                  </button>
+                </div>
+              </div>
+            </div>
             {/* Logo above login form */}
             <div className="mb-4 md:mb-6 flex flex-col items-center">
               <img src="/RMQ_LOGO.png" alt="RMQ 2.0" className="w-56 h-56 md:w-64 md:h-64 object-contain" />
             </div>
-            
+
             {/* Login box */}
             <div className="w-full max-w-md flex flex-col items-center justify-center min-h-[500px] pt-0 pb-12 px-6 md:pt-2 md:px-0">
-            {/* Glassy blurred white box container */}
-            <div className="w-full bg-white/20 backdrop-blur-lg rounded-2xl border border-white/30 shadow-2xl p-6 md:p-8">
-              <form className="w-full flex flex-col items-center gap-6" onSubmit={handleSignIn}>
-                <div className="w-full mt-0 md:mt-2">
+              {/* Glassy blurred white box container */}
+              <div className="w-full bg-white/20 backdrop-blur-lg rounded-2xl border border-white/30 shadow-2xl p-6 md:p-8">
+                <form className="w-full flex flex-col items-center gap-6" onSubmit={handleSignIn}>
+                  <div className="w-full mt-0 md:mt-2">
                     <label className="block font-semibold mb-1 text-white text-left">Email</label>
-                  <div className="relative">
-                    <input
-                      type="email"
+                    <div className="relative">
+                      <input
+                        type="email"
                         className="input input-bordered w-full pl-10 bg-white/95 backdrop-blur-sm text-gray-900 placeholder-gray-400 border-white/30 focus:border-white/50 focus:bg-white"
-                      placeholder="you@email.com"
-                      value={email}
-                      onChange={e => setEmail(e.target.value)}
-                      onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-                      required
-                      autoFocus
-                    />
+                        placeholder="you@email.com"
+                        value={email}
+                        onChange={e => setEmail(e.target.value)}
+                        onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+                        required
+                        autoFocus
+                      />
                       <AtSymbolIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    </div>
                   </div>
-                </div>
-                <div className="w-full">
+                  <div className="w-full">
                     <label className="block font-semibold mb-1 text-white text-left">Password</label>
-                  <input
-                    type="password"
+                    <input
+                      type="password"
                       className="input input-bordered w-full bg-white/95 backdrop-blur-sm text-gray-900 placeholder-gray-400 border-white/30 focus:border-white/50 focus:bg-white"
-                    placeholder="Password"
-                    value={password}
-                    onChange={e => setPassword(e.target.value)}
-                    required
-                  />
-                </div>
-                <button
-                  type="submit"
-                    className="btn btn-outline border-white/50 text-white hover:bg-white/20 hover:border-white/70 w-full text-lg font-semibold shadow-lg hover:scale-105 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
-                  disabled={loading}
-                >
-                  {loading ? <span className="loading loading-spinner loading-sm" /> : <LockClosedIcon className="w-5 h-5" />}
-                  Sign in
-                </button>
-                <div className="relative group w-full">
+                      placeholder="Password"
+                      value={password}
+                      onChange={e => setPassword(e.target.value)}
+                      required
+                    />
+                  </div>
                   <button
-                    type="button"
+                    type="submit"
+                    className="btn btn-outline border-white/50 text-white hover:bg-white/20 hover:border-white/70 w-full text-lg font-semibold shadow-lg hover:scale-105 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={loading}
+                  >
+                    {loading ? <span className="loading loading-spinner loading-sm" /> : <LockClosedIcon className="w-5 h-5" />}
+                    Sign in
+                  </button>
+                  <div className="relative group w-full">
+                    <button
+                      type="button"
                       className="btn btn-outline border-white/50 text-white hover:bg-white/20 hover:border-white/70 w-full text-lg font-semibold shadow-lg hover:scale-105 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
                       onClick={handleMagicLink}
                       disabled={magicLinkLoading || !email}
-                  >
-                    {magicLinkLoading ? (
-                      <>
-                        <span className="loading loading-spinner loading-sm mr-2"></span>
-                        Sending Magic Link...
-                      </>
-                    ) : (
-                      'Trouble signing in? Get a Magic Link'
-                    )}
-                  </button>
-                  
-                  {/* Desktop hover tooltip */}
-                  <div className="hidden md:block absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-6 py-5 bg-gray-900 text-white text-sm rounded-xl shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none z-50 max-w-md">
-                    <div className="text-left">
-                      <div className="font-bold mb-3 text-lg flex items-center gap-2">
-                        <span className="text-2xl">🔗</span>
-                        Magic Link Authentication
-                      </div>
-                      
-                      <div className="space-y-3">
-                        <div>
-                          <div className="font-semibold text-gray-100 mb-2">What is a Magic Link?</div>
-                          <p className="text-xs text-gray-300 leading-relaxed">
-                            A secure, passwordless way to sign in. Instead of remembering passwords, 
-                            you'll receive a time-limited link via email that automatically logs you in with one click.
-                          </p>
+                    >
+                      {magicLinkLoading ? (
+                        <>
+                          <span className="loading loading-spinner loading-sm mr-2"></span>
+                          Sending Magic Link...
+                        </>
+                      ) : (
+                        'Trouble signing in? Get a Magic Link'
+                      )}
+                    </button>
+
+                    {/* Desktop hover tooltip */}
+                    <div className="hidden md:block absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-6 py-5 bg-gray-900 text-white text-sm rounded-xl shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none z-50 max-w-md">
+                      <div className="text-left">
+                        <div className="font-bold mb-3 text-lg flex items-center gap-2">
+                          <span className="text-2xl">🔗</span>
+                          Magic Link Authentication
                         </div>
-                        
-                        <div>
-                          <div className="font-semibold text-gray-100 mb-2">How it works:</div>
-                          <div className="space-y-2">
-                            <div className="flex items-start gap-3">
-                              <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">1</span>
-                              <div>
-                                <div className="text-xs font-medium">Enter your email address above</div>
-                                <div className="text-xs text-gray-400">Use the same email associated with your account</div>
+
+                        <div className="space-y-3">
+                          <div>
+                            <div className="font-semibold text-gray-100 mb-2">What is a Magic Link?</div>
+                            <p className="text-xs text-gray-300 leading-relaxed">
+                              A secure, passwordless way to sign in. Instead of remembering passwords,
+                              you'll receive a time-limited link via email that automatically logs you in with one click.
+                            </p>
+                          </div>
+
+                          <div>
+                            <div className="font-semibold text-gray-100 mb-2">How it works:</div>
+                            <div className="space-y-2">
+                              <div className="flex items-start gap-3">
+                                <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">1</span>
+                                <div>
+                                  <div className="text-xs font-medium">Enter your email address above</div>
+                                  <div className="text-xs text-gray-400">Use the same email associated with your account</div>
+                                </div>
                               </div>
-                            </div>
-                            <div className="flex items-start gap-3">
-                              <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">2</span>
-                              <div>
-                                <div className="text-xs font-medium">Click "Get a Magic Link" button</div>
-                                <div className="text-xs text-gray-400">We'll send a secure link instantly</div>
+                              <div className="flex items-start gap-3">
+                                <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">2</span>
+                                <div>
+                                  <div className="text-xs font-medium">Click "Get a Magic Link" button</div>
+                                  <div className="text-xs text-gray-400">We'll send a secure link instantly</div>
+                                </div>
                               </div>
-                            </div>
-                            <div className="flex items-start gap-3">
-                              <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">3</span>
-                              <div>
-                                <div className="text-xs font-medium">Check your email inbox</div>
-                                <div className="text-xs text-gray-400">Look for email from RMQ 2.0 (check spam folder)</div>
+                              <div className="flex items-start gap-3">
+                                <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">3</span>
+                                <div>
+                                  <div className="text-xs font-medium">Check your email inbox</div>
+                                  <div className="text-xs text-gray-400">Look for email from RMQ 2.0 (check spam folder)</div>
+                                </div>
                               </div>
-                            </div>
-                            <div className="flex items-start gap-3">
-                              <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">4</span>
-                              <div>
-                                <div className="text-xs font-medium">Click the secure link in the email</div>
-                                <div className="text-xs text-gray-400">You'll be automatically logged in and redirected</div>
+                              <div className="flex items-start gap-3">
+                                <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">4</span>
+                                <div>
+                                  <div className="text-xs font-medium">Click the secure link in the email</div>
+                                  <div className="text-xs text-gray-400">You'll be automatically logged in and redirected</div>
+                                </div>
                               </div>
                             </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                    {/* Arrow pointing down */}
-                    <div className="absolute top-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-900"></div>
-                  </div>
-                </div>
-              </form>
-            </div>
-            
-            {/* Success and Error Messages */}
-            {success && (
-              <div className="w-full mt-4">
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4 shadow-sm">
-                  <div className="flex items-start gap-3">
-                    <div className="flex-shrink-0">
-                      <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                    </div>
-                    <div className="flex-1">
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <h4 className="text-sm font-semibold text-green-800 mb-1">Magic Link Sent Successfully!</h4>
-                          <p className="text-sm text-green-700 leading-relaxed">{success}</p>
-                          <div className="mt-2 text-xs text-green-600">
-                            <p>• Check your email inbox (and spam folder)</p>
-                            <p>• Click the secure link to sign in automatically</p>
-                            <p>• The link will expire in 1 hour for security</p>
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => setSuccess(null)}
-                          className="ml-2 text-green-400 hover:text-green-600 transition-colors"
-                          title="Dismiss message"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
+                      {/* Arrow pointing down */}
+                      <div className="absolute top-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-900"></div>
                     </div>
                   </div>
-                </div>
+                </form>
               </div>
-            )}
-            
-            {error && (
-              <div className="w-full mt-4">
-                <div className="bg-red-50 border border-red-200 rounded-lg p-4 shadow-sm">
-                  <div className="flex items-start gap-3">
-                    <div className="flex-shrink-0">
-                      <svg className="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                    </div>
-                    <div className="flex-1">
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <h4 className="text-sm font-semibold text-red-800 mb-1">Error Sending Magic Link</h4>
-                          <p className="text-sm text-red-700 leading-relaxed">{error}</p>
-                          <div className="mt-2 text-xs text-red-600">
-                            <p>• Please check your email address is correct</p>
-                            <p>• Try again in a few moments</p>
-                            <p>• Contact support if the problem persists</p>
+
+              {/* Success and Error Messages */}
+              {success && (
+                <div className="w-full mt-4">
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4 shadow-sm">
+                    <div className="flex items-start gap-3">
+                      <div className="flex-shrink-0">
+                        <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                      </div>
+                      <div className="flex-1">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <h4 className="text-sm font-semibold text-green-800 mb-1">Magic Link Sent Successfully!</h4>
+                            <p className="text-sm text-green-700 leading-relaxed">{success}</p>
+                            <div className="mt-2 text-xs text-green-600">
+                              <p>• Check your email inbox (and spam folder)</p>
+                              <p>• Click the secure link to sign in automatically</p>
+                              <p>• The link will expire in 1 hour for security</p>
+                            </div>
                           </div>
+                          <button
+                            onClick={() => setSuccess(null)}
+                            className="ml-2 text-green-400 hover:text-green-600 transition-colors"
+                            title="Dismiss message"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
                         </div>
-                        <button
-                          onClick={() => setError(null)}
-                          className="ml-2 text-red-400 hover:text-red-600 transition-colors"
-                          title="Dismiss message"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
                       </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
+
+              {error && (
+                <div className="w-full mt-4">
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-4 shadow-sm">
+                    <div className="flex items-start gap-3">
+                      <div className="flex-shrink-0">
+                        <svg className="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                      </div>
+                      <div className="flex-1">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <h4 className="text-sm font-semibold text-red-800 mb-1">Error Sending Magic Link</h4>
+                            <p className="text-sm text-red-700 leading-relaxed">{error}</p>
+                            <div className="mt-2 text-xs text-red-600">
+                              <p>• Please check your email address is correct</p>
+                              <p>• Try again in a few moments</p>
+                              <p>• Contact support if the problem persists</p>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => setError(null)}
+                            className="ml-2 text-red-400 hover:text-red-600 transition-colors"
+                            title="Dismiss message"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
             {/* Copyright at bottom left */}
             <div className="absolute left-0 right-0 bottom-0 z-20 pb-6 flex justify-center w-full">
@@ -440,8 +448,8 @@ const LoginPage: React.FC = () => {
           </div>
         </>
       )}
-      
-      
+
+
       {/* Success animation overlay */}
       {showSuccessAnim && (
         <div className="absolute inset-0 z-50 flex flex-col items-center justify-center w-full h-full">
@@ -458,13 +466,13 @@ const LoginPage: React.FC = () => {
                 Enjoy the future today.
               </div>
             </div>
-            
+
             {/* Employee Image or Success Icon */}
             {welcomeImage ? (
               <div className="checkmark-pop">
                 <div className="relative">
-                  <img 
-                    src={welcomeImage} 
+                  <img
+                    src={welcomeImage}
                     alt={welcomeName}
                     className="w-32 h-32 rounded-full object-cover border-4 border-green-400 shadow-2xl"
                     onError={(e) => {

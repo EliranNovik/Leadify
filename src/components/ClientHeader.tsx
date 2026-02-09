@@ -1285,13 +1285,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     Client declined
                                                 </button>
                                             )}
-                                            <button
-                                                onClick={() => updateLeadStage('payment_request_sent')}
-                                                className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
-                                            >
-                                                <CurrencyDollarIcon className="w-5 h-5" />
-                                                Payment request sent
-                                            </button>
                                             {openSendOfferModal && (
                                                 <button
                                                     onClick={openSendOfferModal}

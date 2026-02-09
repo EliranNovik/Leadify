@@ -56,6 +56,7 @@ import EditContractsPage from './pages/EditContractsPage';
 import ReassignLeadsPage from './pages/ReassignLeadsPage';
 import EmployeeUnavailabilitiesReport from './pages/EmployeeUnavailabilitiesReport';
 import EmployeeSalariesReport from './pages/EmployeeSalariesReport';
+import EmployeeInfoReport from './pages/EmployeeInfoReport';
 import ExternalUserAccessLogsPage from './pages/ExternalUserAccessLogsPage';
 import MasterLeadPage from './components/MasterLeadPage';
 import SettingsPage from './pages/SettingsPage';
@@ -847,6 +848,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/reports/reassign-leads" element={<ReassignLeadsPage />} />
                     <Route path="/reports/employee-unavailabilities" element={<EmployeeUnavailabilitiesReport />} />
                     <Route path="/reports/employee-salaries" element={<EmployeeSalariesReport />} />
+                    <Route path="/reports/employee-info" element={<EmployeeInfoReport />} />
                     <Route path="/access-logs" element={<ExternalUserAccessLogsPage />} />
                     <Route path="/sales/signed" element={<SignedSalesReportPage />} />
                     <Route path="/settings" element={<SettingsPage />} />

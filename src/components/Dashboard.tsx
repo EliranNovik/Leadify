@@ -68,11 +68,6 @@ const Dashboard: React.FC = () => {
   const { user: authUser, isInitialized } = useAuthContext();
   const { isExternalUser, isLoading: isLoadingExternal, userName: externalUserName, userImage: externalUserImage } = useExternalUser();
 
-  // State to track if auth check is complete (prevents flash of dashboard before redirect)
-  // Only check isInitialized - if initialized, we can render (auth check happens in background)
-  // This prevents annoying loading screens on every page navigation
-  const [isAuthChecked, setIsAuthChecked] = useState(isInitialized);
-
   // Get the current month name
   const currentMonthName = new Date().toLocaleString('en-US', { month: 'long' });
 
@@ -180,12 +175,7 @@ const Dashboard: React.FC = () => {
 
   // Skip redundant auth check - ProtectedRoute already handles authentication
   // Just rely on AuthContext state for faster page loads
-  // Only check isInitialized - if initialized, we can render immediately
-  useEffect(() => {
-    if (isInitialized) {
-      setIsAuthChecked(true);
-    }
-  }, [isInitialized]);
+  // isInitialized is checked directly in render below
 
   // Fetch meeting locations and their default links for join buttons
   useEffect(() => {
@@ -5014,13 +5004,14 @@ const Dashboard: React.FC = () => {
     };
   }, [aiContainerCollapsed]);
 
-  // Show loading screen until auth is confirmed (must be after all hooks)
-  if (!isAuthChecked) {
+  // Show loading screen only if auth is not initialized (must be after all hooks)
+  // This should be very brief since AuthContext initializes quickly
+  if (!isInitialized) {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center">
         <div className="text-center">
           <div className="loading loading-spinner loading-lg text-primary"></div>
-          <p className="mt-4 text-gray-600">Verifying authentication...</p>
+          <p className="mt-4 text-gray-600">Loading...</p>
         </div>
       </div>
     );
