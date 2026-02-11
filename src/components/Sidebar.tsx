@@ -182,37 +182,9 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
     }
 
     const fetchUserInfo = async (retryCount = 0) => {
-      // Check cache first
-      const cacheKey = 'sidebar_userData';
-      const cacheTimestampKey = 'sidebar_userData_timestamp';
-      const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
-
-      try {
-        const cachedData = sessionStorage.getItem(cacheKey);
-        const cachedTimestamp = sessionStorage.getItem(cacheTimestampKey);
-
-        if (cachedData && cachedTimestamp) {
-          const age = Date.now() - parseInt(cachedTimestamp, 10);
-          if (age < CACHE_DURATION) {
-            // Use cached data
-            const data = JSON.parse(cachedData);
-            setUserOfficialName(data.userOfficialName || '');
-            setUserRoleFromDB(data.userRoleFromDB || 'User');
-            setUserDepartment(data.userDepartment || 'General');
-            setIsSuperUser(data.isSuperUser || false);
-            setIsLoadingUserInfo(false);
-            console.log('✅ Sidebar: User data loaded from cache');
-            return; // Skip fetch - use cache
-          }
-        }
-      } catch (error) {
-        console.error('Error reading sidebar user data cache:', error);
-      }
-
       // Don't set loading to true - run in background to not block UI
       try {
-
-        // Get the current auth user
+        // Get the current auth user FIRST to check cache key
         const { data: { user }, error: authError } = await supabase.auth.getUser();
 
         if (authError) {
@@ -222,9 +194,61 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
         }
 
         if (!user) {
-          // No user logged in
+          // No user logged in - clear cache and state
+          sessionStorage.removeItem('sidebar_userData');
+          sessionStorage.removeItem('sidebar_userData_timestamp');
+          sessionStorage.removeItem('sidebar_userData_userId');
+          setUserOfficialName('');
+          setUserRoleFromDB('User');
+          setUserDepartment('General');
+          setIsSuperUser(false);
           setIsLoadingUserInfo(false);
           return;
+        }
+
+        // Check cache first - but only if it's for the current user
+        const cacheKey = 'sidebar_userData';
+        const cacheTimestampKey = 'sidebar_userData_timestamp';
+        const cacheUserIdKey = 'sidebar_userData_userId';
+        const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+
+        try {
+          const cachedData = sessionStorage.getItem(cacheKey);
+          const cachedTimestamp = sessionStorage.getItem(cacheTimestampKey);
+          const cachedUserId = sessionStorage.getItem(cacheUserIdKey);
+
+          // Only use cache if it's for the current user
+          if (cachedData && cachedTimestamp && cachedUserId === user.id) {
+            const age = Date.now() - parseInt(cachedTimestamp, 10);
+            if (age < CACHE_DURATION) {
+              // Use cached data
+              const data = JSON.parse(cachedData);
+              setUserOfficialName(data.userOfficialName || '');
+              setUserRoleFromDB(data.userRoleFromDB || 'User');
+              setUserDepartment(data.userDepartment || 'General');
+              setIsSuperUser(data.isSuperUser || false);
+              setIsLoadingUserInfo(false);
+              console.log('✅ Sidebar: User data loaded from cache');
+              return; // Skip fetch - use cache
+            } else {
+              // Cache expired - clear it
+              sessionStorage.removeItem(cacheKey);
+              sessionStorage.removeItem(cacheTimestampKey);
+              sessionStorage.removeItem(cacheUserIdKey);
+            }
+          } else if (cachedUserId && cachedUserId !== user.id) {
+            // Different user - clear old cache
+            console.log('🔄 Sidebar: Different user detected, clearing old cache');
+            sessionStorage.removeItem(cacheKey);
+            sessionStorage.removeItem(cacheTimestampKey);
+            sessionStorage.removeItem(cacheUserIdKey);
+          }
+        } catch (error) {
+          console.error('Error reading sidebar user data cache:', error);
+          // Clear corrupted cache
+          sessionStorage.removeItem(cacheKey);
+          sessionStorage.removeItem(cacheTimestampKey);
+          sessionStorage.removeItem(cacheUserIdKey);
         }
 
         // Get current user's data with employee relationship
@@ -332,7 +356,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
             setUserRoleFromDB('User');
           }
 
-          // Cache the data
+          // Cache the data with user ID
           try {
             const dataToCache = {
               userOfficialName: officialName,
@@ -342,6 +366,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
             };
             sessionStorage.setItem('sidebar_userData', JSON.stringify(dataToCache));
             sessionStorage.setItem('sidebar_userData_timestamp', Date.now().toString());
+            sessionStorage.setItem('sidebar_userData_userId', user.id); // Store user ID with cache
             console.log('✅ Sidebar: User data cached');
           } catch (cacheError) {
             console.error('Error caching sidebar user data:', cacheError);
@@ -353,7 +378,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
           setUserOfficialName(officialName);
           setUserRoleFromDB('User');
 
-          // Cache basic data
+          // Cache basic data with user ID
           try {
             const dataToCache = {
               userOfficialName: officialName,
@@ -363,6 +388,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
             };
             sessionStorage.setItem('sidebar_userData', JSON.stringify(dataToCache));
             sessionStorage.setItem('sidebar_userData_timestamp', Date.now().toString());
+            sessionStorage.setItem('sidebar_userData_userId', user.id); // Store user ID with cache
           } catch (cacheError) {
             console.error('Error caching sidebar user data:', cacheError);
           }
@@ -390,7 +416,10 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
           fetchUserInfo();
         }
       } else if (event === 'SIGNED_OUT') {
-        // Clear user info on sign out
+        // Clear user info and cache on sign out
+        sessionStorage.removeItem('sidebar_userData');
+        sessionStorage.removeItem('sidebar_userData_timestamp');
+        sessionStorage.removeItem('sidebar_userData_userId');
         setUserOfficialName('');
         setUserRoleFromDB('User');
         setUserDepartment('');

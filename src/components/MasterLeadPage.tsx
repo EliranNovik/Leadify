@@ -402,12 +402,13 @@ const MasterLeadPage: React.FC = () => {
     const currentSubLeads = subLeads;
     const hasPersistedData = currentMasterLeadInfo && currentSubLeads.length > 0;
     let currentLeadMatches = false;
+    let persistedBaseNumber: string | undefined = undefined;
 
     if (hasPersistedData) {
       // Check if persisted data matches current lead_number
       // Convert to string to handle both string and number IDs
       const persistedLeadNumber = String(currentMasterLeadInfo.lead_number || currentMasterLeadInfo.id || '');
-      const persistedBaseNumber = persistedLeadNumber.includes('/') ? persistedLeadNumber.split('/')[0] : persistedLeadNumber;
+      persistedBaseNumber = persistedLeadNumber.includes('/') ? persistedLeadNumber.split('/')[0] : persistedLeadNumber;
 
       // Also check if any sub-lead matches
       const subLeadMatches = currentSubLeads.some(subLead => {
@@ -427,7 +428,7 @@ const MasterLeadPage: React.FC = () => {
     if (hasPersistedData && currentLeadMatches) {
       console.log('🔍 MasterLeadPage: Using persisted data, skipping fetch');
       // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:365', message: 'Using persisted data - setting loading false IMMEDIATELY', data: { baseLeadNumber, persistedBaseNumber, hasPersistedData, currentLeadMatches }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:365', message: 'Using persisted data - setting loading false IMMEDIATELY', data: { baseLeadNumber, persistedBaseNumber: persistedBaseNumber || 'undefined', hasPersistedData, currentLeadMatches }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
       // #endregion
       // Set loading to false IMMEDIATELY to prevent loading screen
       setLoading(false);

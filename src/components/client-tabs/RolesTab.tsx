@@ -35,7 +35,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
   // Helper function to get employee by ID or name (matching CalendarPage logic)
   const getEmployeeById = (employeeIdOrName: string | number | null | undefined) => {
     const employeesToUse = (allEmployeesProp && allEmployeesProp.length > 0) ? allEmployeesProp : allEmployees;
-    
+
     if (!employeeIdOrName || employeeIdOrName === '---' || employeeIdOrName === '--' || employeeIdOrName === '') {
       return null;
     }
@@ -85,7 +85,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
   // Helper to get employee ID from role assignee name
   const getEmployeeIdFromRole = (role: Role): string | number | null => {
     const employeesToUse = (allEmployeesProp && allEmployeesProp.length > 0) ? allEmployeesProp : allEmployees;
-    
+
     if (!role.assignee || role.assignee === '---') return null;
 
     if (isLegacyLead && role.legacyFieldName) {
@@ -108,7 +108,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
     const [imageError, setImageError] = useState(false);
     const employee = getEmployeeById(employeeId);
     const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : size === 'md' ? 'w-12 h-12 text-sm' : 'w-16 h-16 text-base';
-    
+
     if (!employee) {
       return null;
     }
@@ -119,7 +119,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
     // If we know there's no photo URL or we have an error, show initials immediately
     if (imageError || !photoUrl) {
       return (
-        <div 
+        <div
           className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
           onClick={() => {
             if (employee.id) {
@@ -162,6 +162,11 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
     return (employeeId: string | number | null | undefined, employees: any[]) => {
       if (!employeeId || employeeId === '---' || employeeId === null || employeeId === undefined) return '---';
 
+      // If employees array is empty, return placeholder
+      if (!employees || employees.length === 0) {
+        return 'Loading...';
+      }
+
       // Convert employeeId to number for comparison
       const idAsNumber = typeof employeeId === 'string' ? parseInt(employeeId, 10) : Number(employeeId);
 
@@ -170,10 +175,22 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
         return '---';
       }
 
-      // Find employee by ID - try both string and number comparison
+      // Find employee by ID - try multiple comparison methods for robustness
       const employee = employees.find((emp: any) => {
-        const empId = typeof emp.id === 'string' ? parseInt(emp.id, 10) : Number(emp.id);
-        return !isNaN(empId) && empId === idAsNumber;
+        if (!emp || !emp.id) return false;
+
+        // Handle bigint type
+        const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
+        const empIdNum = typeof empId === 'string' ? parseInt(empId, 10) : Number(empId);
+
+        if (isNaN(empIdNum)) return false;
+
+        // Try string comparison
+        if (String(empId) === String(employeeId)) return true;
+        // Try number comparison
+        if (empIdNum === idAsNumber) return true;
+
+        return false;
       });
 
       if (employee && employee.display_name) {
@@ -259,7 +276,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
             return getEmployeeDisplayName(Number(closer), employeesToUse);
           }
           // Otherwise, it's already a display name, but verify it exists in employees
-          const employee = employeesToUse.find((emp: any) => 
+          const employee = employeesToUse.find((emp: any) =>
             emp.display_name && emp.display_name.trim() === String(closer).trim()
           );
           // If found, return the display name; otherwise return as-is (might be a name not in our list)
@@ -297,6 +314,13 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
       },
     ];
   }, [client, isLegacyLead, allEmployeesProp, allEmployees, getEmployeeDisplayName]);
+
+  // Sync local allEmployees state with prop when it changes
+  useEffect(() => {
+    if (allEmployeesProp && allEmployeesProp.length > 0) {
+      setAllEmployees(allEmployeesProp);
+    }
+  }, [allEmployeesProp]);
 
   // Use computed roles as the source of truth - initialize state with computed roles
   const [roles, setRoles] = useState<Role[]>(computedRoles);

@@ -44,14 +44,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const lastUserIdRef = useRef<string | null>(null);
 
   const fetchUserDetails = useCallback(async (user: any) => {
-    if (!user?.email) return;
+    if (!user?.id) return;
 
     try {
-      const { data, error } = await supabase
+      // Match by auth_id (Supabase auth user ID) - more reliable than email
+      // Use maybeSingle() instead of single() to handle cases where user doesn't exist in users table
+      // This prevents errors when auth user exists but users table record is missing
+      let { data, error } = await supabase
         .from('users')
-        .select('first_name, last_name, full_name')
-        .eq('email', user.email)
-        .single();
+        .select('first_name, last_name, full_name, email')
+        .eq('auth_id', user.id)
+        .maybeSingle();
+
+      // Fallback to email if not found by auth_id (for backwards compatibility)
+      if ((error || !data) && user.email) {
+        const { data: userByEmail, error: emailError } = await supabase
+          .from('users')
+          .select('first_name, last_name, full_name, email')
+          .eq('email', user.email)
+          .maybeSingle();
+        
+        if (!emailError && userByEmail) {
+          data = userByEmail;
+          error = null;
+        }
+      }
 
       if (!error && data) {
         let fullName: string;
@@ -64,8 +81,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           fullName = data.full_name.trim();
           initials = data.full_name.split(' ').map((n: string) => n[0]).join('').toUpperCase();
         } else {
-          fullName = user.email;
-          initials = user.email[0].toUpperCase();
+          fullName = data.email || user.email || 'User';
+          initials = (data.email || user.email || 'U')[0].toUpperCase();
         }
 
         setAuthState(prev => ({
@@ -75,7 +92,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }));
       } else {
         // Fallback to auth user metadata
-        const authName = user.user_metadata?.first_name || user.user_metadata?.full_name || user.email;
+        const authName = user.user_metadata?.first_name || user.user_metadata?.full_name || user.email || 'User';
         setAuthState(prev => ({
           ...prev,
           userFullName: authName,
@@ -84,11 +101,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     } catch (error) {
       console.error('Error fetching user details:', error);
-      // Fallback to email
+      // Fallback to email or default
+      const fallbackName = user.email || 'User';
       setAuthState(prev => ({
         ...prev,
-        userFullName: user.email,
-        userInitials: user.email[0].toUpperCase(),
+        userFullName: fallbackName,
+        userInitials: fallbackName[0].toUpperCase(),
       }));
     }
   }, []);

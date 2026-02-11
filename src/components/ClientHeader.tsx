@@ -138,21 +138,51 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const navigate = useNavigate();
     const [isEditingCategory, setIsEditingCategory] = useState(false);
 
-    // Helper function to get employee by ID (matching CalendarPage logic)
+    // Local state for employees (matching RolesTab pattern)
+    const [localAllEmployees, setLocalAllEmployees] = useState<any[]>(allEmployees || []);
+    
+    // Update local employees state when prop changes (matching RolesTab exactly)
+    useEffect(() => {
+        if (allEmployees && allEmployees.length > 0) {
+            setLocalAllEmployees(allEmployees);
+        }
+    }, [allEmployees]);
+    
+    // Fetch employees if prop is empty (matching RolesTab pattern)
+    useEffect(() => {
+        if ((!allEmployees || allEmployees.length === 0) && localAllEmployees.length === 0) {
+            const fetchEmployees = async () => {
+                const { data, error } = await supabase
+                    .from('tenants_employee')
+                    .select('id, display_name, photo_url, photo')
+                    .order('display_name', { ascending: true });
+
+                if (!error && data) {
+                    setLocalAllEmployees(data);
+                }
+            };
+            fetchEmployees();
+        }
+    }, [allEmployees, localAllEmployees.length]);
+    
+    // Use prop if available, otherwise use local state (matching RolesTab pattern)
+    const employeesToUse = (allEmployees && allEmployees.length > 0) ? allEmployees : localAllEmployees;
+
+    // Helper function to get employee by ID or name (matching RolesTab logic exactly)
     const getEmployeeById = (employeeIdOrName: string | number | null | undefined) => {
+        // Use the employeesToUse variable defined above (matching RolesTab)
+        
         if (!employeeIdOrName || employeeIdOrName === '---' || employeeIdOrName === '--' || employeeIdOrName === '') {
             return null;
         }
 
-        // First, try to match by ID (for legacy leads and new leads with ID fields)
-        const employeeById = allEmployees.find((emp: any) => {
+        // First, try to match by ID
+        const employeeById = employeesToUse.find((emp: any) => {
             const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
             const searchId = typeof employeeIdOrName === 'string' ? parseInt(employeeIdOrName, 10) : employeeIdOrName;
 
-            // Skip if searchId is NaN (not a valid number)
             if (isNaN(Number(searchId))) return false;
 
-            // Try exact match
             if (empId.toString() === searchId.toString()) return true;
             if (Number(empId) === Number(searchId)) return true;
 
@@ -163,17 +193,25 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             return employeeById;
         }
 
-        // If not found by ID, try to match by display name (for new leads where display_name is saved)
+        // If not found by ID, try to match by display name
         if (typeof employeeIdOrName === 'string') {
-            const employeeByName = allEmployees.find((emp: any) => {
+            const employeeByName = employeesToUse.find((emp: any) => {
                 if (!emp.display_name) return false;
-                // Case-insensitive match, trim whitespace
                 return emp.display_name.trim().toLowerCase() === employeeIdOrName.trim().toLowerCase();
             });
 
             if (employeeByName) {
                 return employeeByName;
             }
+        }
+
+        // Debug logging
+        if (employeesToUse.length > 0) {
+            console.warn('[ClientHeader] Employee not found:', {
+                searchValue: employeeIdOrName,
+                employeesCount: employeesToUse.length,
+                sampleEmployees: employeesToUse.slice(0, 3).map((e: any) => ({ id: e.id, display_name: e.display_name }))
+            });
         }
 
         return null;
@@ -200,7 +238,124 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         return stringValue;
     };
 
-    // Component to render employee avatar (matching CalendarPage logic)
+    // Helper function to format phone number with dashes for better readability (single row)
+    const formatPhoneNumberDisplay = (phone: string | null | undefined): string => {
+        if (!phone || phone === '---' || phone.trim() === '') return phone || '---';
+        
+        // Remove existing formatting to normalize
+        const digitsOnly = phone.replace(/[\s\-\(\)]/g, '');
+        
+        // If it's already formatted nicely with dashes/spaces, return as-is
+        if (phone.includes('-') || phone.includes(' ') || phone.includes('(')) {
+            return phone;
+        }
+        
+        // Format based on common patterns (all on one line)
+        // US/Canada: +1XXXXXXXXXX -> +1 (XXX) XXX-XXXX
+        if (digitsOnly.startsWith('+1') || (digitsOnly.startsWith('1') && digitsOnly.length === 11)) {
+            const num = digitsOnly.startsWith('+1') ? digitsOnly.substring(2) : digitsOnly.substring(1);
+            if (num.length === 10) {
+                return `+1 (${num.substring(0, 3)}) ${num.substring(3, 6)}-${num.substring(6)}`;
+            }
+        }
+        
+        // Israeli: +972XXXXXXXXX or 0XXXXXXXXX -> +972 XX-XXX-XXXX or 0XX-XXX-XXXX
+        if (digitsOnly.startsWith('+972') || digitsOnly.startsWith('972')) {
+            const num = digitsOnly.startsWith('+972') ? digitsOnly.substring(4) : digitsOnly.substring(3);
+            if (num.length === 9) {
+                return `+972 ${num.substring(0, 2)}-${num.substring(2, 5)}-${num.substring(5)}`;
+            }
+        }
+        
+        // UK: +44XXXXXXXXXX -> +44 XXXX XXXXXX
+        if (digitsOnly.startsWith('+44') || digitsOnly.startsWith('44')) {
+            const num = digitsOnly.startsWith('+44') ? digitsOnly.substring(3) : digitsOnly.substring(2);
+            if (num.length === 10) {
+                return `+44 ${num.substring(0, 4)} ${num.substring(4)}`;
+            }
+        }
+        
+        // Australian: +61XXXXXXXXX -> +61 X XXXX XXXX
+        if (digitsOnly.startsWith('+61') || digitsOnly.startsWith('61')) {
+            const num = digitsOnly.startsWith('+61') ? digitsOnly.substring(3) : digitsOnly.substring(2);
+            if (num.length === 9) {
+                return `+61 ${num.substring(0, 1)} ${num.substring(1, 5)} ${num.substring(5)}`;
+            }
+        }
+        
+        // Generic formatting for other numbers: add dashes
+        if (digitsOnly.length > 6) {
+            // Find country code if present
+            let countryCode = '';
+            let numberPart = digitsOnly;
+            
+            if (digitsOnly.startsWith('+')) {
+                // Extract country code (1-3 digits after +)
+                const afterPlus = digitsOnly.substring(1);
+                if (afterPlus.startsWith('1') && afterPlus.length > 10) {
+                    countryCode = '+1';
+                    numberPart = afterPlus.substring(1);
+                } else if (afterPlus.length > 9) {
+                    // Try 2-3 digit country codes
+                    const twoDigit = afterPlus.substring(0, 2);
+                    const threeDigit = afterPlus.substring(0, 3);
+                    if (['44', '61', '27', '33', '49', '39'].includes(twoDigit) && afterPlus.length > 10) {
+                        countryCode = `+${twoDigit}`;
+                        numberPart = afterPlus.substring(2);
+                    } else if (['972', '351', '353'].includes(threeDigit) && afterPlus.length > 11) {
+                        countryCode = `+${threeDigit}`;
+                        numberPart = afterPlus.substring(3);
+                    }
+                }
+            }
+            
+            // Format the number part with dashes
+            let formatted = numberPart;
+            if (numberPart.length > 6) {
+                // Format as XXX-XXX-XXXX or similar
+                const chunks: string[] = [];
+                let remaining = numberPart;
+                
+                // Take chunks from the end
+                while (remaining.length > 4) {
+                    chunks.unshift(remaining.slice(-3));
+                    remaining = remaining.slice(0, -3);
+                }
+                if (remaining.length > 0) {
+                    chunks.unshift(remaining);
+                }
+                
+                formatted = chunks.join('-');
+            }
+            
+            if (countryCode) {
+                return `${countryCode} ${formatted}`;
+            }
+            return formatted;
+        }
+        
+        // If no special formatting applies, return original
+        return phone;
+    };
+
+    // Helper function to get employee display name from ID - SIMPLE: match ID, return display_name
+    const getEmployeeDisplayNameFromId = (employeeId: string | number | null | undefined): string => {
+        if (!employeeId || employeeId === '---' || employeeId === null || employeeId === undefined) return '---';
+        if (!employeesToUse || employeesToUse.length === 0) return '---';
+
+        const idAsNumber = typeof employeeId === 'string' ? parseInt(employeeId, 10) : Number(employeeId);
+        if (isNaN(idAsNumber)) return '---';
+
+        const employee = employeesToUse.find((emp: any) => {
+            if (!emp || !emp.id) return false;
+            const empId = typeof emp.id === 'bigint' ? Number(emp.id) : (typeof emp.id === 'string' ? parseInt(emp.id, 10) : Number(emp.id));
+            return !isNaN(empId) && empId === idAsNumber;
+        });
+
+        return employee?.display_name || '---';
+    };
+
+    // Component to render employee avatar (exact copy from RolesTab)
     const EmployeeAvatar: React.FC<{
         employeeId: string | number | null | undefined;
         size?: 'sm' | 'md' | 'lg';
@@ -208,6 +363,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         const [imageError, setImageError] = useState(false);
         const employee = getEmployeeById(employeeId);
         const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : size === 'md' ? 'w-12 h-12 text-sm' : 'w-16 h-16 text-base';
+        
+        // Debug logging
+        if (employeeId && !employee) {
+            console.warn('[ClientHeader EmployeeAvatar] No employee found for:', employeeId, 'employeesToUse length:', employeesToUse?.length);
+        }
 
         if (!employee) {
             return null;
@@ -255,6 +415,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [allCategories, setAllCategories] = useState<any[]>([]);
     const [isLoadingCategories, setIsLoadingCategories] = useState(false);
     const [allSources, setAllSources] = useState<Array<{ id: number | string, name: string }>>([]);
+    const [allCurrencies, setAllCurrencies] = useState<Array<{ id: number | string, name: string, iso_code: string | null }>>([]);
     const [showStageDropdown, setShowStageDropdown] = useState(false);
     const [isCallModalOpen, setIsCallModalOpen] = useState(false);
     const [callPhoneNumber, setCallPhoneNumber] = useState('');
@@ -284,6 +445,25 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         };
 
         fetchSources();
+    }, []);
+
+    // Fetch currencies from accounting_currencies table
+    useEffect(() => {
+        const fetchCurrencies = async () => {
+            try {
+                const { data, error } = await supabase
+                    .from('accounting_currencies')
+                    .select('id, name, iso_code')
+                    .order('order', { ascending: true, nullsFirst: false });
+
+                if (error) throw error;
+                setAllCurrencies(data || []);
+            } catch (error) {
+                console.error('Error fetching currencies:', error);
+            }
+        };
+
+        fetchCurrencies();
     }, []);
 
     // Fetch categories
@@ -464,6 +644,39 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
         // Fallback to the source name if source_id not found
         return fallbackSource || '';
+    };
+
+    // Helper function to get currency name from accounting_currencies table
+    const getCurrencyName = (currencyId: string | number | null | undefined): string => {
+        if (!currencyId || currencyId === null || currencyId === undefined) {
+            return '₪'; // Default fallback
+        }
+
+        // If currencies haven't loaded yet, return default
+        if (!allCurrencies || allCurrencies.length === 0) {
+            return '₪'; // Default fallback until currencies load
+        }
+
+        // Convert currencyId to number for comparison (handle bigint)
+        const currencyIdNum = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+        if (isNaN(currencyIdNum)) {
+            return '₪'; // Default fallback
+        }
+
+        // Find currency in loaded currencies - compare as numbers
+        const currency = allCurrencies.find((curr: any) => {
+            if (!curr || !curr.id) return false;
+            const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
+            const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
+            return !isNaN(currIdNum) && currIdNum === currencyIdNum;
+        });
+
+        if (currency && currency.name && currency.name.trim() !== '') {
+            return currency.name.trim();
+        }
+
+        // Fallback to default if currency not found
+        return '₪';
     };
 
     // Lead Number
@@ -697,9 +910,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                         window.open(`tel:${displayPhone}`, '_self');
                                                     }
                                                 }}
-                                                className="hover:text-indigo-600 transition-colors cursor-pointer text-left"
+                                                className="hover:text-indigo-600 transition-colors cursor-pointer text-left leading-tight"
                                             >
-                                                {displayPhone}
+                                                {formatPhoneNumberDisplay(displayPhone)}
                                             </button>
                                         ) : '---'}
                                     </p>
@@ -722,17 +935,41 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         {(() => {
                             const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
 
-                            // 1. Currency Resolution
-                            let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
-                            if ((!currency || currency === '₪') && selectedClient?.currency_id && !isLegacyLead) {
-                                const currencyId = Number(selectedClient.currency_id);
-                                switch (currencyId) {
-                                    case 1: currency = '₪'; break;
-                                    case 2: currency = '€'; break;
-                                    case 3: currency = '$'; break;
-                                    case 4: currency = '£'; break;
-                                    default: currency = '₪';
+                            // 1. Currency Resolution - Always try currency_id first, then fallback to proposal_currency/balance_currency, then default to currency_id 1
+                            let currency = ''; // Will be set below
+                            
+                            // Priority 1: Try currency_id (most reliable)
+                            if (selectedClient?.currency_id) {
+                                const currencyFromId = getCurrencyName(selectedClient.currency_id);
+                                if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
+                                    currency = currencyFromId;
                                 }
+                            }
+                            
+                            // Priority 2: For legacy leads, also check currency_id from legacy field
+                            if (isLegacyLead && (selectedClient as any)?.currency_id && !currency) {
+                                const currencyFromId = getCurrencyName((selectedClient as any).currency_id);
+                                if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
+                                    currency = currencyFromId;
+                                }
+                            }
+                            
+                            // Priority 3: Fallback to proposal_currency or balance_currency if currency_id didn't work
+                            if (!currency) {
+                                currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '';
+                            }
+                            
+                            // Priority 4: Default to currency_id 1 (use name column from accounting_currencies)
+                            if (!currency || currency.trim() === '') {
+                                const defaultCurrency = allCurrencies.find((curr: any) => {
+                                    if (!curr || !curr.id) return false;
+                                    const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
+                                    const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
+                                    return !isNaN(currIdNum) && currIdNum === 1;
+                                });
+                                currency = (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '') 
+                                    ? defaultCurrency.name.trim() 
+                                    : '₪'; // Ultimate fallback if currency_id 1 not found
                             }
 
                             // 2. Base Amount (Gross)
@@ -914,155 +1151,244 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         {(() => {
                             const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
 
-                            // Helper to get employee ID for each role - always returns ID, never display name
-                            const getCloserId = () => {
+                            // Get role display names exactly like RolesTab does
+                            const getCloserDisplay = (): string => {
                                 if (isLegacyLead) {
-                                    return (selectedClient as any).closer_id || null;
+                                    return getEmployeeDisplayNameFromId((selectedClient as any).closer_id);
                                 }
-                                // For new leads, closer is saved as display_name (text)
+                                // For new leads, closer is saved as display_name (text) or potentially as ID
                                 const closer = selectedClient.closer;
                                 if (!closer || closer === '---' || closer === '--') {
-                                    return null;
+                                    return '---';
                                 }
+                                // If it's numeric, treat as ID and convert to display name
+                                if (/^\d+$/.test(String(closer).trim())) {
+                                    return getEmployeeDisplayNameFromId(Number(closer));
+                                }
+                                // Otherwise, it's already a display name, but verify it exists in employees
+                                const employee = allEmployees.find((emp: any) =>
+                                    emp.display_name && emp.display_name.trim() === String(closer).trim()
+                                );
+                                // If found, return the display name; otherwise return as-is (might be a name not in our list)
+                                return employee ? employee.display_name : closer;
+                            };
+
+                            const getExpertDisplay = (): string => {
+                                if (isLegacyLead) {
+                                    return getEmployeeDisplayNameFromId((selectedClient as any).expert_id);
+                                }
+                                // For new leads, expert is saved as numeric ID in 'expert' field
+                                return getEmployeeDisplayNameFromId((selectedClient as any).expert) || '---';
+                            };
+
+                            const getHandlerDisplay = (): string => {
+                                if (isLegacyLead) {
+                                    const handlerId = (selectedClient as any).case_handler_id;
+                                    if (handlerId) {
+                                        const displayName = getEmployeeDisplayNameFromId(handlerId);
+                                        // Only return if we have employees loaded and got a valid name
+                                        if (employeesToUse && employeesToUse.length > 0 && displayName && displayName !== '---') {
+                                            return displayName;
+                                        }
+                                        // If employees not loaded yet, return '---' (will update when loaded)
+                                        return displayName || '---';
+                                    }
+                                    return '---';
+                                }
+                                // For new leads: handler can be stored as employee_id in handler column OR as display_name
+                                // Also check case_handler_id if available
+                                // If case_handler_id exists, use it (most reliable)
+                                if ((selectedClient as any).case_handler_id) {
+                                    const handlerId = (selectedClient as any).case_handler_id;
+                                    const displayName = getEmployeeDisplayNameFromId(handlerId);
+                                    // Only return if we have employees loaded and got a valid name
+                                    if (employeesToUse && employeesToUse.length > 0 && displayName && displayName !== '---') {
+                                        return displayName;
+                                    }
+                                    // If employees not loaded yet, return '---' (will update when loaded)
+                                    return displayName || '---';
+                                }
+
+                                const handlerValue = (selectedClient as any).handler;
+                                if (!handlerValue || handlerValue === '---' || handlerValue === '--') {
+                                    return '---';
+                                }
+
+                                // If handler is numeric (employee ID), map it
+                                if (typeof handlerValue === 'number' || (typeof handlerValue === 'string' && !isNaN(Number(handlerValue)) && handlerValue.toString().trim() !== '')) {
+                                    const displayName = getEmployeeDisplayNameFromId(handlerValue);
+                                    // Only return if we have employees loaded and got a valid name
+                                    if (employeesToUse && employeesToUse.length > 0 && displayName && displayName !== '---') {
+                                        return displayName;
+                                    }
+                                    // If employees not loaded yet, return '---' (will update when loaded)
+                                    return displayName || '---';
+                                }
+
+                                // Otherwise, assume handler is already a display name
+                                // But verify it exists in employees list
+                                if (employeesToUse && employeesToUse.length > 0) {
+                                    const employee = employeesToUse.find((emp: any) => 
+                                        emp.display_name && emp.display_name.trim().toLowerCase() === String(handlerValue).trim().toLowerCase()
+                                    );
+                                    if (employee) {
+                                        return employee.display_name;
+                                    }
+                                }
+                                
+                                return handlerValue || '---';
+                            };
+
+                            const getSchedulerDisplay = (): string => {
+                                if (isLegacyLead) {
+                                    return getEmployeeDisplayNameFromId((selectedClient as any).meeting_scheduler_id);
+                                }
+                                // For new leads, scheduler is saved as display_name (text field)
+                                return selectedClient.scheduler || '---';
+                            };
+
+                            // Get display names
+                            const closerDisplay = getCloserDisplay();
+                            const expertDisplay = getExpertDisplay();
+                            const handlerDisplay = getHandlerDisplay();
+                            const schedulerDisplay = getSchedulerDisplay();
+
+                            // Get employee IDs or names - let getEmployeeById handle both (matching RolesTab)
+                            const getCloserId = (): string | number | null => {
+                                if (isLegacyLead) {
+                                    const id = (selectedClient as any).closer_id;
+                                    return id ? Number(id) : null;
+                                }
+                                // For new leads: closer can be display_name or ID
+                                const closer = selectedClient.closer;
+                                if (!closer || closer === '---' || closer === '--' || !employeesToUse || employeesToUse.length === 0) return null;
                                 // If it's numeric, treat as ID
                                 if (/^\d+$/.test(String(closer).trim())) {
                                     return Number(closer);
                                 }
-                                // Otherwise, find by display name
-                                const employee = allEmployees.find((emp: any) =>
-                                    emp.display_name && emp.display_name.trim() === String(closer).trim()
-                                );
-                                return employee?.id || null;
+                                // Otherwise, it's a display name - return as-is, getEmployeeById will handle it
+                                return closer;
                             };
 
-                            const getExpertId = () => {
+                            const getExpertId = (): string | number | null => {
                                 if (isLegacyLead) {
-                                    return (selectedClient as any).expert_id || null;
+                                    const id = (selectedClient as any).expert_id;
+                                    return id ? Number(id) : null;
                                 }
-                                // For new leads, expert might be saved as ID (numeric) or display_name
-                                const expert = (selectedClient as any).expert;
-                                if (!expert || expert === '---' || expert === '--') {
-                                    return null;
-                                }
-                                // If it's numeric, treat as ID
-                                if (/^\d+$/.test(String(expert).trim())) {
-                                    return Number(expert);
-                                }
-                                // Otherwise, find by display name
-                                const employee = allEmployees.find((emp: any) =>
-                                    emp.display_name && emp.display_name.trim() === String(expert).trim()
-                                );
-                                return employee?.id || null;
+                                // For new leads: expert is numeric ID
+                                const expertId = (selectedClient as any).expert;
+                                return expertId ? Number(expertId) : null;
                             };
 
-                            const getHandlerId = () => {
-                                // For new leads, handler is saved as display_name (text)
-                                // But also check case_handler_id which might be numeric
-                                if (selectedClient.case_handler_id) {
-                                    return selectedClient.case_handler_id;
+                            const getHandlerId = (): string | number | null => {
+                                // case_handler_id is always ID
+                                if ((selectedClient as any).case_handler_id) {
+                                    return Number((selectedClient as any).case_handler_id);
                                 }
-                                const handler = selectedClient.handler;
-                                if (!handler || handler === '---' || handler === '--') {
-                                    return null;
-                                }
+                                if (isLegacyLead) return null;
+                                // For new leads: handler can be display_name or ID
+                                const handler = (selectedClient as any).handler;
+                                if (!handler || handler === '---' || handler === '--' || !employeesToUse || employeesToUse.length === 0) return null;
                                 // If it's numeric, treat as ID
-                                if (/^\d+$/.test(String(handler).trim())) {
-                                    return Number(handler);
+                                if (typeof handler === 'number' || (typeof handler === 'string' && !isNaN(Number(handler)) && handler.toString().trim() !== '')) {
+                                    return typeof handler === 'number' ? handler : Number(handler);
                                 }
-                                // Otherwise, find by display name
-                                const employee = allEmployees.find((emp: any) =>
-                                    emp.display_name && emp.display_name.trim() === String(handler).trim()
-                                );
-                                return employee?.id || null;
+                                // Otherwise, it's a display name - return as-is, getEmployeeById will handle it
+                                return handler;
                             };
 
-                            const getSchedulerId = () => {
+                            const getSchedulerId = (): string | number | null => {
                                 if (isLegacyLead) {
-                                    return (selectedClient as any).meeting_scheduler_id || null;
+                                    const id = (selectedClient as any).meeting_scheduler_id;
+                                    return id ? Number(id) : null;
                                 }
-                                // For new leads, scheduler is saved as display_name (text)
+                                // For new leads: scheduler is display_name
                                 const scheduler = selectedClient.scheduler;
-                                if (!scheduler || scheduler === '---' || scheduler === '--') {
-                                    return null;
-                                }
+                                if (!scheduler || scheduler === '---' || scheduler === '--' || !employeesToUse || employeesToUse.length === 0) return null;
                                 // If it's numeric, treat as ID
                                 if (/^\d+$/.test(String(scheduler).trim())) {
                                     return Number(scheduler);
                                 }
-                                // Otherwise, find by display name
-                                const employee = allEmployees.find((emp: any) =>
-                                    emp.display_name && emp.display_name.trim() === String(scheduler).trim()
-                                );
-                                return employee?.id || null;
+                                // Otherwise, it's a display name - return as-is, getEmployeeById will handle it
+                                return scheduler;
                             };
 
-                            // Get display names - always use ID lookup to ensure consistent mapping
+                            // Get IDs once
                             const closerId = getCloserId();
-                            const closerDisplay = formatRoleDisplay(
-                                closerId ? getEmployeeDisplayName(closerId) : null
-                            );
-
-                            const expertId = getExpertId();
-                            const expertDisplay = formatRoleDisplay(
-                                expertId ? getEmployeeDisplayName(expertId) : null
-                            );
-
                             const handlerId = getHandlerId();
-                            const handlerDisplay = formatRoleDisplay(
-                                handlerId ? getEmployeeDisplayName(handlerId) : null
-                            );
-
+                            const expertId = getExpertId();
                             const schedulerId = getSchedulerId();
-                            const schedulerDisplay = formatRoleDisplay(
-                                schedulerId ? getEmployeeDisplayName(schedulerId) : null
-                            );
+                            
+                            // Debug logging
+                            console.log('[ClientHeader Roles] Employee IDs:', {
+                                closerId,
+                                handlerId,
+                                expertId,
+                                schedulerId,
+                                employeesToUseLength: employeesToUse?.length,
+                                schedulerDisplay,
+                                closerDisplay,
+                                handlerDisplay,
+                                expertDisplay
+                            });
+
+                            // Helper to check if a role is empty
+                            const isRoleEmpty = (id: string | number | null | undefined, display: string): boolean => {
+                                // Check if display contains "not_assigned" or similar variations
+                                const displayLower = display ? display.toLowerCase().trim() : '';
+                                const isNotAssigned = displayLower.includes('not_assigned') || 
+                                                      displayLower.includes('not assigned') || 
+                                                      displayLower === 'not assigned' ||
+                                                      displayLower === 'unassigned';
+                                
+                                if (!id && (!display || display === '---' || display === '--' || display === 'Not assigned' || display === 'Unassigned' || display.trim() === '' || isNotAssigned)) {
+                                    return true;
+                                }
+                                // Also check if we have an ID but display is still "not assigned"
+                                if (id && isNotAssigned) {
+                                    return true;
+                                }
+                                return false;
+                            };
 
                             return (
                                 <>
+                                    {!isRoleEmpty(closerId, closerDisplay) && (
                                     <div className="flex flex-col items-start">
                                         <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Closer</p>
                                         <div className="flex items-center gap-2 h-12">
-                                            {getCloserId() ? (
-                                                <EmployeeAvatar employeeId={getCloserId()} size="md" />
-                                            ) : (
-                                                <div className="w-12 h-12 flex-shrink-0"></div>
-                                            )}
-                                            <p className="font-medium truncate text-sm leading-5">{closerDisplay}</p>
+                                                <EmployeeAvatar employeeId={closerId} size="md" />
+                                                <p className="font-medium truncate text-sm leading-5">{formatRoleDisplay(closerDisplay)}</p>
                                         </div>
                                     </div>
+                                    )}
+                                    {!isRoleEmpty(handlerId, handlerDisplay) && (
                                     <div className="flex flex-col items-start">
                                         <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Handler</p>
                                         <div className="flex items-center gap-2 h-12">
-                                            {getHandlerId() ? (
-                                                <EmployeeAvatar employeeId={getHandlerId()} size="md" />
-                                            ) : (
-                                                <div className="w-12 h-12 flex-shrink-0"></div>
-                                            )}
-                                            <p className="font-medium truncate text-sm leading-5">{handlerDisplay}</p>
+                                                <EmployeeAvatar employeeId={handlerId} size="md" />
+                                                <p className="font-medium truncate text-sm leading-5">{formatRoleDisplay(handlerDisplay)}</p>
                                         </div>
                                     </div>
+                                    )}
+                                    {!isRoleEmpty(expertId, expertDisplay) && (
                                     <div className="flex flex-col items-start">
                                         <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Expert</p>
                                         <div className="flex items-center gap-2 h-12">
-                                            {getExpertId() ? (
-                                                <EmployeeAvatar employeeId={getExpertId()} size="md" />
-                                            ) : (
-                                                <div className="w-12 h-12 flex-shrink-0"></div>
-                                            )}
-                                            <p className="font-medium truncate text-sm leading-5">{expertDisplay}</p>
+                                                <EmployeeAvatar employeeId={expertId} size="md" />
+                                                <p className="font-medium truncate text-sm leading-5">{formatRoleDisplay(expertDisplay)}</p>
                                         </div>
                                     </div>
+                                    )}
+                                    {!isRoleEmpty(schedulerId, schedulerDisplay) && (
                                     <div className="flex flex-col items-start">
                                         <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Scheduler</p>
                                         <div className="flex items-center gap-2 h-12">
-                                            {getSchedulerId() ? (
-                                                <EmployeeAvatar employeeId={getSchedulerId()} size="md" />
-                                            ) : (
-                                                <div className="w-12 h-12 flex-shrink-0"></div>
-                                            )}
-                                            <p className="font-medium truncate text-sm leading-5">{schedulerDisplay}</p>
+                                                <EmployeeAvatar employeeId={schedulerId} size="md" />
+                                                <p className="font-medium truncate text-sm leading-5">{formatRoleDisplay(schedulerDisplay)}</p>
                                         </div>
                                     </div>
+                                    )}
                                 </>
                             );
                         })()}

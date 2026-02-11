@@ -693,7 +693,7 @@ const Dashboard: React.FC = () => {
         .from('users')
         .select('id')
         .eq('auth_id', user.id)
-        .single();
+        .maybeSingle();
 
       if (userDataError || !userData?.id) {
         return { newLeads: [], legacyLeads: [], totalCount: 0 };
@@ -926,7 +926,7 @@ const Dashboard: React.FC = () => {
             .from('users')
             .select('id')
             .eq('auth_id', user.id)
-            .single();
+            .maybeSingle();
           if (userData) {
             setCurrentUserId(userData.id);
           }
@@ -1068,7 +1068,7 @@ const Dashboard: React.FC = () => {
               )
             `)
             .eq('auth_id', user.id)
-            .single();
+            .maybeSingle();
 
           if (userData?.employee_id) {
             userEmployeeId = userData.employee_id;
@@ -1810,9 +1810,9 @@ const Dashboard: React.FC = () => {
             )
           `)
           .eq('auth_id', user.id)
-          .single();
+          .maybeSingle();
 
-        if (userDataError) {
+        if (userDataError || !userData) {
           setOverdueFollowups(0);
           return;
         }
@@ -1886,13 +1886,11 @@ const Dashboard: React.FC = () => {
           .from('users')
           .select('id')
           .eq('auth_id', user.id)
-          .single();
+          .maybeSingle();
 
-        if (userLeadsError) {
+        if (userLeadsError || !userLeads) {
           return;
         }
-
-        if (!userLeads) return;
 
         // Fetch recent incoming emails (last 7 days)
         const sevenDaysAgo = new Date();
@@ -2339,7 +2337,7 @@ const Dashboard: React.FC = () => {
           )
         `)
         .eq('auth_id', user.id)
-        .single();
+        .maybeSingle();
 
       if (userError || !userData) {
         setPerformanceLoading(false);
@@ -2409,7 +2407,7 @@ const Dashboard: React.FC = () => {
               .from('leads')
               .select('closer')
               .eq('id', contract.newlead_id)
-              .single();
+              .maybeSingle();
 
             if (newLead?.closer === userFullName) {
               belongsToUser = true;
@@ -2420,7 +2418,7 @@ const Dashboard: React.FC = () => {
               .from('leads_lead')
               .select('closer_id')
               .eq('id', contract.lead_id)
-              .single();
+              .maybeSingle();
 
             if (legacyLead?.closer_id === userEmployeeId) {
               belongsToUser = true;
@@ -5368,7 +5366,7 @@ const Dashboard: React.FC = () => {
             )
           `)
           .eq('auth_id', user.id)
-          .single();
+          .maybeSingle();
 
         const userFullName = (userData?.tenants_employee as any)?.display_name || userData?.full_name;
         const userEmployeeId = userData?.employee_id;
@@ -5388,7 +5386,7 @@ const Dashboard: React.FC = () => {
                 .from('leads')
                 .select('closer')
                 .eq('id', contract.newlead_id)
-                .single();
+                .maybeSingle();
 
               if (newLead?.closer === userFullName) {
                 belongsToUser = true;
@@ -5398,7 +5396,7 @@ const Dashboard: React.FC = () => {
                 .from('leads_lead')
                 .select('closer_id')
                 .eq('id', contract.lead_id)
-                .single();
+                .maybeSingle();
 
               if (legacyLead?.closer_id === userEmployeeId) {
                 belongsToUser = true;
