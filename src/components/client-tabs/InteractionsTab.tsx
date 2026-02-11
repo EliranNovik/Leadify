@@ -2170,14 +2170,27 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       // Now open the modal
       setIsEmailModalOpen(true);
       
-      // Find and select the email after a short delay to ensure emails are loaded
-      setTimeout(() => {
-        const emailToSelect = emails.find((e: any) => e.id === row.id);
+      // Find and select the email after emails are loaded
+      // Try multiple times with increasing delays to ensure emails are loaded
+      const findAndSelectEmail = (attempt = 1) => {
+        const emailToSelect = emails.find((e: any) => 
+          e.id === row.id || 
+          e.message_id === row.id ||
+          String(e.id) === String(row.id) ||
+          String(e.message_id) === String(row.id)
+        );
         if (emailToSelect) {
           setSelectedEmailForView(emailToSelect);
           hydrateEmailBodies([emailToSelect]);
+          setActiveEmailId(null); // Clear after selecting
+        } else if (attempt < 5) {
+          // Retry up to 5 times with increasing delays
+          setTimeout(() => findAndSelectEmail(attempt + 1), 200 * attempt);
         }
-      }, 300);
+      };
+      
+      // Start looking for the email immediately and retry if needed
+      setTimeout(() => findAndSelectEmail(), 100);
     } else if (row.kind === 'whatsapp' && !row.editable) {
       // For actual sent/received WhatsApp messages (not manual), open WhatsApp modal
       // Ensure contacts are loaded first
@@ -2797,6 +2810,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   
   const fetchInteractions = useCallback(
     async (options?: { bypassCache?: boolean }) => {
+      // DEBUG: Log client info for target lead
+      const targetClientId = 'f8b9220f-f93b-4830-b011-766b357689d0';
+      if (client?.id === targetClientId) {
+        console.log('🔍 DEBUG: fetchInteractions called for target client:', {
+          clientId: client.id,
+          lead_number: (client as any)?.lead_number,
+          email: client.email,
+          isLegacy: client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_'),
+        });
+      }
+      
       // Don't fetch if no client
       if (!client?.id) {
         console.log('⚠️ InteractionsTab: No client ID, skipping fetch');
@@ -2822,6 +2846,27 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         let cachedInteractions = cacheForLead.interactions || [];
         const cachedWhatsAppCount = cachedInteractions.filter((i: any) => i.kind === 'whatsapp').length;
         console.log(`📊 Cached interactions: ${cachedInteractions.length} total, ${cachedWhatsAppCount} WhatsApp messages`);
+        
+        // DEBUG: Check if target email is in cache
+        const targetClientId = 'f8b9220f-f93b-4830-b011-766b357689d0';
+        const targetMessageId = 'optimistic_1770820212525';
+        if (client.id === targetClientId) {
+          const targetEmailInCache = cachedInteractions.find((i: any) => 
+            i.id === targetMessageId || 
+            (i.kind === 'email' && i.id?.includes('optimistic_1770820212525'))
+          );
+          console.log('🔍 DEBUG: Checking cache for target email:', {
+            found: !!targetEmailInCache,
+            emailInteraction: targetEmailInCache,
+            allEmailInteractions: cachedInteractions.filter((i: any) => i.kind === 'email').map((e: any) => ({
+              id: e.id,
+              message_id: e.id,
+              subject: e.subject,
+              has_content: !!e.content,
+              content_length: e.content?.length || 0,
+            })),
+          });
+        }
         
         // CRITICAL: Filter out email interactions with no meaningful body content from cache
         cachedInteractions = cachedInteractions.filter((interaction: any) => {
@@ -3068,6 +3113,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 
                 // Build query that matches by lead ID OR email addresses
                 // This ensures emails are shown in all leads where the email address matches
+                // IMPORTANT: Always include client_id/legacy_id matching to ensure system-sent emails appear
                 const emailFilters = buildEmailFilterClauses({
                   clientId: !isLegacyLead ? String(client.id) : null,
                   legacyId: isLegacyLead ? legacyId : null,
@@ -3077,20 +3123,106 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 let emailQuery = supabase
                   .from('emails')
                   .select(
-                    'id, message_id, subject, sent_at, direction, sender_email, recipient_list, body_html, body_preview, attachments, contact_id'
+                    'id, message_id, subject, sent_at, direction, sender_email, recipient_list, body_html, body_preview, attachments, contact_id, client_id, legacy_id'
                   )
                   .limit(EMAIL_MODAL_LIMIT)
                   .order('sent_at', { ascending: false });
 
-                if (emailFilters.length > 0) {
+                // Always prioritize client_id/legacy_id matching to ensure system-sent emails are included
+                // Then add email address matching as additional criteria
+                if (isLegacyLead && legacyId !== null) {
+                  // For legacy leads, match by legacy_id OR email addresses
+                  if (emailFilters.length > 1) {
+                    // Remove legacy_id clause from emailFilters (we'll add it separately)
+                    const emailOnlyFilters = emailFilters.filter(f => !f.startsWith('legacy_id.eq.'));
+                    if (emailOnlyFilters.length > 0) {
+                      emailQuery = emailQuery.or(`legacy_id.eq.${legacyId},${emailOnlyFilters.join(',')}`);
+                    } else {
+                      emailQuery = emailQuery.eq('legacy_id', legacyId);
+                    }
+                  } else {
+                    emailQuery = emailQuery.eq('legacy_id', legacyId);
+                  }
+                } else if (!isLegacyLead && client.id) {
+                  // For new leads, match by client_id OR email addresses
+                  if (emailFilters.length > 1) {
+                    // Remove client_id clause from emailFilters (we'll add it separately)
+                    const emailOnlyFilters = emailFilters.filter(f => !f.startsWith('client_id.eq.'));
+                    if (emailOnlyFilters.length > 0) {
+                      emailQuery = emailQuery.or(`client_id.eq.${client.id},${emailOnlyFilters.join(',')}`);
+                    } else {
+                      emailQuery = emailQuery.eq('client_id', client.id);
+                    }
+                  } else {
+                    emailQuery = emailQuery.eq('client_id', client.id);
+                  }
+                } else if (emailFilters.length > 0) {
+                  // Fallback: use email filters only if no client_id/legacy_id available
                   emailQuery = emailQuery.or(emailFilters.join(','));
-                } else if (isLegacyLead && legacyId !== null) {
-                  emailQuery = emailQuery.eq('legacy_id', legacyId);
-                } else {
-                  emailQuery = emailQuery.eq('client_id', client.id);
                 }
 
+                // Debug: Log the query to see what we're searching for
+                console.log('📧 InteractionsTab email query:', {
+                  isLegacyLead,
+                  clientId: !isLegacyLead ? client.id : null,
+                  legacyId: isLegacyLead ? legacyId : null,
+                  emailFiltersCount: emailFilters.length,
+                  emailFilters,
+                });
+
                 const { data, error } = await emailQuery;
+                
+                // Debug: Log results
+                console.log('📧 InteractionsTab email query results:', {
+                  count: data?.length || 0,
+                  emails: data?.map((e: any) => ({
+                    id: e.id,
+                    message_id: e.message_id,
+                    client_id: e.client_id,
+                    legacy_id: e.legacy_id,
+                    subject: e.subject,
+                    direction: e.direction,
+                  })) || [],
+                });
+                
+                // DEBUG: Check specifically for email ID 131529
+                const targetEmailId = 131529;
+                const targetClientId = 'f8b9220f-f93b-4830-b011-766b357689d0';
+                const targetMessageId = 'optimistic_1770820212525';
+                
+                const foundEmail = data?.find((e: any) => 
+                  e.id === targetEmailId || 
+                  e.message_id === targetMessageId ||
+                  (e.client_id === targetClientId && e.message_id?.includes('optimistic_'))
+                );
+                
+                if (foundEmail) {
+                  console.log('✅ DEBUG: Found target email in query results:', {
+                    id: foundEmail.id,
+                    message_id: foundEmail.message_id,
+                    client_id: foundEmail.client_id,
+                    legacy_id: foundEmail.legacy_id,
+                    contact_id: foundEmail.contact_id,
+                    subject: foundEmail.subject,
+                    sender_email: foundEmail.sender_email,
+                    recipient_list: foundEmail.recipient_list,
+                    has_body_html: !!foundEmail.body_html,
+                    has_body_preview: !!foundEmail.body_preview,
+                    body_html_length: foundEmail.body_html?.length || 0,
+                    body_preview_length: foundEmail.body_preview?.length || 0,
+                  });
+                } else {
+                  console.log('❌ DEBUG: Target email NOT found in query results', {
+                    targetEmailId,
+                    targetMessageId,
+                    targetClientId,
+                    queryResultCount: data?.length || 0,
+                    allEmailIds: data?.map((e: any) => e.id) || [],
+                    allMessageIds: data?.map((e: any) => e.message_id) || [],
+                    allClientIds: data?.map((e: any) => e.client_id) || [],
+                  });
+                }
+                
                 return { data: data || [], error };
               })()
             : Promise.resolve({ data: [], error: null })
@@ -3720,10 +3852,42 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         const emailsWithoutBody: any[] = [];
         
         sortedEmails.forEach((e: any) => {
-          if (hasMeaningfulBody(e)) {
+          // DEBUG: Check specifically for email ID 131529
+          const isTargetEmail = e.id === 131529 || e.message_id === 'optimistic_1770820212525';
+          
+          if (isTargetEmail) {
+            console.log('🔍 DEBUG: Processing target email:', {
+              id: e.id,
+              message_id: e.message_id,
+              client_id: e.client_id,
+              subject: e.subject,
+              has_body_html: !!e.body_html,
+              has_body_preview: !!e.body_preview,
+              body_html_preview: e.body_html?.substring(0, 100),
+              body_preview_preview: e.body_preview?.substring(0, 100),
+            });
+          }
+          
+          const hasMeaningful = hasMeaningfulBody(e);
+          
+          if (isTargetEmail) {
+            console.log('🔍 DEBUG: hasMeaningfulBody result for target email:', {
+              result: hasMeaningful,
+              body_html_length: e.body_html?.length || 0,
+              body_preview_length: e.body_preview?.length || 0,
+            });
+          }
+          
+          if (hasMeaningful) {
             emailsWithBody.push(e);
+            if (isTargetEmail) {
+              console.log('✅ DEBUG: Target email added to emailsWithBody');
+            }
           } else {
             emailsWithoutBody.push(e);
+            if (isTargetEmail) {
+              console.log('❌ DEBUG: Target email added to emailsWithoutBody (will be filtered out)');
+            }
           }
         });
 
@@ -3752,11 +3916,25 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         // Only show emails with meaningful body content
         const emailInteractions = emailsWithBody
           .map((e: any) => {
+            // DEBUG: Check specifically for email ID 131529
+            const isTargetEmail = e.id === 131529 || e.message_id === 'optimistic_1770820212525';
+            
             const emailDate = new Date(e.sent_at);
             
             // Use formatEmailHtmlForDisplay to preserve line breaks and apply RTL
             const bodyHtml = e.body_html ? formatEmailHtmlForDisplay(e.body_html) : null;
             const bodyPreview = e.body_preview ? formatEmailHtmlForDisplay(e.body_preview) : '';
+            
+            if (isTargetEmail) {
+              console.log('🔍 DEBUG: Processing target email for interaction mapping:', {
+                id: e.id,
+                message_id: e.message_id,
+                bodyHtml_length: bodyHtml?.length || 0,
+                bodyPreview_length: bodyPreview?.length || 0,
+                bodyHtml_preview: bodyHtml?.substring(0, 100),
+                bodyPreview_preview: bodyPreview?.substring(0, 100),
+              });
+            }
             
             // Only use body content, never fall back to subject (we've already filtered out emails without body)
             // If body is empty after formatting, use empty string (shouldn't happen due to filtering)
@@ -3766,6 +3944,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               const textContent = bodyHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
               if (textContent && textContent.length > 20 && textContent.toLowerCase() !== e.subject?.trim().toLowerCase()) {
                 body = bodyHtml;
+                if (isTargetEmail) {
+                  console.log('✅ DEBUG: Using bodyHtml for target email, textContent length:', textContent.length);
+                }
+              } else if (isTargetEmail) {
+                console.log('❌ DEBUG: bodyHtml rejected for target email:', {
+                  textContent_length: textContent?.length || 0,
+                  textContent_preview: textContent?.substring(0, 50),
+                  subject: e.subject,
+                  matches_subject: textContent?.toLowerCase() === e.subject?.trim().toLowerCase(),
+                });
               }
             }
             
@@ -3774,12 +3962,29 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               const textContent = bodyPreview.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
               if (textContent && textContent.length > 20 && textContent.toLowerCase() !== e.subject?.trim().toLowerCase()) {
                 body = bodyPreview;
+                if (isTargetEmail) {
+                  console.log('✅ DEBUG: Using bodyPreview for target email, textContent length:', textContent.length);
+                }
+              } else if (isTargetEmail) {
+                console.log('❌ DEBUG: bodyPreview rejected for target email:', {
+                  textContent_length: textContent?.length || 0,
+                  textContent_preview: textContent?.substring(0, 50),
+                  subject: e.subject,
+                  matches_subject: textContent?.toLowerCase() === e.subject?.trim().toLowerCase(),
+                });
               }
             }
             
             // If somehow body is still empty after all checks, skip this email
             if (!body || body.trim() === '') {
+              if (isTargetEmail) {
+                console.log('❌ DEBUG: Target email will be filtered out - body is empty after processing');
+              }
               return null; // This will be filtered out
+            }
+            
+            if (isTargetEmail) {
+              console.log('✅ DEBUG: Target email passed body checks, creating interaction');
             }
           
           // CRITICAL: Determine direction based on sender email
@@ -3872,7 +4077,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             employee_recipient_name: employeeRecipientName, // Store employee recipient for incoming emails
           };
           })
-          .filter((interaction: any) => interaction !== null); // Filter out null entries
+          .filter((interaction: any) => {
+            const isTargetEmail = interaction?.id === 'optimistic_1770820212525';
+            if (isTargetEmail) {
+              console.log('✅ DEBUG: Target email interaction created:', {
+                id: interaction.id,
+                subject: interaction.subject,
+                direction: interaction.direction,
+                has_content: !!interaction.content,
+                content_length: interaction.content?.length || 0,
+              });
+            }
+            return interaction !== null;
+          }); // Filter out null entries
       
         // Helper function to normalize line breaks for manual email interactions
         const normalizeManualContent = (content: string): string => {
@@ -4073,12 +4290,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         const emailsDeduplicated: Array<{id: any, keptId: any}> = [];
         
         uniqueById.forEach((interaction: any) => {
+          // DEBUG: Check if this is the target email
+          const isTargetEmail = interaction.id === 'optimistic_1770820212525' || 
+                                (interaction.kind === 'email' && interaction.id?.includes('optimistic_1770820212525'));
+          
           if (interaction.kind === 'email' && interaction.id) {
             // Check if this is a manual interaction (by ID prefix) - always include manual interactions
             const isManualInteraction = interaction.id?.toString().startsWith('manual_');
             if (isManualInteraction) {
               // Always include manual interactions - add to nonEmailInteractions to bypass email deduplication
               nonEmailInteractions.push(interaction);
+              if (isTargetEmail) {
+                console.log('✅ DEBUG: Target email is manual interaction, bypassing email deduplication');
+              }
               return;
             }
             
@@ -4115,6 +4339,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             if (!hasContent) {
               // Skip this email - it only has a subject or no meaningful content
               const contentText = (interaction.content || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+              if (isTargetEmail) {
+                console.log('❌ DEBUG: Target email filtered out in email deduplication - no content:', {
+                  id: interaction.id,
+                  hasBodyHtml: !!(interaction.body_html && interaction.body_html.trim()),
+                  hasBodyPreview: !!(interaction.body_preview && interaction.body_preview.trim()),
+                  hasContentField: !!(interaction.content && interaction.content.trim()),
+                  contentLength: contentText.length,
+                  contentText_preview: contentText.substring(0, 100),
+                  subject: interaction.subject,
+                });
+              }
               emailsFilteredOut.push({ 
                 id: interaction.id, 
                 reason: 'email_no_content',
@@ -4131,8 +4366,22 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             const messageId = interaction.id;
             const existing = emailMap.get(messageId);
             
+            if (isTargetEmail) {
+              console.log('🔍 DEBUG: Target email in email deduplication:', {
+                id: interaction.id,
+                messageId,
+                hasExisting: !!existing,
+                existingId: existing?.id,
+                hasContent,
+                contentLength: (interaction.content || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().length,
+              });
+            }
+            
             if (!existing) {
               emailMap.set(messageId, interaction);
+              if (isTargetEmail) {
+                console.log('✅ DEBUG: Target email added to emailMap');
+              }
             } else {
               // Compare content - keep the one with more content (not just subject)
               // Use same strict checking as above
@@ -4366,6 +4615,34 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     // If we already have interactions for this client, don't fetch again (tab switching scenario)
     if (currentClientId && interactionsClientIdRef.current === currentClientId && interactions.length > 0) {
       console.log(`✅ Already have ${interactions.length} interactions for client ${currentClientId}, skipping fetch (tab switch)`);
+      
+      // DEBUG: Check if target email is in current interactions
+      const targetClientId = 'f8b9220f-f93b-4830-b011-766b357689d0';
+      const targetMessageId = 'optimistic_1770820212525';
+      if (currentClientId === targetClientId) {
+        const targetEmailInInteractions = interactions.find((i: any) => 
+          i.id === targetMessageId || 
+          (i.kind === 'email' && i.id?.includes('optimistic_1770820212525'))
+        );
+        console.log('🔍 DEBUG: Checking current interactions for target email:', {
+          found: !!targetEmailInInteractions,
+          emailInteraction: targetEmailInInteractions,
+          allEmailInteractions: interactions.filter((i: any) => i.kind === 'email').map((e: any) => ({
+            id: e.id,
+            message_id: e.id,
+            subject: e.subject,
+            has_content: !!e.content,
+            content_length: e.content?.length || 0,
+          })),
+        });
+        
+        // Force refresh to get latest data
+        console.log('🔄 DEBUG: Forcing refresh to check for new email...');
+        fetchInteractions({ bypassCache: true }).catch(err => {
+          console.error('Error forcing refresh:', err);
+        });
+      }
+      
       setInteractionsLoading(false);
       lastClientIdRef.current = currentClientId;
       return;
@@ -5195,17 +5472,25 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           !e.body_html || e.body_html.trim() === ''
         );
         
-        // Auto-select first email if none is selected
+        // Auto-select latest email (newest first) if none is selected
         if (finalUniqueEmails.length > 0 && !selectedEmailForView) {
-          const firstEmail = finalUniqueEmails[0];
-          setSelectedEmailForView(firstEmail);
-          // If first email needs hydration, prioritize it
-          if (emailsNeedingHydration.some((e: any) => e.id === firstEmail.id)) {
-            hydrateEmailBodies([firstEmail]);
+          // Sort by date (newest first) and select the first one
+          const sortedEmails = [...finalUniqueEmails].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+          const latestEmail = sortedEmails[0];
+          setSelectedEmailForView(latestEmail);
+          // If latest email needs hydration, prioritize it
+          if (emailsNeedingHydration.some((e: any) => e.id === latestEmail.id)) {
+            hydrateEmailBodies([latestEmail]);
           }
         } else if (activeEmailId) {
           // If we have an activeEmailId from clicking, find and select that email
-          const emailToSelect = finalUniqueEmails.find((e: any) => e.id === activeEmailId);
+          // Try matching by both id and message_id
+          const emailToSelect = finalUniqueEmails.find((e: any) => 
+            e.id === activeEmailId || 
+            e.message_id === activeEmailId ||
+            String(e.id) === String(activeEmailId) ||
+            String(e.message_id) === String(activeEmailId)
+          );
           if (emailToSelect) {
             setSelectedEmailForView(emailToSelect);
             // If this email needs hydration, prioritize it
@@ -5213,6 +5498,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               hydrateEmailBodies([emailToSelect]);
             }
             setActiveEmailId(null); // Clear after selecting
+          } else {
+            // If not found, keep activeEmailId set so we can retry when emails are loaded
+            console.log('⚠️ Email not found in fetchEmailsForModal, will retry:', activeEmailId);
           }
         }
         
@@ -7434,7 +7722,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                               setShowEmailDetail(true);
                             }
                           }}
-                          className={`w-full text-left p-3 rounded-lg border transition-all ${
+                          className={`w-full text-left p-3 rounded-lg border transition-all relative ${
                             isSelected
                               ? 'bg-purple-50 border-purple-300 shadow-sm'
                               : 'bg-white border-gray-200 hover:bg-gray-50 hover:border-gray-300'
@@ -7449,11 +7737,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                 <span className="text-xs font-semibold text-gray-900 truncate" dir="auto">
                                   {senderDisplayName}
                                 </span>
-                                <span className={`text-xs px-1.5 py-0.5 rounded ${
-                                  isOutgoing ? 'bg-blue-100 text-blue-700' : 'bg-pink-100 text-pink-700'
-                                }`}>
-                                  {isOutgoing ? 'Team' : 'Client'}
-                                </span>
                               </div>
                               <div className="text-sm font-semibold text-gray-900 mb-1 line-clamp-1" dir="auto">
                                 {message.subject || '(no subject)'}
@@ -7467,9 +7750,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                               }}>
                                 {previewText}
                               </div>
-                              <div className="text-xs text-gray-400 mt-2">
-                                {formatTime(message.date)}
-                              </div>
+                            </div>
+                            {/* Timestamp in top right corner */}
+                            <div className="absolute top-3 right-3 text-xs" style={{ color: '#4218CC' }}>
+                              {formatTime(message.date)}
                             </div>
                           </div>
                         </button>
@@ -7484,8 +7768,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               {/* Right Side - Selected Email Viewer (Hidden on Mobile when in list view) */}
               <div className={`${isMobile && !showEmailDetail ? 'hidden' : 'flex-1'} flex flex-col overflow-hidden bg-white`}>
                 {selectedEmailForView ? (
-                  <div className="flex-1 overflow-y-auto p-6">
-                    <div className="max-w-4xl mx-auto">
+                  <div className="flex-1 overflow-y-auto p-4 md:p-6">
+                    <div className="max-w-7xl mx-auto">
                       {/* Email Header */}
                       <div className="border-b border-gray-200 pb-4 mb-6">
                         <div className="flex items-start justify-between mb-4">

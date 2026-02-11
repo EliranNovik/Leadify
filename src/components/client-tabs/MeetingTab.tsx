@@ -2,12 +2,12 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
-import { 
-  CalendarIcon, 
-  PencilSquareIcon, 
-  CheckIcon, 
-  XMarkIcon, 
-  ClockIcon, 
+import {
+  CalendarIcon,
+  PencilSquareIcon,
+  CheckIcon,
+  XMarkIcon,
+  ClockIcon,
   UserIcon,
   VideoCameraIcon,
   MapPinIcon,
@@ -22,9 +22,11 @@ import {
   PencilIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
+import { SiZoom } from 'react-icons/si';
 import { supabase } from '../../lib/supabase';
 import { fetchLeadContacts, ContactInfo } from '../../lib/contactHelpers';
 import { buildApiUrl } from '../../lib/api';
+import { useAuthContext } from '../../contexts/AuthContext';
 import { useMsal } from '@azure/msal-react';
 import { InteractionRequiredAuthError } from '@azure/msal-browser';
 import { loginRequest } from '../../msalConfig';
@@ -33,6 +35,7 @@ import { generateICSFromDateTime } from '../../lib/icsGenerator';
 import { meetingInvitationEmailTemplate } from '../Meetings';
 import MeetingSummaryComponent from '../MeetingSummary';
 import { replaceEmailTemplateParams, replaceEmailTemplateParamsSync } from '../../lib/emailTemplateParams';
+import TimePicker from '../TimePicker';
 
 const fakeNames = ['Anna Zh', 'Mindi', 'Sarah L', 'David K', '---'];
 
@@ -95,6 +98,7 @@ interface Meeting {
   eligibility_status?: string;
   feasibility_notes?: string;
   documents_link?: string;
+  car_number?: string;
   lastEdited: {
     timestamp: string;
     user: string;
@@ -120,11 +124,23 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   }>({});
   const [editingField, setEditingField] = useState<{ meetingId: number; field: 'expert_notes' | 'handler_notes' } | null>(null);
   const [editedContent, setEditedContent] = useState<string>('');
-  
+
   // Edit meeting state
   const [editingMeetingId, setEditingMeetingId] = useState<number | null>(null);
   const [editedMeeting, setEditedMeeting] = useState<Partial<Meeting>>({});
   const [isUpdatingMeeting, setIsUpdatingMeeting] = useState(false);
+  const [showEditLocationDropdown, setShowEditLocationDropdown] = useState(false);
+  const [showEditManagerDropdown, setShowEditManagerDropdown] = useState(false);
+  const [showEditSchedulerDropdown, setShowEditSchedulerDropdown] = useState(false);
+  const [showEditHelperDropdown, setShowEditHelperDropdown] = useState(false);
+  const [editLocationSearchTerm, setEditLocationSearchTerm] = useState('');
+  const [editManagerSearchTerm, setEditManagerSearchTerm] = useState('');
+  const [editSchedulerSearchTerm, setEditSchedulerSearchTerm] = useState('');
+  const [editHelperSearchTerm, setEditHelperSearchTerm] = useState('');
+  const editLocationDropdownRef = useRef<HTMLDivElement>(null);
+  const editManagerDropdownRef = useRef<HTMLDivElement>(null);
+  const editSchedulerDropdownRef = useRef<HTMLDivElement>(null);
+  const editHelperDropdownRef = useRef<HTMLDivElement>(null);
 
 
   // New: Lead-level scheduling info
@@ -153,29 +169,29 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [creatingTeamsMeetingId, setCreatingTeamsMeetingId] = useState<number | null>(null);
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [allMeetingLocations, setAllMeetingLocations] = useState<any[]>([]);
-  
+
   // Notify modal state
   const [showNotifyModal, setShowNotifyModal] = useState(false);
   const [selectedMeetingForNotify, setSelectedMeetingForNotify] = useState<Meeting | null>(null);
   const [contacts, setContacts] = useState<ContactInfo[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [selectedEmailLanguage, setSelectedEmailLanguage] = useState<'en' | 'he'>('en');
-  const [emailTemplates, setEmailTemplates] = useState<{ 
-    en: { content: string | null; name: string | null } | null; 
-    he: { content: string | null; name: string | null } | null 
+  const [emailTemplates, setEmailTemplates] = useState<{
+    en: { content: string | null; name: string | null } | null;
+    he: { content: string | null; name: string | null } | null
   }>({ en: null, he: null });
-  
+
   // Store template IDs for fetching names later
   const [emailTemplateIds, setEmailTemplateIds] = useState<{ en: number | null; he: number | null }>({ en: null, he: null });
   const [emailType, setEmailType] = useState<'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' | 'reminder' | 'cancellation' | 'rescheduled'>('invitation');
-  
+
   // Notify dropdown state
   const [showNotifyDropdown, setShowNotifyDropdown] = useState<number | null>(null); // Track which meeting's dropdown is open
   const notifyDropdownRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const [showWhatsAppDropdown, setShowWhatsAppDropdown] = useState<number | null>(null); // Track which meeting's WhatsApp dropdown is open
   const whatsAppDropdownRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const [whatsAppReminderType, setWhatsAppReminderType] = useState<'reminder' | 'missed_appointment'>('reminder');
-  
+
   // WhatsApp notify modal state
   const [showWhatsAppNotifyModal, setShowWhatsAppNotifyModal] = useState(false);
   const [selectedMeetingForWhatsAppNotify, setSelectedMeetingForWhatsAppNotify] = useState<Meeting | null>(null);
@@ -184,7 +200,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [selectedLanguage, setSelectedLanguage] = useState<'he' | 'en' | 'ru'>('he');
   const [reminderTemplates, setReminderTemplates] = useState<Array<{ id: number; language: string; content: string; name: string; params?: string; param_mapping?: any }>>([]);
   const [sendingWhatsAppMeetingId, setSendingWhatsAppMeetingId] = useState<number | null>(null);
-  
+
   // Schedule Meeting Drawer state
   const [scheduleMeetingFormData, setScheduleMeetingFormData] = useState({
     date: '',
@@ -244,11 +260,66 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     return employee ? employee.display_name : employeeId.toString();
   };
 
+  // Helper function to get employee by ID
+  const getEmployeeById = (employeeId: string | number | null | undefined) => {
+    if (employeeId === null || employeeId === undefined || employeeId === '---') return null;
+    return allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString()) || null;
+  };
+
+  // Helper function to get employee initials
+  const getEmployeeInitials = (name: string | null | undefined): string => {
+    if (!name) return '--';
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+    return name.substring(0, 2).toUpperCase();
+  };
+
+  // EmployeeAvatar component for edit form
+  const EmployeeAvatar: React.FC<{
+    employeeId: string | number | null | undefined;
+    size?: 'sm' | 'md';
+  }> = ({ employeeId, size = 'md' }) => {
+    const [imageError, setImageError] = useState(false);
+    const employee = getEmployeeById(employeeId);
+    const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : 'w-10 h-10 text-sm';
+
+    if (!employee) {
+      return (
+        <div className={`${sizeClasses} rounded-full flex items-center justify-center bg-gray-200 text-gray-500 font-semibold flex-shrink-0`}>
+          --
+        </div>
+      );
+    }
+
+    const photoUrl = employee.photo_url || employee.photo;
+    const initials = getEmployeeInitials(employee.display_name);
+
+    if (imageError || !photoUrl) {
+      return (
+        <div className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold flex-shrink-0`}>
+          {initials}
+        </div>
+      );
+    }
+
+    return (
+      <img
+        src={photoUrl}
+        alt={employee.display_name}
+        className={`${sizeClasses} rounded-full object-cover flex-shrink-0`}
+        onError={() => setImageError(true)}
+        title={employee.display_name}
+      />
+    );
+  };
+
   // Helper function to get meeting location name from ID
   const getMeetingLocationName = (locationId: string | number | null | undefined) => {
     console.log('MeetingTab: getMeetingLocationName called with:', locationId);
     console.log('MeetingTab: allMeetingLocations:', allMeetingLocations);
-    
+
     if (!locationId || locationId === '---' || locationId === 'Not specified') return 'Not specified';
     const location = allMeetingLocations.find((loc: any) => loc.id.toString() === locationId.toString());
     console.log('MeetingTab: Found location:', location);
@@ -256,218 +327,218 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   // Helper function to get currency symbol
-const getCurrencySymbol = (currencyCode?: string) => {
-  switch (currencyCode) {
-    case '₪':
-    case 'NIS':
-    case 'ILS':
-      return '₪';
-    case '$':
-    case 'USD':
-      return '$';
-    case '€':
-    case 'EUR':
-      return '€';
-    case '£':
-    case 'GBP':
-      return '£';
-    default:
-      return '₪'; // Default to NIS for legacy leads
-  }
-};
-
-// Helper function to detect Hebrew/RTL text
-const containsRTL = (text?: string | null): boolean => {
-  if (!text) return false;
-  // Remove HTML tags to check only text content
-  const textOnly = text.replace(/<[^>]*>/g, '');
-  return /[\u0590-\u05FF]/.test(textOnly);
-};
-
-// Parse template content from database (handles various formats)
-const parseTemplateContent = (rawContent: string | null | undefined): string => {
-  if (!rawContent) return '';
-
-  const sanitizeTemplateText = (text: string) => {
-    if (!text) return '';
-    return text
-      .split('\n')
-      .map(line => line.replace(/\s+$/g, ''))
-      .join('\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .replace(/[ \t]+\n/g, '\n')
-      .trim();
+  const getCurrencySymbol = (currencyCode?: string) => {
+    switch (currencyCode) {
+      case '₪':
+      case 'NIS':
+      case 'ILS':
+        return '₪';
+      case '$':
+      case 'USD':
+        return '$';
+      case '€':
+      case 'EUR':
+        return '€';
+      case '£':
+      case 'GBP':
+        return '£';
+      default:
+        return '₪'; // Default to NIS for legacy leads
+    }
   };
 
-  const tryParseDelta = (input: string) => {
-    try {
-      const parsed = JSON.parse(input);
-      const ops = parsed?.delta?.ops || parsed?.ops;
-      if (Array.isArray(ops)) {
-        const text = ops
-          .map((op: any) => (typeof op?.insert === 'string' ? op.insert : ''))
-          .join('');
-        return sanitizeTemplateText(text);
-      }
-    } catch (error) {
-      // ignore
-    }
-    return null;
+  // Helper function to detect Hebrew/RTL text
+  const containsRTL = (text?: string | null): boolean => {
+    if (!text) return false;
+    // Remove HTML tags to check only text content
+    const textOnly = text.replace(/<[^>]*>/g, '');
+    return /[\u0590-\u05FF]/.test(textOnly);
   };
 
-  const cleanHtml = (input: string) => {
-    let text = input;
-    const htmlMatch = text.match(/html\s*:\s*(.*)/is);
-    if (htmlMatch) {
-      text = htmlMatch[1];
-    }
-    text = text
-      .replace(/^{?delta\s*:\s*\{.*?\},?/is, '')
-      .replace(/^{|}$/g, '')
-      .replace(/&nbsp;/gi, ' ')
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/p>/gi, '\n')
-      .replace(/<[^>]+>/g, '')
-      .replace(/\\n/g, '\n')
-      .replace(/\\t/g, '\t')
-      .replace(/\r/g, '')
-      .replace(/\\/g, '\\');
-    return sanitizeTemplateText(text);
-  };
+  // Parse template content from database (handles various formats)
+  const parseTemplateContent = (rawContent: string | null | undefined): string => {
+    if (!rawContent) return '';
 
-  let text = tryParseDelta(rawContent);
-  if (text !== null) {
-    return text;
-  }
-
-  text = tryParseDelta(
-    rawContent
-      .replace(/^"|"$/g, '')
-      .replace(/\\"/g, '"')
-      .replace(/\\n/g, '\n')
-      .replace(/\\t/g, '\t')
-  );
-  if (text !== null) {
-    return text;
-  }
-
-  const normalised = rawContent
-    .replace(/\\"/g, '"')
-    .replace(/\r/g, '')
-    .replace(/\\n/g, '\n')
-    .replace(/\\t/g, '\t');
-  const insertRegex = /"?insert"?\s*:\s*"([^"\n]*)"/g;
-  const inserts: string[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = insertRegex.exec(normalised))) {
-    inserts.push(match[1]);
-  }
-  if (inserts.length > 0) {
-    const combined = inserts.join('');
-    const decoded = combined.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
-    return sanitizeTemplateText(decoded);
-  }
-
-  return sanitizeTemplateText(cleanHtml(rawContent));
-};
-
-// Helper function to preserve line breaks and format HTML with RTL support
-const formatEmailBody = async (
-  template: string, 
-  recipientName: string,
-  context?: {
-    client?: any;
-    meeting?: Meeting;
-    meetingDate?: string;
-    meetingTime?: string;
-    meetingLocation?: string;
-    meetingLink?: string;
-  }
-): Promise<string> => {
-  if (!template) return '';
-  
-  let htmlBody = template;
-  
-  // If context is provided, use centralized template replacement
-  if (context?.client || context?.meeting) {
-    const isLegacyLead = context.client?.lead_type === 'legacy' || 
-                         (context.client?.id && context.client.id.toString().startsWith('legacy_'));
-    
-    // Determine client ID and legacy ID
-    let clientId: string | null = null;
-    let legacyId: number | null = null;
-    
-    if (isLegacyLead) {
-      if (context.client?.id) {
-        const numeric = parseInt(context.client.id.toString().replace(/[^0-9]/g, ''), 10);
-        legacyId = isNaN(numeric) ? null : numeric;
-        clientId = legacyId?.toString() || null;
-      }
-    } else {
-      clientId = context.client?.id || null;
-    }
-    
-    // Use provided meeting data or fetch from DB
-    const templateContext = {
-      clientId,
-      legacyId,
-      clientName: context.client?.name || recipientName,
-      contactName: recipientName,
-      leadNumber: context.client?.lead_number || null,
-      // topic: context.client?.topic || null, // Topic removed - not to be included in emails
-      leadType: context.client?.lead_type || null,
-      meetingDate: context.meetingDate || null,
-      meetingTime: context.meetingTime || null,
-      meetingLocation: context.meetingLocation || null,
-      meetingLink: context.meetingLink || null,
+    const sanitizeTemplateText = (text: string) => {
+      if (!text) return '';
+      return text
+        .split('\n')
+        .map(line => line.replace(/\s+$/g, ''))
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .replace(/[ \t]+\n/g, '\n')
+        .trim();
     };
-    
-    htmlBody = await replaceEmailTemplateParams(template, templateContext);
-  } else {
-    // Fallback: just replace {name} for backward compatibility
-    htmlBody = template.replace(/\{\{name\}\}/g, recipientName).replace(/\{name\}/gi, recipientName);
-  }
-  
-  // Preserve line breaks: convert \n to <br> if not already in HTML
-  // Check if content already has HTML structure
-  const hasHtmlTags = /<[a-z][\s\S]*>/i.test(htmlBody);
-  
-  if (!hasHtmlTags) {
-    // Plain text: convert line breaks to <br> and preserve spacing
-    htmlBody = htmlBody
-      .replace(/\r\n/g, '\n')  // Normalize line endings
-      .replace(/\r/g, '\n')    // Handle old Mac line endings
-      .replace(/\n/g, '<br>'); // Convert to HTML line breaks
-  } else {
-    // Has HTML: ensure <br> tags are preserved, convert remaining \n
-    htmlBody = htmlBody
-      .replace(/\r\n/g, '\n')
-      .replace(/\r/g, '\n')
-      .replace(/(<br\s*\/?>|\n)/gi, '<br>') // Normalize all line breaks
-      .replace(/\n/g, '<br>'); // Convert any remaining newlines
-  }
-  
-  // Detect if content contains Hebrew/RTL text
-  const isRTL = containsRTL(htmlBody);
-  
-  // Wrap in div with proper direction and styling
-  if (isRTL) {
-    htmlBody = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
-  } else {
-    htmlBody = `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
-  }
-  
-  return htmlBody;
-};
+
+    const tryParseDelta = (input: string) => {
+      try {
+        const parsed = JSON.parse(input);
+        const ops = parsed?.delta?.ops || parsed?.ops;
+        if (Array.isArray(ops)) {
+          const text = ops
+            .map((op: any) => (typeof op?.insert === 'string' ? op.insert : ''))
+            .join('');
+          return sanitizeTemplateText(text);
+        }
+      } catch (error) {
+        // ignore
+      }
+      return null;
+    };
+
+    const cleanHtml = (input: string) => {
+      let text = input;
+      const htmlMatch = text.match(/html\s*:\s*(.*)/is);
+      if (htmlMatch) {
+        text = htmlMatch[1];
+      }
+      text = text
+        .replace(/^{?delta\s*:\s*\{.*?\},?/is, '')
+        .replace(/^{|}$/g, '')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/p>/gi, '\n')
+        .replace(/<[^>]+>/g, '')
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+        .replace(/\r/g, '')
+        .replace(/\\/g, '\\');
+      return sanitizeTemplateText(text);
+    };
+
+    let text = tryParseDelta(rawContent);
+    if (text !== null) {
+      return text;
+    }
+
+    text = tryParseDelta(
+      rawContent
+        .replace(/^"|"$/g, '')
+        .replace(/\\"/g, '"')
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t')
+    );
+    if (text !== null) {
+      return text;
+    }
+
+    const normalised = rawContent
+      .replace(/\\"/g, '"')
+      .replace(/\r/g, '')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t');
+    const insertRegex = /"?insert"?\s*:\s*"([^"\n]*)"/g;
+    const inserts: string[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = insertRegex.exec(normalised))) {
+      inserts.push(match[1]);
+    }
+    if (inserts.length > 0) {
+      const combined = inserts.join('');
+      const decoded = combined.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+      return sanitizeTemplateText(decoded);
+    }
+
+    return sanitizeTemplateText(cleanHtml(rawContent));
+  };
+
+  // Helper function to preserve line breaks and format HTML with RTL support
+  const formatEmailBody = async (
+    template: string,
+    recipientName: string,
+    context?: {
+      client?: any;
+      meeting?: Meeting;
+      meetingDate?: string;
+      meetingTime?: string;
+      meetingLocation?: string;
+      meetingLink?: string;
+    }
+  ): Promise<string> => {
+    if (!template) return '';
+
+    let htmlBody = template;
+
+    // If context is provided, use centralized template replacement
+    if (context?.client || context?.meeting) {
+      const isLegacyLead = context.client?.lead_type === 'legacy' ||
+        (context.client?.id && context.client.id.toString().startsWith('legacy_'));
+
+      // Determine client ID and legacy ID
+      let clientId: string | null = null;
+      let legacyId: number | null = null;
+
+      if (isLegacyLead) {
+        if (context.client?.id) {
+          const numeric = parseInt(context.client.id.toString().replace(/[^0-9]/g, ''), 10);
+          legacyId = isNaN(numeric) ? null : numeric;
+          clientId = legacyId?.toString() || null;
+        }
+      } else {
+        clientId = context.client?.id || null;
+      }
+
+      // Use provided meeting data or fetch from DB
+      const templateContext = {
+        clientId,
+        legacyId,
+        clientName: context.client?.name || recipientName,
+        contactName: recipientName,
+        leadNumber: context.client?.lead_number || null,
+        // topic: context.client?.topic || null, // Topic removed - not to be included in emails
+        leadType: context.client?.lead_type || null,
+        meetingDate: context.meetingDate || null,
+        meetingTime: context.meetingTime || null,
+        meetingLocation: context.meetingLocation || null,
+        meetingLink: context.meetingLink || null,
+      };
+
+      htmlBody = await replaceEmailTemplateParams(template, templateContext);
+    } else {
+      // Fallback: just replace {name} for backward compatibility
+      htmlBody = template.replace(/\{\{name\}\}/g, recipientName).replace(/\{name\}/gi, recipientName);
+    }
+
+    // Preserve line breaks: convert \n to <br> if not already in HTML
+    // Check if content already has HTML structure
+    const hasHtmlTags = /<[a-z][\s\S]*>/i.test(htmlBody);
+
+    if (!hasHtmlTags) {
+      // Plain text: convert line breaks to <br> and preserve spacing
+      htmlBody = htmlBody
+        .replace(/\r\n/g, '\n')  // Normalize line endings
+        .replace(/\r/g, '\n')    // Handle old Mac line endings
+        .replace(/\n/g, '<br>'); // Convert to HTML line breaks
+    } else {
+      // Has HTML: ensure <br> tags are preserved, convert remaining \n
+      htmlBody = htmlBody
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .replace(/(<br\s*\/?>|\n)/gi, '<br>') // Normalize all line breaks
+        .replace(/\n/g, '<br>'); // Convert any remaining newlines
+    }
+
+    // Detect if content contains Hebrew/RTL text
+    const isRTL = containsRTL(htmlBody);
+
+    // Wrap in div with proper direction and styling
+    if (isRTL) {
+      htmlBody = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
+    } else {
+      htmlBody = `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
+    }
+
+    return htmlBody;
+  };
 
   // Fetch all employees and meeting locations
   useEffect(() => {
     const fetchEmployees = async () => {
       const { data, error } = await supabase
         .from('tenants_employee')
-        .select('id, display_name, bonuses_role')
+        .select('id, display_name, bonuses_role, photo_url, photo')
         .order('display_name', { ascending: true });
-      
+
       if (!error && data) {
         setAllEmployees(data);
       }
@@ -478,9 +549,9 @@ const formatEmailBody = async (
         .from('tenants_meetinglocation')
         .select('id, name, default_link, address, order')
         .order('order', { ascending: true });
-      
+
       console.log('MeetingTab: Fetched meeting locations:', { data, error });
-      
+
       if (!error && data) {
         setAllMeetingLocations(data);
       }
@@ -494,7 +565,7 @@ const formatEmailBody = async (
         .select('id, name, language, content, params, param_mapping')
         .in('name', ['reminder_of_a_meeting', 'missed_appointment'])
         .eq('active', true);
-      
+
       if (!error && data) {
         console.log('📱 Fetched reminder templates:', data);
         setReminderTemplates(data);
@@ -519,10 +590,11 @@ const formatEmailBody = async (
     }
   }, [allMeetingLocations]);
 
-  // Fetch meeting counts by time for the selected date
+  // Fetch meeting counts by time for the selected date (for both schedule drawer and edit form)
   useEffect(() => {
     const fetchMeetingCounts = async () => {
-      if (!scheduleMeetingFormData.date) {
+      const dateToUse = scheduleMeetingFormData.date || editedMeeting.date;
+      if (!dateToUse) {
         setMeetingCountsByTime({});
         return;
       }
@@ -531,7 +603,7 @@ const formatEmailBody = async (
         const { data: meetings, error } = await supabase
           .from('meetings')
           .select('meeting_time')
-          .eq('meeting_date', scheduleMeetingFormData.date)
+          .eq('meeting_date', dateToUse)
           .or('status.is.null,status.neq.canceled');
 
         if (error) {
@@ -544,8 +616,8 @@ const formatEmailBody = async (
         if (meetings) {
           meetings.forEach((meeting: any) => {
             if (meeting.meeting_time) {
-              const timeStr = typeof meeting.meeting_time === 'string' 
-                ? meeting.meeting_time.substring(0, 5) 
+              const timeStr = typeof meeting.meeting_time === 'string'
+                ? meeting.meeting_time.substring(0, 5)
                 : new Date(meeting.meeting_time).toTimeString().substring(0, 5);
               counts[timeStr] = (counts[timeStr] || 0) + 1;
             }
@@ -559,7 +631,7 @@ const formatEmailBody = async (
     };
 
     fetchMeetingCounts();
-  }, [scheduleMeetingFormData.date]);
+  }, [scheduleMeetingFormData.date, editedMeeting.date]);
 
   // Handle click outside for dropdowns
   useEffect(() => {
@@ -572,6 +644,18 @@ const formatEmailBody = async (
       }
       if (helperDropdownRef.current && !helperDropdownRef.current.contains(event.target as Node)) {
         setShowHelperDropdown(false);
+      }
+      if (editLocationDropdownRef.current && !editLocationDropdownRef.current.contains(event.target as Node)) {
+        setShowEditLocationDropdown(false);
+      }
+      if (editManagerDropdownRef.current && !editManagerDropdownRef.current.contains(event.target as Node)) {
+        setShowEditManagerDropdown(false);
+      }
+      if (editSchedulerDropdownRef.current && !editSchedulerDropdownRef.current.contains(event.target as Node)) {
+        setShowEditSchedulerDropdown(false);
+      }
+      if (editHelperDropdownRef.current && !editHelperDropdownRef.current.contains(event.target as Node)) {
+        setShowEditHelperDropdown(false);
       }
       // Close notify dropdowns
       notifyDropdownRefs.current.forEach((ref, meetingId) => {
@@ -597,24 +681,24 @@ const formatEmailBody = async (
     };
   }, [showNotifyDropdown, showWhatsAppDropdown]);
 
-      // Reset form and set default location to Teams when drawer opens
-      useEffect(() => {
-        if (showScheduleDrawer && allMeetingLocations.length > 0) {
-          const teamsLocation = allMeetingLocations.find(loc => loc.name === 'Teams') || allMeetingLocations[0];
-          setScheduleMeetingFormData({
-            date: '',
-            time: '09:00',
-            location: teamsLocation.name,
-            manager: '',
-            helper: '',
-            brief: '',
-            attendance_probability: 'Medium',
-            complexity: 'Simple',
-            car_number: '',
-            calendar: 'active_client',
-          });
-        }
-      }, [showScheduleDrawer, allMeetingLocations]);
+  // Reset form and set default location to Teams when drawer opens
+  useEffect(() => {
+    if (showScheduleDrawer && allMeetingLocations.length > 0) {
+      const teamsLocation = allMeetingLocations.find(loc => loc.name === 'Teams') || allMeetingLocations[0];
+      setScheduleMeetingFormData({
+        date: '',
+        time: '09:00',
+        location: teamsLocation.name,
+        manager: '',
+        helper: '',
+        brief: '',
+        attendance_probability: 'Medium',
+        complexity: 'Simple',
+        car_number: '',
+        calendar: 'active_client',
+      });
+    }
+  }, [showScheduleDrawer, allMeetingLocations]);
 
   // Simplified employee unavailability check (can be enhanced later)
   const isEmployeeUnavailable = useCallback((employeeName: string, date: string, time: string): boolean => {
@@ -624,18 +708,18 @@ const formatEmailBody = async (
 
   const fetchMeetings = async () => {
     if (!client.id) return;
-    
+
     // Check if this is a legacy lead
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-    
+
     try {
       let allMeetings: any[] = [];
-      
+
       if (isLegacyLead) {
         // For legacy leads, fetch from both leads_lead table (existing meetings) and meetings table (new meetings)
         const legacyId = client.id.toString().replace('legacy_', '');
         console.log('MeetingTab: Client ID:', client.id, 'Extracted legacy ID:', legacyId);
-        
+
         // Fetch existing meetings from leads_lead table
         console.log('fetchMeetings: Querying legacy lead with ID:', legacyId);
         const { data: legacyData, error: legacyError } = await supabase
@@ -656,11 +740,11 @@ const formatEmailBody = async (
             meeting_time
           `)
           .eq('id', legacyId);
-        
+
         console.log('fetchMeetings: Legacy query result:', { legacyData, legacyError });
         console.log('fetchMeetings: Legacy ID being searched:', legacyId);
         console.log('fetchMeetings: Client ID:', client.id);
-        
+
         // Debug meeting_total values
         if (legacyData && legacyData.length > 0) {
           console.log('MeetingTab: Legacy meeting data with totals:', legacyData.map(m => ({
@@ -670,7 +754,7 @@ const formatEmailBody = async (
             meeting_time: m.meeting_time
           })));
         }
-        
+
         if (legacyData && legacyData.length > 0) {
           const legacyMeetings = legacyData
             .filter((m: any) => {
@@ -712,7 +796,7 @@ const formatEmailBody = async (
           })));
           allMeetings.push(...legacyMeetings);
         }
-        
+
         // Fetch new meetings from meetings table using legacy_lead_id
         console.log('fetchMeetings: Querying meetings for legacy lead with ID:', legacyId);
         const { data: meetingsData, error: meetingsError } = await supabase
@@ -720,9 +804,9 @@ const formatEmailBody = async (
           .select('*')
           .eq('legacy_lead_id', legacyId)
           .order('meeting_date', { ascending: false });
-        
+
         console.log('fetchMeetings: New meetings query result:', { meetingsData, meetingsError });
-        
+
         if (meetingsData) {
           const newMeetings = meetingsData.map((m: any) => ({
             id: m.id,
@@ -744,6 +828,7 @@ const formatEmailBody = async (
             eligibility_status: m.eligibility_status,
             feasibility_notes: m.feasibility_notes,
             documents_link: m.documents_link,
+            car_number: m.car_number,
             lastEdited: {
               timestamp: m.last_edited_timestamp,
               user: m.last_edited_by,
@@ -759,7 +844,7 @@ const formatEmailBody = async (
           .select('*')
           .eq('client_id', client.id)
           .order('meeting_date', { ascending: false });
-        
+
         if (newData) {
           const formattedMeetings = newData.map((m: any) => ({
             id: m.id,
@@ -781,6 +866,7 @@ const formatEmailBody = async (
             eligibility_status: m.eligibility_status,
             feasibility_notes: m.feasibility_notes,
             documents_link: m.documents_link,
+            car_number: m.car_number,
             lastEdited: {
               timestamp: m.last_edited_timestamp,
               user: m.last_edited_by,
@@ -790,189 +876,189 @@ const formatEmailBody = async (
           allMeetings = formattedMeetings;
         }
       }
-      
+
       console.log('fetchMeetings: All meetings:', allMeetings);
       setMeetings(allMeetings);
-      
+
     } catch (error) {
       console.error('Error fetching meetings:', error);
       toast.error('Failed to load meetings.');
     }
   };
 
-    const fetchLeadSchedulingInfo = async () => {
-      if (!client.id) return;
-      
-      // Check if this is a legacy lead
-      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      
-      try {
-        let data;
-        let error;
-        
-        if (isLegacyLead) {
-          // For legacy leads, fetch from leads_lead table
-          const legacyId = client.id.toString().replace('legacy_', '');
-          const { data: legacyData, error: legacyError } = await supabase
-            .from('leads_lead')
-            .select('meeting_scheduler_id, meeting_scheduling_notes, next_followup, followup_log, meeting_confirmation, meeting_confirmation_by')
-            .eq('id', legacyId)
-            .single();
-          
-          data = legacyData;
-          error = legacyError;
-          
-          if (data) {
-            setLeadSchedulingInfo({
-              scheduler: data.meeting_scheduler_id || '',
-              meeting_scheduling_notes: data.meeting_scheduling_notes || '',
-              next_followup: data.next_followup || '',
-              followup: data.followup_log || '',
-              meeting_confirmation: parseMeetingConfirmationValue(data.meeting_confirmation),
-              meeting_confirmation_by: normalizeMeetingConfirmationBy(data?.meeting_confirmation_by),
-            });
-          } else {
-            setLeadSchedulingInfo({});
-          }
-        } else {
-          // For new leads, fetch from leads table
-          const { data: newData, error: newError } = await supabase
-            .from('leads')
-            .select('scheduler, meeting_scheduling_notes, next_followup, followup, meeting_confirmation, meeting_confirmation_by')
-            .eq('id', client.id)
-            .single();
-          
-          data = newData;
-          error = newError;
-          
-          if (data) {
-            setLeadSchedulingInfo({
-              scheduler: data.scheduler || '',
-              meeting_scheduling_notes: data.meeting_scheduling_notes || '',
-              next_followup: data.next_followup || '',
-              followup: data.followup || '',
-              meeting_confirmation: parseMeetingConfirmationValue(data.meeting_confirmation),
-              meeting_confirmation_by: normalizeMeetingConfirmationBy(data?.meeting_confirmation_by),
-            });
-          } else {
-            setLeadSchedulingInfo({});
-          }
-        }
-        
-        if (error) throw error;
-      } catch (error) {
-        setLeadSchedulingInfo({});
-      }
-    };
+  const fetchLeadSchedulingInfo = async () => {
+    if (!client.id) return;
 
-    const fetchSchedulingHistory = async () => {
-      if (!client.id) {
-        setSchedulingHistory([]);
-        return;
-      }
-      
-      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      
-      try {
-        // Fetch from scheduling_info_history table
-        let historyQuery = supabase
-          .from('scheduling_info_history')
-          .select('*')
-          .order('created_at', { ascending: false});
-        
-        if (isLegacyLead) {
-          const legacyId = client.id.toString().replace('legacy_', '');
-          historyQuery = historyQuery.eq('legacy_lead_id', legacyId);
+    // Check if this is a legacy lead
+    const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+
+    try {
+      let data;
+      let error;
+
+      if (isLegacyLead) {
+        // For legacy leads, fetch from leads_lead table
+        const legacyId = client.id.toString().replace('legacy_', '');
+        const { data: legacyData, error: legacyError } = await supabase
+          .from('leads_lead')
+          .select('meeting_scheduler_id, meeting_scheduling_notes, next_followup, followup_log, meeting_confirmation, meeting_confirmation_by')
+          .eq('id', legacyId)
+          .single();
+
+        data = legacyData;
+        error = legacyError;
+
+        if (data) {
+          setLeadSchedulingInfo({
+            scheduler: data.meeting_scheduler_id || '',
+            meeting_scheduling_notes: data.meeting_scheduling_notes || '',
+            next_followup: data.next_followup || '',
+            followup: data.followup_log || '',
+            meeting_confirmation: parseMeetingConfirmationValue(data.meeting_confirmation),
+            meeting_confirmation_by: normalizeMeetingConfirmationBy(data?.meeting_confirmation_by),
+          });
         } else {
-          historyQuery = historyQuery.eq('lead_id', client.id);
+          setLeadSchedulingInfo({});
         }
-        
-        const { data: historyData, error: historyError } = await historyQuery;
-        
-        if (historyError) throw historyError;
-        
-        // Fetch from follow_ups table
-        let followUpsQuery = supabase
-          .from('follow_ups')
-          .select(`
+      } else {
+        // For new leads, fetch from leads table
+        const { data: newData, error: newError } = await supabase
+          .from('leads')
+          .select('scheduler, meeting_scheduling_notes, next_followup, followup, meeting_confirmation, meeting_confirmation_by')
+          .eq('id', client.id)
+          .single();
+
+        data = newData;
+        error = newError;
+
+        if (data) {
+          setLeadSchedulingInfo({
+            scheduler: data.scheduler || '',
+            meeting_scheduling_notes: data.meeting_scheduling_notes || '',
+            next_followup: data.next_followup || '',
+            followup: data.followup || '',
+            meeting_confirmation: parseMeetingConfirmationValue(data.meeting_confirmation),
+            meeting_confirmation_by: normalizeMeetingConfirmationBy(data?.meeting_confirmation_by),
+          });
+        } else {
+          setLeadSchedulingInfo({});
+        }
+      }
+
+      if (error) throw error;
+    } catch (error) {
+      setLeadSchedulingInfo({});
+    }
+  };
+
+  const fetchSchedulingHistory = async () => {
+    if (!client.id) {
+      setSchedulingHistory([]);
+      return;
+    }
+
+    const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+
+    try {
+      // Fetch from scheduling_info_history table
+      let historyQuery = supabase
+        .from('scheduling_info_history')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (isLegacyLead) {
+        const legacyId = client.id.toString().replace('legacy_', '');
+        historyQuery = historyQuery.eq('legacy_lead_id', legacyId);
+      } else {
+        historyQuery = historyQuery.eq('lead_id', client.id);
+      }
+
+      const { data: historyData, error: historyError } = await historyQuery;
+
+      if (historyError) throw historyError;
+
+      // Fetch from follow_ups table
+      let followUpsQuery = supabase
+        .from('follow_ups')
+        .select(`
             *,
             users!user_id (
               full_name,
               email
             )
           `)
-          .order('created_at', { ascending: false });
-        
-        if (isLegacyLead) {
-          const legacyId = client.id.toString().replace('legacy_', '');
-          followUpsQuery = followUpsQuery.eq('lead_id', legacyId);
-        } else {
-          followUpsQuery = followUpsQuery.eq('new_lead_id', client.id);
-        }
-        
-        const { data: followUpsData, error: followUpsError } = await followUpsQuery;
-        
-        if (followUpsError) {
-          console.error('Error fetching follow-ups:', followUpsError);
-        }
-        
-        // Transform follow_ups data to match scheduling_history format
-        const followUpsHistory = (followUpsData || []).map((entry: any) => ({
-          id: entry.id,
-          next_followup: entry.date,
-          created_by: entry.users?.full_name || 'Unknown',
-          created_at: entry.created_at,
-          from_followups: true,
-        }));
-        
-        // Fetch from lead_notes table for scheduling-related notes
-        // Only fetch for new leads (legacy leads don't have lead_notes)
-        let notesData: any[] = [];
-        if (!isLegacyLead) {
-          const { data: notes, error: notesError } = await supabase
-            .from('lead_notes')
-            .select('*')
-            .eq('lead_id', client.id)
-            .in('note_type', ['scheduling', 'followup', 'general'])
-            .order('created_at', { ascending: false });
-          
-          if (!notesError && notes) {
-            // Transform lead_notes to match scheduling_history format
-            notesData = notes.map(note => ({
-              id: note.id,
-              meeting_scheduling_notes: note.content,
-              next_followup: null,
-              followup: note.note_type === 'followup' ? note.content : null,
-              followup_log: null,
-              created_by: note.created_by_name || 'Unknown',
-              created_at: note.created_at,
-              note_id: note.id,
-              from_notes: true,
-            }));
-          }
-        }
-        
-        // Merge and sort by created_at (newest first)
-        const allHistory = [
-          ...(historyData || []).map((entry: any) => ({ ...entry, from_notes: false, from_followups: false })),
-          ...followUpsHistory,
-          ...notesData,
-        ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-        
-        setSchedulingHistory(allHistory);
-      } catch (error) {
-        console.error('Error fetching scheduling history:', error);
-        setSchedulingHistory([]);
-      }
-    };
+        .order('created_at', { ascending: false });
 
-    // Add useEffect after both functions are defined
-    useEffect(() => {
-      console.log('MeetingTab useEffect triggered - client changed:', client?.id, client?.lead_type);
-      fetchMeetings();
-      fetchLeadSchedulingInfo();
-      fetchSchedulingHistory();
-    }, [client, onClientUpdate]);
+      if (isLegacyLead) {
+        const legacyId = client.id.toString().replace('legacy_', '');
+        followUpsQuery = followUpsQuery.eq('lead_id', legacyId);
+      } else {
+        followUpsQuery = followUpsQuery.eq('new_lead_id', client.id);
+      }
+
+      const { data: followUpsData, error: followUpsError } = await followUpsQuery;
+
+      if (followUpsError) {
+        console.error('Error fetching follow-ups:', followUpsError);
+      }
+
+      // Transform follow_ups data to match scheduling_history format
+      const followUpsHistory = (followUpsData || []).map((entry: any) => ({
+        id: entry.id,
+        next_followup: entry.date,
+        created_by: entry.users?.full_name || 'Unknown',
+        created_at: entry.created_at,
+        from_followups: true,
+      }));
+
+      // Fetch from lead_notes table for scheduling-related notes
+      // Only fetch for new leads (legacy leads don't have lead_notes)
+      let notesData: any[] = [];
+      if (!isLegacyLead) {
+        const { data: notes, error: notesError } = await supabase
+          .from('lead_notes')
+          .select('*')
+          .eq('lead_id', client.id)
+          .in('note_type', ['scheduling', 'followup', 'general'])
+          .order('created_at', { ascending: false });
+
+        if (!notesError && notes) {
+          // Transform lead_notes to match scheduling_history format
+          notesData = notes.map(note => ({
+            id: note.id,
+            meeting_scheduling_notes: note.content,
+            next_followup: null,
+            followup: note.note_type === 'followup' ? note.content : null,
+            followup_log: null,
+            created_by: note.created_by_name || 'Unknown',
+            created_at: note.created_at,
+            note_id: note.id,
+            from_notes: true,
+          }));
+        }
+      }
+
+      // Merge and sort by created_at (newest first)
+      const allHistory = [
+        ...(historyData || []).map((entry: any) => ({ ...entry, from_notes: false, from_followups: false })),
+        ...followUpsHistory,
+        ...notesData,
+      ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+      setSchedulingHistory(allHistory);
+    } catch (error) {
+      console.error('Error fetching scheduling history:', error);
+      setSchedulingHistory([]);
+    }
+  };
+
+  // Add useEffect after both functions are defined
+  useEffect(() => {
+    console.log('MeetingTab useEffect triggered - client changed:', client?.id, client?.lead_type);
+    fetchMeetings();
+    fetchLeadSchedulingInfo();
+    fetchSchedulingHistory();
+  }, [client, onClientUpdate]);
 
   // Fetch latest notes from leads table when a meeting is expanded
   useEffect(() => {
@@ -981,14 +1067,14 @@ const formatEmailBody = async (
         ...prev,
         [meeting.id]: { ...prev[meeting.id], loading: true }
       }));
-      
+
       // Check if this is a legacy lead
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      
+
       try {
         let data;
         let error;
-        
+
         if (isLegacyLead) {
           // For legacy leads, fetch from leads_lead table
           const legacyId = client.id.toString().replace('legacy_', '');
@@ -997,7 +1083,7 @@ const formatEmailBody = async (
             .select('expert_notes, handler_notes')
             .eq('id', legacyId)
             .single();
-          
+
           data = legacyData;
           error = legacyError;
         } else {
@@ -1007,11 +1093,11 @@ const formatEmailBody = async (
             .select('expert_notes, handler_notes')
             .eq('id', meeting.client_id)
             .single();
-          
+
           data = newData;
           error = newError;
         }
-        
+
         if (error) throw error;
         setExpandedMeetingData(prev => ({
           ...prev,
@@ -1042,7 +1128,7 @@ const formatEmailBody = async (
 
     try {
       let error;
-      
+
       if (isLegacyLead) {
         // For legacy leads, update the leads_lead table
         const legacyId = client.id.toString().replace('legacy_', '');
@@ -1050,7 +1136,7 @@ const formatEmailBody = async (
           .from('leads_lead')
           .update({ [field]: editedContent })
           .eq('id', legacyId);
-        
+
         error = legacyError;
       } else {
         // For new leads, update the meetings table
@@ -1058,10 +1144,10 @@ const formatEmailBody = async (
           .from('meetings')
           .update({ [field]: editedContent })
           .eq('id', meetingId);
-        
+
         error = newError;
       }
-      
+
       if (error) throw error;
 
       toast.success('Notes updated successfully!');
@@ -1091,7 +1177,7 @@ const formatEmailBody = async (
           .from('leads_lead')
           .update({ meeting_brief: editedBrief })
           .eq('id', legacyId);
-        
+
         if (error) throw error;
       } else {
         // For new meetings, update the meetings table
@@ -1099,10 +1185,10 @@ const formatEmailBody = async (
           .from('meetings')
           .update({ meeting_brief: editedBrief })
           .eq('id', meetingId);
-        
+
         if (error) throw error;
       }
-      
+
       toast.success('Meeting brief updated!');
       setEditingBriefId(null);
       setEditedBrief('');
@@ -1124,18 +1210,18 @@ const formatEmailBody = async (
     setShowNotifyDropdown(null); // Close dropdown
     try {
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      const normalizedLeadId = isLegacyLead 
+      const normalizedLeadId = isLegacyLead
         ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
         : client.id;
-      
+
       const fetchedContacts = await fetchLeadContacts(normalizedLeadId, isLegacyLead);
       setContacts(fetchedContacts);
-      
+
       // Fetch email templates based on type
       try {
         let enTemplateId: number;
         let heTemplateId: number;
-        
+
         switch (type) {
           case 'invitation':
             enTemplateId = 151;
@@ -1169,36 +1255,36 @@ const formatEmailBody = async (
             enTemplateId = 151;
             heTemplateId = 152;
         }
-        
+
         const { data: enTemplate, error: enError } = await supabase
           .from('misc_emailtemplate')
           .select('content, name')
           .eq('id', enTemplateId)
           .single();
-        
+
         const { data: heTemplate, error: heError } = await supabase
           .from('misc_emailtemplate')
           .select('content, name')
           .eq('id', heTemplateId)
           .single();
-        
+
         if (!enError && enTemplate) {
           const parsedContent = parseTemplateContent(enTemplate.content);
-          setEmailTemplates(prev => ({ 
-            ...prev, 
-            en: { content: parsedContent, name: enTemplate.name || null } 
+          setEmailTemplates(prev => ({
+            ...prev,
+            en: { content: parsedContent, name: enTemplate.name || null }
           }));
           setEmailTemplateIds(prev => ({ ...prev, en: enTemplateId }));
         } else {
           setEmailTemplates(prev => ({ ...prev, en: null }));
           setEmailTemplateIds(prev => ({ ...prev, en: null }));
         }
-        
+
         if (!heError && heTemplate) {
           const parsedContent = parseTemplateContent(heTemplate.content);
-          setEmailTemplates(prev => ({ 
-            ...prev, 
-            he: { content: parsedContent, name: heTemplate.name || null } 
+          setEmailTemplates(prev => ({
+            ...prev,
+            he: { content: parsedContent, name: heTemplate.name || null }
           }));
           setEmailTemplateIds(prev => ({ ...prev, he: heTemplateId }));
         } else {
@@ -1208,7 +1294,7 @@ const formatEmailBody = async (
       } catch (error) {
         console.error('Error fetching email templates:', error);
       }
-      
+
       setShowNotifyModal(true);
     } catch (error) {
       console.error('Error fetching contacts:', error);
@@ -1223,13 +1309,13 @@ const formatEmailBody = async (
     setLoadingWhatsAppContacts(true);
     try {
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      const normalizedLeadId = isLegacyLead 
+      const normalizedLeadId = isLegacyLead
         ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
         : client.id;
-      
+
       const fetchedContacts = await fetchLeadContacts(normalizedLeadId, isLegacyLead);
       console.log('📱 WhatsApp Notify - Fetched contacts (before dedup):', fetchedContacts.length, fetchedContacts);
-      
+
       // Deduplicate contacts - only remove exact duplicates within the contact list
       const uniqueContacts: ContactInfo[] = [];
       const seenContactKeys = new Set<string>();
@@ -1248,25 +1334,25 @@ const formatEmailBody = async (
       const contactsMatch = (c1: ContactInfo, c2: ContactInfo): boolean => {
         const n1 = normalizeContactInfo(c1);
         const n2 = normalizeContactInfo(c2);
-        
+
         // Match if same email (and email is not empty)
         if (n1.email && n2.email && n1.email === n2.email) {
           return true;
         }
-        
+
         // Match if same phone (and phone is not empty)
         if (n1.phone && n2.phone && n1.phone === n2.phone) {
           return true;
         }
-        
+
         // Match if same name AND (same email OR same phone)
         if (n1.name && n2.name && n1.name === n2.name) {
           if ((n1.email && n2.email && n1.email === n2.email) ||
-              (n1.phone && n2.phone && n1.phone === n2.phone)) {
+            (n1.phone && n2.phone && n1.phone === n2.phone)) {
             return true;
           }
         }
-        
+
         return false;
       };
 
@@ -1274,18 +1360,18 @@ const formatEmailBody = async (
       fetchedContacts.forEach((contact) => {
         const normalized = normalizeContactInfo(contact);
         const contactKey = `${normalized.email}_${normalized.phone}_${normalized.name}`;
-        
+
         // Check if we've already seen a contact with the same key
         if (seenContactKeys.has(contactKey)) {
           return; // Skip duplicate
         }
-        
+
         // Check if this contact is a duplicate of any existing contact
         const isDuplicate = uniqueContacts.some(existing => contactsMatch(existing, contact));
         if (isDuplicate) {
           return; // Skip duplicate
         }
-        
+
         // Add the contact
         seenContactKeys.add(contactKey);
         uniqueContacts.push(contact);
@@ -1318,23 +1404,23 @@ const formatEmailBody = async (
 
   const handleSendWhatsAppReminder = async (meeting: Meeting, phoneNumbers?: string | string[], reminderType?: 'reminder' | 'missed_appointment') => {
     if (!selectedMeetingForWhatsAppNotify) return;
-    
+
     const type = reminderType || whatsAppReminderType;
     setSendingWhatsAppMeetingId(meeting.id);
     setShowWhatsAppNotifyModal(false);
     setShowWhatsAppDropdown(null); // Close dropdown
-    
+
     try {
       // Get the selected template based on reminder type and language
       const templateName = type === 'missed_appointment' ? 'missed_appointment' : 'reminder_of_a_meeting';
       const targetLanguage = selectedLanguage.toLowerCase();
-      
+
       // Helper function to normalize language code (e.g., 'he_IL' -> 'he', 'en_US' -> 'en')
       const normalizeLanguageCode = (lang: string | null | undefined): string => {
         if (!lang) return '';
         return lang.split('_')[0].toLowerCase();
       };
-      
+
       // Template ID mappings:
       // reminder_of_a_meeting: HE = 1, EN = 2
       // missed_appointment: EN = 16, HE = 15, RU = 15
@@ -1347,10 +1433,10 @@ const formatEmailBody = async (
           'ru': 15
         };
         const templateId = templateIdMap[targetLanguage];
-        
+
         // Match by ID first (most reliable)
         selectedTemplate = reminderTemplates.find(t => t.id === templateId);
-        
+
         // Fallback: match by name and normalized language
         if (!selectedTemplate) {
           selectedTemplate = reminderTemplates.find(t => {
@@ -1365,10 +1451,10 @@ const formatEmailBody = async (
           'en': 2
         };
         const templateId = templateIdMap[targetLanguage];
-        
+
         // Match by ID first (most reliable)
         selectedTemplate = reminderTemplates.find(t => t.id === templateId);
-        
+
         // Fallback: match by name and normalized language
         if (!selectedTemplate) {
           selectedTemplate = reminderTemplates.find(t => {
@@ -1379,15 +1465,15 @@ const formatEmailBody = async (
       }
 
       if (!selectedTemplate) {
-        console.error('📱 Template not found:', { 
-          selectedLanguage, 
-          targetLanguage, 
+        console.error('📱 Template not found:', {
+          selectedLanguage,
+          targetLanguage,
           availableTemplates: reminderTemplates.map(t => ({ id: t.id, name: t.name, language: t.language }))
         });
         toast.error(`Reminder template not found for ${selectedLanguage === 'he' ? 'Hebrew' : 'English'}. Please ensure templates with name "reminder_of_a_meeting" and language "${targetLanguage}" exist in the database.`);
         return;
       }
-      
+
       console.log('📱 Selected template:', { id: selectedTemplate.id, name: selectedTemplate.name, language: selectedTemplate.language });
 
       // Get current user's full name
@@ -1423,7 +1509,7 @@ const formatEmailBody = async (
       const locationName = getMeetingLocationName(meeting.location);
 
       // Determine phone numbers to send to
-      const phoneNumbersToSend = phoneNumbers 
+      const phoneNumbersToSend = phoneNumbers
         ? (Array.isArray(phoneNumbers) ? phoneNumbers : [phoneNumbers])
         : [];
 
@@ -1439,33 +1525,33 @@ const formatEmailBody = async (
         }
 
         // Find contact for this phone number to get contact_id
-        const contact = whatsAppContacts.find(c => 
-          (c.phone && c.phone.trim() === phoneNumber.trim()) || 
+        const contact = whatsAppContacts.find(c =>
+          (c.phone && c.phone.trim() === phoneNumber.trim()) ||
           (c.mobile && c.mobile.trim() === phoneNumber.trim())
         );
 
         const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
         // Keep the 'legacy_' prefix for backend - backend expects it to identify legacy leads
-        const normalizedLeadId = isLegacyLead 
+        const normalizedLeadId = isLegacyLead
           ? (typeof client.id === 'string' ? client.id : `legacy_${client.id}`)
           : client.id;
 
         // Generate template parameters - same approach as SchedulerWhatsAppModal
         let templateParameters: Array<{ type: string; text: string }> = [];
         const paramCount = Number(selectedTemplate.params) || 0;
-        
+
         if (paramCount > 0) {
           try {
             console.log('🔍 Getting template param definitions...');
             const { getTemplateParamDefinitions, generateParamsFromDefinitions } = await import('../../lib/whatsappTemplateParamMapping');
             const { generateTemplateParameters } = await import('../../lib/whatsappTemplateParams');
-            
+
             const paramDefinitions = await getTemplateParamDefinitions(selectedTemplate.id, selectedTemplate.name);
-            
+
             // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1447',message:'Template param definitions check',data:{templateId:selectedTemplate.id,templateName:selectedTemplate.name,paramCount,paramDefinitionsLength:paramDefinitions.length,paramDefinitions},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+            fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1447', message: 'Template param definitions check', data: { templateId: selectedTemplate.id, templateName: selectedTemplate.name, paramCount, paramDefinitionsLength: paramDefinitions.length, paramDefinitions }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
             // #endregion
-            
+
             // Create a client object with meeting data for parameter generation
             const currentMeeting = meeting;
             const formatDate = (dateStr: string): string => {
@@ -1474,8 +1560,24 @@ const formatEmailBody = async (
             };
             const formattedDate = formatDate(currentMeeting.date);
             const formattedTime = currentMeeting.time ? currentMeeting.time.substring(0, 5) : '';
-            const meetingLink = getValidTeamsLink(currentMeeting.link) || '';
-            
+
+            // Get meeting link: first check if location has default_link, otherwise use teams_meeting_url
+            let meetingLink = '';
+            const locationIdOrName = currentMeeting.location;
+
+            // Try to find location by ID first, then by name
+            let location = allMeetingLocations.find((loc: any) => loc.id.toString() === locationIdOrName.toString());
+            if (!location) {
+              // If not found by ID, try to find by name
+              location = allMeetingLocations.find((loc: any) => loc.name === locationIdOrName);
+            }
+
+            if (location?.default_link) {
+              meetingLink = location.default_link;
+            } else {
+              meetingLink = getValidTeamsLink(currentMeeting.link) || '';
+            }
+
             const clientForParams = {
               ...client,
               meeting_date: formattedDate,
@@ -1483,21 +1585,21 @@ const formatEmailBody = async (
               meeting_location: locationName,
               meeting_link: meetingLink,
             };
-            
+
             if (paramDefinitions.length > 0) {
               console.log('✅ Using template-specific param definitions');
               templateParameters = await generateParamsFromDefinitions(paramDefinitions, clientForParams, contact?.id || null);
               // #region agent log
-              fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1469',message:'Generated params from definitions',data:{templateParametersLength:templateParameters.length,templateParameters},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+              fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1469', message: 'Generated params from definitions', data: { templateParametersLength: templateParameters.length, templateParameters }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
               // #endregion
             } else {
               console.log('⚠️ No specific param definitions, using generic generation');
               templateParameters = await generateTemplateParameters(paramCount, clientForParams, contact?.id || null);
               // #region agent log
-              fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1472',message:'Generated params from generic function',data:{templateParametersLength:templateParameters.length,templateParameters,paramCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+              fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1472', message: 'Generated params from generic function', data: { templateParametersLength: templateParameters.length, templateParameters, paramCount }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
               // #endregion
             }
-            
+
             // Override with meeting-specific data
             // Note: mobile_number, phone_number, and email should use logged-in user's data (handled by helper functions)
             // Only override meeting-specific parameters
@@ -1505,7 +1607,7 @@ const formatEmailBody = async (
               paramDefinitions.forEach((param: any, index: number) => {
                 if (templateParameters[index]) {
                   let paramValue = templateParameters[index].text || '';
-                  
+
                   switch (param.type) {
                     case 'meeting_date':
                       paramValue = formattedDate || '';
@@ -1519,7 +1621,7 @@ const formatEmailBody = async (
                     case 'meeting_link':
                       paramValue = meetingLink || '';
                       // #region agent log
-                      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1494',message:'Setting meeting_link param',data:{index,paramValue,meetingLink},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+                      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1494', message: 'Setting meeting_link param', data: { index, paramValue, meetingLink }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'D' }) }).catch(() => { });
                       // #endregion
                       break;
                     // mobile_number, phone_number, and email are handled by helper functions
@@ -1528,40 +1630,40 @@ const formatEmailBody = async (
                       // Keep the generated value (includes mobile_number, phone_number, email from helper functions)
                       paramValue = templateParameters[index].text || '';
                   }
-                  
+
                   templateParameters[index].text = paramValue.trim();
                 }
               });
             } else {
               // #region agent log
-              fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1506',message:'No param definitions - checking if param 4 needs meeting link',data:{paramCount,templateParametersLength:templateParameters.length,meetingLink},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+              fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1506', message: 'No param definitions - checking if param 4 needs meeting link', data: { paramCount, templateParametersLength: templateParameters.length, meetingLink }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'E' }) }).catch(() => { });
               // #endregion
               // If no param definitions, we still need to set param 4 (meeting link) if paramCount >= 4
               // This handles the case where generateTemplateParameters fills params 3+ with empty strings
               if (paramCount >= 4 && templateParameters.length >= 4) {
                 templateParameters[3].text = meetingLink || '';
                 // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1510',message:'Manually setting param 4 to meeting link',data:{meetingLink,param4Value:templateParameters[3].text},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+                fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1510', message: 'Manually setting param 4 to meeting link', data: { meetingLink, param4Value: templateParameters[3].text }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'E' }) }).catch(() => { });
                 // #endregion
               }
             }
-            
+
             // Ensure we have exactly the right number of parameters
             while (templateParameters.length < paramCount) {
               templateParameters.push({ type: 'text', text: '' });
             }
-            
+
             // Backend will handle empty parameter replacement with 'N/A'
             // Just ensure all parameters are strings (not null/undefined)
             templateParameters = templateParameters.map((param) => ({
               type: 'text',
               text: (param.text || '').trim()
             }));
-            
+
             // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1518',message:'Final template parameters before sending',data:{paramCount,templateParametersLength:templateParameters.length,templateParameters},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+            fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1518', message: 'Final template parameters before sending', data: { paramCount, templateParametersLength: templateParameters.length, templateParameters }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'F' }) }).catch(() => { });
             // #endregion
-            
+
             if (templateParameters && templateParameters.length > 0) {
               console.log(`✅ Template with ${paramCount} param(s) - auto-filled parameters:`, templateParameters);
             } else {
@@ -1609,26 +1711,169 @@ const formatEmailBody = async (
           messagePayload.message = selectedTemplate.content || 'Template sent';
         }
 
-        const response = await fetch(buildApiUrl('/api/whatsapp/send-message'), {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(messagePayload),
-        });
+        let response: Response;
+        let result: any;
 
-        const result = await response.json();
+        try {
+          response = await fetch(buildApiUrl('/api/whatsapp/send-message'), {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(messagePayload),
+          });
 
-        if (!response.ok) {
+          result = await response.json();
+        } catch (fetchError) {
+          // If we can't even parse the response, assume it failed
+          console.error('❌ Error fetching or parsing WhatsApp API response:', fetchError);
+          return { success: false, phoneNumber, error: 'Failed to send WhatsApp message: Network error' };
+        }
+
+        // Check if backend returned an error but message was actually sent
+        // The backend sends WhatsApp message first, then saves to DB
+        // If DB save fails, backend returns 500 with "Failed to save message" but message was already sent
+        const isDbSaveError = !response.ok && result && result.error && (
+          result.error.includes('save') ||
+          result.error.includes('Failed to save message') ||
+          result.details?.includes('save') ||
+          result.details?.includes('permission denied')
+        );
+
+        if (!response.ok && !isDbSaveError) {
+          // Real error - message was not sent
           let errorMessage = '';
-          if (result.code === 'RE_ENGAGEMENT_REQUIRED') {
+          if (result?.code === 'RE_ENGAGEMENT_REQUIRED') {
             errorMessage = '⚠️ WhatsApp 24-Hour Rule: You can only send template messages after 24 hours of customer inactivity.';
           } else {
-            errorMessage = result.error || 'Failed to send WhatsApp message';
+            errorMessage = result?.error || 'Failed to send WhatsApp message';
           }
           return { success: false, phoneNumber, error: errorMessage };
         }
 
+        // If it's a DB save error, the message was sent but DB save failed
+        // We'll handle it optimistically and still return success
+        if (isDbSaveError) {
+          console.warn('⚠️ WhatsApp message sent but database save failed. Adding optimistic record:', {
+            error: result?.error,
+            details: result?.details,
+          });
+          // Continue to optimistic upsert below - message was sent successfully
+        }
+
+        // Message was sent successfully (either backend saved it or we need to save it optimistically)
+        // Use the message ID from backend response if available, otherwise generate one
+        // Note: If DB save failed, result won't have whatsapp_message_id, so we'll generate one
+        const whatsappMessageId = result.whatsapp_message_id || result.message_id || result.data?.whatsapp_message_id || result.id;
+
+        // Add optimistic upsert to database (always do this, even if backend saved it, to ensure it appears immediately)
+        try {
+          const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+          const legacyId = isLegacyLead
+            ? (() => {
+              const numeric = parseInt(String(client.id).replace('legacy_', ''), 10);
+              return Number.isNaN(numeric) ? null : numeric;
+            })()
+            : null;
+
+          const now = new Date();
+          const whatsappMessageRecord: any = {
+            phone_number: phoneNumber.trim(),
+            sender_name: senderName,
+            direction: 'out',
+            message: filledContent || selectedTemplate.content || `[Template: ${selectedTemplate.name}]`,
+            template_id: selectedTemplate.id,
+            sent_at: now.toISOString(),
+            whatsapp_message_id: whatsappMessageId || `optimistic_${now.getTime()}`,
+            whatsapp_status: 'sent', // Optimistic status
+            message_type: 'text',
+            whatsapp_timestamp: now.toISOString(),
+          };
+
+          // Set either client_id OR legacy_id, not both
+          if (isLegacyLead) {
+            whatsappMessageRecord.legacy_id = legacyId;
+            whatsappMessageRecord.lead_id = null;
+          } else {
+            whatsappMessageRecord.lead_id = client.id;
+            whatsappMessageRecord.legacy_id = null;
+          }
+
+          // Add contact_id if available
+          if (contact?.id) {
+            whatsappMessageRecord.contact_id = contact.id;
+          }
+
+          // Try to insert the message optimistically
+          const { data: insertedData, error: insertError } = await supabase
+            .from('whatsapp_messages')
+            .insert([whatsappMessageRecord])
+            .select();
+
+          if (insertError) {
+            console.error('❌ Failed to insert WhatsApp message record (message was sent successfully):', {
+              error: insertError,
+              code: insertError.code,
+              message: insertError.message,
+              details: insertError.details,
+              hint: insertError.hint,
+            });
+
+            // If it's a permission error for pending_stage_evaluations, try workaround
+            if (insertError.code === '42501' && insertError.message?.includes('pending_stage_evaluations')) {
+              console.log('🔄 Permission denied for trigger, attempting workaround for WhatsApp message...');
+              const messageRecordWithoutContext = { ...whatsappMessageRecord };
+              delete messageRecordWithoutContext.lead_id;
+              delete messageRecordWithoutContext.legacy_id;
+              delete messageRecordWithoutContext.contact_id;
+
+              const { data: insertedWithoutContext, error: insertWithoutContextError } = await supabase
+                .from('whatsapp_messages')
+                .insert([messageRecordWithoutContext])
+                .select();
+
+              if (!insertWithoutContextError && insertedWithoutContext && insertedWithoutContext.length > 0) {
+                // Now try to update with the context
+                const { error: updateError } = await supabase
+                  .from('whatsapp_messages')
+                  .update({
+                    lead_id: whatsappMessageRecord.lead_id,
+                    legacy_id: whatsappMessageRecord.legacy_id,
+                    contact_id: whatsappMessageRecord.contact_id,
+                  })
+                  .eq('id', insertedWithoutContext[0].id);
+
+                if (updateError) {
+                  console.error('❌ Failed to update WhatsApp message record with context:', updateError);
+                  console.warn('⚠️ WhatsApp message was sent successfully but cannot be saved to database due to permissions. It will appear after backend sync.');
+                  // Don't throw - message was sent successfully
+                } else {
+                  console.log('✅ WhatsApp message record saved with workaround (insert then update)');
+                }
+              } else {
+                console.error('❌ Workaround also failed for WhatsApp message:', insertWithoutContextError);
+                console.warn('⚠️ WhatsApp message was sent successfully but cannot be saved to database due to permissions. It will appear after backend sync.');
+                // Don't throw - message was sent successfully
+              }
+            } else {
+              // Not a permission error, log it
+              console.warn('⚠️ WhatsApp message was sent successfully but cannot be saved to database. It will appear after backend sync.');
+            }
+            // Don't throw - message was sent successfully, just log the error
+          } else {
+            console.log('✅ WhatsApp message record inserted successfully:', insertedData);
+          }
+        } catch (dbError) {
+          // Database errors should not prevent success message
+          // The message was already sent successfully
+          console.error('❌ Error saving WhatsApp message record to database (message was sent successfully):', dbError);
+          console.warn('⚠️ WhatsApp message was sent successfully but cannot be saved to database. It will appear after backend sync.');
+          // Message was sent, so we still return success
+          // The message will appear in InteractionsTab after backend sync
+        }
+
+        // Always return success if we got here (message was sent, DB save is just for immediate visibility)
+        // The message will appear in InteractionsTab after backend sync if DB save failed
         return { success: true, phoneNumber };
       });
 
@@ -1667,7 +1912,7 @@ const formatEmailBody = async (
       const accounts = instance.getAllAccounts();
       if (!accounts.length) throw new Error('No Microsoft account found');
       const account = accounts[0];
-      
+
       // Try silent token acquisition first, fall back to popup if needed
       let tokenResponse;
       try {
@@ -1681,45 +1926,45 @@ const formatEmailBody = async (
           throw error; // Re-throw other errors
         }
       }
-      
+
       const senderName = account?.name || 'Your Team';
       const now = new Date();
-      
+
       // Format time without seconds (for ICS file)
       const formattedTime = meeting.time ? meeting.time.substring(0, 5) : meeting.time;
-      
+
       // Format date as dd/mm/yyyy
       const formatDate = (dateStr: string): string => {
         const [year, month, day] = dateStr.split('-');
         return `${day}/${month}/${year}`;
       };
       const formattedDate = formatDate(meeting.date);
-      
+
       // Use explicit email type if provided, otherwise use state
       const currentEmailType = explicitEmailType || emailType;
-      
+
       const joinLink = getValidTeamsLink(meeting.link);
       // Category and topic removed - not to be included in emails
       const locationName = getMeetingLocationName(meeting.location);
-      
+
       // Check if recipient email is a Microsoft domain (for Outlook/Exchange)
       const isMicrosoftEmail = (email: string | string[]): boolean => {
         const emails = Array.isArray(email) ? email : [email];
         const microsoftDomains = ['outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'onmicrosoft.com'];
-        return emails.some(addr => 
+        return emails.some(addr =>
           microsoftDomains.some(domain => addr.toLowerCase().includes(`@${domain}`))
         );
       };
-      
+
       const recipientEmailArray = Array.isArray(recipientEmail) ? recipientEmail : [recipientEmail];
       const primaryRecipientEmail = recipientEmailArray[0];
       const useOutlookCalendarInvite = isMicrosoftEmail(recipientEmail);
-      
+
       // Get recipient name (use provided contactName, or find from contacts, or fallback to client name)
-      const recipientName = contactName || (Array.isArray(emailAddress) 
+      const recipientName = contactName || (Array.isArray(emailAddress)
         ? (contacts.find(c => c.email === primaryRecipientEmail)?.name || client.name)
         : (contacts.find(c => c.email === emailAddress)?.name || client.name));
-      
+
       // Build description HTML (category and topic removed)
       let descriptionHtml = `<p>Meeting with <strong>${recipientName}</strong></p>`;
       if (joinLink) {
@@ -1728,21 +1973,21 @@ const formatEmailBody = async (
       if (meeting.brief) {
         descriptionHtml += `<p><strong>Brief:</strong><br>${meeting.brief.replace(/\n/g, '<br>')}</p>`;
       }
-      
+
       // Calendar subject (category and topic removed)
       const calendarSubject = `Meeting with Decker, Pex, Levi Lawoffice`;
-      
+
       // Prepare date/time for calendar
       const startDateTime = new Date(`${meeting.date}T${formattedTime}:00`);
       const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000); // 1 hour duration
-      
+
       // Determine language based on client's language_id for automatic template selection
       // For rescheduled emails, automatically use language_id; for others, use manual selection
       let languageToUse: 'en' | 'he';
       if (currentEmailType === 'rescheduled') {
         // Automatically determine language from client's language_id
-        const isHebrew = client.language_id === 2 || 
-                        (client.language_id === undefined && client.language?.toLowerCase().includes('hebrew'));
+        const isHebrew = client.language_id === 2 ||
+          (client.language_id === undefined && client.language?.toLowerCase().includes('hebrew'));
         languageToUse = isHebrew ? 'he' : 'en';
         console.log('🌐 Reschedule email - Auto language selection:', {
           language_id: client.language_id,
@@ -1753,10 +1998,10 @@ const formatEmailBody = async (
         // Use manual language selection for other email types
         languageToUse = selectedEmailLanguage;
       }
-      
+
       // Get email template based on determined language
       const selectedTemplate = languageToUse === 'en' ? emailTemplates.en : emailTemplates.he;
-      
+
       // Get template name for subject (use template's name from database, or fallback to hardcoded)
       let subject: string;
       if (selectedTemplate?.name) {
@@ -1774,7 +2019,7 @@ const formatEmailBody = async (
           subject = `Meeting with Decker, Pex, Levi Lawoffice - ${formattedDate}`;
         }
       }
-      
+
       // Build HTML body for email - use template if available, otherwise fallback to default template
       let htmlBody: string;
       if (selectedTemplate?.content) {
@@ -1810,7 +2055,7 @@ const formatEmailBody = async (
           meetingLink: joinLink,
         });
       }
-      
+
       // Only create calendar invites for invitations (all invitation types)
       if (currentEmailType === 'invitation' || currentEmailType === 'invitation_jlm' || currentEmailType === 'invitation_tlv' || currentEmailType === 'invitation_tlv_parking') {
         if (useOutlookCalendarInvite) {
@@ -1831,7 +2076,7 @@ const formatEmailBody = async (
               teamsJoinUrl: locationName === 'Teams' ? joinLink : undefined,
               timeZone: 'Asia/Jerusalem'
             });
-            
+
             // The calendar event creation automatically sends a meeting invitation email via Outlook
             // This invitation appears as a proper calendar box in Outlook, not as an attachment
           } catch (calendarError) {
@@ -1858,9 +2103,9 @@ const formatEmailBody = async (
               teamsJoinUrl: locationName === 'Teams' ? joinLink : undefined,
               timeZone: 'Asia/Jerusalem'
             });
-            
+
             const icsBase64 = btoa(unescape(encodeURIComponent(icsContent)));
-            
+
             attachments = [{
               name: 'meeting-invite.ics',
               contentBytes: icsBase64,
@@ -1869,11 +2114,11 @@ const formatEmailBody = async (
           } catch (icsError) {
             console.error('Failed to generate ICS file:', icsError);
           }
-          
+
           // Send email with ICS attachment
-          await sendEmail(tokenResponse.accessToken, { 
-            to: recipientEmail, 
-            subject, 
+          await sendEmail(tokenResponse.accessToken, {
+            to: recipientEmail,
+            subject,
             body: htmlBody,
             attachments,
             skipSignature: true // Don't include user signature in template emails
@@ -1881,9 +2126,9 @@ const formatEmailBody = async (
         }
       } else {
         // For reminder and cancellation, just send email without calendar invite
-        await sendEmail(tokenResponse.accessToken, { 
-          to: recipientEmail, 
-          subject, 
+        await sendEmail(tokenResponse.accessToken, {
+          to: recipientEmail,
+          subject,
           body: htmlBody,
           skipSignature: true // Don't include user signature in template emails
         });
@@ -1898,32 +2143,209 @@ const formatEmailBody = async (
         rescheduled: `Meeting rescheduled notice sent for meeting on ${meeting.date}`
       };
       toast.success(emailTypeMessages[currentEmailType]);
+
       // --- Optimistic upsert to emails table ---
       // For Outlook calendar invites, the email is sent automatically by Exchange
       // For non-Outlook, we send the email with ICS attachment
-      await supabase.from('emails').upsert([
-        {
+      // Note: We wrap this in try-catch so database errors don't affect the email sending success
+      try {
+        const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+        const legacyId = isLegacyLead
+          ? (() => {
+            const numeric = parseInt(String(client.id).replace('legacy_', ''), 10);
+            return Number.isNaN(numeric) ? null : numeric;
+          })()
+          : null;
+
+        // Find contact_id from recipient email if available
+        let contactId: number | null = null;
+        const recipientEmailArrayForContact = Array.isArray(recipientEmail) ? recipientEmail : [recipientEmail];
+        if (recipientEmailArrayForContact.length > 0) {
+          const contactByEmail = contacts.find(c => c.email === recipientEmailArrayForContact[0]);
+          if (contactByEmail) {
+            contactId = contactByEmail.id;
+          }
+        }
+
+        // Ensure we have a valid sender email (required by database NOT NULL constraint)
+        const senderEmail = account.username || account.name || 'noreply@lawoffice.org.il';
+        if (!senderEmail || senderEmail.trim() === '') {
+          throw new Error('Sender email is required but could not be determined from account');
+        }
+
+        const emailRecord: any = {
           message_id: `optimistic_${now.getTime()}`,
-          client_id: client.id,
           thread_id: null,
           sender_name: senderName,
-          sender_email: account.username || account.name || 'Me',
-          recipient_list: recipientEmail,
+          sender_email: senderEmail,
+          recipient_list: Array.isArray(recipientEmail) ? recipientEmail.join(', ') : recipientEmail,
           subject,
-          body_preview: htmlBody,
+          body_html: htmlBody,
+          body_preview: htmlBody.substring(0, 500),
           sent_at: now.toISOString(),
           direction: 'outgoing',
           attachments: null,
+        };
+
+        // Set either client_id OR legacy_id, not both
+        if (isLegacyLead) {
+          emailRecord.legacy_id = legacyId;
+          emailRecord.client_id = null;
+        } else {
+          emailRecord.client_id = client.id;
+          emailRecord.legacy_id = null;
         }
-      ], { onConflict: 'message_id' });
+
+        // Add contact_id if available
+        if (contactId) {
+          emailRecord.contact_id = contactId;
+        }
+
+        // Use insert since we're using a unique optimistic message_id
+        // The unique constraint is on (message_id, client_id, legacy_id, contact_id)
+        // Since message_id is unique per timestamp, this should always be a new record
+        const { data: insertedData, error: insertError } = await supabase
+          .from('emails')
+          .insert([emailRecord])
+          .select();
+
+        // Debug: Log the insert attempt
+        console.log('📧 MeetingTab email insert attempt:', {
+          emailRecord: {
+            message_id: emailRecord.message_id,
+            client_id: emailRecord.client_id,
+            legacy_id: emailRecord.legacy_id,
+            contact_id: emailRecord.contact_id,
+            sender_email: emailRecord.sender_email,
+            subject: emailRecord.subject,
+            direction: emailRecord.direction,
+            recipient_list: emailRecord.recipient_list,
+            sent_at: emailRecord.sent_at,
+          },
+        });
+
+        if (insertError) {
+          console.error('❌ Failed to insert email record:', {
+            error: insertError,
+            code: insertError.code,
+            message: insertError.message,
+            details: insertError.details,
+            hint: insertError.hint,
+          });
+
+          // If it's a unique constraint violation, try upsert as fallback
+          if (insertError.code === '23505' || insertError.message?.includes('unique') || insertError.message?.includes('duplicate')) {
+            console.log('🔄 Unique constraint violation detected, attempting upsert...');
+            const { data: upsertedData, error: upsertError } = await supabase
+              .from('emails')
+              .upsert([emailRecord], {
+                onConflict: 'message_id',
+                ignoreDuplicates: false
+              })
+              .select();
+
+            if (upsertError) {
+              console.error('❌ Failed to upsert email record:', upsertError);
+              // Don't throw - email was sent successfully, just log the error
+              toast.error('Email sent but failed to save record. It will appear after sync.');
+            } else {
+              console.log('✅ Email record upserted successfully:', upsertedData);
+            }
+          } else if (insertError.code === '42501' && insertError.message?.includes('pending_stage_evaluations')) {
+            // Permission denied for trigger - this is a database configuration issue
+            // The trigger function trigger_stage_evaluation_on_email() needs to be created with SECURITY DEFINER
+            // to run with elevated privileges. This is a backend/database admin issue that needs to be fixed.
+            // 
+            // Workaround: Try inserting without client_id/legacy_id first (trigger won't fire), then update
+            // Note: The update will also trigger the same trigger, so this might still fail, but it's worth trying
+            console.log('🔄 Permission denied for trigger, attempting workaround...');
+            console.warn('⚠️ Database trigger permission issue detected. The trigger function should be created with SECURITY DEFINER.');
+            const emailRecordWithoutContext = { ...emailRecord };
+            delete emailRecordWithoutContext.client_id;
+            delete emailRecordWithoutContext.legacy_id;
+            delete emailRecordWithoutContext.contact_id;
+
+            const { data: insertedWithoutContext, error: insertWithoutContextError } = await supabase
+              .from('emails')
+              .insert([emailRecordWithoutContext])
+              .select();
+
+            if (!insertWithoutContextError && insertedWithoutContext && insertedWithoutContext.length > 0) {
+              // Now try to update with the context
+              const { error: updateError } = await supabase
+                .from('emails')
+                .update({
+                  client_id: emailRecord.client_id,
+                  legacy_id: emailRecord.legacy_id,
+                  contact_id: emailRecord.contact_id,
+                })
+                .eq('message_id', emailRecord.message_id);
+
+              if (updateError) {
+                console.error('❌ Failed to update email record with context:', updateError);
+                toast.error('Email sent but failed to save record. It will appear after sync.');
+              } else {
+                console.log('✅ Email record saved with workaround (insert then update)');
+              }
+            } else {
+              console.error('❌ Workaround also failed:', insertWithoutContextError);
+              toast.error('Email sent but failed to save record. It will appear after sync.');
+            }
+          } else {
+            // For other errors, log but don't throw - email was sent successfully
+            console.error('❌ Database insert failed but email was sent:', insertError);
+            toast.error('Email sent but failed to save record. It will appear after sync.');
+          }
+        } else {
+          console.log('✅ Email record inserted successfully:', insertedData);
+          if (!insertedData || insertedData.length === 0) {
+            console.warn('⚠️ Insert succeeded but no data returned');
+          }
+        }
+      } catch (dbError) {
+        // Database errors should not prevent the success message or refresh
+        // The email was already sent successfully
+        console.error('❌ Error saving email record to database (email was sent successfully):', dbError);
+        toast.error('Email sent but failed to save record. It will appear after sync.');
+      }
+
       // Stage evaluation is handled automatically by database triggers
-      
+      // Note: The email is sent via Graph API directly, so the backend's recordOutgoingEmail is not called
+      // However, the optimistic upsert ensures it appears immediately in InteractionsTab
+      // When the email is synced from Outlook, it will be updated with the real message_id
+      // The fixes to persistMessages ensure it maintains the proper client_id/legacy_id context
+
       if (onClientUpdate) await onClientUpdate();
       // Refresh meetings to show updated data
       await fetchMeetings();
     } catch (error) {
-      toast.error('Failed to send email.');
-      console.error(error);
+      // Only show "Failed to send email" if the actual email sending failed
+      // Database errors are handled separately above
+      console.error('❌ Error in handleSendEmail:', error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+
+      console.error('❌ Error details:', {
+        message: errorMessage,
+        stack: errorStack,
+        error: error,
+      });
+
+      // Check if this is a database-related error (shouldn't happen here, but just in case)
+      if (errorMessage.includes('insert email record') || errorMessage.includes('upsert email record') || errorMessage.includes('save email record')) {
+        toast.error('Email sent but failed to save record. It will appear after sync.');
+      } else if (errorMessage.includes('Graph API error')) {
+        // Extract the actual Graph API error message if available
+        const graphErrorMatch = errorMessage.match(/Graph API error sending email: (.+)/);
+        const displayMessage = graphErrorMatch ? graphErrorMatch[1] : 'Failed to send email via Microsoft Graph API.';
+        toast.error(displayMessage);
+      } else if (errorMessage.includes('No recipient') || errorMessage.includes('Recipient email')) {
+        toast.error('Please specify a recipient email address.');
+      } else if (errorMessage.includes('Microsoft account')) {
+        toast.error('Please sign in to your Microsoft account.');
+      } else {
+        toast.error(`Failed to send email: ${errorMessage}`);
+      }
     } finally {
       setSendingEmailMeetingId(null);
     }
@@ -1935,7 +2357,7 @@ const formatEmailBody = async (
       if (!instance) throw new Error('MSAL instance not available');
       const accounts = instance.getAllAccounts();
       if (!accounts.length) throw new Error('No Microsoft account found');
-      
+
       // Try silent token acquisition first, fall back to popup if needed
       let tokenResponse;
       try {
@@ -1949,21 +2371,21 @@ const formatEmailBody = async (
           throw error; // Re-throw other errors
         }
       }
-      
+
       // Check if meeting already has a Teams URL
       const existingLink = getValidTeamsLink(meeting.link);
       if (existingLink && existingLink.trim() !== '') {
         // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1930',message:'handleCreateTeamsMeeting - link already exists',data:{meetingId:meeting.id,meetingLink:meeting.link,existingLink},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1930', message: 'handleCreateTeamsMeeting - link already exists', data: { meetingId: meeting.id, meetingLink: meeting.link, existingLink }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
         // #endregion
         toast.success('Teams meeting already exists for this meeting');
         return;
       }
-      
+
       // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1937',message:'handleCreateTeamsMeeting - creating new link',data:{meetingId:meeting.id,meetingLink:meeting.link,existingLink},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1937', message: 'handleCreateTeamsMeeting - creating new link', data: { meetingId: meeting.id, meetingLink: meeting.link, existingLink }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
       // #endregion
-      
+
       const startDateTime = new Date(`${meeting.date}T${meeting.time || '09:00'}`).toISOString();
       const endDateTime = new Date(new Date(startDateTime).getTime() + 60 * 60 * 1000).toISOString();
       const teamsData = await createTeamsMeeting(tokenResponse.accessToken, {
@@ -1973,10 +2395,10 @@ const formatEmailBody = async (
       });
       const joinUrl = teamsData.joinUrl;
       if (!joinUrl) throw new Error('No joinUrl returned from Teams API');
-      
+
       // Check if this is a legacy meeting
       const isLegacyMeeting = (meeting as any).isLegacy;
-      
+
       if (isLegacyMeeting) {
         // For legacy meetings, update the leads_lead table
         const legacyId = client.id.toString().replace('legacy_', '');
@@ -1984,7 +2406,7 @@ const formatEmailBody = async (
           .from('leads_lead')
           .update({ meeting_url: joinUrl })
           .eq('id', legacyId);
-        
+
         if (error) throw error;
       } else {
         // For new meetings, update the meetings table
@@ -1992,7 +2414,7 @@ const formatEmailBody = async (
           .from('meetings')
           .update({ teams_meeting_url: joinUrl })
           .eq('id', meeting.id);
-        
+
         if (newError) throw newError;
       }
       toast.success('Teams meeting created and saved!');
@@ -2008,15 +2430,15 @@ const formatEmailBody = async (
 
   const getValidTeamsLink = (link: string | undefined) => {
     // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1977',message:'getValidTeamsLink called',data:{link,linkType:typeof link,linkLength:link?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1977', message: 'getValidTeamsLink called', data: { link, linkType: typeof link, linkLength: link?.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
     // #endregion
-    
+
     if (!link || link.trim() === '') return '';
     try {
       // If it's a plain URL, return as is
       if (link.startsWith('http')) {
         // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1981',message:'getValidTeamsLink returning http link',data:{link},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1981', message: 'getValidTeamsLink returning http link', data: { link }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
         // #endregion
         return link;
       }
@@ -2024,14 +2446,14 @@ const formatEmailBody = async (
       const obj = JSON.parse(link);
       if (obj && typeof obj === 'object' && obj.joinUrl && typeof obj.joinUrl === 'string') {
         // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1985',message:'getValidTeamsLink returning joinUrl',data:{joinUrl:obj.joinUrl},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1985', message: 'getValidTeamsLink returning joinUrl', data: { joinUrl: obj.joinUrl }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
         // #endregion
         return obj.joinUrl;
       }
       // Some Graph API responses use joinWebUrl
       if (obj && typeof obj === 'object' && obj.joinWebUrl && typeof obj.joinWebUrl === 'string') {
         // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:1989',message:'getValidTeamsLink returning joinWebUrl',data:{joinWebUrl:obj.joinWebUrl},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1989', message: 'getValidTeamsLink returning joinWebUrl', data: { joinWebUrl: obj.joinWebUrl }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
         // #endregion
         return obj.joinWebUrl;
       }
@@ -2040,6 +2462,45 @@ const formatEmailBody = async (
       if (typeof link === 'string' && link.startsWith('http')) return link;
     }
     return '';
+  };
+
+  // Helper function to detect link type (Teams, Zoom, or other)
+  const getLinkType = (link: string | undefined): 'teams' | 'zoom' | 'other' => {
+    if (!link) return 'other';
+    const linkLower = link.toLowerCase();
+
+    // Check for Teams links
+    if (linkLower.includes('teams.microsoft.com') ||
+      linkLower.includes('teams.live.com') ||
+      linkLower.includes('microsoft.com/teams') ||
+      linkLower.includes('teams.office.com')) {
+      return 'teams';
+    }
+
+    // Check for Zoom links
+    if (linkLower.includes('zoom.us') ||
+      linkLower.includes('zoom.com') ||
+      linkLower.includes('zoom.') && linkLower.includes('/j/')) {
+      return 'zoom';
+    }
+
+    return 'other';
+  };
+
+  // Helper function to get the appropriate icon for a link
+  const getLinkIcon = (link: string | undefined) => {
+    const linkType = getLinkType(link);
+    const iconClass = "w-3 h-3 sm:w-4 sm:h-4";
+
+    switch (linkType) {
+      case 'teams':
+        // Use VideoCameraIcon for Teams (already imported)
+        return <VideoCameraIcon className={iconClass} />;
+      case 'zoom':
+        return <SiZoom className={iconClass} />;
+      default:
+        return <LinkIcon className={iconClass} />;
+    }
   };
 
   // Helper to determine if a meeting is in the past (based on date only, not time)
@@ -2070,32 +2531,32 @@ const formatEmailBody = async (
   useEffect(() => {
     const fetchRescheduleMeetings = async () => {
       if (!client.id || !showRescheduleDrawer) return;
-      
+
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      
+
       let query = supabase
         .from('meetings')
         .select('*')
         .neq('status', 'canceled')
         .gte('meeting_date', new Date().toISOString().split('T')[0])
         .order('meeting_date', { ascending: true });
-      
+
       if (isLegacyLead) {
         const legacyId = client.id.toString().replace('legacy_', '');
         query = query.eq('legacy_lead_id', legacyId);
       } else {
         query = query.eq('client_id', client.id);
       }
-      
+
       const { data, error } = await query;
-      
+
       if (!error && data) {
         setRescheduleMeetings(data);
       } else {
         setRescheduleMeetings([]);
       }
     };
-    
+
     fetchRescheduleMeetings();
   }, [client.id, showRescheduleDrawer]);
 
@@ -2202,12 +2663,12 @@ const formatEmailBody = async (
     amount?: number;
     currency?: string;
   }) => {
-    const calendarEmail = meetingDetails.calendar === 'active_client' 
-      ? 'shared-newclients@lawoffice.org.il' 
+    const calendarEmail = meetingDetails.calendar === 'active_client'
+      ? 'shared-newclients@lawoffice.org.il'
       : 'shared-potentialclients@lawoffice.org.il';
-    
+
     const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(calendarEmail)}/calendar/events`;
-    
+
     const description = [
       'Meeting Details:',
       `Manager: ${meetingDetails.manager || 'Not specified'}`,
@@ -2272,7 +2733,7 @@ const formatEmailBody = async (
 
     const data = await response.json();
     const joinUrl = data.onlineMeeting?.joinUrl || data.webLink;
-    
+
     return {
       joinUrl: joinUrl,
       id: data.id,
@@ -2291,7 +2752,7 @@ const formatEmailBody = async (
           'Content-Type': 'application/json'
         }
       });
-      
+
       return response.ok;
     } catch (error) {
       console.error(`Calendar access test failed for ${calendarEmail}:`, error);
@@ -2335,7 +2796,7 @@ const formatEmailBody = async (
             `)
             .eq('auth_id', authUser.id)
             .single();
-          
+
           if (userData) {
             // Prefer display_name from tenants_employee if available, otherwise use full_name
             const employee = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
@@ -2343,7 +2804,7 @@ const formatEmailBody = async (
             currentUserEmployeeId = userData.employee_id || null;
           }
         }
-        
+
         // Fallback to email-based lookup if auth_id lookup fails
         if (!currentUserFullName && account.username) {
           const { data: userDataByEmail } = await supabase
@@ -2358,7 +2819,7 @@ const formatEmailBody = async (
             `)
             .eq('email', account.username)
             .single();
-          
+
           if (userDataByEmail) {
             const employee = Array.isArray(userDataByEmail.tenants_employee) ? userDataByEmail.tenants_employee[0] : userDataByEmail.tenants_employee;
             currentUserFullName = employee?.display_name || userDataByEmail.full_name || '';
@@ -2379,7 +2840,7 @@ const formatEmailBody = async (
       if (selectedLocation && selectedLocation.id && restrictedLocationIds.includes(selectedLocation.id)) {
         // Extract hour from the selected time (e.g., "10:30" -> "10")
         const selectedTimeHour = scheduleMeetingFormData.time.split(':')[0];
-        
+
         // Check if there's already a meeting at the same date, same hour, and location
         // We need to fetch all meetings for that date and location, then filter by hour
         const { data: allMeetingsForDate, error: conflictError } = await supabase
@@ -2444,10 +2905,10 @@ const formatEmailBody = async (
         const start = new Date(year, month - 1, day, hours, minutes);
         const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
 
-        const calendarEmail = scheduleMeetingFormData.calendar === 'active_client' 
-          ? 'shared-newclients@lawoffice.org.il' 
+        const calendarEmail = scheduleMeetingFormData.calendar === 'active_client'
+          ? 'shared-newclients@lawoffice.org.il'
           : 'shared-potentialclients@lawoffice.org.il';
-        
+
         try {
           const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
           if (!hasAccess) {
@@ -2462,7 +2923,7 @@ const formatEmailBody = async (
 
         const categoryName = client.category || 'No Category';
         const meetingSubject = `[#${client.lead_number || client.id}] ${client.name} - ${categoryName} - ${scheduleMeetingFormData.brief || 'Meeting'}`;
-        
+
         try {
           const calendarEventData = await createCalendarEvent(accessToken, {
             subject: meetingSubject,
@@ -2532,24 +2993,24 @@ const formatEmailBody = async (
       // Helper function to get employee ID from display name
       const getEmployeeIdFromDisplayName = (displayName: string | null | undefined): number | null => {
         if (!displayName || displayName === '---' || displayName.trim() === '') return null;
-        
+
         // Try exact match first
-        let employee = allEmployees.find((emp: any) => 
+        let employee = allEmployees.find((emp: any) =>
           emp.display_name && emp.display_name.trim() === displayName.trim()
         );
-        
+
         // If not found, try case-insensitive match
         if (!employee) {
-          employee = allEmployees.find((emp: any) => 
+          employee = allEmployees.find((emp: any) =>
             emp.display_name && emp.display_name.trim().toLowerCase() === displayName.trim().toLowerCase()
           );
         }
-        
+
         if (!employee) {
           console.warn(`Employee not found for display name: "${displayName}"`);
           return null;
         }
-        
+
         // Ensure ID is a number
         return typeof employee.id === 'number' ? employee.id : parseInt(employee.id, 10);
       };
@@ -2557,7 +3018,7 @@ const formatEmailBody = async (
       // Resolve manager and helper employee IDs
       const managerEmployeeId = getEmployeeIdFromDisplayName(scheduleMeetingFormData.manager);
       const helperEmployeeId = getEmployeeIdFromDisplayName(scheduleMeetingFormData.helper);
-      
+
       // Resolve scheduler employee ID - use employee_id directly if available (most reliable)
       let schedulerEmployeeId: number | null = null;
       if (currentUserEmployeeId !== null) {
@@ -2578,7 +3039,7 @@ const formatEmailBody = async (
           console.warn(`⚠️ Could not resolve scheduler employee ID for "${currentUserFullName}" - employee_id was not available and display_name did not match`);
         }
       }
-      
+
       // Resolve expert employee ID
       const expertEmployeeId = getEmployeeIdFromDisplayName(client.expert);
 
@@ -2598,7 +3059,7 @@ const formatEmailBody = async (
         if (helperEmployeeId !== null) {
           updatePayload.meeting_lawyer_id = helperEmployeeId;
         }
-        
+
         // Update expert for legacy leads (must be numeric employee ID, not display name)
         if (expertEmployeeId !== null) {
           updatePayload.expert_id = expertEmployeeId;
@@ -2657,7 +3118,7 @@ const formatEmailBody = async (
         clientName: client?.name,
         meetingData: insertedData?.[0]
       });
-      
+
       if (insertedData && insertedData.length > 0 && client.email) {
         const newMeeting: Meeting = {
           id: insertedData[0].id,
@@ -2682,7 +3143,7 @@ const formatEmailBody = async (
         // Determine the appropriate invitation type based on meeting location
         const location = (scheduleMeetingFormData.location || '').toLowerCase();
         let invitationType: 'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' = 'invitation';
-        
+
         if (location.includes('jrslm') || location.includes('jerusalem')) {
           invitationType = 'invitation_jlm';
         } else if (location.includes('tlv') && location.includes('parking')) {
@@ -2697,7 +3158,7 @@ const formatEmailBody = async (
           clientEmail: client.email,
           meetingDate: newMeeting.date
         });
-        
+
         // Send the invitation email with calendar invite (ICS/Outlook)
         // Pass invitationType directly as the 4th parameter
         try {
@@ -2718,7 +3179,7 @@ const formatEmailBody = async (
       // Update UI
       setShowScheduleDrawer(false);
       setIsSchedulingMeeting(false);
-      
+
       // Reset form
       setScheduleMeetingFormData({
         date: '',
@@ -2732,7 +3193,7 @@ const formatEmailBody = async (
         car_number: '',
         calendar: 'active_client',
       });
-      
+
       if (onClientUpdate) await onClientUpdate();
       await fetchMeetings();
     } catch (error) {
@@ -2748,19 +3209,19 @@ const formatEmailBody = async (
     setIsReschedulingMeeting(true);
     try {
       const account = instance.getAllAccounts()[0];
-      
+
       // Cancel the meeting
       const { data: { user } } = await supabase.auth.getUser();
       const editor = user?.email || account?.name || 'system';
       const { error: cancelError } = await supabase
         .from('meetings')
-        .update({ 
-          status: 'canceled', 
-          last_edited_timestamp: new Date().toISOString(), 
-          last_edited_by: editor 
+        .update({
+          status: 'canceled',
+          last_edited_timestamp: new Date().toISOString(),
+          last_edited_by: editor
         })
         .eq('id', meetingToDelete);
-      
+
       if (cancelError) throw cancelError;
 
       // Get meeting details for email
@@ -2769,7 +3230,7 @@ const formatEmailBody = async (
         .select('*')
         .eq('id', meetingToDelete)
         .single();
-      
+
       if (fetchError) throw fetchError;
 
       // Send cancellation email to client (only if notify toggle is on)
@@ -2786,12 +3247,12 @@ const formatEmailBody = async (
             throw error;
           }
         }
-        
+
         // Get language_id from client - for legacy leads, it's directly in the client object
         // For new leads, we might need to fetch it from the database
         const isLegacyLeadForCancel = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
         let clientLanguageId: number | null = null;
-        
+
         if (isLegacyLeadForCancel) {
           // For legacy leads, language_id should be directly on the client
           // It might be in client.language_id or we need to fetch it
@@ -2820,13 +3281,13 @@ const formatEmailBody = async (
             clientLanguageId = leadData?.language_id || null;
           }
         }
-        
+
         // Fetch email template by name ('cancellation') and language_id
         let templateContent: string | null = null;
         let templateName: string | null = null;
         try {
           console.log('📧 Fetching cancellation email template:', { clientLanguageId, isLegacyLeadForCancel });
-          
+
           if (!clientLanguageId) {
             console.warn('⚠️ No language_id found for client, cannot fetch template');
           } else {
@@ -2836,13 +3297,13 @@ const formatEmailBody = async (
               .eq('name', 'cancellation')
               .eq('language_id', clientLanguageId)
               .single();
-          
+
             if (templateError) {
               console.error('❌ Error fetching cancellation email template:', templateError);
             } else if (template && template.content) {
               // Store template name for subject
               templateName = template.name || null;
-              
+
               // Try parsing, but if it returns empty, use raw content (might be HTML)
               const parsed = parseTemplateContent(template.content);
               templateContent = parsed && parsed.trim() ? parsed : template.content;
@@ -2859,7 +3320,7 @@ const formatEmailBody = async (
         } catch (error) {
           console.error('❌ Exception fetching cancellation email template:', error);
         }
-        
+
         // Format meeting date and time
         const formatDate = (dateStr: string): string => {
           const [year, month, day] = dateStr.split('-');
@@ -2868,12 +3329,12 @@ const formatEmailBody = async (
         const formattedDate = formatDate(canceledMeeting.meeting_date);
         const formattedTime = canceledMeeting.meeting_time ? canceledMeeting.meeting_time.substring(0, 5) : '';
         const locationName = getMeetingLocationName(canceledMeeting.meeting_location || canceledMeeting.meeting_location_old);
-        
+
         // Build email body using template or fallback
         let emailBody: string;
         if (templateContent && templateContent.trim()) {
           console.log('✅ Using cancellation email template');
-          
+
           // Use template with parameter replacement
           emailBody = await formatEmailBody(templateContent, client.name, {
             client,
@@ -2899,7 +3360,7 @@ const formatEmailBody = async (
             </div>
           `;
         }
-        
+
         // Use template name as subject, or fallback to hardcoded
         const subject = templateName || `[${client.lead_number || client.id}] - ${client.name} - Meeting Canceled`;
         await sendEmail(accessToken, {
@@ -2943,12 +3404,12 @@ const formatEmailBody = async (
     setIsReschedulingMeeting(true);
     try {
       const account = instance.getAllAccounts()[0];
-      
+
       // IMPORTANT: Always automatically cancel the oldest upcoming meeting when rescheduling
       // Find and cancel the oldest upcoming meeting automatically (user doesn't need to select)
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
       const legacyId = isLegacyLead ? client.id.toString().replace('legacy_', '') : null;
-      
+
       // Query for the oldest upcoming meeting to cancel
       let query = supabase
         .from('meetings')
@@ -2958,35 +3419,35 @@ const formatEmailBody = async (
         .order('meeting_date', { ascending: true })
         .order('meeting_time', { ascending: true })
         .limit(1);
-      
+
       if (isLegacyLead) {
         query = query.eq('legacy_lead_id', legacyId);
       } else {
         query = query.eq('client_id', client.id);
       }
-      
+
       const { data: upcomingMeetingsToCancel, error: queryError } = await query;
-      
+
       let canceledMeeting = null;
       let meetingIdToCancel: number | null = null;
-      
+
       if (queryError) {
         console.error('❌ Error querying for meetings to cancel:', queryError);
       } else if (upcomingMeetingsToCancel && upcomingMeetingsToCancel.length > 0) {
         meetingIdToCancel = upcomingMeetingsToCancel[0].id;
         console.log('🔄 Automatically canceling oldest upcoming meeting before rescheduling:', meetingIdToCancel);
-        
+
         const { data: { user } } = await supabase.auth.getUser();
         const editor = user?.email || account?.name || 'system';
         const { error: cancelError } = await supabase
           .from('meetings')
-          .update({ 
-            status: 'canceled', 
-            last_edited_timestamp: new Date().toISOString(), 
-            last_edited_by: editor 
+          .update({
+            status: 'canceled',
+            last_edited_timestamp: new Date().toISOString(),
+            last_edited_by: editor
           })
           .eq('id', meetingIdToCancel);
-        
+
         if (cancelError) {
           console.error('❌ Failed to cancel old meeting:', cancelError);
           throw new Error(`Failed to cancel old meeting: ${cancelError.message}`);
@@ -2997,7 +3458,7 @@ const formatEmailBody = async (
           .select('*')
           .eq('id', meetingIdToCancel)
           .single();
-        
+
         canceledMeeting = canceledMeetingData;
         console.log('✅ Old meeting canceled successfully:', meetingIdToCancel);
       } else {
@@ -3041,7 +3502,7 @@ const formatEmailBody = async (
       if (selectedLocation && selectedLocation.id && restrictedLocationIds.includes(selectedLocation.id)) {
         // Extract hour from the selected time (e.g., "10:30" -> "10")
         const selectedTimeHour = rescheduleFormData.time.split(':')[0];
-        
+
         // Check if there's already a meeting at the same date, same hour, and location
         // We need to fetch all meetings for that date and location, then filter by hour
         // Exclude the meeting we're rescheduling (if it exists and hasn't been canceled yet)
@@ -3107,9 +3568,9 @@ const formatEmailBody = async (
         const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
 
         const calendarEmail = 'shared-newclients@lawoffice.org.il'; // Always use active client calendar
-        
+
         const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
-        
+
         if (!hasAccess) {
           toast.error(`Cannot access calendar ${calendarEmail}. Please check permissions or contact your administrator.`);
           setIsReschedulingMeeting(false);
@@ -3118,7 +3579,7 @@ const formatEmailBody = async (
 
         const categoryName = client.category || 'No Category';
         const meetingSubject = `[#${client.lead_number || client.id}] ${client.name} - ${categoryName} - Meeting`;
-        
+
         try {
           const calendarEventData = await createCalendarEvent(accessToken, {
             subject: meetingSubject,
@@ -3196,20 +3657,20 @@ const formatEmailBody = async (
             throw error;
           }
         }
-        
+
         const userName = account?.name || 'Staff';
-        
+
         const meetingLink = getValidTeamsLink(teamsMeetingUrl);
         const joinButton = meetingLink
           ? `<div style='margin:24px 0;'>
               <a href='${meetingLink}' target='_blank' style='background:#3b28c7;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;display:inline-block;'>Join Meeting</a>
             </div>`
           : '';
-        
+
         // Get language_id from client - for legacy leads, it's directly in the client object
         // For new leads, we might need to fetch it from the database
         let clientLanguageId: number | null = null;
-        
+
         if (isLegacyLead) {
           // For legacy leads, language_id should be directly on the client
           // It might be in client.language_id or we need to fetch it
@@ -3238,13 +3699,13 @@ const formatEmailBody = async (
             clientLanguageId = leadData?.language_id || null;
           }
         }
-        
+
         // Fetch email template by name ('rescheduled') and language_id
         let templateContent: string | null = null;
         let templateName: string | null = null;
         try {
           console.log('📧 Fetching rescheduled email template:', { clientLanguageId, isLegacyLead });
-          
+
           if (!clientLanguageId) {
             console.warn('⚠️ No language_id found for client, cannot fetch template');
           } else {
@@ -3254,13 +3715,13 @@ const formatEmailBody = async (
               .eq('name', 'rescheduled')
               .eq('language_id', clientLanguageId)
               .single();
-            
+
             if (templateError) {
               console.error('❌ Error fetching rescheduled email template:', templateError);
             } else if (template && template.content) {
               // Store template name for subject
               templateName = template.name || null;
-              
+
               // Try parsing, but if it returns empty, use raw content (might be HTML)
               const parsed = parseTemplateContent(template.content);
               templateContent = parsed && parsed.trim() ? parsed : template.content;
@@ -3277,7 +3738,7 @@ const formatEmailBody = async (
         } catch (error) {
           console.error('❌ Exception fetching rescheduled email template:', error);
         }
-        
+
         // Format dates and times
         const formatDate = (dateStr: string): string => {
           const [year, month, day] = dateStr.split('-');
@@ -3286,7 +3747,7 @@ const formatEmailBody = async (
         const formattedNewDate = formatDate(rescheduleFormData.date);
         const formattedNewTime = rescheduleFormData.time.substring(0, 5);
         const newLocationName = getMeetingLocationName(rescheduleFormData.location);
-        
+
         let formattedOldDate = '';
         let formattedOldTime = '';
         let oldLocationName = '';
@@ -3295,7 +3756,7 @@ const formatEmailBody = async (
           formattedOldTime = canceledMeeting.meeting_time ? canceledMeeting.meeting_time.substring(0, 5) : '';
           oldLocationName = getMeetingLocationName(canceledMeeting.meeting_location || canceledMeeting.meeting_location_old);
         }
-        
+
         // Build email body using template or fallback
         let emailBody: string;
         if (templateContent && templateContent.trim()) {
@@ -3350,22 +3811,22 @@ const formatEmailBody = async (
             `;
           }
         }
-        
+
         // Use template name as subject, or fallback to hardcoded
-        const emailSubject = templateName || (canceledMeeting 
+        const emailSubject = templateName || (canceledMeeting
           ? `[${client.lead_number || client.id}] - ${client.name} - Meeting Rescheduled`
           : `[${client.lead_number || client.id}] - ${client.name} - New Meeting Scheduled`);
-        
+
         const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
         const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
         const startDateTime = new Date(year, month - 1, day, hours, minutes);
         const endDateTime = new Date(startDateTime.getTime() + 30 * 60000);
-        
+
         const categoryName = client.category || 'No Category';
-        const meetingSubject = canceledMeeting 
+        const meetingSubject = canceledMeeting
           ? `[#${client.lead_number || client.id}] ${client.name} - ${categoryName} - Meeting Rescheduled`
           : `[#${client.lead_number || client.id}] ${client.name} - ${categoryName} - Meeting`;
-        
+
         try {
           await createCalendarEventWithAttendee(accessToken, {
             subject: meetingSubject,
@@ -3380,7 +3841,7 @@ const formatEmailBody = async (
             teamsJoinUrl: meetingLink || undefined,
             timeZone: 'Asia/Jerusalem'
           });
-          
+
           await sendEmail(accessToken, {
             to: client.email,
             subject: emailSubject,
@@ -3432,12 +3893,12 @@ const formatEmailBody = async (
       setEditingBriefId(meeting.id);
       setEditedBrief(meeting.brief || '');
     };
-  
+
     const handleCancelEdit = () => {
       setEditingBriefId(null);
       setEditedBrief('');
     };
-    
+
     const handleEditField = (meetingId: number, field: 'expert_notes' | 'handler_notes', currentContent?: string) => {
       setEditingField({ meetingId, field });
       setEditedContent(currentContent || '');
@@ -3448,296 +3909,337 @@ const formatEmailBody = async (
       setEditedContent('');
     };
 
-  // Edit meeting functions
-  const handleEditMeeting = (meeting: Meeting) => {
-    setEditingMeetingId(meeting.id);
-    
-    // Find the location ID for the current location name
-    let locationId = meeting.location;
-    if (typeof meeting.location === 'string' && !meeting.location.match(/^\d+$/)) {
-      // If it's a string name, find the corresponding ID
-      const location = allMeetingLocations.find(loc => loc.name === meeting.location);
-      locationId = location ? location.id : meeting.location;
-    }
-    
-    const normalizedLocation =
-      typeof locationId === 'number'
-        ? String(locationId)
-        : typeof locationId === 'string'
-          ? locationId
-          : '';
+    // Edit meeting functions
+    const handleEditMeeting = (meeting: Meeting) => {
+      setEditingMeetingId(meeting.id);
 
-    setEditedMeeting({
-      date: meeting.date,
-      time: meeting.time ? meeting.time.substring(0, 5) : meeting.time, // Remove seconds if present
-      location: normalizedLocation,
-      manager: meeting.manager,
-      currency: meeting.currency,
-      amount: meeting.amount,
-      brief: meeting.brief,
-      scheduler: meeting.scheduler,
-      helper: meeting.helper,
-    });
-  };
+      // Find the location ID for the current location name
+      let locationId = meeting.location;
+      if (typeof meeting.location === 'string' && !meeting.location.match(/^\d+$/)) {
+        // If it's a string name, find the corresponding ID
+        const location = allMeetingLocations.find(loc => loc.name === meeting.location);
+        locationId = location ? location.id : meeting.location;
+      }
 
-  const handleCancelEditMeeting = () => {
-    setEditingMeetingId(null);
-    setEditedMeeting({});
-  };
+      const normalizedLocation =
+        typeof locationId === 'number'
+          ? String(locationId)
+          : typeof locationId === 'string'
+            ? locationId
+            : '';
 
-  const handleSaveMeeting = async () => {
-    if (!editingMeetingId) return;
-    
-    setIsUpdatingMeeting(true);
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      const editor = user?.email || 'system';
-      
-      // Check if location changed to Teams and needs Teams meeting creation
-      const originalMeeting = meetings.find(m => m.id === editingMeetingId);
-      const newLocationName = getMeetingLocationName(editedMeeting.location);
-      const originalLocationName = getMeetingLocationName(originalMeeting?.location);
-      
-      // For Teams meetings, we should create a Teams meeting if:
-      // 1. New location is Teams AND original location was not Teams, OR
-      // 2. New location is Teams AND there's no existing Teams meeting link
-      const needsTeamsMeeting = newLocationName === 'Teams' && 
-        (originalLocationName !== 'Teams' || !originalMeeting?.link || !getValidTeamsLink(originalMeeting?.link));
-      
-      console.log('🔍 Teams meeting creation check:', {
-        editingMeetingId,
-        originalMeeting: originalMeeting ? { id: originalMeeting.id, location: originalMeeting.location } : null,
-        editedMeetingLocation: editedMeeting.location,
-        newLocationName,
-        originalLocationName,
-        hasExistingLink: !!originalMeeting?.link,
-        existingLink: originalMeeting?.link,
-        isValidTeamsLink: originalMeeting?.link ? !!getValidTeamsLink(originalMeeting.link) : false,
-        needsTeamsMeeting
+      // Convert scheduler display name to employee ID for the dropdown
+      // For new meetings, scheduler is stored as display name, but dropdown needs employee ID
+      let schedulerId = meeting.scheduler;
+      if (meeting.scheduler && typeof meeting.scheduler === 'string') {
+        // Try to find employee by display name
+        const employee = allEmployees.find((emp: any) =>
+          emp.display_name === meeting.scheduler || emp.full_name === meeting.scheduler
+        );
+        if (employee) {
+          schedulerId = employee.id;
+        }
+      }
+
+      setEditedMeeting({
+        date: meeting.date,
+        time: meeting.time ? meeting.time.substring(0, 5) : meeting.time, // Remove seconds if present
+        location: normalizedLocation,
+        manager: meeting.manager,
+        currency: meeting.currency,
+        amount: meeting.amount,
+        brief: meeting.brief,
+        scheduler: schedulerId,
+        helper: meeting.helper,
+        car_number: meeting.car_number,
       });
-      
-      let teamsMeetingUrl = originalMeeting?.link; // Keep existing link if any
-      
-      // Create Teams meeting if location changed to Teams and no existing link
-      if (needsTeamsMeeting) {
-        console.log('🔧 Creating Teams meeting for location change...');
-        console.log('🔧 Meeting details:', { date: editedMeeting.date, time: editedMeeting.time, client: client.name });
-        
-        try {
-          if (!instance) throw new Error('MSAL instance not available');
-          const accounts = instance.getAllAccounts();
-          if (!accounts.length) throw new Error('No Microsoft account found');
-          
-          console.log('🔧 MSAL instance and accounts available');
-          
-          // Try silent token acquisition first, fall back to popup if needed
-          let tokenResponse;
-          try {
-            tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
-            console.log('🔧 Token acquired successfully');
-          } catch (error) {
-            // If silent acquisition fails (e.g., session expired), try interactive popup
-            if (error instanceof InteractionRequiredAuthError) {
-              toast('Your session has expired. Please sign in again.', { icon: '🔑' });
-              tokenResponse = await instance.acquireTokenPopup({ ...loginRequest, account: accounts[0] });
-              console.log('🔧 Token acquired via popup');
-            } else {
-              throw error; // Re-throw other errors
-            }
-          }
-          
-          const startDateTime = new Date(`${editedMeeting.date}T${editedMeeting.time || '09:00'}`).toISOString();
-          const endDateTime = new Date(new Date(startDateTime).getTime() + 60 * 60 * 1000).toISOString();
-          
-          console.log('🔧 Creating Teams meeting with:', {
-            subject: `Meeting with ${client.name}`,
-            startDateTime,
-            endDateTime,
-          });
-          
-          const teamsData = await createTeamsMeeting(tokenResponse.accessToken, {
-            subject: `Meeting with ${client.name}`,
-            startDateTime,
-            endDateTime,
-          });
-          
-          console.log('🔧 Teams meeting created successfully:', teamsData);
-          
-          if (!teamsData || !teamsData.joinUrl) {
-            throw new Error('No joinUrl returned from Teams API');
-          }
-          
-          teamsMeetingUrl = teamsData.joinUrl;
-          console.log('🔧 Teams meeting URL:', teamsMeetingUrl);
-          toast.success('Teams meeting created automatically!');
-        } catch (teamsError: any) {
-          console.error('❌ Failed to create Teams meeting:', teamsError);
-          console.error('❌ Error details:', {
-            message: teamsError.message,
-            stack: teamsError.stack,
-            needsTeamsMeeting,
-            newLocationName,
-            originalLocationName,
-            hasExistingLink: !!originalMeeting?.link
-          });
-          toast.error(`Meeting updated but failed to create Teams meeting: ${teamsError.message}`);
-        }
-      }
-      
-      // Check if this is a legacy meeting
-      const isLegacyMeeting = originalMeeting && (originalMeeting as any).isLegacy;
-      
-      // Update database based on meeting type
-      let dbError;
-      
-      if (isLegacyMeeting) {
-        // For legacy meetings, update the leads_lead table
-        const legacyId = client.id.toString().replace('legacy_', '');
-        const locationIdValue =
-          editedMeeting.location && /^\d+$/.test(String(editedMeeting.location))
-            ? Number(editedMeeting.location)
-            : null;
-        const updateData: any = {
-          meeting_date: editedMeeting.date,
-          meeting_time: editedMeeting.time,
-          meeting_location_id: locationIdValue,
-          meeting_manager_id: editedMeeting.manager,
-          meeting_total_currency_id: editedMeeting.currency === 'NIS' ? 1 : editedMeeting.currency === 'USD' ? 2 : 3,
-          meeting_total: editedMeeting.amount,
-          meeting_brief: editedMeeting.brief,
-          meeting_scheduler_id: editedMeeting.scheduler,
-          meeting_lawyer_id: editedMeeting.helper,
-        };
-        
-        // Add Teams meeting URL if we created one
-        if (teamsMeetingUrl && newLocationName === 'Teams') {
-          updateData.meeting_url = teamsMeetingUrl;
-        }
-        
-        const { error } = await supabase
-          .from('leads_lead')
-          .update(updateData)
-          .eq('id', legacyId);
-        
-        dbError = error;
-      } else {
-        // For new meetings, update the meetings table
-        // Convert location ID to location name for new leads
-        const locationText = getMeetingLocationName(editedMeeting.location);
-        
-        const updateData: any = {
-          meeting_date: editedMeeting.date,
-          meeting_time: editedMeeting.time,
-          meeting_location: locationText, // Use location name (text) for new leads
-          meeting_manager: editedMeeting.manager,
-          meeting_currency: editedMeeting.currency,
-          meeting_amount: editedMeeting.amount,
-          meeting_brief: editedMeeting.brief,
-          scheduler: editedMeeting.scheduler,
-          helper: editedMeeting.helper,
-          last_edited_timestamp: new Date().toISOString(),
-          last_edited_by: editor,
-        };
-        
-        // Add Teams meeting URL if we created one
-        if (teamsMeetingUrl && newLocationName === 'Teams') {
-          updateData.teams_meeting_url = teamsMeetingUrl;
-        }
+    };
 
-        const { error } = await supabase
-          .from('meetings')
-          .update(updateData)
-          .eq('id', editingMeetingId);
-        
-        dbError = error;
-      }
+    const handleCancelEditMeeting = () => {
+      setEditingMeetingId(null);
+      setEditedMeeting({});
+      setEditLocationSearchTerm('');
+      setEditManagerSearchTerm('');
+      setEditSchedulerSearchTerm('');
+      setEditHelperSearchTerm('');
+      setShowEditLocationDropdown(false);
+      setShowEditManagerDropdown(false);
+      setShowEditSchedulerDropdown(false);
+      setShowEditHelperDropdown(false);
+    };
 
-      if (dbError) throw dbError;
+    const handleSaveMeeting = async () => {
+      if (!editingMeetingId) return;
 
-      // If it's a Teams meeting and date/time changed, update Outlook
-      const finalTeamsUrl = teamsMeetingUrl || originalMeeting?.link;
-      if (originalMeeting && getMeetingLocationName(editedMeeting.location) === 'Teams' && finalTeamsUrl) {
-        const dateChanged = originalMeeting.date !== editedMeeting.date;
-        const timeChanged = originalMeeting.time !== editedMeeting.time;
-        
-        console.log('🔄 Checking Outlook sync:', {
-          dateChanged,
-          timeChanged,
-          finalTeamsUrl,
-          originalDate: originalMeeting.date,
-          newDate: editedMeeting.date,
-          originalTime: originalMeeting.time,
-          newTime: editedMeeting.time
+      setIsUpdatingMeeting(true);
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        const editor = user?.email || 'system';
+
+        // Check if location changed to Teams and needs Teams meeting creation
+        const originalMeeting = meetings.find(m => m.id === editingMeetingId);
+        const newLocationName = getMeetingLocationName(editedMeeting.location);
+        const originalLocationName = getMeetingLocationName(originalMeeting?.location);
+
+        // For Teams meetings, we should create a Teams meeting if:
+        // 1. New location is Teams AND original location was not Teams, OR
+        // 2. New location is Teams AND there's no existing Teams meeting link
+        const needsTeamsMeeting = newLocationName === 'Teams' &&
+          (originalLocationName !== 'Teams' || !originalMeeting?.link || !getValidTeamsLink(originalMeeting?.link));
+
+        console.log('🔍 Teams meeting creation check:', {
+          editingMeetingId,
+          originalMeeting: originalMeeting ? { id: originalMeeting.id, location: originalMeeting.location } : null,
+          editedMeetingLocation: editedMeeting.location,
+          newLocationName,
+          originalLocationName,
+          hasExistingLink: !!originalMeeting?.link,
+          existingLink: originalMeeting?.link,
+          isValidTeamsLink: originalMeeting?.link ? !!getValidTeamsLink(originalMeeting.link) : false,
+          needsTeamsMeeting
         });
-        
-        if (dateChanged || timeChanged) {
+
+        let teamsMeetingUrl = originalMeeting?.link; // Keep existing link if any
+
+        // Create Teams meeting if location changed to Teams and no existing link
+        if (needsTeamsMeeting) {
+          console.log('🔧 Creating Teams meeting for location change...');
+          console.log('🔧 Meeting details:', { date: editedMeeting.date, time: editedMeeting.time, client: client.name });
+
           try {
-            const account = instance.getActiveAccount();
-            if (account) {
-              // Try silent token acquisition first, fall back to popup if needed
-              let tokenResponse;
-              try {
-                tokenResponse = await instance.acquireTokenSilent({
-                  ...loginRequest,
-                  account: account,
-                });
-              } catch (error) {
-                // If silent acquisition fails (e.g., session expired), try interactive popup
-                if (error instanceof InteractionRequiredAuthError) {
-                  toast('Your session has expired. Please sign in again.', { icon: '🔑' });
-                  tokenResponse = await instance.acquireTokenPopup({
+            if (!instance) throw new Error('MSAL instance not available');
+            const accounts = instance.getAllAccounts();
+            if (!accounts.length) throw new Error('No Microsoft account found');
+
+            console.log('🔧 MSAL instance and accounts available');
+
+            // Try silent token acquisition first, fall back to popup if needed
+            let tokenResponse;
+            try {
+              tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
+              console.log('🔧 Token acquired successfully');
+            } catch (error) {
+              // If silent acquisition fails (e.g., session expired), try interactive popup
+              if (error instanceof InteractionRequiredAuthError) {
+                toast('Your session has expired. Please sign in again.', { icon: '🔑' });
+                tokenResponse = await instance.acquireTokenPopup({ ...loginRequest, account: accounts[0] });
+                console.log('🔧 Token acquired via popup');
+              } else {
+                throw error; // Re-throw other errors
+              }
+            }
+
+            const startDateTime = new Date(`${editedMeeting.date}T${editedMeeting.time || '09:00'}`).toISOString();
+            const endDateTime = new Date(new Date(startDateTime).getTime() + 60 * 60 * 1000).toISOString();
+
+            console.log('🔧 Creating Teams meeting with:', {
+              subject: `Meeting with ${client.name}`,
+              startDateTime,
+              endDateTime,
+            });
+
+            const teamsData = await createTeamsMeeting(tokenResponse.accessToken, {
+              subject: `Meeting with ${client.name}`,
+              startDateTime,
+              endDateTime,
+            });
+
+            console.log('🔧 Teams meeting created successfully:', teamsData);
+
+            if (!teamsData || !teamsData.joinUrl) {
+              throw new Error('No joinUrl returned from Teams API');
+            }
+
+            teamsMeetingUrl = teamsData.joinUrl;
+            console.log('🔧 Teams meeting URL:', teamsMeetingUrl);
+            toast.success('Teams meeting created automatically!');
+          } catch (teamsError: any) {
+            console.error('❌ Failed to create Teams meeting:', teamsError);
+            console.error('❌ Error details:', {
+              message: teamsError.message,
+              stack: teamsError.stack,
+              needsTeamsMeeting,
+              newLocationName,
+              originalLocationName,
+              hasExistingLink: !!originalMeeting?.link
+            });
+            toast.error(`Meeting updated but failed to create Teams meeting: ${teamsError.message}`);
+          }
+        }
+
+        // Check if this is a legacy meeting
+        const isLegacyMeeting = originalMeeting && (originalMeeting as any).isLegacy;
+
+        // Update database based on meeting type
+        let dbError;
+
+        if (isLegacyMeeting) {
+          // For legacy meetings, update the leads_lead table
+          const legacyId = client.id.toString().replace('legacy_', '');
+          const locationIdValue =
+            editedMeeting.location && /^\d+$/.test(String(editedMeeting.location))
+              ? Number(editedMeeting.location)
+              : null;
+          // Convert scheduler employee ID to number for legacy meetings
+          const schedulerEmployeeId = editedMeeting.scheduler
+            ? (typeof editedMeeting.scheduler === 'string' ? parseInt(editedMeeting.scheduler, 10) : Number(editedMeeting.scheduler))
+            : null;
+
+          const updateData: any = {
+            meeting_date: editedMeeting.date,
+            meeting_time: editedMeeting.time,
+            meeting_location_id: locationIdValue,
+            meeting_manager_id: editedMeeting.manager,
+            meeting_total_currency_id: editedMeeting.currency === 'NIS' ? 1 : editedMeeting.currency === 'USD' ? 2 : 3,
+            meeting_total: editedMeeting.amount,
+            meeting_brief: editedMeeting.brief,
+            meeting_scheduler_id: schedulerEmployeeId,
+            meeting_lawyer_id: editedMeeting.helper,
+          };
+
+          // Add Teams meeting URL if we created one
+          if (teamsMeetingUrl && newLocationName === 'Teams') {
+            updateData.meeting_url = teamsMeetingUrl;
+          }
+
+          const { error } = await supabase
+            .from('leads_lead')
+            .update(updateData)
+            .eq('id', legacyId);
+
+          dbError = error;
+        } else {
+          // For new meetings, update the meetings table
+          // Convert location ID to location name for new leads
+          const locationText = getMeetingLocationName(editedMeeting.location);
+
+          // Convert scheduler employee ID to display name for new meetings
+          const schedulerDisplayName = editedMeeting.scheduler
+            ? getEmployeeDisplayName(editedMeeting.scheduler)
+            : null;
+
+          const updateData: any = {
+            meeting_date: editedMeeting.date,
+            meeting_time: editedMeeting.time,
+            meeting_location: locationText, // Use location name (text) for new leads
+            meeting_manager: editedMeeting.manager,
+            meeting_currency: editedMeeting.currency,
+            meeting_amount: editedMeeting.amount,
+            meeting_brief: editedMeeting.brief,
+            scheduler: schedulerDisplayName,
+            helper: editedMeeting.helper,
+            car_number: editedMeeting.car_number || null,
+            last_edited_timestamp: new Date().toISOString(),
+            last_edited_by: editor,
+          };
+
+          // Add Teams meeting URL if we created one
+          if (teamsMeetingUrl && newLocationName === 'Teams') {
+            updateData.teams_meeting_url = teamsMeetingUrl;
+          }
+
+          const { error } = await supabase
+            .from('meetings')
+            .update(updateData)
+            .eq('id', editingMeetingId);
+
+          dbError = error;
+        }
+
+        if (dbError) throw dbError;
+
+        // If it's a Teams meeting and date/time changed, update Outlook
+        const finalTeamsUrl = teamsMeetingUrl || originalMeeting?.link;
+        if (originalMeeting && getMeetingLocationName(editedMeeting.location) === 'Teams' && finalTeamsUrl) {
+          const dateChanged = originalMeeting.date !== editedMeeting.date;
+          const timeChanged = originalMeeting.time !== editedMeeting.time;
+
+          console.log('🔄 Checking Outlook sync:', {
+            dateChanged,
+            timeChanged,
+            finalTeamsUrl,
+            originalDate: originalMeeting.date,
+            newDate: editedMeeting.date,
+            originalTime: originalMeeting.time,
+            newTime: editedMeeting.time
+          });
+
+          if (dateChanged || timeChanged) {
+            try {
+              const account = instance.getActiveAccount();
+              if (account) {
+                // Try silent token acquisition first, fall back to popup if needed
+                let tokenResponse;
+                try {
+                  tokenResponse = await instance.acquireTokenSilent({
                     ...loginRequest,
                     account: account,
                   });
-                } else {
-                  throw error; // Re-throw other errors
+                } catch (error) {
+                  // If silent acquisition fails (e.g., session expired), try interactive popup
+                  if (error instanceof InteractionRequiredAuthError) {
+                    toast('Your session has expired. Please sign in again.', { icon: '🔑' });
+                    tokenResponse = await instance.acquireTokenPopup({
+                      ...loginRequest,
+                      account: account,
+                    });
+                  } else {
+                    throw error; // Re-throw other errors
+                  }
+                }
+
+                if (tokenResponse.accessToken) {
+                  console.log('🔄 Updating Outlook meeting...');
+                  await updateOutlookMeeting(tokenResponse.accessToken, finalTeamsUrl, {
+                    startDateTime: `${editedMeeting.date}T${editedMeeting.time}:00`,
+                    endDateTime: `${editedMeeting.date}T${editedMeeting.time}:00`,
+                  });
+                  console.log('✅ Outlook meeting updated successfully');
                 }
               }
-              
-              if (tokenResponse.accessToken) {
-                console.log('🔄 Updating Outlook meeting...');
-                await updateOutlookMeeting(tokenResponse.accessToken, finalTeamsUrl, {
-                  startDateTime: `${editedMeeting.date}T${editedMeeting.time}:00`,
-                  endDateTime: `${editedMeeting.date}T${editedMeeting.time}:00`,
-                });
-                console.log('✅ Outlook meeting updated successfully');
-              }
+            } catch (outlookError) {
+              console.error('❌ Failed to update Outlook meeting:', outlookError);
+              // Silently fail - meeting is already updated in database
             }
-          } catch (outlookError) {
-            console.error('❌ Failed to update Outlook meeting:', outlookError);
-            toast.error('Meeting updated in database but failed to sync with Outlook');
           }
         }
+
+        toast.success('Meeting updated successfully');
+        setMeetings(prev => prev.map(m =>
+          m.id === editingMeetingId
+            ? { ...m, ...editedMeeting, link: teamsMeetingUrl || m.link, lastEdited: { timestamp: new Date().toISOString(), user: editor } }
+            : m
+        ));
+
+        setEditingMeetingId(null);
+        setEditedMeeting({});
+        setEditLocationSearchTerm('');
+        setEditManagerSearchTerm('');
+        setEditSchedulerSearchTerm('');
+        setEditHelperSearchTerm('');
+        setShowEditLocationDropdown(false);
+        setShowEditManagerDropdown(false);
+        setShowEditSchedulerDropdown(false);
+        setShowEditHelperDropdown(false);
+
+        if (onClientUpdate) await onClientUpdate();
+      } catch (error) {
+        console.error('Error updating meeting:', error);
+        toast.error('Failed to update meeting');
+      } finally {
+        setIsUpdatingMeeting(false);
       }
+    };
 
-      toast.success('Meeting updated successfully');
-      setMeetings(prev => prev.map(m => 
-        m.id === editingMeetingId 
-          ? { ...m, ...editedMeeting, link: teamsMeetingUrl || m.link, lastEdited: { timestamp: new Date().toISOString(), user: editor } }
-          : m
-      ));
-      
-      setEditingMeetingId(null);
-      setEditedMeeting({});
-      
-      if (onClientUpdate) await onClientUpdate();
-    } catch (error) {
-      console.error('Error updating meeting:', error);
-      toast.error('Failed to update meeting');
-    } finally {
-      setIsUpdatingMeeting(false);
-    }
-  };
+    // Use expandedMeetingData if available
+    const expandedData = expandedMeetingData[meeting.id] || {};
+    const isExpanded = expandedMeetingId === meeting.id;
 
-  // Use expandedMeetingData if available
-  const expandedData = expandedMeetingData[meeting.id] || {};
-  const isExpanded = expandedMeetingId === meeting.id;
+    const past = isPastMeeting(meeting);
+    const showPastActions = past && isRecentPastMeeting(meeting);
+    const headerColor = past ? '#6B7280' : 'rgb(25, 49, 31)'; // Grey for past, dark green for upcoming
 
-  const past = isPastMeeting(meeting);
-  const showPastActions = past && isRecentPastMeeting(meeting);
-  const headerColor = past ? '#DC473F' : '#369A69';
-
-  return (
+    return (
       <div key={meeting.id} className="bg-white border border-gray-200 rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden relative">
         {/* Canceled watermark */}
         {meeting.status === 'canceled' && (
@@ -3805,7 +4307,7 @@ const formatEmailBody = async (
                         {/* Conditional Meeting Invitation based on location */}
                         {(() => {
                           const location = (meeting.location || '').toLowerCase();
-                          
+
                           if (location.includes('jrslm') || location.includes('jerusalem')) {
                             return (
                               <button
@@ -3929,26 +4431,44 @@ const formatEmailBody = async (
                 const hasValidLink = validLink && validLink.trim() !== '';
                 const locationName = getMeetingLocationName(meeting.location);
                 const isTeams = locationName === 'Teams';
-                fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'MeetingTab.tsx:3879',message:'Teams button rendering check',data:{meetingId:meeting.id,isTeams,hasLink,hasValidLink,meetingLinkValue,validLink,locationName},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+
+                // Get location object to check for default_link
+                const locationIdOrName = meeting.location;
+                let location = allMeetingLocations.find((loc: any) => loc.id.toString() === locationIdOrName.toString());
+                if (!location) {
+                  location = allMeetingLocations.find((loc: any) => loc.name === locationIdOrName);
+                }
+                const defaultLink = location?.default_link;
+
+                fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:3879', message: 'Teams button rendering check', data: { meetingId: meeting.id, isTeams, hasLink, hasValidLink, meetingLinkValue, validLink, locationName, defaultLink }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
                 // #endregion
-                
-                if (!past && isTeams) {
-                  // Show "Open Link" button if we have a valid link
-                  if (hasValidLink) {
+
+                if (!past) {
+                  // Determine which link to use: default_link first (if available), then valid link
+                  const linkToUse = defaultLink || validLink;
+
+                  // If we have a link (either default_link or valid link), show it
+                  if (linkToUse) {
+                    // Check if the link being used is a Teams link
+                    const isTeamsLink = linkToUse === validLink && getLinkType(validLink) === 'teams';
+                    const iconToShow = isTeamsLink ? <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" /> : <LinkIcon className="w-3 h-3 sm:w-4 sm:h-4" />;
+                    const title = isTeamsLink ? 'Join Teams Meeting' : 'Join Meeting';
+
                     return (
                       <a
-                        href={validLink}
+                        href={linkToUse}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
-                        title="Join Teams Meeting"
+                        title={title}
                       >
-                        <LinkIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                        {iconToShow}
                       </a>
                     );
                   }
-                  // Show "Create Teams" button only if there's NO link at all (not even an empty string)
-                  if (!hasLink) {
+
+                  // Show "Create Teams" button only for Teams location if there's NO link at all
+                  if (isTeams && !hasLink && !defaultLink) {
                     return (
                       <button
                         className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
@@ -3994,97 +4514,235 @@ const formatEmailBody = async (
               /* Edit Mode */
               <div className="space-y-4">
                 {/* Date and Time */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Date</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Date</label>
                     <input
                       type="date"
                       className="input input-bordered w-full"
                       value={editedMeeting.date || ''}
-                      onChange={(e) => setEditedMeeting(prev => ({ ...prev, date: e.target.value }))}
+                      onChange={(e) => {
+                        setEditedMeeting(prev => ({ ...prev, date: e.target.value }));
+                        setMeetingCountsByTime({});
+                      }}
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Time</label>
-                    <select
-                      className="select select-bordered w-full"
-                      value={editedMeeting.time || ''}
-                      onChange={(e) => setEditedMeeting(prev => ({ ...prev, time: e.target.value }))}
-                    >
-                      <option value="">{meeting.time ? meeting.time.substring(0, 5) : 'Select time'}</option>
-                      {timeOptions.map(time => (
-                        <option key={time} value={time}>{time}</option>
-                      ))}
-                    </select>
+                    <TimePicker
+                      value={editedMeeting.time || (meeting.time ? meeting.time.substring(0, 5) : '09:00')}
+                      onChange={(time) => setEditedMeeting(prev => ({ ...prev, time }))}
+                      meetingCounts={editedMeeting.date ? meetingCountsByTime : {}}
+                      label="Time"
+                    />
                   </div>
                 </div>
 
                 {/* Location and Manager */}
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Location</label>
-                    <select
-                      className="select select-bordered w-full"
-                      value={editedMeeting.location ?? ''}
+                  <div className="space-y-2 relative" ref={editLocationDropdownRef}>
+                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Location</label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      placeholder="Select location..."
+                      value={editLocationSearchTerm !== '' ? editLocationSearchTerm : (getMeetingLocationName(editedMeeting.location) || '')}
                       onChange={(e) => {
                         const value = e.target.value;
-                        setEditedMeeting(prev => ({ ...prev, location: value }));
+                        setEditLocationSearchTerm(value);
+                        setShowEditLocationDropdown(true);
                       }}
-                    >
-                      <option value="">{getMeetingLocationName(meeting.location) || 'Select location'}</option>
-                      {allMeetingLocations.map((location: any) => (
-                        <option key={location.id} value={location.id}>{location.name}</option>
-                      ))}
-                    </select>
+                      onFocus={() => {
+                        setEditLocationSearchTerm(getMeetingLocationName(editedMeeting.location) || '');
+                        setShowEditLocationDropdown(true);
+                      }}
+                      onBlur={() => {
+                        // Reset search term after a short delay to allow click to register
+                        setTimeout(() => {
+                          setEditLocationSearchTerm('');
+                          setShowEditLocationDropdown(false);
+                        }, 200);
+                      }}
+                      autoComplete="off"
+                    />
+                    {showEditLocationDropdown && (
+                      <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                        {allMeetingLocations
+                          .filter((location: any) => {
+                            const searchTerm = editLocationSearchTerm.toLowerCase();
+                            return !searchTerm || location.name.toLowerCase().includes(searchTerm);
+                          })
+                          .map((location: any) => (
+                            <div
+                              key={location.id}
+                              className="px-4 py-2 cursor-pointer hover:bg-gray-100"
+                              onClick={() => {
+                                setEditedMeeting(prev => ({ ...prev, location: location.id }));
+                                setEditLocationSearchTerm('');
+                                setShowEditLocationDropdown(false);
+                              }}
+                            >
+                              {location.name}
+                            </div>
+                          ))}
+                      </div>
+                    )}
                   </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Manager</label>
-                    <select
-                      className="select select-bordered w-full"
-                      value={editedMeeting.manager || ''}
-                      onChange={(e) => setEditedMeeting(prev => ({ ...prev, manager: e.target.value }))}
-                    >
-                      <option value="">{getEmployeeDisplayName(meeting.manager) || 'Select manager'}</option>
-                      {allEmployees.map((emp: any) => (
-                        <option key={emp.id} value={emp.id}>{emp.display_name || emp.full_name}</option>
-                      ))}
-                    </select>
+                  <div className="space-y-2 relative" ref={editManagerDropdownRef}>
+                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Manager</label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      placeholder="Select manager..."
+                      value={editManagerSearchTerm !== '' ? editManagerSearchTerm : (getEmployeeDisplayName(editedMeeting.manager) || '')}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setEditManagerSearchTerm(value);
+                        setShowEditManagerDropdown(true);
+                      }}
+                      onFocus={() => {
+                        setEditManagerSearchTerm(getEmployeeDisplayName(editedMeeting.manager) || '');
+                        setShowEditManagerDropdown(true);
+                      }}
+                      onBlur={() => {
+                        setTimeout(() => {
+                          setEditManagerSearchTerm('');
+                          setShowEditManagerDropdown(false);
+                        }, 200);
+                      }}
+                      autoComplete="off"
+                    />
+                    {showEditManagerDropdown && (
+                      <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                        {allEmployees
+                          .filter((emp: any) => {
+                            const searchTerm = editManagerSearchTerm.toLowerCase();
+                            const displayName = (emp.display_name || emp.full_name || '').toLowerCase();
+                            return !searchTerm || displayName.includes(searchTerm);
+                          })
+                          .map((emp: any) => (
+                            <div
+                              key={emp.id}
+                              className="px-4 py-2 cursor-pointer hover:bg-gray-100 flex items-center gap-3"
+                              onClick={() => {
+                                setEditedMeeting(prev => ({ ...prev, manager: emp.id }));
+                                setEditManagerSearchTerm('');
+                                setShowEditManagerDropdown(false);
+                              }}
+                            >
+                              <EmployeeAvatar employeeId={emp.id} size="sm" />
+                              <span>{emp.display_name || emp.full_name}</span>
+                            </div>
+                          ))}
+                      </div>
+                    )}
                   </div>
                 </div>
 
                 {/* Scheduler and Helper */}
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Scheduler</label>
-                    <select
-                      className="select select-bordered w-full"
-                      value={editedMeeting.scheduler || ''}
-                      onChange={(e) => setEditedMeeting(prev => ({ ...prev, scheduler: e.target.value }))}
-                    >
-                      <option value="">{getEmployeeDisplayName(meeting.scheduler) || 'Select scheduler'}</option>
-                      {allEmployees.map((emp: any) => (
-                        <option key={emp.id} value={emp.id}>{emp.display_name || emp.full_name}</option>
-                      ))}
-                    </select>
+                  <div className="space-y-2 relative" ref={editSchedulerDropdownRef}>
+                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Scheduler</label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      placeholder="Select scheduler..."
+                      value={editSchedulerSearchTerm !== '' ? editSchedulerSearchTerm : (getEmployeeDisplayName(editedMeeting.scheduler) || '')}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setEditSchedulerSearchTerm(value);
+                        setShowEditSchedulerDropdown(true);
+                      }}
+                      onFocus={() => {
+                        setEditSchedulerSearchTerm(getEmployeeDisplayName(editedMeeting.scheduler) || '');
+                        setShowEditSchedulerDropdown(true);
+                      }}
+                      onBlur={() => {
+                        setTimeout(() => {
+                          setEditSchedulerSearchTerm('');
+                          setShowEditSchedulerDropdown(false);
+                        }, 200);
+                      }}
+                      autoComplete="off"
+                    />
+                    {showEditSchedulerDropdown && (
+                      <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                        {allEmployees
+                          .filter((emp: any) => {
+                            const searchTerm = editSchedulerSearchTerm.toLowerCase();
+                            const displayName = (emp.display_name || emp.full_name || '').toLowerCase();
+                            return !searchTerm || displayName.includes(searchTerm);
+                          })
+                          .map((emp: any) => (
+                            <div
+                              key={emp.id}
+                              className="px-4 py-2 cursor-pointer hover:bg-gray-100 flex items-center gap-3"
+                              onClick={() => {
+                                setEditedMeeting(prev => ({ ...prev, scheduler: emp.id }));
+                                setEditSchedulerSearchTerm('');
+                                setShowEditSchedulerDropdown(false);
+                              }}
+                            >
+                              <EmployeeAvatar employeeId={emp.id} size="sm" />
+                              <span>{emp.display_name || emp.full_name}</span>
+                            </div>
+                          ))}
+                      </div>
+                    )}
                   </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Helper</label>
-                    <select
-                      className="select select-bordered w-full"
-                      value={editedMeeting.helper || ''}
-                      onChange={(e) => setEditedMeeting(prev => ({ ...prev, helper: e.target.value }))}
-                    >
-                      <option value="">{getEmployeeDisplayName(meeting.helper) || 'Select helper'}</option>
-                      {allEmployees.map((emp: any) => (
-                        <option key={emp.id} value={emp.id}>{emp.display_name || emp.full_name}</option>
-                      ))}
-                    </select>
+                  <div className="space-y-2 relative" ref={editHelperDropdownRef}>
+                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Helper</label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      placeholder="Select helper..."
+                      value={editHelperSearchTerm !== '' ? editHelperSearchTerm : (getEmployeeDisplayName(editedMeeting.helper) || '')}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setEditHelperSearchTerm(value);
+                        setShowEditHelperDropdown(true);
+                      }}
+                      onFocus={() => {
+                        setEditHelperSearchTerm(getEmployeeDisplayName(editedMeeting.helper) || '');
+                        setShowEditHelperDropdown(true);
+                      }}
+                      onBlur={() => {
+                        setTimeout(() => {
+                          setEditHelperSearchTerm('');
+                          setShowEditHelperDropdown(false);
+                        }, 200);
+                      }}
+                      autoComplete="off"
+                    />
+                    {showEditHelperDropdown && (
+                      <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                        {allEmployees
+                          .filter((emp: any) => {
+                            const searchTerm = editHelperSearchTerm.toLowerCase();
+                            const displayName = (emp.display_name || emp.full_name || '').toLowerCase();
+                            return !searchTerm || displayName.includes(searchTerm);
+                          })
+                          .map((emp: any) => (
+                            <div
+                              key={emp.id}
+                              className="px-4 py-2 cursor-pointer hover:bg-gray-100 flex items-center gap-3"
+                              onClick={() => {
+                                setEditedMeeting(prev => ({ ...prev, helper: emp.id }));
+                                setEditHelperSearchTerm('');
+                                setShowEditHelperDropdown(false);
+                              }}
+                            >
+                              <EmployeeAvatar employeeId={emp.id} size="sm" />
+                              <span>{emp.display_name || emp.full_name}</span>
+                            </div>
+                          ))}
+                      </div>
+                    )}
                   </div>
                 </div>
 
                 {/* Amount */}
                 <div className="space-y-2">
-                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Amount</label>
+                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Amount</label>
                   <div className="flex gap-2">
                     <select
                       className="select select-bordered flex-shrink-0"
@@ -4097,12 +4755,24 @@ const formatEmailBody = async (
                     </select>
                     <input
                       type="number"
-                      className="input input-bordered flex-1"
+                      className="input input-bordered flex-1 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                       placeholder={meeting.amount ? meeting.amount.toString() : "Amount"}
                       value={editedMeeting.amount || ''}
                       onChange={(e) => setEditedMeeting(prev => ({ ...prev, amount: parseFloat(e.target.value) || 0 }))}
                     />
                   </div>
+                </div>
+
+                {/* Car Number */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Car Number</label>
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    placeholder={meeting.car_number || "Enter car number"}
+                    value={editedMeeting.car_number || ''}
+                    onChange={(e) => setEditedMeeting(prev => ({ ...prev, car_number: e.target.value }))}
+                  />
                 </div>
 
                 {/* Action Buttons */}
@@ -4135,92 +4805,102 @@ const formatEmailBody = async (
               /* View Mode */
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-3">
                 <div className="space-y-2 sm:space-y-2">
-                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Location</label>
-                <div className="flex items-center gap-2 sm:gap-2">
-                    <MapPinIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: '#391BCB' }} />
-                  <span className="text-sm sm:text-base text-gray-900">{getMeetingLocationName(meeting.location)}</span>
+                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Location</label>
+                  <div className="flex items-center gap-2 sm:gap-2">
+                    <MapPinIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: 'rgb(40, 75, 50)' }} />
+                    <span className="text-sm sm:text-base text-gray-900">{getMeetingLocationName(meeting.location)}</span>
+                  </div>
+                </div>
+                <div className="space-y-2 sm:space-y-2">
+                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Manager</label>
+                  <div className="flex items-center gap-2 sm:gap-2">
+                    <UserIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: 'rgb(40, 75, 50)' }} />
+                    <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.manager)}</span>
+                  </div>
+                </div>
+                <div className="space-y-2 sm:space-y-2">
+                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Scheduler</label>
+                  <div className="flex items-center gap-2 sm:gap-2">
+                    <UserCircleIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: 'rgb(40, 75, 50)' }} />
+                    <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.scheduler)}</span>
+                  </div>
+                </div>
+                <div className="space-y-2 sm:space-y-2">
+                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Helper</label>
+                  <div className="flex items-center gap-2 sm:gap-2">
+                    <UserCircleIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: 'rgb(40, 75, 50)' }} />
+                    <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.helper)}</span>
+                  </div>
+                </div>
+                <div className="space-y-2 sm:space-y-2">
+                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Expert</label>
+                  <div className="flex items-center gap-2 sm:gap-2">
+                    <AcademicCapIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: 'rgb(40, 75, 50)' }} />
+                    <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.expert)}</span>
+                  </div>
+                </div>
+                <div className="space-y-2 sm:space-y-2">
+                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Amount</label>
+                  <div className="flex items-center gap-2">
+                    {meeting.amount && meeting.amount > 0 ? (
+                      <span className="text-sm sm:text-base font-semibold" style={{ color: 'rgb(40, 75, 50)' }}>
+                        {getCurrencySymbol(meeting.currency)} {typeof meeting.amount === 'number' ? meeting.amount.toLocaleString() : meeting.amount}
+                      </span>
+                    ) : (
+                      <span className="text-sm sm:text-base text-gray-400 italic">Not specified</span>
+                    )}
+                  </div>
+                </div>
+                <div className="space-y-2 sm:space-y-2">
+                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Car Number</label>
+                  <div className="flex items-center gap-2">
+                    {meeting.car_number ? (
+                      <span className="text-sm sm:text-base text-gray-900">{meeting.car_number}</span>
+                    ) : (
+                      <span className="text-sm sm:text-base text-gray-400 italic">Not specified</span>
+                    )}
+                  </div>
                 </div>
               </div>
-              <div className="space-y-2 sm:space-y-2">
-                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Manager</label>
-                <div className="flex items-center gap-2 sm:gap-2">
-                    <UserIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: '#391BCB' }} />
-                  <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.manager)}</span>
-                </div>
-              </div>
-              <div className="space-y-2 sm:space-y-2">
-                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Scheduler</label>
-                <div className="flex items-center gap-2 sm:gap-2">
-                    <UserCircleIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: '#391BCB' }} />
-                  <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.scheduler)}</span>
-                </div>
-              </div>
-              <div className="space-y-2 sm:space-y-2">
-                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Helper</label>
-                <div className="flex items-center gap-2 sm:gap-2">
-                    <UserCircleIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: '#391BCB' }} />
-                  <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.helper)}</span>
-                </div>
-              </div>
-              <div className="space-y-2 sm:space-y-2">
-                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Expert</label>
-                <div className="flex items-center gap-2 sm:gap-2">
-                    <AcademicCapIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: '#391BCB' }} />
-                  <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.expert)}</span>
-                </div>
-              </div>
-              <div className="space-y-2 sm:space-y-2">
-                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Amount</label>
-                <div className="flex items-center gap-2">
-                  {meeting.amount && meeting.amount > 0 ? (
-                      <span className="text-sm sm:text-base font-semibold" style={{ color: '#391BCB' }}>
-                      {getCurrencySymbol(meeting.currency)} {typeof meeting.amount === 'number' ? meeting.amount.toLocaleString() : meeting.amount}
-                    </span>
-                  ) : (
-                    <span className="text-sm sm:text-base text-gray-400 italic">Not specified</span>
-                  )}
-                </div>
-              </div>
-            </div>
             )}
 
             {/* Brief Section */}
             {editingMeetingId !== meeting.id && (
-            <div className="border-t border-purple-100 pt-3 sm:pt-3">
-              <div className="flex justify-between items-center mb-2 sm:mb-2">
-                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Brief</label>
-                {editingBriefId === meeting.id ? (
-                  <div className="flex items-center gap-1">
-                    <button className="btn btn-ghost btn-xs hover:bg-green-50" onClick={() => handleSaveBrief(meeting.id)}>
-                      <CheckIcon className="w-4 h-4 sm:w-4 sm:h-4 text-green-600" />
-                    </button>
-                    <button className="btn btn-ghost btn-xs hover:bg-red-50" onClick={handleCancelEdit}>
-                      <XMarkIcon className="w-4 h-4 sm:w-4 sm:h-4 text-red-600" />
-                    </button>
-                  </div>
-                ) : (
-                  <button className="btn btn-ghost btn-xs hover:bg-purple-50" onClick={handleEditBrief}>
-                    <PencilSquareIcon className="w-4 h-4 sm:w-4 sm:h-4 text-purple-500 hover:text-purple-600" />
-                  </button>
-                )}
-              </div>
-              {editingBriefId === meeting.id ? (
-                <textarea
-                  className="textarea textarea-bordered w-full h-20 sm:h-20 text-sm sm:text-base"
-                  value={editedBrief}
-                  onChange={(e) => setEditedBrief(e.target.value)}
-                  placeholder="Add a meeting brief..."
-                />
-              ) : (
-                <div className="bg-gray-50 rounded-lg p-3 sm:p-3 min-h-[60px] sm:min-h-[60px]">
-                  {meeting.brief ? (
-                    <p className="text-sm sm:text-base text-gray-900 whitespace-pre-wrap">{meeting.brief}</p>
+              <div className="border-t border-purple-100 pt-3 sm:pt-3">
+                <div className="flex justify-between items-center mb-2 sm:mb-2">
+                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Brief</label>
+                  {editingBriefId === meeting.id ? (
+                    <div className="flex items-center gap-1">
+                      <button className="btn btn-ghost btn-xs hover:bg-green-50" onClick={() => handleSaveBrief(meeting.id)}>
+                        <CheckIcon className="w-4 h-4 sm:w-4 sm:h-4 text-green-600" />
+                      </button>
+                      <button className="btn btn-ghost btn-xs hover:bg-red-50" onClick={handleCancelEdit}>
+                        <XMarkIcon className="w-4 h-4 sm:w-4 sm:h-4 text-red-600" />
+                      </button>
+                    </div>
                   ) : (
-                    <span className="text-sm sm:text-base text-gray-400 italic">No brief provided</span>
+                    <button className="btn btn-ghost btn-xs hover:bg-purple-50" onClick={handleEditBrief}>
+                      <PencilSquareIcon className="w-4 h-4 sm:w-4 sm:h-4 text-purple-500 hover:text-purple-600" />
+                    </button>
                   )}
                 </div>
-              )}
-            </div>
+                {editingBriefId === meeting.id ? (
+                  <textarea
+                    className="textarea textarea-bordered w-full h-20 sm:h-20 text-sm sm:text-base"
+                    value={editedBrief}
+                    onChange={(e) => setEditedBrief(e.target.value)}
+                    placeholder="Add a meeting brief..."
+                  />
+                ) : (
+                  <div className="bg-gray-50 rounded-lg p-3 sm:p-3 min-h-[60px] sm:min-h-[60px]">
+                    {meeting.brief ? (
+                      <p className="text-sm sm:text-base text-gray-900 whitespace-pre-wrap">{meeting.brief}</p>
+                    ) : (
+                      <span className="text-sm sm:text-base text-gray-400 italic">No brief provided</span>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
 
             {/* Brief Section in Edit Mode */}
@@ -4261,13 +4941,13 @@ const formatEmailBody = async (
                   clientEmail={client.email}
                   onUpdate={onClientUpdate}
                 />
-                
+
                 {/* Expert and Handler Notes */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="bg-white rounded-lg p-4 border border-purple-100 shadow-sm">
                     <div className="flex justify-between items-center mb-2">
                       <h5 className="font-semibold text-purple-800">Expert Notes</h5>
-                      <button 
+                      <button
                         className="btn btn-ghost btn-xs hover:bg-purple-50"
                         onClick={() => handleEditField(meeting.id, 'expert_notes', expandedData.expert_notes)}
                       >
@@ -4298,7 +4978,7 @@ const formatEmailBody = async (
                   <div className="bg-white rounded-lg p-4 border border-purple-100 shadow-sm">
                     <div className="flex justify-between items-center mb-2">
                       <h5 className="font-semibold text-purple-800">Handler Notes</h5>
-                      <button 
+                      <button
                         className="btn btn-ghost btn-xs hover:bg-purple-50"
                         onClick={() => handleEditField(meeting.id, 'handler_notes', expandedData.handler_notes)}
                       >
@@ -4337,9 +5017,9 @@ const formatEmailBody = async (
           className="cursor-pointer transition-all p-2 text-center border-t border-purple-200 bg-white"
           onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)}
         >
-          <div className="flex items-center justify-center gap-2 text-xs font-medium" style={{ color: '#391BCB' }}>
+          <div className="flex items-center justify-center gap-2 text-xs font-medium" style={{ color: 'rgb(40, 75, 50)' }}>
             <span>{expandedMeetingId === meeting.id ? 'Show Less' : 'Show More'}</span>
-            <ChevronDownIcon className={`w-4 h-4 transition-transform ${expandedMeetingId === meeting.id ? 'rotate-180' : ''}`} style={{ color: '#391BCB' }} />
+            <ChevronDownIcon className={`w-4 h-4 transition-transform ${expandedMeetingId === meeting.id ? 'rotate-180' : ''}`} style={{ color: 'rgb(40, 75, 50)' }} />
           </div>
         </div>
       </div>
@@ -4348,7 +5028,7 @@ const formatEmailBody = async (
 
   const updateOutlookMeeting = async (accessToken: string, meetingId: string, updates: any) => {
     const url = `https://graph.microsoft.com/v1.0/me/calendar/events/${meetingId}`;
-    
+
     const response = await fetch(url, {
       method: 'PATCH',
       headers: {
@@ -4387,29 +5067,29 @@ const formatEmailBody = async (
         </div>
         {/* Schedule/Reschedule Meeting Button - Only show when stage is 60 or higher (client signed agreement and beyond) */}
         {(() => {
-          const stageId = typeof client.stage === 'number' ? client.stage : 
-                          typeof client.stage === 'string' ? parseInt(client.stage, 10) : null;
+          const stageId = typeof client.stage === 'number' ? client.stage :
+            typeof client.stage === 'string' ? parseInt(client.stage, 10) : null;
           return stageId !== null && stageId >= 60;
         })() && (
-          <button
-            onClick={() => {
-              if (upcomingMeetings.length > 0) {
-                setShowRescheduleDrawer(true);
-              } else {
-                setShowScheduleDrawer(true);
-              }
-            }}
-            className="btn text-white border-none"
-            style={{ 
-              background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',
-              border: 'none',
-              boxShadow: 'none'
-            }}
-          >
-            <CalendarIcon className="w-5 h-5 mr-2 text-white" />
-            {upcomingMeetings.length > 0 ? 'Reschedule Meeting' : 'Schedule Meeting'}
-          </button>
-        )}
+            <button
+              onClick={() => {
+                if (upcomingMeetings.length > 0) {
+                  setShowRescheduleDrawer(true);
+                } else {
+                  setShowScheduleDrawer(true);
+                }
+              }}
+              className="btn text-white border-none"
+              style={{
+                background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',
+                border: 'none',
+                boxShadow: 'none'
+              }}
+            >
+              <CalendarIcon className="w-5 h-5 mr-2 text-white" />
+              {upcomingMeetings.length > 0 ? 'Reschedule Meeting' : 'Schedule Meeting'}
+            </button>
+          )}
       </div>
 
       {/* Scheduling History Table */}
@@ -4422,40 +5102,40 @@ const formatEmailBody = async (
           <div className="p-6">
             <div className="overflow-x-auto">
               <table className="table w-full">
-                  <thead>
-                    <tr>
-                      <th className="text-xs font-semibold text-gray-600 uppercase">Date</th>
-                      <th className="text-xs font-semibold text-gray-600 uppercase">Created By</th>
-                      <th className="text-xs font-semibold text-gray-600 uppercase">Scheduling Notes</th>
-                      <th className="text-xs font-semibold text-gray-600 uppercase">Next Follow-up</th>
-                      <th className="text-xs font-semibold text-gray-600 uppercase">Follow-up Notes</th>
+                <thead>
+                  <tr>
+                    <th className="text-xs font-semibold text-gray-600 uppercase">Date</th>
+                    <th className="text-xs font-semibold text-gray-600 uppercase">Created By</th>
+                    <th className="text-xs font-semibold text-gray-600 uppercase">Scheduling Notes</th>
+                    <th className="text-xs font-semibold text-gray-600 uppercase">Next Follow-up</th>
+                    <th className="text-xs font-semibold text-gray-600 uppercase">Follow-up Notes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {schedulingHistory.map((entry) => (
+                    <tr key={entry.id}>
+                      <td className="text-sm text-gray-900">
+                        {new Date(entry.created_at).toLocaleDateString('en-US', {
+                          year: 'numeric',
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                      </td>
+                      <td className="text-sm text-gray-900">{entry.created_by || 'Unknown'}</td>
+                      <td className="text-sm text-gray-900 whitespace-pre-line max-w-xs">
+                        {entry.meeting_scheduling_notes || <span className="text-gray-400 italic">No notes</span>}
+                      </td>
+                      <td className="text-sm text-gray-900">
+                        {entry.next_followup ? new Date(entry.next_followup).toLocaleDateString() : <span className="text-gray-400 italic">Not set</span>}
+                      </td>
+                      <td className="text-sm text-gray-900 whitespace-pre-line max-w-xs">
+                        {entry.followup || entry.followup_log || <span className="text-gray-400 italic">No notes</span>}
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {schedulingHistory.map((entry) => (
-                      <tr key={entry.id}>
-                        <td className="text-sm text-gray-900">
-                          {new Date(entry.created_at).toLocaleDateString('en-US', {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          })}
-                        </td>
-                        <td className="text-sm text-gray-900">{entry.created_by || 'Unknown'}</td>
-                        <td className="text-sm text-gray-900 whitespace-pre-line max-w-xs">
-                          {entry.meeting_scheduling_notes || <span className="text-gray-400 italic">No notes</span>}
-                        </td>
-                        <td className="text-sm text-gray-900">
-                          {entry.next_followup ? new Date(entry.next_followup).toLocaleDateString() : <span className="text-gray-400 italic">Not set</span>}
-                        </td>
-                        <td className="text-sm text-gray-900 whitespace-pre-line max-w-xs">
-                          {entry.followup || entry.followup_log || <span className="text-gray-400 italic">No notes</span>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
+                  ))}
+                </tbody>
               </table>
             </div>
           </div>
@@ -4482,7 +5162,7 @@ const formatEmailBody = async (
             </div>
             
             {/* Summary Status */}
-            {/* <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+      {/* <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
               <div className="flex items-center gap-2 mb-2">
                 <div className="w-4 h-4 bg-blue-500 rounded-full"></div>
                 <span className="font-medium text-blue-900">Summary Status</span>
@@ -4493,7 +5173,7 @@ const formatEmailBody = async (
             </div>
 
             {/* Instructions */}
-            {/* <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+      {/* <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
               <div className="flex items-center gap-2 mb-2">
                 <div className="w-4 h-4 bg-yellow-500 rounded-full"></div>
                 <span className="font-medium text-yellow-900">How to Get Summaries</span>
@@ -4587,34 +5267,32 @@ const formatEmailBody = async (
                   <XMarkIcon className="w-5 h-5" />
                 </button>
               </div>
-              
+
               {/* Language Selection */}
               <div className="mb-4">
                 <label className="block text-sm font-medium text-gray-700 mb-2">Email Language</label>
                 <div className="flex gap-2">
                   <button
                     onClick={() => setSelectedEmailLanguage('en')}
-                    className={`flex-1 px-4 py-2 rounded-lg border transition-colors ${
-                      selectedEmailLanguage === 'en'
-                        ? 'bg-primary text-white border-primary'
-                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                    }`}
+                    className={`flex-1 px-4 py-2 rounded-lg border transition-colors ${selectedEmailLanguage === 'en'
+                      ? 'bg-primary text-white border-primary'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                      }`}
                   >
                     English
                   </button>
                   <button
                     onClick={() => setSelectedEmailLanguage('he')}
-                    className={`flex-1 px-4 py-2 rounded-lg border transition-colors ${
-                      selectedEmailLanguage === 'he'
-                        ? 'bg-primary text-white border-primary'
-                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                    }`}
+                    className={`flex-1 px-4 py-2 rounded-lg border transition-colors ${selectedEmailLanguage === 'he'
+                      ? 'bg-primary text-white border-primary'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                      }`}
                   >
                     עברית
                   </button>
                 </div>
               </div>
-              
+
               {loadingContacts ? (
                 <div className="flex justify-center items-center py-8">
                   <span className="loading loading-spinner loading-md"></span>
@@ -4629,12 +5307,12 @@ const formatEmailBody = async (
                         const allEmails = contacts
                           .filter(c => c.email && c.email !== '---')
                           .map(c => c.email!);
-                        
+
                         if (allEmails.length === 0) {
                           toast.error('No email addresses found for contacts');
                           return;
                         }
-                        
+
                         handleSendEmail(selectedMeetingForNotify, allEmails, client.name);
                       }}
                       className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-purple-50 hover:border-purple-300 transition-colors"
@@ -4650,7 +5328,7 @@ const formatEmailBody = async (
                       </div>
                     </button>
                   )}
-                  
+
                   {/* Individual Contacts */}
                   {contacts
                     .filter(c => c.email && c.email !== '---')
@@ -4674,7 +5352,7 @@ const formatEmailBody = async (
                         </div>
                       </button>
                     ))}
-                  
+
                   {/* Client Email (fallback) */}
                   {client.email && contacts.filter(c => c.email && c.email !== '---').length === 0 && (
                     <button
@@ -4690,7 +5368,7 @@ const formatEmailBody = async (
                       </div>
                     </button>
                   )}
-                  
+
                   {contacts.filter(c => c.email && c.email !== '---').length === 0 && !client.email && (
                     <div className="text-center py-8 text-gray-500">
                       <EnvelopeIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
@@ -4720,46 +5398,43 @@ const formatEmailBody = async (
                   <XMarkIcon className="w-5 h-5" />
                 </button>
               </div>
-              
+
               {/* Language Selection */}
               <div className="mb-4">
                 <label className="block text-sm font-medium text-gray-700 mb-2">Language</label>
                 <div className="flex gap-2">
                   <button
                     onClick={() => setSelectedLanguage('he')}
-                    className={`flex-1 px-4 py-2 rounded-lg border transition-colors ${
-                      selectedLanguage === 'he'
-                        ? 'bg-green-600 text-white border-green-600'
-                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                    }`}
+                    className={`flex-1 px-4 py-2 rounded-lg border transition-colors ${selectedLanguage === 'he'
+                      ? 'bg-green-600 text-white border-green-600'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                      }`}
                   >
                     Hebrew
                   </button>
                   <button
                     onClick={() => setSelectedLanguage('en')}
-                    className={`flex-1 px-4 py-2 rounded-lg border transition-colors ${
-                      selectedLanguage === 'en'
-                        ? 'bg-green-600 text-white border-green-600'
-                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                    }`}
+                    className={`flex-1 px-4 py-2 rounded-lg border transition-colors ${selectedLanguage === 'en'
+                      ? 'bg-green-600 text-white border-green-600'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                      }`}
                   >
                     English
                   </button>
                   {whatsAppReminderType === 'missed_appointment' && (
                     <button
                       onClick={() => setSelectedLanguage('ru')}
-                      className={`flex-1 px-4 py-2 rounded-lg border transition-colors ${
-                        selectedLanguage === 'ru'
-                          ? 'bg-green-600 text-white border-green-600'
-                          : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                      }`}
+                      className={`flex-1 px-4 py-2 rounded-lg border transition-colors ${selectedLanguage === 'ru'
+                        ? 'bg-green-600 text-white border-green-600'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                        }`}
                     >
                       Russian
                     </button>
                   )}
                 </div>
               </div>
-              
+
               {loadingWhatsAppContacts ? (
                 <div className="flex justify-center items-center py-8">
                   <span className="loading loading-spinner loading-md"></span>
@@ -4773,7 +5448,7 @@ const formatEmailBody = async (
                       const mobile = c.mobile?.trim();
                       return (phone && phone !== '' && phone !== '---') || (mobile && mobile !== '' && mobile !== '---');
                     });
-                    
+
                     return (
                       <>
                         {/* WhatsApp All Option */}
@@ -4788,12 +5463,12 @@ const formatEmailBody = async (
                                   return (phone && phone !== '' && phone !== '---') ? phone : (mobile && mobile !== '' && mobile !== '---') ? mobile : null;
                                 })
                                 .filter(Boolean) as string[];
-                              
+
                               if (allPhones.length === 0) {
                                 toast.error('No phone numbers found for contacts');
                                 return;
                               }
-                              
+
                               handleSendWhatsAppReminder(selectedMeetingForWhatsAppNotify, allPhones, whatsAppReminderType);
                             }}
                             className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-green-50 hover:border-green-300 transition-colors"
@@ -4809,15 +5484,15 @@ const formatEmailBody = async (
                             </div>
                           </button>
                         )}
-                        
+
                         {/* Individual Contacts */}
                         {contactsWithPhone.map((contact) => {
                           const phone = contact.phone?.trim();
                           const mobile = contact.mobile?.trim();
                           const phoneNumber = (phone && phone !== '' && phone !== '---') ? phone : (mobile && mobile !== '' && mobile !== '---') ? mobile : null;
-                          
+
                           if (!phoneNumber) return null;
-                          
+
                           return (
                             <button
                               key={contact.id}
@@ -4839,13 +5514,13 @@ const formatEmailBody = async (
                             </button>
                           );
                         })}
-                        
+
                         {/* Client Phone (fallback) */}
                         {(() => {
                           const clientPhone = client.phone?.trim();
                           const clientMobile = client.mobile?.trim();
                           const hasClientPhone = (clientPhone && clientPhone !== '' && clientPhone !== '---') || (clientMobile && clientMobile !== '' && clientMobile !== '---');
-                          
+
                           if (hasClientPhone && contactsWithPhone.length === 0) {
                             const clientPhoneNumber = (clientPhone && clientPhone !== '' && clientPhone !== '---') ? clientPhone : (clientMobile && clientMobile !== '' && clientMobile !== '---') ? clientMobile : null;
                             if (clientPhoneNumber) {
@@ -4867,7 +5542,7 @@ const formatEmailBody = async (
                           }
                           return null;
                         })()}
-                        
+
                         {contactsWithPhone.length === 0 && !(client.phone?.trim() && client.phone.trim() !== '' && client.phone.trim() !== '---') && !(client.mobile?.trim() && client.mobile.trim() !== '' && client.mobile.trim() !== '---') && (
                           <div className="text-center py-8 text-gray-500">
                             <FaWhatsapp className="w-12 h-12 mx-auto text-gray-300 mb-3" />
@@ -4911,7 +5586,7 @@ const formatEmailBody = async (
           </div>
         </div>
       )}
-      
+
       <TimelineHistoryButtons client={client} />
 
       {/* Schedule Meeting Drawer */}
@@ -4959,7 +5634,7 @@ const formatEmailBody = async (
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
-            
+
             {/* Scrollable Content */}
             <div className="flex-1 overflow-y-auto p-8 pt-4">
               <div className="flex flex-col gap-4">
@@ -5025,13 +5700,13 @@ const formatEmailBody = async (
                         const timeOption = `${hour.toString().padStart(2, '0')}:${minute}`;
                         const count = meetingCountsByTime[timeOption] || 0;
                         // Determine badge color based on count
-                        const badgeClass = count === 0 
-                          ? 'badge badge-ghost' 
-                          : count <= 2 
-                          ? 'badge badge-success' 
-                          : count <= 5 
-                          ? 'badge badge-warning' 
-                          : 'badge badge-error';
+                        const badgeClass = count === 0
+                          ? 'badge badge-ghost'
+                          : count <= 2
+                            ? 'badge badge-success'
+                            : count <= 5
+                              ? 'badge badge-warning'
+                              : 'badge badge-error';
                         return (
                           <div
                             key={timeOption}
@@ -5077,7 +5752,7 @@ const formatEmailBody = async (
                         const filteredEmployees = allEmployees.filter(emp => {
                           return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
                         });
-                        
+
                         return filteredEmployees.length > 0 ? (
                           filteredEmployees.map(emp => {
                             const isUnavailable = scheduleMeetingFormData.date && scheduleMeetingFormData.time
@@ -5086,11 +5761,10 @@ const formatEmailBody = async (
                             return (
                               <div
                                 key={emp.id}
-                                className={`px-4 py-2 cursor-pointer flex items-center justify-between ${
-                                  isUnavailable
-                                    ? 'bg-red-50 text-red-600 hover:bg-red-100'
-                                    : 'hover:bg-gray-100'
-                                }`}
+                                className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isUnavailable
+                                  ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                                  : 'hover:bg-gray-100'
+                                  }`}
                                 onClick={() => {
                                   setScheduleMeetingFormData(prev => ({ ...prev, manager: emp.display_name }));
                                   setManagerSearchTerm('');
@@ -5144,7 +5818,7 @@ const formatEmailBody = async (
                         const filteredEmployees = allEmployees.filter(emp => {
                           return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
                         });
-                        
+
                         return filteredEmployees.length > 0 ? (
                           filteredEmployees.map(emp => {
                             const isUnavailable = scheduleMeetingFormData.date && scheduleMeetingFormData.time
@@ -5153,11 +5827,10 @@ const formatEmailBody = async (
                             return (
                               <div
                                 key={emp.id}
-                                className={`px-4 py-2 cursor-pointer flex items-center justify-between ${
-                                  isUnavailable
-                                    ? 'bg-red-50 text-red-600 hover:bg-red-100'
-                                    : 'hover:bg-gray-100'
-                                }`}
+                                className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isUnavailable
+                                  ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                                  : 'hover:bg-gray-100'
+                                  }`}
                                 onClick={() => {
                                   setScheduleMeetingFormData(prev => ({ ...prev, helper: emp.display_name }));
                                   setHelperSearchTerm('');
@@ -5239,12 +5912,12 @@ const formatEmailBody = async (
                 </div>
               </div>
             </div>
-            
+
             {/* Fixed Footer */}
             <div className="p-8 pt-4 border-t border-base-300 bg-base-100">
               <div className="flex justify-end">
-                <button 
-                  className="btn btn-primary px-8" 
+                <button
+                  className="btn btn-primary px-8"
                   onClick={handleScheduleMeetingFromDrawer}
                   disabled={!scheduleMeetingFormData.date || !scheduleMeetingFormData.time || isSchedulingMeeting}
                 >
@@ -5391,7 +6064,7 @@ const formatEmailBody = async (
                     </button>
                   </div>
                   <p className="text-sm text-gray-500 mt-2">
-                    {rescheduleOption === 'cancel' 
+                    {rescheduleOption === 'cancel'
                       ? 'Cancel the meeting and send cancellation email to client.'
                       : 'Cancel the previous meeting and create a new one. Client will be notified of both actions.'}
                   </p>
@@ -5490,7 +6163,7 @@ const formatEmailBody = async (
                             const filteredEmployees = allEmployees.filter(emp => {
                               return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
                             });
-                            
+
                             return filteredEmployees.length > 0 ? (
                               filteredEmployees.map(emp => {
                                 const isUnavailable = rescheduleFormData.date && rescheduleFormData.time
@@ -5499,11 +6172,10 @@ const formatEmailBody = async (
                                 return (
                                   <div
                                     key={emp.id}
-                                    className={`px-4 py-2 cursor-pointer flex items-center justify-between ${
-                                      isUnavailable
-                                        ? 'bg-red-50 text-red-600 hover:bg-red-100'
-                                        : 'hover:bg-gray-100'
-                                    }`}
+                                    className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isUnavailable
+                                      ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                                      : 'hover:bg-gray-100'
+                                      }`}
                                     onClick={() => {
                                       setRescheduleFormData((prev: any) => ({ ...prev, manager: emp.display_name }));
                                       setManagerSearchTerm('');
@@ -5557,7 +6229,7 @@ const formatEmailBody = async (
                             const filteredEmployees = allEmployees.filter(emp => {
                               return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
                             });
-                            
+
                             return filteredEmployees.length > 0 ? (
                               filteredEmployees.map(emp => {
                                 const isUnavailable = rescheduleFormData.date && rescheduleFormData.time
@@ -5566,11 +6238,10 @@ const formatEmailBody = async (
                                 return (
                                   <div
                                     key={emp.id}
-                                    className={`px-4 py-2 cursor-pointer flex items-center justify-between ${
-                                      isUnavailable
-                                        ? 'bg-red-50 text-red-600 hover:bg-red-100'
-                                        : 'hover:bg-gray-100'
-                                    }`}
+                                    className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isUnavailable
+                                      ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                                      : 'hover:bg-gray-100'
+                                      }`}
                                     onClick={() => {
                                       setRescheduleFormData((prev: any) => ({ ...prev, helper: emp.display_name }));
                                       setHelperSearchTerm('');

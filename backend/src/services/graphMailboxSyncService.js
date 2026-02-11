@@ -821,32 +821,27 @@ class GraphMailboxSyncService {
         }
 
         // Filter out matches where lead or contact email should be filtered
+        // BUT: For outgoing emails (sender is from office), we should NOT filter based on lead/contact email domain
+        // because these are system-sent emails that should always be saved
+        // For incoming emails, we should NOT filter based on lead/contact email domain either,
+        // because a client might send from their personal email even if the lead/contact record has an office email
+        // We only filter based on the sender email domain (handled elsewhere)
         const filteredMatches = Array.from(allMatches).filter((match) => {
-          // Check contact email if contact_id exists
-          if (match.contactId) {
-            const contactEmail = contactEmailsMap.get(match.contactId);
-            if (contactEmail && shouldFilterEmail(contactEmail)) {
-              console.log(`🚫 Skipping email record for contact ${match.contactId} (${contactEmail}) - filtered email`);
-              return false;
-            }
+          // If sender is from office (outgoing email), don't filter based on lead/contact email domain
+          // These are system-sent emails that should always be saved
+          if (isSenderFromOffice) {
+            return true; // Always include outgoing emails regardless of lead/contact email domain
           }
-
-          // Check lead email
-          if (match.clientId) {
-            const leadEmail = leadEmailsMap.get(`new_${match.clientId}`);
-            if (leadEmail && shouldFilterEmail(leadEmail)) {
-              console.log(`🚫 Skipping email record for new lead ${match.clientId} (${leadEmail}) - filtered email`);
-              return false;
-            }
-          }
-          if (match.legacyId) {
-            const leadEmail = leadEmailsMap.get(`legacy_${match.legacyId}`);
-            if (leadEmail && shouldFilterEmail(leadEmail)) {
-              console.log(`🚫 Skipping email record for legacy lead ${match.legacyId} (${leadEmail}) - filtered email`);
-              return false;
-            }
-          }
-
+          
+          // For incoming emails, we should NOT filter based on lead/contact email domain
+          // A client might send from their personal email (e.g., client@gmail.com) even if
+          // the lead/contact record has an office email. We should save the email because
+          // the sender is a legitimate client (not from @lawoffice.org.il).
+          // The sender email domain filtering is handled elsewhere (in the main filter at line ~947).
+          // 
+          // REMOVED: Filtering based on lead/contact email domain for incoming emails
+          // This was too aggressive and was blocking legitimate client emails
+          
           return true;
         });
 
@@ -1832,7 +1827,27 @@ class GraphMailboxSyncService {
       }
 
       // Filter out matches where lead or contact email should be filtered
+      // BUT: If we have explicit lead context (clientId, legacyId, or contactId from context),
+      // we should NOT filter based on email domain - these are system-sent emails that should always be saved
+      const originalContextMatch = {
+        clientId: clientId,
+        legacyId: legacyId,
+        contactId: context.contactId || context.contact_id || null,
+      };
+      
       const filteredMatches = Array.from(allMatches).filter((match) => {
+        // If this match is the original context match (the lead/contact the email was sent from),
+        // always include it regardless of email domain - it's a system-sent email
+        const isOriginalContext = 
+          (match.clientId && match.clientId === originalContextMatch.clientId) ||
+          (match.legacyId && match.legacyId === originalContextMatch.legacyId) ||
+          (match.contactId && match.contactId === originalContextMatch.contactId);
+        
+        if (isOriginalContext) {
+          return true; // Always include original context match
+        }
+        
+        // For other matches (found by recipient email), filter based on email domain
         // Check contact email if contact_id exists
         if (match.contactId) {
           const contactEmail = contactEmailsMap.get(match.contactId);

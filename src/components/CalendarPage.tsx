@@ -1237,6 +1237,7 @@ const CalendarPage: React.FC = () => {
         .lte('meeting_date', toDate)
         .not('meeting_date', 'is', null)
         .not('name', 'is', null)
+        .or('status.eq.0,status.is.null') // Filter out inactive leads
         .limit(1000)
         .order('meeting_date', { ascending: true });
 
@@ -1879,7 +1880,8 @@ const CalendarPage: React.FC = () => {
                   )
                 )
               `)
-              .in('id', clientIds);
+              .in('id', clientIds)
+              .is('unactivated_at', null); // Filter out inactive leads
 
             if (newLeadsData) {
               // Process each lead and extract currency data from the join
@@ -1970,7 +1972,8 @@ const CalendarPage: React.FC = () => {
                   )
                 )
               `)
-              .in('id', numericLegacyLeadIds);
+              .in('id', numericLegacyLeadIds)
+              .or('status.eq.0,status.is.null'); // Filter out inactive leads
 
             if (legacyLeadsData && legacyLeadsData.length > 0) {
               // Process each legacy lead and extract currency data from the join
@@ -2865,6 +2868,7 @@ const CalendarPage: React.FC = () => {
             )
           `)
           .in('id', uniqueClientIds)
+          .is('unactivated_at', null) // Filter out inactive leads
           .limit(500);
 
         if (leadsError) {
@@ -2935,6 +2939,7 @@ const CalendarPage: React.FC = () => {
             )
           `)
           .in('id', uniqueLegacyLeadIds)
+          .or('status.eq.0,status.is.null') // Filter out inactive leads
           .limit(500);
 
         if (legacyLeadsError) {
@@ -3012,6 +3017,7 @@ const CalendarPage: React.FC = () => {
         .lte('meeting_date', thirtyDaysFromNow)
         .not('meeting_date', 'is', null)
         .not('name', 'is', null)
+        .or('status.eq.0,status.is.null') // Filter out inactive leads
         .limit(500);
 
       // Process direct legacy meetings and convert currency to symbols
@@ -3283,6 +3289,7 @@ const CalendarPage: React.FC = () => {
           .not('meeting_date', 'is', null)
           .gte('meeting_date', threeMonthsAgo)
           .lte('meeting_date', thirtyDaysFromNow)
+          .or('status.eq.0,status.is.null') // Filter out inactive leads
           .order('meeting_date', { ascending: true })
           .order('meeting_time', { ascending: true });
 
@@ -3724,13 +3731,13 @@ const CalendarPage: React.FC = () => {
     const spaceBelow = viewportHeight - rect.bottom;
     const spaceAbove = rect.top;
     const estimatedDropdownHeight = 200; // Approximate height of dropdown with max-h-32 (128px) + some padding
-    
+
     // If there's not enough space below but enough space above, open upward
     const openUpward = spaceBelow < estimatedDropdownHeight && spaceAbove > estimatedDropdownHeight;
-    
+
     setDropdownPosition({
       x: rect.left,
-      y: openUpward 
+      y: openUpward
         ? rect.top // For upward: store top position of input (will be used as bottom value)
         : rect.bottom + window.scrollY, // For downward: use top positioning (distance from top of document)
       width: rect.width,
@@ -7026,7 +7033,7 @@ const CalendarPage: React.FC = () => {
           className="fixed z-[9999] max-h-32 overflow-y-auto border border-gray-200 rounded-lg bg-white shadow-lg"
           style={{
             left: dropdownPosition?.x || 0,
-            ...(dropdownPosition?.openUpward 
+            ...(dropdownPosition?.openUpward
               ? { bottom: window.innerHeight - (dropdownPosition.y || 0), top: 'auto' }
               : { top: dropdownPosition?.y || 0, bottom: 'auto' }
             ),

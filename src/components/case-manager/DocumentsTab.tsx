@@ -12,10 +12,15 @@ import {
   UserGroupIcon,
   FolderIcon,
   ChevronDownIcon,
-  EllipsisVerticalIcon
+  EllipsisVerticalIcon,
+  TableCellsIcon,
+  Squares2X2Icon,
+  CheckCircleIcon
 } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import { toast } from 'react-hot-toast';
+import UploadDocumentModal from './UploadDocumentModal';
+import DocumentModal from '../DocumentModal';
 
 interface HandlerLead {
   id: string;
@@ -39,7 +44,8 @@ interface HandlerLead {
 
 interface RequiredDocument {
   id: string;
-  lead_id: string;
+  lead_id?: string | null;
+  legacy_lead_id?: string | null;
   contact_id?: string;
   document_name: string;
   document_type: string;
@@ -63,6 +69,14 @@ interface RequiredDocument {
     name: string;
     lead_number: string;
   };
+  requested_by_user?: {
+    first_name?: string;
+    full_name?: string;
+  } | null;
+  requested_from_changed_by_user?: {
+    first_name?: string;
+    full_name?: string;
+  } | null;
 }
 
 interface DocumentTemplate {
@@ -114,6 +128,13 @@ interface HandlerTabProps {
 
 // Documents Tab Component with full CRUD functionality
 const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploadingLeadId, uploadedFiles, isUploading, handleFileInput }) => {
+  console.log('🚀 DocumentsTab - Component rendered/mounted');
+  console.log('🚀 DocumentsTab - Props received:', {
+    leadsCount: leads?.length || 0,
+    leads: leads,
+    hasUploadFiles: !!uploadFiles
+  });
+
     const [requiredDocuments, setRequiredDocuments] = useState<RequiredDocument[]>([]);
     const [contacts, setContacts] = useState<Contact[]>([]);
     const [documentTemplates, setDocumentTemplates] = useState<DocumentTemplate[]>([]);
@@ -129,8 +150,29 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
     const [draggedFile, setDraggedFile] = useState<File | null>(null);
     const [dragOverContact, setDragOverContact] = useState<string | null>(null);
     const [expandedContact, setExpandedContact] = useState<string | null>(null);
-    const [currentUser, setCurrentUser] = useState<{id: string, full_name: string} | null>(null);
+  const [currentUser, setCurrentUser] = useState<{ id: string, full_name: string } | null>(null);
     const [flippedCards, setFlippedCards] = useState<Set<string>>(new Set());
+  const [viewMode, setViewMode] = useState<'box' | 'table'>('table');
+  const [expandedTableRows, setExpandedTableRows] = useState<Set<string>>(new Set());
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [selectedContactForUpload, setSelectedContactForUpload] = useState<Contact | null>(null);
+  const [selectedLeadForUpload, setSelectedLeadForUpload] = useState<HandlerLead | null>(null);
+  const [showRequestModal, setShowRequestModal] = useState(false);
+  const [selectedContactForRequest, setSelectedContactForRequest] = useState<Contact | null>(null);
+  const [selectedLeadForRequest, setSelectedLeadForRequest] = useState<HandlerLead | null>(null);
+  const [selectedDocumentNameForRequest, setSelectedDocumentNameForRequest] = useState<string>('');
+  const [requestedFromForRequest, setRequestedFromForRequest] = useState<string>('');
+  const [plusDropdownOpen, setPlusDropdownOpen] = useState<string | null>(null);
+  const [showRequestDetailsModal, setShowRequestDetailsModal] = useState(false);
+  const [selectedDocumentForDetails, setSelectedDocumentForDetails] = useState<RequiredDocument | null>(null);
+  const [showDocumentEditModal, setShowDocumentEditModal] = useState(false);
+  const [selectedDocumentForEdit, setSelectedDocumentForEdit] = useState<RequiredDocument | null>(null);
+  const [templateDueDates, setTemplateDueDates] = useState<Record<string, string>>({});
+  const [templateStatuses, setTemplateStatuses] = useState<Record<string, 'pending' | 'received' | 'missing'>>({});
+  const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
+  const [selectedLeadForDocumentModal, setSelectedLeadForDocumentModal] = useState<HandlerLead | null>(null);
+  const [showDocumentsDropdown, setShowDocumentsDropdown] = useState(false);
+  const [showRemoveDocumentModal, setShowRemoveDocumentModal] = useState(false);
     
     // Mobile detection
     const [isMobile, setIsMobile] = useState(false);
@@ -160,11 +202,14 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
         if (openDropdown && !(event.target as Element).closest('.dropdown-menu')) {
           setOpenDropdown(null);
         }
+      if (showDocumentsDropdown && !(event.target as Element).closest('.documents-dropdown')) {
+        setShowDocumentsDropdown(false);
+      }
       };
 
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
-    }, [openDropdown]);
+  }, [openDropdown, showDocumentsDropdown]);
 
     useEffect(() => {
       const checkMobile = () => {
@@ -213,22 +258,135 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
     const fetchRequiredDocuments = async () => {
       setLoading(true);
       try {
-        // First fetch the documents
-        const { data: documents, error: documentsError } = await supabase
+      // Separate new leads (UUID) from legacy leads (numeric ID with "legacy_" prefix)
+      const newLeads = leads.filter(lead => !lead.id.startsWith('legacy_'));
+      const legacyLeads = leads.filter(lead => lead.id.startsWith('legacy_'));
+      const newLeadIds = newLeads.map(lead => lead.id);
+      const legacyLeadIds = legacyLeads.map(lead => lead.id.replace('legacy_', ''));
+
+      const allDocuments: RequiredDocument[] = [];
+
+      // Fetch documents for new leads (UUIDs)
+      if (newLeadIds.length > 0) {
+        console.log('🔍 Fetching documents for new leads:', newLeadIds);
+        const { data: newDocuments, error: newDocumentsError } = await supabase
           .from('lead_required_documents')
           .select('*')
-          .in('lead_id', leads.length > 0 ? leads.map((lead: HandlerLead) => lead.id) : [])
+          .in('lead_id', newLeadIds)
           .order('created_at', { ascending: false });
         
-        if (documentsError) {
-          toast.error('Error fetching documents: ' + documentsError.message);
-          return;
-        }
+        console.log('📥 Fetched new lead documents:', { count: newDocuments?.length || 0, documents: newDocuments });
 
-        if (documents) {
-          // Since we're now storing full names directly, we don't need to do user lookup
-          setRequiredDocuments(documents);
+        if (newDocumentsError) {
+          console.error('Error fetching new lead documents:', newDocumentsError);
+        } else if (newDocuments) {
+          allDocuments.push(...newDocuments);
         }
+      }
+
+      // Fetch documents for legacy leads
+      if (legacyLeadIds.length > 0) {
+        const { data: legacyDocuments, error: legacyDocumentsError } = await supabase
+          .from('lead_required_documents')
+          .select('*')
+          .in('legacy_lead_id', legacyLeadIds)
+          .order('created_at', { ascending: false });
+
+        if (legacyDocumentsError) {
+          console.error('Error fetching legacy lead documents:', legacyDocumentsError);
+        } else if (legacyDocuments) {
+          // Map legacy documents to include the full legacy lead ID
+          const mappedLegacyDocuments = legacyDocuments.map(doc => ({
+            ...doc,
+            lead_id: `legacy_${doc.legacy_lead_id}` // Add for compatibility
+          }));
+          allDocuments.push(...mappedLegacyDocuments);
+        }
+      }
+
+      // Fetch user information for requested_by and requested_from_changed_by
+      const userIds = new Set<string>();
+      allDocuments.forEach(doc => {
+        if (doc.requested_by && typeof doc.requested_by === 'string' && doc.requested_by.length > 10) {
+          // Check if it looks like a UUID
+          if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(doc.requested_by)) {
+            userIds.add(doc.requested_by);
+          }
+        }
+        if (doc.requested_from_changed_by && typeof doc.requested_from_changed_by === 'string' && doc.requested_from_changed_by.length > 10) {
+          if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(doc.requested_from_changed_by)) {
+            userIds.add(doc.requested_from_changed_by);
+          }
+        }
+      });
+
+      // Fetch users by ID
+      let usersMap: Record<string, { first_name?: string; full_name?: string }> = {};
+      if (userIds.size > 0) {
+        const { data: users, error: usersError } = await supabase
+          .from('users')
+          .select('id, first_name, full_name')
+          .in('id', Array.from(userIds));
+
+        if (!usersError && users) {
+          users.forEach(user => {
+            usersMap[user.id] = { first_name: user.first_name, full_name: user.full_name };
+          });
+        }
+      }
+
+      // Also try to fetch by full_name if requested_by or requested_from_changed_by is a name
+      const userNames = new Set<string>();
+      allDocuments.forEach(doc => {
+        if (doc.requested_by && typeof doc.requested_by === 'string' && !userIds.has(doc.requested_by)) {
+          userNames.add(doc.requested_by);
+        }
+        if (doc.requested_from_changed_by && typeof doc.requested_from_changed_by === 'string' && !userIds.has(doc.requested_from_changed_by)) {
+          userNames.add(doc.requested_from_changed_by);
+        }
+      });
+
+      if (userNames.size > 0) {
+        const nameArray = Array.from(userNames);
+        // Build OR conditions for Supabase
+        const orConditions = nameArray.map(name => `full_name.eq.${name},email.eq.${name}`).join(',');
+        const { data: usersByName, error: usersByNameError } = await supabase
+          .from('users')
+          .select('id, first_name, full_name, email')
+          .or(orConditions);
+
+        if (!usersByNameError && usersByName) {
+          usersByName.forEach(user => {
+            // Map by full_name or email
+            if (user.full_name && userNames.has(user.full_name)) {
+              usersMap[user.full_name] = { first_name: user.first_name, full_name: user.full_name };
+            }
+            if (user.email && userNames.has(user.email)) {
+              usersMap[user.email] = { first_name: user.first_name, full_name: user.full_name };
+            }
+          });
+        }
+      }
+
+      // Map user information to documents
+      const documentsWithUsers = allDocuments.map(doc => ({
+        ...doc,
+        requested_by_user: doc.requested_by ? usersMap[doc.requested_by] || null : null,
+        requested_from_changed_by_user: doc.requested_from_changed_by ? usersMap[doc.requested_from_changed_by] || null : null
+      }));
+
+      setRequiredDocuments(documentsWithUsers);
+      const uniqueDocNames = [...new Set(documentsWithUsers.map(d => d.document_name).filter(Boolean))];
+      console.log('📄 Fetched required documents:', {
+        count: documentsWithUsers.length,
+        documentNames: uniqueDocNames,
+        allDocuments: documentsWithUsers.map(d => ({
+          name: d.document_name,
+          lead_id: d.lead_id,
+          legacy_lead_id: d.legacy_lead_id,
+          contact_id: d.contact_id
+        }))
+      });
       } catch (err) {
         toast.error('Failed to fetch documents');
         console.error('Error fetching documents:', err);
@@ -256,33 +414,112 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
       }
     };
   
-    // Fetch contacts for this Documents tab
+  // Fetch contacts for this Documents tab (using same logic as ContactsTab)
     const fetchContacts = async () => {
-      if (leads.length === 0) return;
+    console.log('🚀 DocumentsTab - fetchContacts called');
+    console.log('🚀 DocumentsTab - leads.length:', leads.length);
+    console.log('🚀 DocumentsTab - leads:', leads);
+
+    if (leads.length === 0) {
+      console.log('⚠️ DocumentsTab - No leads, returning early');
+      return;
+    }
       
       try {
-        // Only fetch for new leads (legacy leads don't have contacts in the new system)
+      // Separate new leads (UUID) from legacy leads (numeric ID with "legacy_" prefix)
         const newLeads = leads.filter(lead => !lead.id.startsWith('legacy_'));
-        
-        if (newLeads.length === 0) {
-          setContacts([]);
-          return;
-        }
-        
-        const { data, error } = await supabase
+      const legacyLeads = leads.filter(lead => lead.id.startsWith('legacy_'));
+      const newLeadIds = newLeads.map(lead => lead.id);
+      const allContacts: Contact[] = [];
+
+      console.log('🚀 DocumentsTab - newLeads.length:', newLeads.length);
+      console.log('🚀 DocumentsTab - legacyLeads.length:', legacyLeads.length);
+      console.log('🚀 DocumentsTab - newLeadIds:', newLeadIds);
+
+      // Fetch contacts for new leads (contacts table)
+      if (newLeadIds.length > 0) {
+        console.log('🔍 DocumentsTab - Fetching contacts for lead IDs:', newLeadIds);
+        console.log('🔍 DocumentsTab - Number of new leads:', newLeads.length);
+
+        // Fetch all contacts that match any of the lead IDs
+        const { data: newContactsData, error: newContactsError } = await supabase
           .from('contacts')
           .select('*')
-          .in('lead_id', newLeads.map(lead => lead.id))
+          .in('lead_id', newLeadIds)
+          .order('is_main_applicant', { ascending: false })
+          .order('created_at', { ascending: true });
+
+        if (newContactsError) {
+          console.error('❌ DocumentsTab - Error fetching new contacts:', newContactsError);
+          toast.error('Error fetching contacts: ' + newContactsError.message);
+        } else {
+          console.log('🔍 DocumentsTab - Fetched contacts from database:', newContactsData?.length || 0);
+          if (newContactsData && newContactsData.length > 0) {
+            console.log('🔍 DocumentsTab - Sample contact data:', newContactsData[0]);
+          }
+
+          if (newContactsData && newContactsData.length > 0) {
+            // Filter to only include contacts that match our leads (in case of any data inconsistencies)
+            const validContacts = newContactsData.filter(contact => {
+              const isValid = contact.lead_id && newLeadIds.includes(contact.lead_id);
+              if (!isValid) {
+                console.warn('⚠️ DocumentsTab - Contact with invalid lead_id found:', {
+                  contact_id: contact.id,
+                  contact_name: contact.name,
+                  lead_id: contact.lead_id,
+                  expected_lead_ids: newLeadIds
+                });
+              }
+              return isValid;
+            });
+
+            console.log('🔍 DocumentsTab - Valid contacts after filtering:', validContacts.length);
+            allContacts.push(...validContacts);
+            console.log('🔍 DocumentsTab - Total contacts after processing:', allContacts.length);
+          } else {
+            console.log('🔍 DocumentsTab - No contacts found in database for these lead IDs');
+          }
+        }
+      }
+
+      // Fetch contacts for legacy leads (same logic as ContactsTab)
+      if (legacyLeads.length > 0) {
+        console.log('🔍 DocumentsTab - Fetching contacts for legacy leads:', legacyLeads.length);
+        for (const legacyLead of legacyLeads) {
+          const legacyId = legacyLead.id.replace('legacy_', '');
+          const legacyIdPattern = `[LEGACY_LEAD_ID:${legacyId}]`;
+
+          console.log('🔍 DocumentsTab - Checking legacy lead:', legacyId, 'pattern:', legacyIdPattern);
+
+          // First, try to fetch from unified contacts table (if migrated or newly added)
+          const { data: migratedContacts, error: migratedError } = await supabase
+          .from('contacts')
+          .select('*')
+            .like('contact_notes', `%${legacyIdPattern}%`)
           .order('is_main_applicant', { ascending: false })
           .order('created_at', { ascending: true });
         
-        if (error) {
-          console.error('Error fetching contacts:', error.message);
-        } else if (data) {
-          setContacts(data);
+          if (!migratedError && migratedContacts && migratedContacts.length > 0) {
+            console.log('🔍 DocumentsTab - Found', migratedContacts.length, 'contacts for legacy lead in contacts table');
+            // Map contacts with legacy lead_id
+            const legacyContactsWithLeadId = migratedContacts.map(contact => ({
+              ...contact,
+              lead_id: legacyLead.id,
+              is_legacy: true
+            }));
+            allContacts.push(...legacyContactsWithLeadId);
+            console.log('🔍 DocumentsTab - Added legacy contacts, total now:', allContacts.length);
+          } else {
+            console.log('🔍 DocumentsTab - No contacts found in unified table for legacy lead:', legacyId);
+          }
         }
+      }
+
+      console.log('🔍 DocumentsTab - Final total contacts:', allContacts.length);
+      setContacts(allContacts);
       } catch (err) {
         console.error('Failed to fetch contacts:', err);
+      toast.error('Failed to fetch contacts');
       }
     };
   
@@ -349,37 +586,76 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
     };
   
     useEffect(() => {
+    console.log('🚀 DocumentsTab - useEffect triggered, leads.length:', leads.length);
       fetchCurrentUser();
       if (leads.length > 0) {
+      console.log('🚀 DocumentsTab - Calling fetch functions...');
         fetchRequiredDocuments();
         fetchDocumentTemplates();
         fetchContacts();
+    } else {
+      console.log('⚠️ DocumentsTab - No leads, skipping fetch');
       }
     }, [leads]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (plusDropdownOpen) {
+        setPlusDropdownOpen(null);
+      }
+    };
+    document.addEventListener('click', handleClickOutside);
+    return () => {
+      document.removeEventListener('click', handleClickOutside);
+    };
+  }, [plusDropdownOpen]);
   
     // Add new required document
     const addRequiredDocument = async () => {
-      if (!newDocument.document_name.trim() || !selectedLead) {
+    // Auto-select lead if only one is available
+    const leadToUse = selectedLead || (leads.length === 1 ? leads[0] : null);
+
+    if (!newDocument.document_name.trim() || !leadToUse) {
         toast.error('Document name and lead are required');
         return;
       }
   
       try {
-        const documentData = {
-          ...newDocument,
-          lead_id: selectedLead.id,
+      const isLegacyLead = leadToUse.id.startsWith('legacy_');
+
+      const documentData: any = {
+        document_name: newDocument.document_name,
+        document_type: newDocument.document_type,
           contact_id: selectedContact?.id || null,
-          requested_by: 'current_user', // Replace with actual user
-          due_date: newDocument.due_date || null
-        };
-  
-        const { error } = await supabase
+        is_required: newDocument.is_required,
+        notes: newDocument.notes || null,
+        due_date: newDocument.due_date || null,
+        status: 'pending',
+        requested_by: currentUser?.id || currentUser?.full_name || 'System User',
+        requested_date: new Date().toISOString()
+      };
+
+      // For legacy leads, use legacy_lead_id; for new leads, use lead_id
+      if (isLegacyLead) {
+        // Remove "legacy_" prefix when saving to legacy_lead_id column
+        documentData.legacy_lead_id = leadToUse.id.replace('legacy_', '');
+        documentData.lead_id = null;
+      } else {
+        documentData.lead_id = leadToUse.id;
+        documentData.legacy_lead_id = null;
+      }
+
+      const { data: insertedDocument, error } = await supabase
           .from('lead_required_documents')
-          .insert(documentData);
+        .insert(documentData)
+        .select();
         
         if (error) {
           toast.error('Error adding document: ' + error.message);
+        console.error('Error adding document:', error);
         } else {
+        console.log('✅ Document added successfully:', insertedDocument);
           toast.success('Document added successfully');
           setShowAddDocModal(false);
           setNewDocument({
@@ -390,7 +666,10 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
             is_required: true
           });
           setSelectedLead(null);
+        setSelectedContact(null);
+        // Force a refresh of documents
           await fetchRequiredDocuments();
+        console.log('✅ Documents refreshed after adding new document');
         }
       } catch (err) {
         toast.error('Failed to add document');
@@ -406,24 +685,67 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
           return;
         }
   
-        // Use the stored procedure for tracking
-        const { error } = await supabase.rpc('update_document_status_with_tracking', {
+      // Prepare update data
+      const updateData: any = {
+        status: status
+      };
+
+      // Set received_date if status is 'received'
+      if (status === 'received') {
+        updateData.received_date = new Date().toISOString();
+      }
+
+      // Try stored procedure first, fallback to direct update
+      const { error: rpcError } = await supabase.rpc('update_document_status_with_tracking', {
           p_document_id: documentId,
           p_new_status: status,
-          p_changed_by: currentUser.id,
+        p_changed_by: currentUser.id || currentUser.full_name,
           p_change_reason: changeReason || null,
           p_notes: notes || null
         });
         
-        if (error) {
-          toast.error('Error updating document: ' + error.message);
+      if (rpcError) {
+        // Fallback to direct update if stored procedure fails
+        console.warn('Stored procedure failed, using direct update:', rpcError);
+        const { error: updateError } = await supabase
+          .from('lead_required_documents')
+          .update(updateData)
+          .eq('id', documentId);
+
+        if (updateError) {
+          toast.error('Error updating document: ' + updateError.message);
+          console.error('Error updating document status:', updateError);
+          return;
+        }
+      }
+
+      toast.success(`Document status updated to ${status}`);
+      await fetchRequiredDocuments();
+    } catch (err) {
+      // Final fallback: try direct update
+      try {
+        const updateData: any = {
+          status: status
+        };
+        if (status === 'received') {
+          updateData.received_date = new Date().toISOString();
+        }
+        const { error: updateError } = await supabase
+          .from('lead_required_documents')
+          .update(updateData)
+          .eq('id', documentId);
+
+        if (updateError) {
+          toast.error('Failed to update document: ' + updateError.message);
+          console.error('Error updating document status:', updateError);
         } else {
           toast.success(`Document status updated to ${status}`);
           await fetchRequiredDocuments();
         }
-      } catch (err) {
+      } catch (fallbackErr) {
         toast.error('Failed to update document');
-        console.error('Error updating document status:', err);
+        console.error('Error updating document status:', fallbackErr);
+      }
       }
     };
 
@@ -435,25 +757,167 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
           return;
         }
   
-        const { error } = await supabase.rpc('update_document_requested_from_with_name_tracking', {
+      // Try stored procedure first, fallback to direct update
+      const { error: rpcError } = await supabase.rpc('update_document_requested_from_with_name_tracking', {
           p_document_id: documentId,
           p_requested_from: requestedFrom,
           p_changed_by_name: currentUser.full_name
         });
         
-        if (error) {
-          toast.error('Error updating requested from: ' + error.message);
+      if (rpcError) {
+        // Fallback to direct update if stored procedure fails
+        console.warn('Stored procedure failed, using direct update:', rpcError);
+        const { error: updateError } = await supabase
+          .from('lead_required_documents')
+          .update({ requested_from: requestedFrom || null })
+          .eq('id', documentId);
+
+        if (updateError) {
+          toast.error('Error updating requested from: ' + updateError.message);
+          console.error('Error updating requested from:', updateError);
+          return;
+        }
+      }
+
+      toast.success(`Requested from updated to ${requestedFrom || 'none'}`);
+      await fetchRequiredDocuments();
+    } catch (err) {
+      // Final fallback: try direct update
+      try {
+        const { error: updateError } = await supabase
+          .from('lead_required_documents')
+          .update({ requested_from: requestedFrom || null })
+          .eq('id', documentId);
+
+        if (updateError) {
+          toast.error('Failed to update requested from: ' + updateError.message);
+          console.error('Error updating requested from:', updateError);
         } else {
-          toast.success(`Requested from updated to ${requestedFrom}`);
+          toast.success(`Requested from updated to ${requestedFrom || 'none'}`);
           await fetchRequiredDocuments();
         }
-      } catch (err) {
+      } catch (fallbackErr) {
         toast.error('Failed to update requested from');
-        console.error('Error updating requested from:', err);
+        console.error('Error updating requested from:', fallbackErr);
+      }
+    }
+  };
+
+  // Request a document (create document requirement)
+  const requestDocument = async (contact: Contact, lead: HandlerLead, documentName: string, requestedFrom: string) => {
+    try {
+      if (!currentUser) {
+        toast.error('User not authenticated');
+        return;
+      }
+
+      // Check if this is a legacy lead
+      const isLegacyLead = lead.id.startsWith('legacy_');
+      const legacyLeadId = isLegacyLead ? lead.id.replace('legacy_', '') : null;
+
+      // Find the template for this document
+      const template = documentTemplates.find(t => t.name === documentName);
+      const defaultDueDate = template ? (() => {
+        const date = new Date();
+        date.setDate(date.getDate() + template.typical_due_days);
+        return date.toISOString();
+      })() : null;
+
+      const documentData: any = {
+        contact_id: contact.id,
+        document_name: documentName,
+        document_type: template?.category || 'identity',
+        due_date: defaultDueDate,
+        notes: template?.instructions || null,
+        is_required: true,
+        status: 'pending',
+        requested_from: requestedFrom,
+        requested_by: currentUser.id || currentUser.full_name || 'System User',
+        requested_date: new Date().toISOString()
+      };
+
+      // Set lead_id or legacy_lead_id based on lead type
+      if (isLegacyLead) {
+        documentData.legacy_lead_id = legacyLeadId;
+        documentData.lead_id = null;
+      } else {
+        documentData.lead_id = lead.id;
+        documentData.legacy_lead_id = null;
+      }
+
+      const { error } = await supabase
+        .from('lead_required_documents')
+        .insert(documentData)
+        .select()
+        .single();
+
+        if (error) {
+        toast.error('Error requesting document: ' + error.message);
+        console.error('Error requesting document:', error);
+        } else {
+        toast.success(`${documentName} requested successfully`);
+          await fetchRequiredDocuments();
+        setShowRequestModal(false);
+        setSelectedContactForRequest(null);
+        setSelectedLeadForRequest(null);
+        setSelectedDocumentNameForRequest('');
+        setRequestedFromForRequest('');
+        }
+      } catch (err) {
+      toast.error('Failed to request document');
+      console.error('Error requesting document:', err);
       }
     };
 
     // Update document received_from with tracking
+  // Get custom document names (excluding default documents)
+  const getCustomDocumentNames = (): string[] => {
+    const defaultDocumentNames = ['Birth Certificate', 'Marriage Certificate', 'Passport Copy', 'Police Certificate'];
+    const allDocumentNames = new Set<string>();
+
+    requiredDocuments.forEach(doc => {
+      if (doc.document_name && !defaultDocumentNames.includes(doc.document_name)) {
+        allDocumentNames.add(doc.document_name);
+      }
+    });
+
+    return Array.from(allDocumentNames).sort();
+  };
+
+  // Delete all documents with a specific document name
+  const deleteRequiredDocument = async (documentName: string) => {
+    try {
+      // Get all documents with this name for all leads
+      const documentsToDelete = requiredDocuments.filter(doc => doc.document_name === documentName);
+
+      if (documentsToDelete.length === 0) {
+        toast.error('No documents found to delete');
+        return;
+      }
+
+      // Delete all documents with this name
+      const documentIds = documentsToDelete.map(doc => doc.id);
+
+      const { error } = await supabase
+        .from('lead_required_documents')
+        .delete()
+        .in('id', documentIds);
+
+      if (error) {
+        toast.error('Error deleting documents: ' + error.message);
+        console.error('Error deleting documents:', error);
+        return;
+      }
+
+      toast.success(`Successfully removed "${documentName}" document requirement`);
+      await fetchRequiredDocuments();
+      setShowRemoveDocumentModal(false);
+    } catch (err) {
+      toast.error('Failed to delete documents');
+      console.error('Error deleting documents:', err);
+    }
+  };
+
     const updateDocumentReceivedFrom = async (documentId: string, receivedFrom: string) => {
       try {
         if (!currentUser) {
@@ -461,21 +925,49 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
           return;
         }
   
-        const { error } = await supabase.rpc('update_document_received_from_with_name_tracking', {
+      // Try stored procedure first, fallback to direct update
+      const { error: rpcError } = await supabase.rpc('update_document_received_from_with_name_tracking', {
           p_document_id: documentId,
           p_received_from: receivedFrom,
           p_changed_by_name: currentUser.full_name
         });
         
-        if (error) {
-          toast.error('Error updating received from: ' + error.message);
+      if (rpcError) {
+        // Fallback to direct update if stored procedure fails
+        console.warn('Stored procedure failed, using direct update:', rpcError);
+        const { error: updateError } = await supabase
+          .from('lead_required_documents')
+          .update({ received_from: receivedFrom || null })
+          .eq('id', documentId);
+
+        if (updateError) {
+          toast.error('Error updating received from: ' + updateError.message);
+          console.error('Error updating received from:', updateError);
+          return;
+        }
+      }
+
+      toast.success(`Received from updated to ${receivedFrom || 'none'}`);
+      await fetchRequiredDocuments();
+    } catch (err) {
+      // Final fallback: try direct update
+      try {
+        const { error: updateError } = await supabase
+          .from('lead_required_documents')
+          .update({ received_from: receivedFrom || null })
+          .eq('id', documentId);
+
+        if (updateError) {
+          toast.error('Failed to update received from: ' + updateError.message);
+          console.error('Error updating received from:', updateError);
         } else {
-          toast.success(`Received from updated to ${receivedFrom}`);
+          toast.success(`Received from updated to ${receivedFrom || 'none'}`);
           await fetchRequiredDocuments();
         }
-      } catch (err) {
+      } catch (fallbackErr) {
         toast.error('Failed to update received from');
-        console.error('Error updating received from:', err);
+        console.error('Error updating received from:', fallbackErr);
+      }
       }
     };
   
@@ -529,18 +1021,27 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
     };
   
     // Add template document to lead
-    const addTemplateDocument = async (leadId: string, template: DocumentTemplate) => {
+  const addTemplateDocument = async (leadId: string, template: DocumentTemplate, contactId?: string) => {
+    // Check if this is a legacy lead
+    if (leadId.startsWith('legacy_')) {
+      toast.error('Cannot add documents for legacy leads. Please use the legacy system.');
+      return;
+    }
+
       try {
         const dueDate = new Date();
         dueDate.setDate(dueDate.getDate() + template.typical_due_days);
   
         const documentData = {
           lead_id: leadId,
+        contact_id: contactId || null,
           document_name: template.name,
           document_type: template.category,
           due_date: dueDate.toISOString(),
           notes: template.instructions,
-          requested_by: 'current_user'
+        is_required: true,
+        status: 'pending',
+        requested_by: currentUser?.id || currentUser?.full_name || 'System User'
         };
   
         const { error } = await supabase
@@ -572,7 +1073,13 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
   
     // Get documents for a specific lead
     const getLeadDocuments = (leadId: string) => {
+    const isLegacyLead = leadId.startsWith('legacy_');
+    if (isLegacyLead) {
+      const legacyId = leadId.replace('legacy_', '');
+      return requiredDocuments.filter(doc => doc.legacy_lead_id === legacyId);
+    } else {
       return requiredDocuments.filter(doc => doc.lead_id === leadId);
+    }
     };
   
     if (loading) {
@@ -593,24 +1100,362 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
               <h3 className="text-lg sm:text-xl font-bold text-gray-900">Document Management</h3>
               <p className="text-sm sm:text-base text-gray-600">Manage required documents for all cases</p>
             </div>
+          <div className="flex items-center gap-3">
+            {/* View Toggle */}
+            <div className="flex items-center gap-2 bg-gray-100 rounded-lg p-1">
             <button 
-              className="btn btn-primary gap-2 text-sm sm:text-base"
-              onClick={() => setShowAddDocModal(true)}
+                className={`btn btn-sm ${viewMode === 'box' ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => setViewMode('box')}
+                title="Box View"
+              >
+                <Squares2X2Icon className="w-4 h-4" />
+              </button>
+              <button
+                className={`btn btn-sm ${viewMode === 'table' ? 'btn-primary' : 'btn-ghost'}`}
+                onClick={() => setViewMode('table')}
+                title="Table View"
+              >
+                <TableCellsIcon className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="relative documents-dropdown">
+              <button
+                className="btn btn-primary btn-circle"
+                onClick={() => setShowDocumentsDropdown(!showDocumentsDropdown)}
+                title="Document Actions"
+              >
+                <EllipsisVerticalIcon className="w-5 h-5" />
+              </button>
+              {showDocumentsDropdown && (
+                <div className="absolute right-0 top-full mt-2 bg-white border border-gray-200 rounded-lg shadow-lg z-50 min-w-[200px]">
+                  <button
+                    className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowAddDocModal(true);
+                      setShowDocumentsDropdown(false);
+                    }}
             >
               <PlusIcon className="w-4 h-4" />
               Add Document Requirement
             </button>
+                  {leads.length > 0 && (
+                    <button
+                      className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const firstLead = leads[0];
+                        setSelectedLeadForDocumentModal(firstLead);
+                        setIsDocumentModalOpen(true);
+                        setShowDocumentsDropdown(false);
+                      }}
+                    >
+                      <FolderIcon className="w-4 h-4" />
+                      View All Documents
+                    </button>
+                  )}
+                  <button
+                    className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowRemoveDocumentModal(true);
+                      setShowDocumentsDropdown(false);
+                    }}
+                  >
+                    <TrashIcon className="w-4 h-4" />
+                    Remove Required Document
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
           </div>
         </div>
 
         {/* Content Container with Background */}
-        <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-3 sm:p-6">
           {leads.length === 0 ? (
+        <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-3 sm:p-6">
             <div className="text-center py-16 px-8 text-gray-500">
               <DocumentTextIcon className="w-16 h-16 mx-auto mb-4 text-gray-300" />
               <p className="text-lg font-medium mb-1">No cases to manage documents</p>
             </div>
-          ) : (
+        </div>
+      ) : viewMode === 'table' ? (
+        /* Table View - Show contacts with dynamic document columns */
+        <div className="w-full overflow-x-auto">
+          {(() => {
+            // Default document names that should always be shown
+            const defaultDocumentNames = ['Birth Certificate', 'Marriage Certificate', 'Passport Copy', 'Police Certificate'];
+
+            // Get all unique document names from requiredDocuments across all leads
+            const allDocumentNames = new Set<string>();
+
+            // Always include default documents
+            defaultDocumentNames.forEach(name => allDocumentNames.add(name));
+
+            // Add all other documents from the database
+            requiredDocuments.forEach(doc => {
+              if (doc.document_name) {
+                allDocumentNames.add(doc.document_name);
+              }
+            });
+
+            // Convert to array: default documents first, then others sorted
+            const defaultDocs = defaultDocumentNames.filter(name => allDocumentNames.has(name));
+            const otherDocs = Array.from(allDocumentNames).filter(name => !defaultDocumentNames.includes(name)).sort();
+            const documentNamesArray = [...defaultDocs, ...otherDocs];
+
+
+            // Collect all contacts from all leads
+            const allContactsList: Contact[] = [];
+            leads.forEach((lead) => {
+              const leadContacts = contacts.filter(contact => contact.lead_id === lead.id);
+              allContactsList.push(...leadContacts);
+            });
+
+            // Calculate colspan: Contact Name + Relationship + all document columns
+            const totalCols = 2 + documentNamesArray.length;
+
+            return (
+              <table className="table w-full">
+                <thead>
+                  <tr>
+                    <th>Contact Name</th>
+                    <th>Relationship</th>
+                    {documentNamesArray.map(docName => (
+                      <th key={docName}>{docName}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {allContactsList.length === 0 ? (
+                    <tr>
+                      <td colSpan={totalCols} className="text-center py-16 text-gray-500">
+                        <UserGroupIcon className="w-16 h-16 mx-auto mb-4 text-gray-300" />
+                        <p className="text-lg font-medium mb-1">No applicants found</p>
+                        <p className="text-sm text-gray-400">Add applicants in the Contacts tab first</p>
+                      </td>
+                    </tr>
+                  ) : (
+                    allContactsList.map((contact) => {
+                      const lead = leads.find(l => l.id === contact.lead_id);
+                      if (!lead) return null;
+
+                      // Get documents for this specific contact OR documents for all applicants (contact_id is null) for this lead
+                      const isLegacyLead = lead.id.startsWith('legacy_');
+                      const contactDocs = requiredDocuments.filter(doc => {
+                        // Document specific to this contact
+                        if (doc.contact_id === contact.id) {
+                          if (isLegacyLead) {
+                            return doc.legacy_lead_id === lead.id.replace('legacy_', '');
+                          } else {
+                            return doc.lead_id === lead.id;
+                          }
+                        }
+                        // Document for all applicants (contact_id is null)
+                        if (doc.contact_id === null) {
+                          if (isLegacyLead) {
+                            return doc.legacy_lead_id === lead.id.replace('legacy_', '');
+                          } else {
+                            return doc.lead_id === lead.id;
+                          }
+                        }
+                        return false;
+                      });
+
+                      // Helper function to get document for a specific name
+                      const getDocumentForName = (docName: string) => {
+                        // First try to find a document specific to this contact
+                        const contactSpecificDoc = contactDocs.find(doc => doc.document_name === docName && doc.contact_id === contact.id);
+                        if (contactSpecificDoc) return contactSpecificDoc;
+                        // If not found, return a document for all applicants (contact_id is null)
+                        return contactDocs.find(doc => doc.document_name === docName && doc.contact_id === null);
+                      };
+
+                      // Render document cell for a specific document name
+                      const renderDocumentCell = (docName: string) => {
+                        const doc = getDocumentForName(docName);
+
+                        if (!doc) {
+                          // Document doesn't exist - show dropdown with options
+                          const dropdownId = `${contact.id}-${docName}`;
+                          const isDropdownOpen = plusDropdownOpen === dropdownId;
+                          return (
+                            <td className="text-center" onClick={(e) => e.stopPropagation()}>
+                              <div className="relative dropdown">
+                                <button
+                                  className="btn btn-ghost btn-xs text-green-600 hover:bg-green-600 hover:text-white"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setPlusDropdownOpen(isDropdownOpen ? null : dropdownId);
+                                  }}
+                                  title={`Add ${docName}`}
+                                >
+                                  <PlusIcon className="w-4 h-4" />
+                                </button>
+                                {isDropdownOpen && (
+                                  <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 min-w-[180px]">
+                                    <button
+                                      className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (lead) {
+                                          setSelectedContactForUpload(contact);
+                                          setSelectedLeadForUpload(lead);
+                                          setShowUploadModal(true);
+                                          setPlusDropdownOpen(null);
+                                        }
+                                      }}
+                                    >
+                                      <CloudArrowUpIcon className="w-5 h-5" />
+                                      Upload Document
+                                    </button>
+                                    <button
+                                      className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (lead) {
+                                          setSelectedContactForRequest(contact);
+                                          setSelectedLeadForRequest(lead);
+                                          setSelectedDocumentNameForRequest(docName);
+                                          setShowRequestModal(true);
+                                          setPlusDropdownOpen(null);
+                                        }
+                                      }}
+                                    >
+                                      <DocumentTextIcon className="w-4 h-4" />
+                                      Request Document
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                          );
+                        }
+
+                        // Document exists - show status and controls
+                        // If requested_from is set, show simplified view with date stamp (clickable to open modal)
+                        // If requested_from is NOT set, show plus icon with dropdown (same as when document doesn't exist)
+                        if (doc.requested_from) {
+                          // Document is requested - show simplified view
+                          return (
+                            <td onClick={(e) => e.stopPropagation()}>
+                              <div className="flex items-center gap-2 p-1 rounded text-xs">
+                                <div
+                                  className="cursor-pointer hover:bg-gray-100 flex-1 p-1 rounded text-gray-500 flex items-center gap-2"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedDocumentForEdit(doc);
+                                    setShowDocumentEditModal(true);
+                                  }}
+                                  title="Click to edit document details"
+                                >
+                                  <span>
+                                    {doc.requested_from_changed_at ? new Date(doc.requested_from_changed_at).toLocaleDateString() : doc.requested_date ? new Date(doc.requested_date).toLocaleDateString() : '-'} • {doc.requested_from_changed_by_user?.first_name || doc.requested_from_changed_by_user?.full_name || doc.requested_by_user?.first_name || doc.requested_by_user?.full_name || doc.requested_from_changed_by || doc.requested_by || 'Unknown'}
+                                  </span>
+                                  {doc.status !== 'received' && (
+                                    <button
+                                      className="btn btn-ghost btn-xs text-blue-600 hover:bg-blue-600 hover:text-white flex-shrink-0"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (lead) {
+                                          setSelectedContactForUpload(contact);
+                                          setSelectedLeadForUpload(lead);
+                                          setShowUploadModal(true);
+                                        }
+                                      }}
+                                      title="Upload Document"
+                                    >
+                                      <CloudArrowUpIcon className="w-6 h-6" />
+                                    </button>
+                                  )}
+                                  {doc.status === 'received' && (
+                                    <CheckCircleIcon className="w-6 h-6 text-green-600 flex-shrink-0" title="Received" />
+                                  )}
+                                </div>
+                              </div>
+                            </td>
+                          );
+                        }
+
+                        // Document exists but not requested - show plus icon with dropdown (same as when document doesn't exist)
+                        const dropdownId = `${contact.id}-${docName}-existing`;
+                        const isDropdownOpen = plusDropdownOpen === dropdownId;
+                        return (
+                          <td className="text-center" onClick={(e) => e.stopPropagation()}>
+                            <div className="relative dropdown">
+                              <button
+                                className="btn btn-ghost btn-xs text-green-600 hover:bg-green-600 hover:text-white"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPlusDropdownOpen(isDropdownOpen ? null : dropdownId);
+                                }}
+                                title={`Add ${docName}`}
+                              >
+                                <PlusIcon className="w-4 h-4" />
+                              </button>
+                              {isDropdownOpen && (
+                                <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 min-w-[180px]">
+                                  <button
+                                    className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (lead) {
+                                        setSelectedContactForUpload(contact);
+                                        setSelectedLeadForUpload(lead);
+                                        setShowUploadModal(true);
+                                        setPlusDropdownOpen(null);
+                                      }
+                                    }}
+                                  >
+                                    <CloudArrowUpIcon className="w-5 h-5" />
+                                    Upload Document
+                                  </button>
+                                  <button
+                                    className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (lead) {
+                                        setSelectedContactForRequest(contact);
+                                        setSelectedLeadForRequest(lead);
+                                        setSelectedDocumentNameForRequest(docName);
+                                        setShowRequestModal(true);
+                                        setPlusDropdownOpen(null);
+                                      }
+                                    }}
+                                  >
+                                    <DocumentTextIcon className="w-4 h-4" />
+                                    Request Document
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        );
+                      };
+
+                      return (
+                        <tr key={contact.id} className="hover:bg-gray-50">
+                          <td className="font-semibold">{contact.name}</td>
+                          <td>
+                            {contact.relationship ? (
+                              <span>{contact.relationship.replace('_', ' ')}</span>
+                            ) : (
+                              <span className="text-gray-400">-</span>
+                            )}
+                          </td>
+                          {documentNamesArray.map(docName => renderDocumentCell(docName))}
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            );
+          })()}
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-3 sm:p-6">
             <div className="w-full">
               {leads.map((lead) => {
                 const leadContacts = contacts.filter(contact => contact.lead_id === lead.id);
@@ -658,8 +1503,7 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                         return (
                           <div 
                             key={contact.id} 
-                            className={`relative bg-white rounded-xl shadow-lg border border-gray-200 transition-all duration-300 hover:shadow-xl cursor-pointer ${
-                              dragOverContact === contact.id 
+                            className={`relative bg-white rounded-xl shadow-lg border border-gray-200 transition-all duration-300 hover:shadow-xl cursor-pointer ${dragOverContact === contact.id
                                 ? 'border-blue-500 bg-blue-50 scale-105 shadow-xl' 
                                 : 'hover:border-gray-300'
                             } ${isExpanded ? 'col-span-full' : ''} ${flippedCards.has(contact.id) ? 'min-h-[600px]' : ''}`}
@@ -686,7 +1530,7 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                                   {/* Completion Progress Ring */}
                                   <div className="absolute -top-4 -right-4">
                                     <div className="radial-progress text-white text-xs font-bold bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600" 
-                                    style={{"--value": completionPercentage, "--size": "3rem"} as React.CSSProperties}
+                                      style={{ "--value": completionPercentage, "--size": "3rem" } as React.CSSProperties}
                                     role="progressbar">
                                       {completionPercentage}%
                                     </div>
@@ -735,8 +1579,7 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                                   </div>
   
                                   {/* Drag & Drop Area - Compact */}
-                                  <div className={`mb-3 sm:mb-4 p-2 sm:p-3 border-2 border-dashed rounded-lg text-center transition-all duration-300 cursor-pointer ${
-                                    dragOverContact === contact.id 
+                                  <div className={`mb-3 sm:mb-4 p-2 sm:p-3 border-2 border-dashed rounded-lg text-center transition-all duration-300 cursor-pointer ${dragOverContact === contact.id
                                       ? 'border-purple-500 bg-purple-100' 
                                       : 'border-gray-300 bg-gray-50 hover:border-purple-400'
                                   }`}>
@@ -1160,11 +2003,12 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
               );
             })}
           </div>
+          </div>
         )}
   
         {/* Add Document Modal */}
         {showAddDocModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/30">
             <div className="bg-white rounded-2xl p-6 max-w-md w-full max-h-[90vh] overflow-y-auto">
               <div className="flex items-center justify-between mb-6">
                 <h3 className="text-xl font-bold">Add Document Requirement</h3>
@@ -1172,6 +2016,14 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                   onClick={() => {
                     setShowAddDocModal(false);
                     setSelectedLead(null);
+                  setSelectedContact(null);
+                  setNewDocument({
+                    document_name: '',
+                    document_type: 'identity',
+                    due_date: '',
+                    notes: '',
+                    is_required: true
+                  });
                   }}
                   className="btn btn-ghost btn-circle btn-sm"
                 >
@@ -1180,7 +2032,7 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
               </div>
   
               <div className="space-y-4">
-                {!selectedLead && (
+              {!selectedLead && leads.length > 1 && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Lead *</label>
                     <select
@@ -1189,6 +2041,7 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                       onChange={(e) => {
                         const lead = leads.find((l: HandlerLead) => l.id === e.target.value);
                         setSelectedLead(lead || null);
+                      setSelectedContact(null); // Reset contact when lead changes
                       }}
                     >
                       <option value="">Select a lead...</option>
@@ -1200,6 +2053,17 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                     </select>
                   </div>
                 )}
+              {!selectedLead && leads.length === 1 && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Lead *</label>
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    value={`${leads[0].name} - #${leads[0].lead_number}`}
+                    disabled
+                  />
+                </div>
+              )}
   
                 {selectedLead && (
                   <div>
@@ -1286,6 +2150,14 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                   onClick={() => {
                     setShowAddDocModal(false);
                     setSelectedLead(null);
+                  setSelectedContact(null);
+                  setNewDocument({
+                    document_name: '',
+                    document_type: 'identity',
+                    due_date: '',
+                    notes: '',
+                    is_required: true
+                  });
                   }}
                 >
                   Cancel
@@ -1501,7 +2373,470 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
             </div>
           </div>
         )}
+
+      {/* Upload Document Modal */}
+      <UploadDocumentModal
+        isOpen={showUploadModal}
+        onClose={() => {
+          setShowUploadModal(false);
+          setSelectedContactForUpload(null);
+          setSelectedLeadForUpload(null);
+        }}
+        contact={selectedContactForUpload}
+        lead={selectedLeadForUpload as any}
+        uploadFiles={uploadFiles as any}
+        isUploading={isUploading && uploadingLeadId === selectedLeadForUpload?.id}
+        onDocumentAdded={fetchRequiredDocuments}
+        currentUser={currentUser}
+      />
+
+      {/* Document Request Details Modal */}
+      {showRequestDetailsModal && selectedDocumentForDetails && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50" onClick={() => {
+          setShowRequestDetailsModal(false);
+          setSelectedDocumentForDetails(null);
+        }}>
+          <div className="bg-white rounded-2xl max-w-2xl w-full shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-6 border-b border-gray-200">
+              <h3 className="text-xl font-bold text-gray-900">Document Request Details</h3>
+              <button
+                onClick={() => {
+                  setShowRequestDetailsModal(false);
+                  setSelectedDocumentForDetails(null);
+                }}
+                className="btn btn-ghost btn-circle"
+              >
+                <XMarkIcon className="w-6 h-6" />
+              </button>
       </div>
+
+            <div className="p-6">
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Document Name</label>
+                  <div className="input input-bordered w-full bg-gray-50">
+                    {selectedDocumentForDetails.document_name}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Document Type</label>
+                  <div className="input input-bordered w-full bg-gray-50">
+                    {selectedDocumentForDetails.document_type || 'N/A'}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Requested From</label>
+                  <div className="input input-bordered w-full bg-gray-50">
+                    {selectedDocumentForDetails.requested_from || 'Not specified'}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Requested By</label>
+                  <div className="input input-bordered w-full bg-gray-50">
+                    {selectedDocumentForDetails.requested_from_changed_by_user?.first_name ||
+                      selectedDocumentForDetails.requested_from_changed_by_user?.full_name ||
+                      selectedDocumentForDetails.requested_by_user?.first_name ||
+                      selectedDocumentForDetails.requested_by_user?.full_name ||
+                      selectedDocumentForDetails.requested_from_changed_by ||
+                      selectedDocumentForDetails.requested_by ||
+                      'Unknown'}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Request Date</label>
+                  <div className="input input-bordered w-full bg-gray-50">
+                    {selectedDocumentForDetails.requested_from_changed_at
+                      ? new Date(selectedDocumentForDetails.requested_from_changed_at).toLocaleString()
+                      : selectedDocumentForDetails.requested_date
+                        ? new Date(selectedDocumentForDetails.requested_date).toLocaleString()
+                        : 'Not specified'}
+                  </div>
+                </div>
+
+                {selectedDocumentForDetails.due_date && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Due Date</label>
+                    <div className="input input-bordered w-full bg-gray-50">
+                      {new Date(selectedDocumentForDetails.due_date).toLocaleDateString()}
+                    </div>
+                  </div>
+                )}
+
+                {selectedDocumentForDetails.status && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                    <div className="input input-bordered w-full bg-gray-50">
+                      <span className={`badge ${selectedDocumentForDetails.status === 'received' ? 'badge-success' : selectedDocumentForDetails.status === 'missing' ? 'badge-error' : 'badge-warning'}`}>
+                        {selectedDocumentForDetails.status}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {selectedDocumentForDetails.notes && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
+                    <div className="textarea textarea-bordered w-full bg-gray-50 min-h-[100px]">
+                      {selectedDocumentForDetails.notes}
+                    </div>
+                  </div>
+                )}
+
+                {selectedDocumentForDetails.received_from && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Received From</label>
+                    <div className="input input-bordered w-full bg-gray-50">
+                      {selectedDocumentForDetails.received_from}
+                    </div>
+                  </div>
+                )}
+
+                {selectedDocumentForDetails.received_date && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Received Date</label>
+                    <div className="input input-bordered w-full bg-gray-50">
+                      {new Date(selectedDocumentForDetails.received_date).toLocaleString()}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-3 mt-6">
+                <button
+                  className="btn btn-primary flex-1"
+                  onClick={() => {
+                    setShowRequestDetailsModal(false);
+                    setSelectedDocumentForDetails(null);
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Request Document Modal */}
+      {showRequestModal && selectedContactForRequest && selectedLeadForRequest && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50" onClick={() => {
+          setShowRequestModal(false);
+          setSelectedContactForRequest(null);
+          setSelectedLeadForRequest(null);
+          setSelectedDocumentNameForRequest('');
+        }}>
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-6 border-b border-gray-200">
+              <h3 className="text-xl font-bold text-gray-900">Request Document</h3>
+              <button
+                onClick={() => {
+                  setShowRequestModal(false);
+                  setSelectedContactForRequest(null);
+                  setSelectedLeadForRequest(null);
+                  setSelectedDocumentNameForRequest('');
+                  setRequestedFromForRequest('');
+                }}
+                className="btn btn-ghost btn-circle"
+              >
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="p-6">
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Contact</label>
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    value={selectedContactForRequest.name}
+                    disabled
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Document Name</label>
+                  {selectedDocumentNameForRequest ? (
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      value={selectedDocumentNameForRequest}
+                      disabled
+                    />
+                  ) : (
+                    <select
+                      className="select select-bordered w-full"
+                      value={selectedDocumentNameForRequest}
+                      onChange={(e) => setSelectedDocumentNameForRequest(e.target.value)}
+                    >
+                      <option value="">Select document...</option>
+                      {['Birth Certificate', 'Marriage Certificate', 'Passport Copy', 'Police Certificate'].map((docName) => {
+                        const existingDoc = requiredDocuments.find(
+                          doc => doc.contact_id === selectedContactForRequest.id && doc.document_name === docName
+                        );
+                        if (existingDoc) return null;
+                        return (
+                          <option key={docName} value={docName}>
+                            {docName}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Requested From</label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={requestedFromForRequest}
+                    onChange={(e) => setRequestedFromForRequest(e.target.value)}
+                  >
+                    <option value="">Select source...</option>
+                    {sourceOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex gap-3 mt-6">
+                <button
+                  className="btn btn-outline flex-1"
+                  onClick={() => {
+                    setShowRequestModal(false);
+                    setSelectedContactForRequest(null);
+                    setSelectedLeadForRequest(null);
+                    setSelectedDocumentNameForRequest('');
+                    setRequestedFromForRequest('');
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary flex-1"
+                  onClick={() => {
+                    if (!selectedDocumentNameForRequest) {
+                      toast.error('Please select a document');
+                      return;
+                    }
+                    if (!requestedFromForRequest) {
+                      toast.error('Please select where the document is requested from');
+                      return;
+                    }
+
+                    requestDocument(selectedContactForRequest, selectedLeadForRequest, selectedDocumentNameForRequest, requestedFromForRequest);
+                  }}
+                >
+                  Request Document
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Document Edit Modal - Opens when clicking date stamp */}
+      {showDocumentEditModal && selectedDocumentForEdit && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[100]">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+            <div className="flex items-center justify-between p-6 border-b border-gray-200">
+              <h3 className="text-xl font-bold text-gray-900">Edit Document: {selectedDocumentForEdit.document_name}</h3>
+              <button
+                onClick={() => {
+                  setShowDocumentEditModal(false);
+                  setSelectedDocumentForEdit(null);
+                }}
+                className="btn btn-ghost btn-circle"
+              >
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="p-6">
+              <div className="space-y-4">
+                {/* Status buttons */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Status</label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      className={`btn flex-1 ${selectedDocumentForEdit.status === 'received' ? 'btn-success' : 'btn-outline'}`}
+                      onClick={() => {
+                        updateDocumentStatus(selectedDocumentForEdit.id, 'received');
+                        setSelectedDocumentForEdit({ ...selectedDocumentForEdit, status: 'received' });
+                      }}
+                    >
+                      ✓ Received
+                    </button>
+                    <button
+                      className={`btn flex-1 ${selectedDocumentForEdit.status === 'missing' ? 'btn-error' : 'btn-outline'}`}
+                      onClick={() => {
+                        updateDocumentStatus(selectedDocumentForEdit.id, 'missing');
+                        setSelectedDocumentForEdit({ ...selectedDocumentForEdit, status: 'missing' });
+                      }}
+                    >
+                      ✗ Missing
+                    </button>
+                  </div>
+                </div>
+
+                {/* Due Date */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Due Date</label>
+                  <input
+                    type="date"
+                    className="input input-bordered w-full"
+                    value={selectedDocumentForEdit.due_date ? new Date(selectedDocumentForEdit.due_date).toISOString().split('T')[0] : ''}
+                    onChange={async (e) => {
+                      const newDate = e.target.value ? new Date(e.target.value).toISOString() : null;
+                      try {
+                        const { error } = await supabase
+                          .from('lead_required_documents')
+                          .update({ due_date: newDate })
+                          .eq('id', selectedDocumentForEdit.id);
+
+                        if (error) {
+                          toast.error('Error updating due date: ' + error.message);
+                          console.error('Error updating due date:', error);
+                        } else {
+                          // Update local state
+                          setSelectedDocumentForEdit({ ...selectedDocumentForEdit, due_date: newDate as any });
+                          // Refresh documents to ensure consistency
+                          await fetchRequiredDocuments();
+                        }
+                      } catch (err) {
+                        toast.error('Failed to update due date');
+                        console.error('Error updating due date:', err);
+                      }
+                    }}
+                  />
+                </div>
+
+                {/* Requested From */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Requested From</label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={selectedDocumentForEdit.requested_from || ''}
+                    onChange={(e) => {
+                      updateDocumentRequestedFrom(selectedDocumentForEdit.id, e.target.value);
+                      setSelectedDocumentForEdit({ ...selectedDocumentForEdit, requested_from: e.target.value });
+                    }}
+                  >
+                    <option value="">Requested from...</option>
+                    {sourceOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex gap-3 mt-6">
+                <button
+                  className="btn btn-outline flex-1"
+                  onClick={() => {
+                    setShowDocumentEditModal(false);
+                    setSelectedDocumentForEdit(null);
+                    fetchRequiredDocuments();
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Remove Required Document Modal */}
+      {showRemoveDocumentModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-6 border-b border-gray-200">
+              <h3 className="text-xl font-bold text-gray-900">Remove Required Document</h3>
+              <button
+                onClick={() => setShowRemoveDocumentModal(false)}
+                className="btn btn-ghost btn-circle btn-sm"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              {(() => {
+                const customDocuments = getCustomDocumentNames();
+                if (customDocuments.length === 0) {
+                  return (
+                    <div className="text-center py-8">
+                      <p className="text-gray-500">No custom required documents to remove.</p>
+                      <p className="text-sm text-gray-400 mt-2">Default documents cannot be removed.</p>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="space-y-3">
+                    <p className="text-sm text-gray-600 mb-4">
+                      Select a custom required document to remove. This will delete all instances of this document requirement for all contacts.
+                    </p>
+                    <div className="max-h-64 overflow-y-auto space-y-2">
+                      {customDocuments.map((docName) => (
+                        <button
+                          key={docName}
+                          className="w-full px-4 py-3 text-left border border-gray-200 rounded-lg hover:bg-red-50 hover:border-red-300 transition-colors flex items-center justify-between"
+                          onClick={() => {
+                            if (window.confirm(`Are you sure you want to remove "${docName}"? This will delete all instances of this document requirement.`)) {
+                              deleteRequiredDocument(docName);
+                            }
+                          }}
+                        >
+                          <span className="font-medium text-gray-900">{docName}</span>
+                          <TrashIcon className="w-5 h-5 text-red-600" />
+                        </button>
+                      ))}
+                    </div>
+                    <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                      <p className="text-xs text-yellow-800">
+                        <strong>Note:</strong> Default documents (Birth Certificate, Marriage Certificate, Passport Copy, Police Certificate) cannot be removed.
+                      </p>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+            <div className="flex justify-end gap-2 p-6 border-t border-gray-200">
+              <button
+                className="btn btn-outline"
+                onClick={() => setShowRemoveDocumentModal(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Document Modal Side Drawer */}
+      {isDocumentModalOpen && selectedLeadForDocumentModal && (
+        <div className="fixed inset-0 z-[100] flex">
+          <div className="fixed inset-0 bg-black/30 transition-opacity duration-300" onClick={() => { setIsDocumentModalOpen(false); setSelectedLeadForDocumentModal(null); }} />
+          <div className="ml-auto w-full max-w-2xl bg-white h-full shadow-2xl p-0 flex flex-col animate-slideInRight z-[100] rounded-l-2xl border-l-4 border-primary relative" style={{ boxShadow: '0 0 40px 0 rgba(0,0,0,0.2)' }}>
+            <DocumentModal
+              isOpen={isDocumentModalOpen}
+              onClose={() => { setIsDocumentModalOpen(false); setSelectedLeadForDocumentModal(null); }}
+              leadNumber={selectedLeadForDocumentModal.lead_number}
+              clientName={selectedLeadForDocumentModal.name}
+              onDocumentCountChange={() => { }}
+            />
+          </div>
+        </div>
+      )}
         </div>
     );
   };

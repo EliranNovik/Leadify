@@ -1,9 +1,11 @@
 -- Create lead note function that accepts user information as parameters
+-- Updated to support both new leads (UUID) and legacy leads (TEXT)
 
 CREATE OR REPLACE FUNCTION create_lead_note_with_user(
-  p_lead_id UUID,
-  p_title TEXT,
   p_content TEXT,
+  p_title TEXT DEFAULT NULL,
+  p_lead_id UUID DEFAULT NULL,
+  p_legacy_lead_id TEXT DEFAULT NULL,
   p_note_type TEXT DEFAULT 'general',
   p_is_important BOOLEAN DEFAULT FALSE,
   p_is_private BOOLEAN DEFAULT FALSE,
@@ -19,6 +21,15 @@ DECLARE
   v_user_email TEXT;
   v_final_user_id UUID;
 BEGIN
+  -- Validate that either lead_id or legacy_lead_id is provided
+  IF p_lead_id IS NULL AND p_legacy_lead_id IS NULL THEN
+    RAISE EXCEPTION 'Either lead_id or legacy_lead_id must be provided';
+  END IF;
+  
+  IF p_lead_id IS NOT NULL AND p_legacy_lead_id IS NOT NULL THEN
+    RAISE EXCEPTION 'Cannot provide both lead_id and legacy_lead_id';
+  END IF;
+  
   -- Determine user ID
   v_final_user_id := COALESCE(p_user_id, auth.uid(), gen_random_uuid());
   
@@ -49,6 +60,7 @@ BEGIN
   -- Insert the note
   INSERT INTO lead_notes (
     lead_id,
+    legacy_lead_id,
     title,
     content,
     note_type,
@@ -60,6 +72,7 @@ BEGIN
     contact_id
   ) VALUES (
     p_lead_id,
+    p_legacy_lead_id,
     p_title,
     p_content,
     p_note_type,
@@ -76,4 +89,4 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Grant execute permission
-GRANT EXECUTE ON FUNCTION create_lead_note_with_user(UUID, TEXT, TEXT, TEXT, BOOLEAN, BOOLEAN, TEXT[], UUID, UUID, TEXT) TO authenticated; 
+GRANT EXECUTE ON FUNCTION create_lead_note_with_user(TEXT, TEXT, UUID, TEXT, TEXT, BOOLEAN, BOOLEAN, TEXT[], UUID, UUID, TEXT) TO authenticated; 

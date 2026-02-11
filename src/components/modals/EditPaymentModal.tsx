@@ -49,7 +49,13 @@ const EditPaymentModal: React.FC<EditPaymentModalProps> = ({
   // Initialize form data when payment changes
   useEffect(() => {
     if (payment) {
-      setEditPaymentData({ ...payment });
+      // Ensure all payment fields are preserved, especially id and isLegacy
+      setEditPaymentData({ 
+        ...payment,
+        id: payment.id, // Ensure ID is preserved
+        isLegacy: payment.isLegacy, // Ensure isLegacy flag is preserved
+        dueDate: payment.dueDate || '', // Ensure dueDate is preserved
+      });
       setEditPaymentIncludeVat((payment.valueVat || 0) > 0);
       setEditingValueVatId(null);
       setNotesDirection(getTextDirection(payment.notes || ''));
@@ -91,8 +97,67 @@ const EditPaymentModal: React.FC<EditPaymentModalProps> = ({
     setEditPaymentData((d: any) => ({ ...d, valueVat: newValueVat }));
   };
 
+  // Helper function to convert date from dd/mm/yyyy or ISO format to YYYY-MM-DD for input
+  const formatDateForInput = (dateString: string | null | undefined): string => {
+    if (!dateString) return '';
+    // If already in YYYY-MM-DD format, return as is
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+      return dateString;
+    }
+    // If in dd/mm/yyyy format, convert to YYYY-MM-DD
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateString)) {
+      const [day, month, year] = dateString.split('/');
+      return `${year}-${month}-${day}`;
+    }
+    // If it's an ISO date string (with or without time), extract YYYY-MM-DD
+    try {
+      const date = new Date(dateString);
+      if (!isNaN(date.getTime())) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      }
+    } catch (e) {
+      // Ignore parsing errors
+    }
+    return '';
+  };
+
+  // Helper function to convert date from YYYY-MM-DD to ISO format for database
+  const formatDateForSave = (dateString: string): string => {
+    if (!dateString) return '';
+    // If in YYYY-MM-DD format, return as is (database expects this format)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+      return dateString;
+    }
+    // Try to parse and convert to YYYY-MM-DD
+    try {
+      const date = new Date(dateString);
+      if (!isNaN(date.getTime())) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      }
+    } catch (e) {
+      // Ignore parsing errors
+    }
+    return dateString;
+  };
+
+  const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const dateValue = e.target.value;
+    setEditPaymentData((d: any) => ({ ...d, dueDate: dateValue }));
+  };
+
   const handleSave = async () => {
-    await onSave(editPaymentData, editPaymentIncludeVat);
+    // Format the date before saving
+    const formattedData = {
+      ...editPaymentData,
+      dueDate: formatDateForSave(editPaymentData.dueDate || '')
+    };
+    await onSave(formattedData, editPaymentIncludeVat);
   };
 
   const getCurrencySymbol = (currency?: string): string => {
@@ -232,6 +297,19 @@ const EditPaymentModal: React.FC<EditPaymentModalProps> = ({
                 ))
               )}
             </select>
+          </div>
+
+          {/* Due Date */}
+          <div className="form-control">
+            <label className="label">
+              <span className="label-text font-semibold">Due Date</span>
+            </label>
+            <input
+              type="date"
+              className="input input-bordered w-full"
+              value={formatDateForInput(editPaymentData.dueDate || payment.dueDate)}
+              onChange={handleDateChange}
+            />
           </div>
 
           {/* Order */}

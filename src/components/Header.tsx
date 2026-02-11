@@ -429,6 +429,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       icon: UserGroupIcon,
     },
     {
+      label: 'Handler Management',
+      path: '/handler-management',
+      icon: UserGroupIcon,
+    },
+    {
       label: 'Reports',
       path: '/reports',
       icon: DocumentChartBarIcon,

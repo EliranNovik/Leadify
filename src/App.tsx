@@ -33,8 +33,10 @@ import OutlookCalendarPage from './components/OutlookCalendarPage';
 import PipelinePage from './components/PipelinePage';
 import NewCasesPage from './pages/NewCasesPage';
 import NewHandlerCasesPage from './pages/NewHandlerCasesPage';
+import HandlerManagementPage from './pages/HandlerManagementPage';
 import MyCasesPage from './pages/MyCasesPage';
 import CaseManagerPageNew from './components/CaseManagerPageNew';
+import CaseDetailsPage from './pages/CaseDetailsPage';
 import DoubleLeadsPage from './pages/DoubleLeadsPage';
 import AdminPage from './components/admin/AdminPage';
 import TeamsPage from './pages/TeamsPage';
@@ -93,6 +95,7 @@ const AppContentInner: React.FC = () => {
   const isAdminPage = useMemo(() => location.pathname === '/admin', [location.pathname]);
   const isReportsPage = useMemo(() => location.pathname.startsWith('/reports'), [location.pathname]);
   const isSignedSalesPage = useMemo(() => location.pathname === '/sales/signed', [location.pathname]);
+  const isCaseManagerPage = useMemo(() => location.pathname.startsWith('/case-manager'), [location.pathname]);
   const msalAccount = instance.getActiveAccount() || accounts[0];
   const userName = accounts.length > 0 ? accounts[0].name : undefined;
 
@@ -781,7 +784,7 @@ const AppContentInner: React.FC = () => {
         element={
           < ProtectedRoute user={authUser} >
             <div className={`flex h-screen bg-base-100 ${appJustLoggedIn ? 'fade-in' : ''}`}>
-              {!isSignedSalesPage && (
+              {!isSignedSalesPage && !isCaseManagerPage && (
                 <Sidebar
                   userName={sidebarUserName}
                   userInitials={userInitials}
@@ -791,7 +794,7 @@ const AppContentInner: React.FC = () => {
                   mobileOnly={sidebarMobileOnly}
                 />
               )}
-              <div className={`flex-1 flex flex-col overflow-hidden ${!isAdminPage && !isReportsPage && !isSignedSalesPage ? 'md:pl-24' : ''}`}>
+              <div className={`flex-1 flex flex-col overflow-hidden ${!isAdminPage && !isReportsPage && !isSignedSalesPage && !isCaseManagerPage ? 'md:pl-24' : ''}`}>
                 <Header
                   onMenuClick={handleMenuClick}
                   onSearchClick={handleSearchClick}
@@ -823,8 +826,10 @@ const AppContentInner: React.FC = () => {
                     <Route path="/pipeline" element={<PipelinePage />} />
                     <Route path="/new-cases" element={<NewCasesPage />} />
                     <Route path="/new-handler-cases" element={<NewHandlerCasesPage />} />
+                    <Route path="/handler-management" element={<HandlerManagementPage />} />
                     <Route path="/my-cases" element={<MyCasesPage />} />
                     <Route path="/case-manager" element={<CaseManagerPageNew />} />
+                    <Route path="/case-manager/:caseId" element={<CaseDetailsPage />} />
                     <Route path="/double-leads" element={<DoubleLeadsPage />} />
                     <Route path="/admin" element={<AdminPage />} />
                     <Route path="/teams" element={<TeamsPage />} />

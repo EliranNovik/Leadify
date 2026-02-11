@@ -1,34 +1,25 @@
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
-import { 
-  Squares2X2Icon, 
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import {
+  Squares2X2Icon,
   ListBulletIcon,
-  UserGroupIcon,
   DocumentTextIcon,
   ClockIcon,
   ChartBarIcon,
   ChatBubbleLeftRightIcon,
   FolderIcon,
-  CheckIcon,
   CurrencyDollarIcon,
   EnvelopeIcon,
   CalendarIcon,
-  DocumentMagnifyingGlassIcon,
   ExclamationTriangleIcon,
   ArrowTrendingUpIcon
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
+import { convertToNIS } from '../lib/currencyConversion';
 
 // Import tab components
 import DashboardTab from './case-manager/DashboardTab';
-import CasesTab from './case-manager/CasesTab';
-import ContactsTab from './case-manager/ContactsTab';
-import DocumentsTab from './case-manager/DocumentsTab';
-import TasksTab from './case-manager/TasksTab';
-import StatusTab from './case-manager/StatusTab';
-import NotesTab from './case-manager/NotesTab';
-import CommunicationsTab from './case-manager/CommunicationsTab';
-import FinanceTab from './case-manager/FinanceTab';
 
 interface HandlerLead {
   id: string;
@@ -59,34 +50,36 @@ interface UploadedFile {
   error?: string;
 }
 
-interface TabItem {
-  id: string;
-  label: string;
-  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
-  badge?: number;
-}
-
-const tabs: TabItem[] = [
-  { id: 'cases', label: 'Cases', icon: FolderIcon },
-  { id: 'contacts', label: 'Contacts', icon: UserGroupIcon },
-  { id: 'documents', label: 'Documents', icon: DocumentTextIcon },
-  { id: 'tasks', label: 'Tasks', icon: ClockIcon },
-  { id: 'status', label: 'Status', icon: CheckIcon },
-  { id: 'notes', label: 'Notes', icon: DocumentMagnifyingGlassIcon },
-  { id: 'communications', label: 'Communications', icon: ChatBubbleLeftRightIcon },
-  { id: 'finance', label: 'Finance', icon: ChartBarIcon },
-];
-
-type TabId = typeof tabs[number]['id'];
 
 const CaseManagerPageNew: React.FC = () => {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [leads, setLeads] = useState<HandlerLead[]>([]);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<TabId>('cases');
   const [uploadingLeadId, setUploadingLeadId] = useState<string | null>(null);
   const [uploadedFiles, setUploadedFiles] = useState<{ [leadId: string]: UploadedFile[] }>({});
   const [isUploading, setIsUploading] = useState(false);
   const mainContainerRef = useRef<HTMLDivElement>(null);
+
+  // Get handler ID from URL params (if filtering by specific handler)
+  const handlerIdFromUrl = searchParams.get('handlerId');
+  const [filterHandlerId, setFilterHandlerId] = useState<number | null>(
+    handlerIdFromUrl ? parseInt(handlerIdFromUrl, 10) : null
+  );
+  const [filterHandlerName, setFilterHandlerName] = useState<string | null>(null);
+
+  // Update filterHandlerId when URL changes
+  useEffect(() => {
+    const handlerId = searchParams.get('handlerId');
+    if (handlerId) {
+      const parsedId = parseInt(handlerId, 10);
+      if (!isNaN(parsedId)) {
+        setFilterHandlerId(parsedId);
+      }
+    } else {
+      setFilterHandlerId(null);
+    }
+  }, [searchParams]);
 
   // User authentication state
   const [currentUserFullName, setCurrentUserFullName] = useState<string>('');
@@ -103,13 +96,13 @@ const CaseManagerPageNew: React.FC = () => {
   const [documentsPendingCount, setDocumentsPendingCount] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [showCaseCards, setShowCaseCards] = useState(window.innerWidth >= 768); // Show by default on desktop
-  
+
   // Tasks due data
   const [tasksDue, setTasksDue] = useState<any[]>([]);
-  
+
   // Documents due data
   const [documentsDue, setDocumentsDue] = useState<any[]>([]);
-  
+
   // New dashboard statistics
   const [caseStats, setCaseStats] = useState({
     inProcess: 0,
@@ -118,11 +111,11 @@ const CaseManagerPageNew: React.FC = () => {
     declined: 0
   });
   const [totalBalance, setTotalBalance] = useState(0);
+  const [applicationsSentThisMonth, setApplicationsSentThisMonth] = useState(0);
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
-  
+
   // Single case view state
-  const [selectedCase, setSelectedCase] = useState<HandlerLead | null>(null);
 
   const getPriorityBadgeColor = (priority: string) => {
     switch (priority) {
@@ -150,17 +143,17 @@ const CaseManagerPageNew: React.FC = () => {
         // Try to find the fallback category in the loaded categories
         let foundCategory = null;
         if (typeof fallbackCategory === 'number') {
-          foundCategory = allCategories.find((cat: any) => 
+          foundCategory = allCategories.find((cat: any) =>
             cat.id.toString() === fallbackCategory.toString()
           );
         }
-        
+
         if (!foundCategory) {
-          foundCategory = allCategories.find((cat: any) => 
+          foundCategory = allCategories.find((cat: any) =>
             cat.name.toLowerCase().trim() === String(fallbackCategory).toLowerCase().trim()
           );
         }
-        
+
         if (foundCategory) {
           // Return category name with main category in parentheses
           if (foundCategory.misc_maincategory?.name) {
@@ -174,12 +167,12 @@ const CaseManagerPageNew: React.FC = () => {
       }
       return 'Not specified';
     }
-    
+
     // If allCategories is not loaded yet, return the original value
     if (!allCategories || allCategories.length === 0) {
       return String(categoryId);
     }
-    
+
     // First try to find by ID
     const categoryById = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
     if (categoryById) {
@@ -190,7 +183,7 @@ const CaseManagerPageNew: React.FC = () => {
         return categoryById.name;
       }
     }
-    
+
     // If not found by ID, try to find by name (in case it's already a name)
     const categoryByName = allCategories.find((cat: any) => cat.name === categoryId);
     if (categoryByName) {
@@ -201,7 +194,7 @@ const CaseManagerPageNew: React.FC = () => {
         return categoryByName.name;
       }
     }
-    
+
     return String(categoryId);
   };
 
@@ -210,14 +203,14 @@ const CaseManagerPageNew: React.FC = () => {
     if (!stage || (typeof stage === 'string' && !stage.trim())) {
       return 'No Stage';
     }
-    
+
     const stageStr = String(stage);
-    
+
     // If it's already text (not a numeric ID), return as-is with proper formatting
     if (typeof stage === 'string' && !stage.match(/^\d+$/)) {
       return stageStr.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
     }
-    
+
     // For numeric IDs, use comprehensive mapping (same as Calendar page)
     const stageMapping: { [key: string]: string } = {
       '0': 'Created',
@@ -240,9 +233,9 @@ const CaseManagerPageNew: React.FC = () => {
       'success': 'Success',
       'created': 'Created'
     };
-    
+
     const stageName = stageMapping[stageStr] || stageStr;
-    
+
     return stageName;
   };
 
@@ -300,27 +293,34 @@ const CaseManagerPageNew: React.FC = () => {
 
   const fetchHandlerStageStats = async () => {
     try {
-      // Count new leads with handler assigned
+      // Count new leads with handler assigned (excluding inactive leads)
       let newLeadsQuery = supabase
         .from('leads')
         .select('*', { count: 'exact', head: true })
         .not('handler', 'is', null)
         .not('handler', 'eq', '')
-        .not('handler', 'eq', '---');
+        .not('handler', 'eq', '---')
+        .is('unactivated_at', null); // Only active leads (exclude inactive)
 
       if (currentUserFullName) {
         newLeadsQuery = newLeadsQuery.eq('handler', currentUserFullName);
+      }
+
+      // Also filter by case_handler_id if we have handler ID
+      if (currentUserEmployeeId) {
+        newLeadsQuery = newLeadsQuery.eq('case_handler_id', currentUserEmployeeId);
       }
 
       const { count: newLeadsCount, error: newLeadsError } = await newLeadsQuery;
 
       if (newLeadsError) throw newLeadsError;
 
-      // Count legacy leads with handler assigned
+      // Count legacy leads with handler assigned (excluding inactive leads)
       let legacyLeadsQuery = supabase
         .from('leads_lead')
         .select('*', { count: 'exact', head: true })
-        .not('case_handler_id', 'is', null);
+        .not('case_handler_id', 'is', null)
+        .or('status.eq.0,status.is.null'); // Only active leads (status 0 or null = active, status 10 = inactive)
 
       if (currentUserEmployeeId) {
         legacyLeadsQuery = legacyLeadsQuery.eq('case_handler_id', currentUserEmployeeId);
@@ -352,132 +352,754 @@ const CaseManagerPageNew: React.FC = () => {
   };
 
   const fetchTasksDue = async () => {
-    try {
-      const today = new Date();
-      const tomorrow = new Date(today);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const todayStr = today.toISOString().split('T')[0];
-      const tomorrowStr = tomorrow.toISOString().split('T')[0];
-      
-      console.log('Fetching tasks for dates:', todayStr, tomorrowStr);
-      
-      const { data, error } = await supabase
-        .from('handler_tasks')
-        .select(`
-          *,
-          lead:leads(name, lead_number)
-        `)
-        .in('due_date', [todayStr, tomorrowStr])
-        .neq('status', 'completed')
-        .order('priority', { ascending: false });
-      
-      if (error) {
-        console.error('Error fetching tasks due:', error);
-      } else if (data) {
-        console.log('Tasks due fetched:', data);
-        console.log('Number of tasks found:', data.length);
-        setTasksDue(data);
-        setTasksDueCount(data.length);
-      } else {
-        console.log('No tasks found for today or tomorrow');
-        setTasksDue([]);
-        setTasksDueCount(0);
-      }
-    } catch (error) {
-      console.error('Error fetching tasks due:', error);
-    }
-  };
-
-  const fetchDocumentsPending = async () => {
+    console.log('⏰ fetchTasksDue: ===== START =====');
     try {
       // Get today and tomorrow dates
       const today = new Date();
       const tomorrow = new Date(today);
       tomorrow.setDate(tomorrow.getDate() + 1);
-      
+
       // Format dates for comparison (YYYY-MM-DD)
       const todayStr = today.toISOString().split('T')[0];
       const tomorrowStr = tomorrow.toISOString().split('T')[0];
 
-      // Fetch documents due today and tomorrow
-      const { data: documentsDue, error } = await supabase
+      console.log('⏰ fetchTasksDue: Date calculations', {
+        today: today.toISOString(),
+        tomorrow: tomorrow.toISOString(),
+        todayStr,
+        tomorrowStr
+      });
+
+      // Fetch all tasks with due_date (regardless of status) and filter in JavaScript
+      // This approach handles both new and legacy leads
+      console.log('⏰ fetchTasksDue: Fetching all tasks with due_date...');
+      const { data: allTasksWithDueDate, error: fetchError } = await supabase
+        .from('handler_tasks')
+        .select('*')
+        .not('due_date', 'is', null)
+        .neq('status', 'completed')
+        .order('priority', { ascending: false });
+
+      console.log('⏰ fetchTasksDue: Fetched all tasks with due_date', {
+        count: allTasksWithDueDate?.length || 0,
+        error: fetchError
+      });
+
+      if (fetchError) {
+        console.error('⏰ fetchTasksDue: Error fetching tasks:', fetchError);
+        throw fetchError;
+      }
+
+      // Filter in JavaScript to match due date (today or tomorrow)
+      console.log('⏰ fetchTasksDue: Filtering tasks by date', {
+        totalTasks: allTasksWithDueDate?.length || 0,
+        todayStr,
+        tomorrowStr
+      });
+
+      const tasksDue = (allTasksWithDueDate || []).filter(task => {
+        if (!task.due_date) return false;
+        try {
+          const taskDate = new Date(task.due_date);
+          const taskDateStr = taskDate.toISOString().split('T')[0];
+          const matches = taskDateStr === todayStr || taskDateStr === tomorrowStr;
+          return matches;
+        } catch (e) {
+          console.warn('⏰ fetchTasksDue: Error parsing date', {
+            taskId: task.id,
+            due_date: task.due_date,
+            error: e
+          });
+          return false;
+        }
+      });
+
+      console.log('⏰ fetchTasksDue: Filter results', {
+        totalFetched: allTasksWithDueDate?.length || 0,
+        afterDateFilter: tasksDue.length,
+        tasksDue: tasksDue.map(t => ({
+          id: t.id,
+          title: t.title,
+          due_date: t.due_date,
+          lead_id: t.lead_id,
+          legacy_lead_id: t.legacy_lead_id,
+          status: t.status
+        }))
+      });
+
+      // Enrich tasks with lead information
+      console.log('⏰ fetchTasksDue: Starting enrichment process...');
+      const enrichedTasks = await Promise.all(
+        (tasksDue || []).map(async (task, index) => {
+          console.log(`⏰ fetchTasksDue: Enriching task ${index + 1}/${tasksDue.length}`, {
+            taskId: task.id,
+            title: task.title,
+            lead_id: task.lead_id,
+            legacy_lead_id: task.legacy_lead_id
+          });
+
+          let leadInfo = null;
+
+          // For new leads
+          if (task.lead_id) {
+            console.log(`⏰ fetchTasksDue: Fetching new lead info for lead_id: ${task.lead_id}`);
+            const { data: leadData, error: leadError } = await supabase
+              .from('leads')
+              .select('name, lead_number')
+              .eq('id', task.lead_id)
+              .single();
+
+            console.log(`⏰ fetchTasksDue: New lead fetch result`, {
+              lead_id: task.lead_id,
+              leadData,
+              error: leadError
+            });
+
+            if (leadData) {
+              leadInfo = leadData;
+            }
+          }
+          // For legacy leads
+          else if (task.legacy_lead_id) {
+            console.log(`⏰ fetchTasksDue: Fetching legacy lead info for legacy_lead_id: ${task.legacy_lead_id}`);
+            const { data: leadData, error: leadError } = await supabase
+              .from('leads_lead')
+              .select('id, name')
+              .eq('id', task.legacy_lead_id)
+              .single();
+
+            console.log(`⏰ fetchTasksDue: Legacy lead fetch result`, {
+              legacy_lead_id: task.legacy_lead_id,
+              leadData,
+              error: leadError
+            });
+
+            if (leadData) {
+              leadInfo = {
+                name: leadData.name || 'Unknown',
+                lead_number: String(leadData.id)
+              };
+            }
+          } else {
+            console.log(`⏰ fetchTasksDue: Task has neither lead_id nor legacy_lead_id`, {
+              taskId: task.id,
+              title: task.title
+            });
+          }
+
+          return {
+            ...task,
+            lead: leadInfo
+          };
+        })
+      );
+
+      console.log('⏰ fetchTasksDue: Enrichment complete', {
+        count: enrichedTasks.length,
+        enrichedTasks: enrichedTasks,
+        sample: enrichedTasks.slice(0, 3).map(t => ({
+          id: t.id,
+          title: t.title,
+          due_date: t.due_date,
+          lead: t.lead
+        }))
+      });
+
+      // Set the count and store the tasks for display
+      console.log('⏰ fetchTasksDue: Setting state', {
+        count: enrichedTasks.length,
+        tasksCount: enrichedTasks.length
+      });
+
+      setTasksDueCount(enrichedTasks.length);
+      setTasksDue(enrichedTasks);
+
+      console.log('⏰ fetchTasksDue: State updated', {
+        tasksDueCount: enrichedTasks.length,
+        tasksDueLength: enrichedTasks.length
+      });
+
+      console.log('⏰ fetchTasksDue: ===== END (SUCCESS) =====');
+    } catch (error) {
+      console.error('⏰ fetchTasksDue: ===== ERROR =====', error);
+      console.error('⏰ fetchTasksDue: Error details', {
+        error,
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined
+      });
+      setTasksDue([]);
+      setTasksDueCount(0);
+    }
+  };
+
+  const fetchDocumentsPending = async () => {
+    console.log('📄 fetchDocumentsPending: ===== START =====');
+    try {
+      // Get today and tomorrow dates
+      const today = new Date();
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      // Format dates for comparison (YYYY-MM-DD)
+      const todayStr = today.toISOString().split('T')[0];
+      const tomorrowStr = tomorrow.toISOString().split('T')[0];
+
+      console.log('📄 fetchDocumentsPending: Date calculations', {
+        today: today.toISOString(),
+        tomorrow: tomorrow.toISOString(),
+        todayStr,
+        tomorrowStr
+      });
+
+      // Fetch all documents with due_date (regardless of status) and filter in JavaScript
+      // We'll filter by status AND date in JavaScript to catch all relevant documents
+      // This is more reliable than the .or() filter which might have issues with date formats
+      console.log('📄 fetchDocumentsPending: Fetching all documents with due_date...');
+      const { data: allDocumentsWithDueDate, error: fetchError } = await supabase
         .from('lead_required_documents')
         .select(`
           *,
-          lead:leads(name, lead_number),
           contact:contacts(name, relationship)
         `)
-        .in('status', ['pending', 'missing'])
-        .or(`due_date.eq.${todayStr},due_date.eq.${tomorrowStr}`)
+        .not('due_date', 'is', null)
         .order('due_date', { ascending: true });
 
-      if (error) throw error;
-      
+      console.log('📄 fetchDocumentsPending: Fetched all documents with due_date', {
+        count: allDocumentsWithDueDate?.length || 0,
+        error: fetchError
+      });
+
+      if (fetchError) {
+        console.error('📄 fetchDocumentsPending: Error fetching documents:', fetchError);
+        throw fetchError;
+      }
+
+      // Filter in JavaScript to match:
+      // 1. Status must be 'pending' or 'missing' (exclude 'received')
+      // 2. Due date must be today or tomorrow
+      console.log('📄 fetchDocumentsPending: Filtering documents by status and date', {
+        totalDocuments: allDocumentsWithDueDate?.length || 0,
+        todayStr,
+        tomorrowStr
+      });
+
+      const documentsDue = (allDocumentsWithDueDate || []).filter(doc => {
+        // First check status - must be 'pending' or 'missing' (exclude 'received')
+        const hasValidStatus = doc.status && (doc.status === 'pending' || doc.status === 'missing');
+
+        if (!hasValidStatus) {
+          // Log documents that are filtered out due to status
+          if (doc.due_date) {
+            try {
+              const docDate = new Date(doc.due_date);
+              const docDateStr = docDate.toISOString().split('T')[0];
+              const isDueTodayOrTomorrow = docDateStr === todayStr || docDateStr === tomorrowStr;
+              if (isDueTodayOrTomorrow) {
+                console.log('📄 fetchDocumentsPending: Document excluded due to status (but due today/tomorrow)', {
+                  docId: doc.id,
+                  document_name: doc.document_name,
+                  due_date: doc.due_date,
+                  status: doc.status,
+                  docDateStr,
+                  todayStr,
+                  tomorrowStr
+                });
+              }
+            } catch (e) {
+              // Ignore date parsing errors for logging
+            }
+          }
+          return false;
+        }
+
+        // Then check due date
+        if (!doc.due_date) return false;
+        try {
+          const docDate = new Date(doc.due_date);
+          const docDateStr = docDate.toISOString().split('T')[0];
+          const matches = docDateStr === todayStr || docDateStr === tomorrowStr;
+          if (matches) {
+            console.log('📄 fetchDocumentsPending: ✅ Document matches all filters', {
+              docId: doc.id,
+              document_name: doc.document_name,
+              due_date: doc.due_date,
+              status: doc.status,
+              docDateStr,
+              todayStr,
+              tomorrowStr
+            });
+          } else {
+            console.log('📄 fetchDocumentsPending: Document has valid status but wrong date', {
+              docId: doc.id,
+              document_name: doc.document_name,
+              due_date: doc.due_date,
+              status: doc.status,
+              docDateStr,
+              todayStr,
+              tomorrowStr
+            });
+          }
+          return matches;
+        } catch (e) {
+          console.warn('📄 fetchDocumentsPending: Error parsing date', {
+            docId: doc.id,
+            due_date: doc.due_date,
+            error: e
+          });
+          return false;
+        }
+      });
+
+      console.log('📄 fetchDocumentsPending: Filter results', {
+        totalFetched: allDocumentsWithDueDate?.length || 0,
+        afterStatusFilter: (allDocumentsWithDueDate || []).filter(d => d.status && (d.status === 'pending' || d.status === 'missing')).length,
+        afterDateFilter: documentsDue.length,
+        documentsDue: documentsDue.map(d => ({
+          id: d.id,
+          document_name: d.document_name,
+          due_date: d.due_date,
+          status: d.status
+        }))
+      });
+
+      const error = null; // No error if we got here
+
+      console.log('📄 fetchDocumentsPending: Query executed', {
+        hasError: !!error,
+        error: error ? {
+          message: error.message,
+          code: error.code,
+          details: error.details,
+          hint: error.hint
+        } : null,
+        dataLength: documentsDue?.length || 0,
+        rawData: documentsDue
+      });
+
+      if (error) {
+        console.error('📄 fetchDocumentsPending: Error fetching documents:', error);
+        throw error;
+      }
+
+      console.log('📄 fetchDocumentsPending: Fetched documents (raw)', {
+        count: documentsDue?.length || 0,
+        allDocuments: documentsDue,
+        sample: documentsDue?.slice(0, 5).map(d => ({
+          id: d.id,
+          document_name: d.document_name,
+          due_date: d.due_date,
+          lead_id: d.lead_id,
+          legacy_lead_id: d.legacy_lead_id,
+          status: d.status,
+          contact: d.contact
+        }))
+      });
+
+      if (!documentsDue || documentsDue.length === 0) {
+        console.log('📄 fetchDocumentsPending: No documents found - checking if query is correct');
+        // Let's also check what documents exist in the table
+        const { data: allDocs, error: allDocsError } = await supabase
+          .from('lead_required_documents')
+          .select('id, document_name, due_date, status, lead_id, legacy_lead_id')
+          .limit(20);
+
+        console.log('📄 fetchDocumentsPending: Sample of all documents in table', {
+          count: allDocs?.length || 0,
+          sample: allDocs,
+          error: allDocsError
+        });
+
+        // Check documents with pending/missing status
+        const { data: pendingDocs, error: pendingError } = await supabase
+          .from('lead_required_documents')
+          .select('id, document_name, due_date, status, lead_id, legacy_lead_id')
+          .in('status', ['pending', 'missing'])
+          .limit(20);
+
+        console.log('📄 fetchDocumentsPending: Documents with pending/missing status', {
+          count: pendingDocs?.length || 0,
+          sample: pendingDocs,
+          error: pendingError
+        });
+
+        // Check documents with due_date set
+        const { data: docsWithDueDate, error: dueDateError } = await supabase
+          .from('lead_required_documents')
+          .select('id, document_name, due_date, status, lead_id, legacy_lead_id')
+          .not('due_date', 'is', null)
+          .limit(20);
+
+        console.log('📄 fetchDocumentsPending: Documents with due_date set', {
+          count: docsWithDueDate?.length || 0,
+          sample: docsWithDueDate,
+          error: dueDateError,
+          dueDates: docsWithDueDate?.map(d => ({
+            id: d.id,
+            document_name: d.document_name,
+            due_date: d.due_date,
+            due_date_type: typeof d.due_date,
+            due_date_length: d.due_date ? String(d.due_date).length : 0
+          }))
+        });
+
+        // Try a different query approach - get all pending/missing and filter in JS
+        const { data: allPendingMissing, error: allPendingError } = await supabase
+          .from('lead_required_documents')
+          .select('id, document_name, due_date, status, lead_id, legacy_lead_id, contact:contacts(name, relationship)')
+          .in('status', ['pending', 'missing'])
+          .not('due_date', 'is', null);
+
+        if (allPendingMissing && allPendingMissing.length > 0) {
+          console.log('📄 fetchDocumentsPending: All pending/missing documents with due_date', {
+            count: allPendingMissing.length,
+            allDocs: allPendingMissing.map(d => ({
+              id: d.id,
+              document_name: d.document_name,
+              due_date: d.due_date,
+              due_date_parsed: d.due_date ? new Date(d.due_date).toISOString().split('T')[0] : null,
+              status: d.status
+            }))
+          });
+
+          // Filter in JavaScript to see if date matching is the issue
+          const filteredDocs = allPendingMissing.filter(doc => {
+            if (!doc.due_date) return false;
+            const docDate = new Date(doc.due_date);
+            const docDateStr = docDate.toISOString().split('T')[0];
+            const matches = docDateStr === todayStr || docDateStr === tomorrowStr;
+            console.log('📄 fetchDocumentsPending: Checking document date', {
+              docId: doc.id,
+              document_name: doc.document_name,
+              due_date: doc.due_date,
+              docDateStr,
+              todayStr,
+              tomorrowStr,
+              matches
+            });
+            return matches;
+          });
+
+          console.log('📄 fetchDocumentsPending: Filtered documents (JS filter)', {
+            count: filteredDocs.length,
+            filteredDocs: filteredDocs
+          });
+        }
+      }
+
+      // Enrich documents with lead information
+      console.log('📄 fetchDocumentsPending: Starting enrichment process...');
+      const enrichedDocuments = await Promise.all(
+        (documentsDue || []).map(async (doc, index) => {
+          console.log(`📄 fetchDocumentsPending: Enriching document ${index + 1}/${documentsDue.length}`, {
+            docId: doc.id,
+            document_name: doc.document_name,
+            lead_id: doc.lead_id,
+            legacy_lead_id: doc.legacy_lead_id
+          });
+
+          let leadInfo = null;
+
+          // For new leads
+          if (doc.lead_id) {
+            console.log(`📄 fetchDocumentsPending: Fetching new lead info for lead_id: ${doc.lead_id}`);
+            const { data: leadData, error: leadError } = await supabase
+              .from('leads')
+              .select('name, lead_number')
+              .eq('id', doc.lead_id)
+              .single();
+
+            console.log(`📄 fetchDocumentsPending: New lead fetch result`, {
+              lead_id: doc.lead_id,
+              leadData,
+              error: leadError
+            });
+
+            if (leadData) {
+              leadInfo = leadData;
+            }
+          }
+          // For legacy leads
+          else if (doc.legacy_lead_id) {
+            console.log(`📄 fetchDocumentsPending: Fetching legacy lead info for legacy_lead_id: ${doc.legacy_lead_id}`);
+            const { data: leadData, error: leadError } = await supabase
+              .from('leads_lead')
+              .select('name, lead_number')
+              .eq('id', doc.legacy_lead_id)
+              .single();
+
+            console.log(`📄 fetchDocumentsPending: Legacy lead fetch result`, {
+              legacy_lead_id: doc.legacy_lead_id,
+              leadData,
+              error: leadError
+            });
+
+            if (leadData) {
+              leadInfo = leadData;
+            }
+          } else {
+            console.log(`📄 fetchDocumentsPending: Document has neither lead_id nor legacy_lead_id`, {
+              docId: doc.id,
+              document_name: doc.document_name
+            });
+          }
+
+          return {
+            ...doc,
+            lead: leadInfo
+          };
+        })
+      );
+
+      console.log('📄 fetchDocumentsPending: Enrichment complete', {
+        count: enrichedDocuments.length,
+        enrichedDocuments: enrichedDocuments,
+        sample: enrichedDocuments.slice(0, 3).map(d => ({
+          id: d.id,
+          document_name: d.document_name,
+          due_date: d.due_date,
+          lead: d.lead
+        }))
+      });
+
       // Set the count and store the documents for display
-      setDocumentsPendingCount(documentsDue?.length || 0);
-      setDocumentsDue(documentsDue || []);
+      console.log('📄 fetchDocumentsPending: Setting state', {
+        count: enrichedDocuments.length,
+        documentsCount: enrichedDocuments.length
+      });
+
+      setDocumentsPendingCount(enrichedDocuments.length);
+      setDocumentsDue(enrichedDocuments);
+
+      console.log('📄 fetchDocumentsPending: State updated', {
+        documentsPendingCount: enrichedDocuments.length,
+        documentsDueLength: enrichedDocuments.length
+      });
+
+      console.log('📄 fetchDocumentsPending: ===== END (SUCCESS) =====');
     } catch (error) {
-      console.error('Error fetching documents pending:', error);
+      console.error('📄 fetchDocumentsPending: ===== ERROR =====', error);
+      console.error('📄 fetchDocumentsPending: Error details', {
+        error,
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined
+      });
+      // Set to 0 on error to avoid showing incorrect counts
+      setDocumentsPendingCount(0);
+      setDocumentsDue([]);
+      console.log('📄 fetchDocumentsPending: State reset to 0 due to error');
     }
   };
 
   const fetchCaseStatistics = async () => {
     try {
-      // Helper function to count leads by stage for new leads
-      const countNewLeadsByStage = async (stage: string) => {
-        let query = supabase
-        .from('leads')
-        .select('*', { count: 'exact', head: true })
-          .eq('stage', stage)
-        .not('handler', 'is', null)
-        .not('handler', 'eq', '')
-        .not('handler', 'eq', '---');
+      // Helper function to get stage ID from stage
+      const getStageId = (stage: string | number | null | undefined): number | null => {
+        if (!stage) return null;
+        if (typeof stage === 'number') return stage;
+        const parsed = parseInt(String(stage), 10);
+        return isNaN(parsed) ? null : parsed;
+      };
+
+      // Count "In Process" = New Cases (stage <= 105) + Active Cases (stage >= 110 and stage < 150, excluding Application Submitted and above)
+      let inProcessCount = 0;
+
+      // Count new leads (new cases + active cases, excluding inactive)
+      if (currentUserFullName || currentUserEmployeeId) {
+        let newLeadsQuery = supabase
+          .from('leads')
+          .select('id, stage, handler_stage')
+          .not('handler', 'is', null)
+          .not('handler', 'eq', '')
+          .not('handler', 'eq', '---')
+          .is('unactivated_at', null); // Only active leads
 
         if (currentUserFullName) {
-          query = query.eq('handler', currentUserFullName);
+          newLeadsQuery = newLeadsQuery.eq('handler', currentUserFullName);
         }
-
-        const { count, error } = await query;
-        if (error) throw error;
-        return count || 0;
-      };
-
-      // Helper function to count leads by stage for legacy leads
-      const countLegacyLeadsByStage = async (stage: string) => {
-        let query = supabase
-          .from('leads_lead')
-        .select('*', { count: 'exact', head: true })
-          .eq('stage', stage)
-          .not('case_handler_id', 'is', null);
-
         if (currentUserEmployeeId) {
-          query = query.eq('case_handler_id', currentUserEmployeeId);
+          newLeadsQuery = newLeadsQuery.eq('case_handler_id', currentUserEmployeeId);
         }
 
-        const { count, error } = await query;
-        if (error) throw error;
-        return count || 0;
-      };
+        const { data: newLeads, error: newLeadsError } = await newLeadsQuery;
+        if (!newLeadsError && newLeads) {
+          newLeads.forEach(lead => {
+            const stageId = getStageId(lead.handler_stage || lead.stage);
+            if (stageId !== null && stageId !== undefined && stageId !== 200) {
+              // New cases: stage <= 105 OR Active cases: stage >= 110 AND stage < 150 (exclude Application Submitted and above)
+              if (stageId <= 105 || (stageId >= 110 && stageId < 150)) {
+                inProcessCount++;
+              }
+            }
+          });
+        }
+      }
 
-      // Fetch cases in process (handler_assigned stage)
-      const newInProcess = await countNewLeadsByStage('handler_assigned');
-      const legacyInProcess = await countLegacyLeadsByStage('handler_assigned');
+      // Count legacy leads (new cases + active cases, excluding inactive)
+      if (currentUserEmployeeId) {
+        let legacyLeadsQuery = supabase
+          .from('leads_lead')
+          .select('id, stage')
+          .not('case_handler_id', 'is', null)
+          .eq('case_handler_id', currentUserEmployeeId)
+          .or('status.eq.0,status.is.null'); // Only active leads
 
-      // Fetch cases with applications sent (applications_sent stage)
-      const newApplicationsSent = await countNewLeadsByStage('applications_sent');
-      const legacyApplicationsSent = await countLegacyLeadsByStage('applications_sent');
+        const { data: legacyLeads, error: legacyLeadsError } = await legacyLeadsQuery;
+        if (!legacyLeadsError && legacyLeads) {
+          legacyLeads.forEach(lead => {
+            const stageId = getStageId(lead.stage);
+            if (stageId !== null && stageId !== undefined && stageId !== 200) {
+              // New cases: stage <= 105 OR Active cases: stage >= 110 AND stage < 150 (exclude Application Submitted and above)
+              if (stageId <= 105 || (stageId >= 110 && stageId < 150)) {
+                inProcessCount++;
+              }
+            }
+          });
+        }
+      }
 
-      // Fetch approved cases
-      const newApproved = await countNewLeadsByStage('approved');
-      const legacyApproved = await countLegacyLeadsByStage('approved');
+      // Count "Applications Sent" = All leads where employee is handler that have stage >= 150 (Application Submitted and above) from leads_leadstage
+      let applicationsSentCount = 0;
 
-      // Fetch declined cases
-      const newDeclined = await countNewLeadsByStage('declined');
-      const legacyDeclined = await countLegacyLeadsByStage('declined');
+      // For new leads - get lead IDs first, then check leads_leadstage
+      if (currentUserFullName || currentUserEmployeeId) {
+        let newLeadsQuery = supabase
+          .from('leads')
+          .select('id')
+          .not('handler', 'is', null)
+          .not('handler', 'eq', '')
+          .not('handler', 'eq', '---')
+          .is('unactivated_at', null); // Only active leads
+
+        if (currentUserFullName) {
+          newLeadsQuery = newLeadsQuery.eq('handler', currentUserFullName);
+        }
+        if (currentUserEmployeeId) {
+          newLeadsQuery = newLeadsQuery.eq('case_handler_id', currentUserEmployeeId);
+        }
+
+        const { data: userNewLeads, error: userNewLeadsError } = await newLeadsQuery;
+        if (!userNewLeadsError && userNewLeads && userNewLeads.length > 0) {
+          const userNewLeadIds = userNewLeads.map(l => l.id);
+
+          // Count distinct leads from leads_leadstage where stage >= 150
+          const { data: stageRecords, error: stageError } = await supabase
+            .from('leads_leadstage')
+            .select('newlead_id', { count: 'exact', head: false })
+            .in('newlead_id', userNewLeadIds)
+            .gte('stage', 150);
+
+          if (!stageError && stageRecords) {
+            // Get unique lead IDs that have stage >= 150
+            const uniqueLeadIds = new Set(stageRecords.map(r => r.newlead_id).filter(Boolean));
+            applicationsSentCount += uniqueLeadIds.size;
+          }
+        }
+      }
+
+      // For legacy leads - get lead IDs first, then check leads_leadstage
+      if (currentUserEmployeeId) {
+        const { data: userLegacyLeads, error: userLegacyLeadsError } = await supabase
+          .from('leads_lead')
+          .select('id')
+          .eq('case_handler_id', currentUserEmployeeId)
+          .not('case_handler_id', 'is', null)
+          .or('status.eq.0,status.is.null'); // Only active leads
+
+        if (!userLegacyLeadsError && userLegacyLeads && userLegacyLeads.length > 0) {
+          const userLegacyLeadIds = userLegacyLeads.map(l => Number(l.id)).filter(id => !Number.isNaN(id));
+
+          // Count distinct leads from leads_leadstage where stage >= 150
+          const { data: stageRecords, error: stageError } = await supabase
+            .from('leads_leadstage')
+            .select('lead_id', { count: 'exact', head: false })
+            .in('lead_id', userLegacyLeadIds)
+            .gte('stage', 150);
+
+          if (!stageError && stageRecords) {
+            // Get unique lead IDs that have stage >= 150
+            const uniqueLeadIds = new Set(stageRecords.map(r => r.lead_id).filter(Boolean));
+            applicationsSentCount += uniqueLeadIds.size;
+          }
+        }
+      }
+
+      // Fetch approved cases (stage = approved)
+      let newApproved = 0;
+      let legacyApproved = 0;
+      if (currentUserFullName || currentUserEmployeeId) {
+        let newApprovedQuery = supabase
+          .from('leads')
+          .select('*', { count: 'exact', head: true })
+          .eq('stage', 'approved')
+          .not('handler', 'is', null)
+          .not('handler', 'eq', '')
+          .not('handler', 'eq', '---')
+          .is('unactivated_at', null);
+
+        if (currentUserFullName) {
+          newApprovedQuery = newApprovedQuery.eq('handler', currentUserFullName);
+        }
+        if (currentUserEmployeeId) {
+          newApprovedQuery = newApprovedQuery.eq('case_handler_id', currentUserEmployeeId);
+        }
+
+        const { count: newApprovedCount, error: newApprovedError } = await newApprovedQuery;
+        if (!newApprovedError) newApproved = newApprovedCount || 0;
+      }
+
+      if (currentUserEmployeeId) {
+        let legacyApprovedQuery = supabase
+          .from('leads_lead')
+          .select('*', { count: 'exact', head: true })
+          .eq('stage', 'approved')
+          .eq('case_handler_id', currentUserEmployeeId)
+          .not('case_handler_id', 'is', null)
+          .or('status.eq.0,status.is.null');
+
+        const { count: legacyApprovedCount, error: legacyApprovedError } = await legacyApprovedQuery;
+        if (!legacyApprovedError) legacyApproved = legacyApprovedCount || 0;
+      }
+
+      // Fetch declined cases (stage = declined)
+      let newDeclined = 0;
+      let legacyDeclined = 0;
+      if (currentUserFullName || currentUserEmployeeId) {
+        let newDeclinedQuery = supabase
+          .from('leads')
+          .select('*', { count: 'exact', head: true })
+          .eq('stage', 'declined')
+          .not('handler', 'is', null)
+          .not('handler', 'eq', '')
+          .not('handler', 'eq', '---')
+          .is('unactivated_at', null);
+
+        if (currentUserFullName) {
+          newDeclinedQuery = newDeclinedQuery.eq('handler', currentUserFullName);
+        }
+        if (currentUserEmployeeId) {
+          newDeclinedQuery = newDeclinedQuery.eq('case_handler_id', currentUserEmployeeId);
+        }
+
+        const { count: newDeclinedCount, error: newDeclinedError } = await newDeclinedQuery;
+        if (!newDeclinedError) newDeclined = newDeclinedCount || 0;
+      }
+
+      if (currentUserEmployeeId) {
+        let legacyDeclinedQuery = supabase
+          .from('leads_lead')
+          .select('*', { count: 'exact', head: true })
+          .eq('stage', 'declined')
+          .eq('case_handler_id', currentUserEmployeeId)
+          .not('case_handler_id', 'is', null)
+          .or('status.eq.0,status.is.null');
+
+        const { count: legacyDeclinedCount, error: legacyDeclinedError } = await legacyDeclinedQuery;
+        if (!legacyDeclinedError) legacyDeclined = legacyDeclinedCount || 0;
+      }
 
       setCaseStats({
-        inProcess: newInProcess + legacyInProcess,
-        applicationsSent: newApplicationsSent + legacyApplicationsSent,
+        inProcess: inProcessCount,
+        applicationsSent: applicationsSentCount,
         approved: newApproved + legacyApproved,
         declined: newDeclined + legacyDeclined
       });
@@ -488,51 +1110,292 @@ const CaseManagerPageNew: React.FC = () => {
 
   const fetchTotalBalance = async () => {
     try {
-      // Get payment plans for new leads with handlers assigned
-      let newLeadsQuery = supabase
-        .from('leads')
-        .select('id, lead_number')
-        .not('handler', 'is', null)
-        .not('handler', 'eq', '')
-        .not('handler', 'eq', '---');
-
-      if (currentUserFullName) {
-        newLeadsQuery = newLeadsQuery.eq('handler', currentUserFullName);
-      }
-
-      const { data: newLeadsWithHandlers, error: newLeadsError } = await newLeadsQuery;
-
-      if (newLeadsError) throw newLeadsError;
-
-      if (!newLeadsWithHandlers || newLeadsWithHandlers.length === 0) {
+      // Don't fetch if we don't have user identification yet
+      if (!currentUserFullName && !currentUserEmployeeId) {
+        console.log('🔍 My Achievements - Skipping fetch: No user data available yet');
         setTotalBalance(0);
         return;
       }
 
-      const newLeadIds = newLeadsWithHandlers.map(lead => lead.id);
+      // Create date range for selected month and year (based on due_date, not paid_at)
+      const startDate = `${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}-01T00:00:00`;
+      const endDate = new Date(selectedYear, selectedMonth + 1, 0, 23, 59, 59).toISOString();
 
-      // Create date range for selected month and year
-      const startDate = new Date(selectedYear, selectedMonth, 1).toISOString();
-      const endDate = new Date(selectedYear, selectedMonth + 1, 0, 23, 59, 59, 999).toISOString();
+      console.log('🔍 My Achievements - Fetching payments for month/year:', {
+        selectedMonth,
+        selectedYear,
+        startDate,
+        endDate,
+        currentUserFullName,
+        currentUserEmployeeId
+      });
 
-      // Get payment plans for these leads with date filter (only new leads have payment plans)
-      const { data: paymentPlans, error: paymentError } = await supabase
+      // Fetch new payment plans - ready to pay with due_date in selected month/year
+      let newPaymentsQuery = supabase
         .from('payment_plans')
-        .select('id, value, paid, lead_id, paid_at')
-        .in('lead_id', newLeadIds)
-        .eq('paid', true)
-        .gte('paid_at', startDate)
-        .lte('paid_at', endDate);
+        .select(`
+          id,
+          lead_id,
+          value,
+          value_vat,
+          currency,
+          due_date,
+          cancel_date,
+          ready_to_pay
+        `)
+        .eq('ready_to_pay', true)
+        .not('due_date', 'is', null)
+        .is('cancel_date', null)
+        .gte('due_date', startDate)
+        .lte('due_date', endDate);
 
-      if (paymentError) throw paymentError;
+      // Filter by current user's handler if available
+      let newPayments: any[] = [];
+      if (currentUserFullName) {
+        // First, get lead IDs for this handler
+        const { data: userLeads, error: userLeadsError } = await supabase
+          .from('leads')
+          .select('id')
+          .eq('handler', currentUserFullName)
+          .not('handler', 'is', null)
+          .not('handler', 'eq', '')
+          .not('handler', 'eq', '---');
 
-      // Calculate total value from paid payment plans for selected month
-      const total = paymentPlans?.reduce((sum, plan) => {
-        return sum + (plan.value || 0);
-      }, 0) || 0;
-      setTotalBalance(total);
+        if (!userLeadsError && userLeads && userLeads.length > 0) {
+          const userLeadIds = userLeads.map(l => l.id);
+          newPaymentsQuery = newPaymentsQuery.in('lead_id', userLeadIds);
+          const { data: newPaymentsData, error: newError } = await newPaymentsQuery;
+          if (newError) {
+            console.error('❌ My Achievements - Error fetching new payments:', newError);
+            throw newError;
+          }
+          newPayments = newPaymentsData || [];
+          console.log('✅ My Achievements - Fetched new payments:', newPayments.length);
+        } else {
+          // No new leads for this user, skip new payments query but still check legacy leads
+          console.log('✅ My Achievements - No new leads found, skipping new payments query');
+        }
+      } else {
+        // No currentUserFullName, execute query without handler filter
+        const { data: newPaymentsData, error: newError } = await newPaymentsQuery;
+        if (newError) {
+          console.error('❌ My Achievements - Error fetching new payments:', newError);
+          throw newError;
+        }
+        newPayments = newPaymentsData || [];
+        console.log('✅ My Achievements - Fetched new payments:', newPayments.length);
+      }
+      // Fetch legacy payment plans from finances_paymentplanrow
+      // Filter by due_date in selected month/year (not ready_to_pay flag)
+      let legacyPaymentsQuery = supabase
+        .from('finances_paymentplanrow')
+        .select(`
+          id,
+          lead_id,
+          value,
+          value_base,
+          vat_value,
+          currency_id,
+          due_date,
+          cancel_date,
+          accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
+        `)
+        .not('due_date', 'is', null)
+        .is('cancel_date', null)
+        .gte('due_date', startDate)
+        .lte('due_date', endDate);
+
+      // Filter by current user's case_handler_id if available
+      let legacyPayments: any[] = [];
+      if (currentUserEmployeeId) {
+        // First, get lead IDs for this handler
+        const { data: userLegacyLeads, error: userLegacyLeadsError } = await supabase
+          .from('leads_lead')
+          .select('id')
+          .eq('case_handler_id', currentUserEmployeeId)
+          .not('case_handler_id', 'is', null);
+
+        if (!userLegacyLeadsError && userLegacyLeads && userLegacyLeads.length > 0) {
+          const userLegacyLeadIds = userLegacyLeads.map(l => Number(l.id)).filter(id => !Number.isNaN(id));
+          legacyPaymentsQuery = legacyPaymentsQuery.in('lead_id', userLegacyLeadIds);
+          const { data: legacyPaymentsData, error: legacyError } = await legacyPaymentsQuery;
+          if (legacyError) {
+            console.error('❌ My Achievements - Error fetching legacy payments:', legacyError);
+            throw legacyError;
+          }
+          legacyPayments = legacyPaymentsData || [];
+          console.log('✅ My Achievements - Fetched legacy payments:', legacyPayments.length);
+        } else {
+          // No legacy leads for this user, skip legacy payments query
+          console.log('✅ My Achievements - No legacy leads found, skipping legacy payments query');
+        }
+      } else {
+        // No currentUserEmployeeId, execute query without handler filter
+        const { data: legacyPaymentsData, error: legacyError } = await legacyPaymentsQuery;
+        if (legacyError) {
+          console.error('❌ My Achievements - Error fetching legacy payments:', legacyError);
+          throw legacyError;
+        }
+        legacyPayments = legacyPaymentsData || [];
+        console.log('✅ My Achievements - Fetched legacy payments:', legacyPayments.length);
+      }
+
+      // Calculate total from new payments
+      let totalInNIS = 0;
+
+      // Process new payments
+      if (newPayments && newPayments.length > 0) {
+        newPayments.forEach((payment: any) => {
+          const value = Number(payment.value || 0);
+          let vat = Number(payment.value_vat || 0);
+          if (!vat && (payment.currency || '₪') === '₪') {
+            vat = Math.round(value * 0.18 * 100) / 100;
+          }
+          const amount = value + vat;
+
+          // Convert to NIS
+          let currencyForConversion = payment.currency || 'NIS';
+          if (currencyForConversion === '₪') currencyForConversion = 'NIS';
+          else if (currencyForConversion === '€') currencyForConversion = 'EUR';
+          else if (currencyForConversion === '$') currencyForConversion = 'USD';
+          else if (currencyForConversion === '£') currencyForConversion = 'GBP';
+
+          const valueInNIS = convertToNIS(value, currencyForConversion);
+          totalInNIS += valueInNIS;
+        });
+      }
+
+      // Process legacy payments
+      if (legacyPayments && legacyPayments.length > 0) {
+        legacyPayments.forEach((payment: any) => {
+          const value = Number(payment.value || payment.value_base || 0);
+
+          // Get currency from accounting_currencies relation
+          const accountingCurrency: any = payment.accounting_currencies
+            ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies)
+            : null;
+
+          let currencyForConversion = 'NIS';
+          if (accountingCurrency?.name) {
+            currencyForConversion = accountingCurrency.name;
+          } else if (accountingCurrency?.iso_code) {
+            currencyForConversion = accountingCurrency.iso_code;
+          } else if (payment.currency_id) {
+            switch (payment.currency_id) {
+              case 1: currencyForConversion = 'NIS'; break;
+              case 2: currencyForConversion = 'EUR'; break;
+              case 3: currencyForConversion = 'USD'; break;
+              case 4: currencyForConversion = 'GBP'; break;
+              default: currencyForConversion = 'NIS'; break;
+            }
+          }
+
+          // Normalize currency symbols to codes
+          if (currencyForConversion === '₪') currencyForConversion = 'NIS';
+          else if (currencyForConversion === '€') currencyForConversion = 'EUR';
+          else if (currencyForConversion === '$') currencyForConversion = 'USD';
+          else if (currencyForConversion === '£') currencyForConversion = 'GBP';
+
+          const valueInNIS = convertToNIS(value, currencyForConversion);
+          totalInNIS += valueInNIS;
+        });
+      }
+
+      console.log('✅ My Achievements - Total in NIS:', totalInNIS);
+      setTotalBalance(totalInNIS);
     } catch (error) {
-      console.error('Error fetching total balance:', error);
+      console.error('❌ My Achievements - Error fetching total balance:', error);
+      setTotalBalance(0);
+    }
+  };
+
+  const fetchApplicationsSentThisMonth = async () => {
+    try {
+      // Create date range for selected month and year
+      const startDate = `${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}-01T00:00:00`;
+      const endDate = new Date(selectedYear, selectedMonth + 1, 0, 23, 59, 59).toISOString();
+
+      console.log('🔍 My Achievements - Fetching applications sent for month/year:', {
+        selectedMonth,
+        selectedYear,
+        startDate,
+        endDate,
+        stageId: 150
+      });
+
+      let totalCount = 0;
+
+      // Fetch stage changes for new leads (newlead_id)
+      if (currentUserFullName) {
+        // First, get new lead IDs for this handler
+        const { data: userLeads, error: userLeadsError } = await supabase
+          .from('leads')
+          .select('id')
+          .eq('handler', currentUserFullName)
+          .not('handler', 'is', null)
+          .not('handler', 'eq', '')
+          .not('handler', 'eq', '---');
+
+        if (!userLeadsError && userLeads && userLeads.length > 0) {
+          const userLeadIds = userLeads.map(l => l.id);
+
+          // Count stage changes to 150 (application submitted) for new leads
+          const { data: newStageChanges, error: newStageError } = await supabase
+            .from('leads_leadstage')
+            .select('id', { count: 'exact', head: false })
+            .eq('stage', 150)
+            .in('newlead_id', userLeadIds)
+            .not('date', 'is', null)
+            .gte('date', startDate)
+            .lte('date', endDate);
+
+          if (newStageError) {
+            console.error('❌ My Achievements - Error fetching new stage changes:', newStageError);
+          } else {
+            const newCount = newStageChanges?.length || 0;
+            console.log('✅ My Achievements - Found', newCount, 'new lead stage changes to 150');
+            totalCount += newCount;
+          }
+        }
+      }
+
+      // Fetch stage changes for legacy leads (lead_id)
+      if (currentUserEmployeeId) {
+        // First, get legacy lead IDs for this handler
+        const { data: userLegacyLeads, error: userLegacyLeadsError } = await supabase
+          .from('leads_lead')
+          .select('id')
+          .eq('case_handler_id', currentUserEmployeeId)
+          .not('case_handler_id', 'is', null);
+
+        if (!userLegacyLeadsError && userLegacyLeads && userLegacyLeads.length > 0) {
+          const userLegacyLeadIds = userLegacyLeads.map(l => Number(l.id)).filter(id => !Number.isNaN(id));
+
+          // Count stage changes to 150 (application submitted) for legacy leads
+          const { data: legacyStageChanges, error: legacyStageError } = await supabase
+            .from('leads_leadstage')
+            .select('id', { count: 'exact', head: false })
+            .eq('stage', 150)
+            .in('lead_id', userLegacyLeadIds)
+            .not('date', 'is', null)
+            .gte('date', startDate)
+            .lte('date', endDate);
+
+          if (legacyStageError) {
+            console.error('❌ My Achievements - Error fetching legacy stage changes:', legacyStageError);
+          } else {
+            const legacyCount = legacyStageChanges?.length || 0;
+            console.log('✅ My Achievements - Found', legacyCount, 'legacy lead stage changes to 150');
+            totalCount += legacyCount;
+          }
+        }
+      }
+
+      console.log('✅ My Achievements - Total applications sent this month:', totalCount);
+      setApplicationsSentThisMonth(totalCount);
+    } catch (error) {
+      console.error('❌ My Achievements - Error fetching applications sent:', error);
+      setApplicationsSentThisMonth(0);
     }
   };
 
@@ -544,6 +1407,7 @@ const CaseManagerPageNew: React.FC = () => {
         .from('leads')
         .select(`
           *,
+          master_id,
           misc_category!category_id(
             id,
             name,
@@ -556,12 +1420,19 @@ const CaseManagerPageNew: React.FC = () => {
         `)
         .not('handler', 'is', null)
         .not('handler', 'eq', '')
-        .not('handler', 'eq', '---');
+        .not('handler', 'eq', '---')
+        .is('unactivated_at', null); // Only active leads (exclude inactive)
 
-      // Filter new leads by handler field if we have user's full name
+      // Filter new leads by handler field if we have handler name (from URL param or current user)
       if (currentUserFullName) {
         newLeadsQuery = newLeadsQuery.eq('handler', currentUserFullName);
         console.log('🔍 Filtering new leads by handler:', currentUserFullName);
+      }
+
+      // Also filter by case_handler_id if we have handler ID (more reliable)
+      if (currentUserEmployeeId) {
+        newLeadsQuery = newLeadsQuery.eq('case_handler_id', currentUserEmployeeId);
+        console.log('🔍 Filtering new leads by case_handler_id:', currentUserEmployeeId);
       }
 
       const { data: newLeadsData, error: newLeadsError } = await newLeadsQuery.order('created_at', { ascending: false });
@@ -576,6 +1447,7 @@ const CaseManagerPageNew: React.FC = () => {
         .from('leads_lead')
         .select(`
           *,
+          master_id,
           misc_category!category_id(
             id,
             name,
@@ -594,7 +1466,8 @@ const CaseManagerPageNew: React.FC = () => {
             display_name
           )
         `)
-        .not('case_handler_id', 'is', null);
+        .not('case_handler_id', 'is', null)
+        .or('status.eq.0,status.is.null'); // Only active leads (status 0 or null = active, status 10 = inactive)
 
       // Filter legacy leads by case_handler_id if we have the employee ID
       if (currentUserEmployeeId) {
@@ -620,16 +1493,16 @@ const CaseManagerPageNew: React.FC = () => {
             fallbackCategory: lead.category
           });
         }
-        
+
         return {
           ...lead,
           lead_type: 'new' as const,
           handler: lead.handler || 'Not assigned',
           expert: lead.expert || '--',
-          category: lead.misc_category?.name 
-            ? (lead.misc_category.misc_maincategory?.name 
-                ? `${lead.misc_category.name} (${lead.misc_category.misc_maincategory.name})`
-                : lead.misc_category.name)
+          category: lead.misc_category?.name
+            ? (lead.misc_category.misc_maincategory?.name
+              ? `${lead.misc_category.name} (${lead.misc_category.misc_maincategory.name})`
+              : lead.misc_category.name)
             : getCategoryDisplayName(lead.category_id, lead.category)
         };
       });
@@ -645,7 +1518,7 @@ const CaseManagerPageNew: React.FC = () => {
             fallbackCategory: lead.category
           });
         }
-        
+
         return {
           ...lead,
           id: `legacy_${lead.id}`,
@@ -654,10 +1527,10 @@ const CaseManagerPageNew: React.FC = () => {
           lead_type: 'legacy' as const,
           handler: lead.case_handler?.display_name || getEmployeeDisplayName(lead.case_handler_id) || 'Not assigned',
           expert: lead.expert?.display_name || getEmployeeDisplayName(lead.expert_id) || '--',
-          category: lead.misc_category?.name 
-            ? (lead.misc_category.misc_maincategory?.name 
-                ? `${lead.misc_category.name} (${lead.misc_category.misc_maincategory.name})`
-                : lead.misc_category.name)
+          category: lead.misc_category?.name
+            ? (lead.misc_category.misc_maincategory?.name
+              ? `${lead.misc_category.name} (${lead.misc_category.misc_maincategory.name})`
+              : lead.misc_category.name)
             : getCategoryDisplayName(lead.category_id, lead.category),
           balance: lead.total || 0,
           balance_currency: lead.currency_id === 1 ? '₪' : lead.currency_id === 2 ? '$' : lead.currency_id === 3 ? '€' : '₪'
@@ -683,7 +1556,7 @@ const CaseManagerPageNew: React.FC = () => {
   const uploadFiles = async (lead: HandlerLead, files: File[]) => {
     setUploadingLeadId(lead.id);
     setIsUploading(true);
-    
+
     const newFiles: UploadedFile[] = files.map(file => ({
       name: file.name,
       status: 'uploading',
@@ -699,7 +1572,7 @@ const CaseManagerPageNew: React.FC = () => {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         const fileName = `${lead.id}/${Date.now()}_${file.name}`;
-        
+
         const { error } = await supabase.storage
           .from('documents')
           .upload(fileName, file);
@@ -709,8 +1582,8 @@ const CaseManagerPageNew: React.FC = () => {
         // Update progress
         setUploadedFiles(prev => ({
           ...prev,
-          [lead.id]: prev[lead.id].map((f, index) => 
-            f.name === file.name 
+          [lead.id]: prev[lead.id].map((f, index) =>
+            f.name === file.name
               ? { ...f, status: 'success', progress: 100 }
               : f
           )
@@ -721,7 +1594,7 @@ const CaseManagerPageNew: React.FC = () => {
     } catch (error) {
       console.error('Error uploading files:', error);
       toast.error('Failed to upload files');
-      
+
       // Update failed files
       setUploadedFiles(prev => ({
         ...prev,
@@ -756,35 +1629,42 @@ const CaseManagerPageNew: React.FC = () => {
 
 
   const handleCaseSelect = (lead: HandlerLead) => {
-    // Immediately scroll to top before state changes
-    window.scrollTo({ top: 0, behavior: 'auto' });
-    
-    setSelectedCase(lead);
-    setActiveTab('cases'); // Start with cases tab
+    // Navigate to the case details page
+    // Remove "legacy_" prefix from ID for URL
+    const caseId = lead.id.startsWith('legacy_') ? lead.id.replace('legacy_', '') : lead.id;
+    navigate(`/case-manager/${caseId}`);
   };
 
-  const handleBackToCases = () => {
-    // Reset scroll position before state changes
-    window.scrollTo({ top: 0, behavior: 'auto' });
-    document.body.scrollTop = 0;
-    document.documentElement.scrollTop = 0;
-    
-    setSelectedCase(null);
-    setActiveTab('cases');
-  };
 
-  // User authentication effect
+  // User authentication effect - also handles handlerId from URL
   useEffect(() => {
     (async () => {
       try {
+        // If handlerId is in URL, fetch that handler's info instead of current user
+        if (filterHandlerId) {
+          const { data: handlerData, error: handlerError } = await supabase
+            .from('tenants_employee')
+            .select('id, display_name')
+            .eq('id', filterHandlerId)
+            .single();
+
+          if (!handlerError && handlerData) {
+            setFilterHandlerName(handlerData.display_name || '');
+            setCurrentUserFullName(handlerData.display_name || '');
+            setCurrentUserEmployeeId(filterHandlerId);
+            return;
+          }
+        }
+
+        // Otherwise, fetch current user's data
         const { data: { user }, error: authError } = await supabase.auth.getUser();
-        
+
         if (authError) {
           console.error('🔍 Authentication error:', authError);
           setCurrentUserFullName('Unknown User');
           return;
         }
-        
+
         // Fetch current user's data with employee relationship using JOIN
         if (user?.id) {
           const { data: userData, error: userError } = await supabase
@@ -801,13 +1681,13 @@ const CaseManagerPageNew: React.FC = () => {
             `)
             .eq('auth_id', user.id)
             .single();
-          
+
           if (userError) {
             console.error('🔍 User data fetch error details:', userError);
             setCurrentUserFullName('Unknown User');
             return;
           }
-          
+
           if (userData?.full_name) {
             setCurrentUserFullName(userData.full_name);
           } else if (userData?.tenants_employee && Array.isArray(userData.tenants_employee) && userData.tenants_employee.length > 0) {
@@ -815,7 +1695,7 @@ const CaseManagerPageNew: React.FC = () => {
           } else {
             setCurrentUserFullName('Unknown User');
           }
-          
+
           // Store employee ID for efficient filtering
           if (userData?.employee_id && typeof userData.employee_id === 'number') {
             setCurrentUserEmployeeId(userData.employee_id);
@@ -830,63 +1710,24 @@ const CaseManagerPageNew: React.FC = () => {
         setCurrentUserFullName('Unknown User');
       }
     })();
-  }, []);
+  }, [filterHandlerId]);
 
   useEffect(() => {
     // Only fetch leads when we have user authentication data
     if (currentUserFullName || currentUserEmployeeId) {
       fetchReferenceData(); // Fetch reference data first
-    fetchLeads();
-    fetchHandlerStageStats();
-    fetchNewMessages();
-    fetchTasksDue();
-    fetchDocumentsPending();
-    fetchCaseStatistics();
-    fetchTotalBalance();
+      fetchLeads();
+      fetchHandlerStageStats();
+      fetchNewMessages();
+      fetchTasksDue();
+      console.log('📄 CaseManagerPageNew: Calling fetchDocumentsPending from useEffect');
+      fetchDocumentsPending();
+      fetchCaseStatistics();
+      fetchTotalBalance();
+      fetchApplicationsSentThisMonth();
     }
   }, [currentUserFullName, currentUserEmployeeId]);
 
-  // Scroll to top when component first mounts with a selected case
-  useEffect(() => {
-    if (selectedCase) {
-      // Force scroll to top on mount and reset all scroll positions
-      window.scrollTo({ top: 0, behavior: 'auto' });
-      document.body.scrollTop = 0;
-      document.documentElement.scrollTop = 0;
-    }
-  }, []);
-
-  // Scroll to top when a case is selected or tab changes
-  useLayoutEffect(() => {
-    if (selectedCase) {
-      // Force scroll to top immediately and reset scroll position
-      window.scrollTo({ top: 0, behavior: 'auto' });
-      
-      // Also reset scroll position on the document body
-      document.body.scrollTop = 0;
-      document.documentElement.scrollTop = 0;
-    }
-  }, [selectedCase]);
-
-  // Additional scroll effect for tab changes
-  useEffect(() => {
-    if (selectedCase) {
-      // Comprehensive scroll reset after component has rendered
-      setTimeout(() => {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-        document.body.scrollTop = 0;
-        document.documentElement.scrollTop = 0;
-        
-        // Also reset any scrollable containers
-        const scrollableElements = document.querySelectorAll('.overflow-auto, .overflow-y-auto, .overflow-scroll');
-        scrollableElements.forEach((element) => {
-          if (element instanceof HTMLElement) {
-            element.scrollTop = 0;
-          }
-        });
-      }, 100);
-    }
-  }, [activeTab, selectedCase]);
 
   // Handle responsive case cards display
   useEffect(() => {
@@ -904,167 +1745,26 @@ const CaseManagerPageNew: React.FC = () => {
 
   useEffect(() => {
     fetchTotalBalance();
-  }, [selectedMonth, selectedYear]);
+    fetchApplicationsSentThisMonth();
+  }, [selectedMonth, selectedYear, currentUserFullName, currentUserEmployeeId]);
 
-  const renderTabContent = () => {
-    const tabProps = {
-      leads: selectedCase ? [selectedCase] : leads,
-      uploadFiles,
-      uploadingLeadId,
-      uploadedFiles,
-      isUploading,
-      handleFileInput,
-      refreshLeads,
-      refreshDashboardData,
-      getStageDisplayName
-    };
-
-    switch (activeTab) {
-      case 'cases':
-        return <CasesTab {...tabProps} />;
-      case 'contacts':
-        return <ContactsTab {...tabProps} />;
-      case 'documents':
-        return <DocumentsTab {...tabProps} />;
-      case 'tasks':
-        return <TasksTab {...tabProps} />;
-      case 'status':
-        return <StatusTab {...tabProps} />;
-      case 'notes':
-        return <NotesTab {...tabProps} />;
-      case 'communications':
-        return <CommunicationsTab {...tabProps} />;
-      case 'finance':
-        return <FinanceTab {...tabProps} />;
-      default:
-        return <CasesTab {...tabProps} />;
-    }
-  };
-
-  // If a case is selected, show single case view
-  if (selectedCase) {
-    return (
-      <div ref={mainContainerRef} className="min-h-screen bg-white pt-8">
-        <div className="container mx-auto px-4 py-8">
-          {/* Header with back button */}
-          <div className="mb-6 sm:mb-8">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
-              <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-purple-700 rounded-full flex items-center justify-center">
-                    <span className="text-white font-bold text-sm">
-                      {selectedCase.name.charAt(0).toUpperCase()}
-                    </span>
-                  </div>
-                  <div className="flex items-start gap-3">
-                    <div>
-                      <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-900">{selectedCase.name}</h1>
-                      <p className="text-sm sm:text-lg text-gray-600">#{selectedCase.lead_number}</p>
-                    </div>
-                    {selectedCase.handler_stage && (
-                      <span className="badge badge-primary badge-sm sm:badge-md lg:badge-lg mt-1">
-                        {selectedCase.handler_stage.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-              <button
-                onClick={handleBackToCases}
-                className="btn btn-outline btn-sm w-full sm:w-auto"
-              >
-                Back to Dashboard
-              </button>
-            </div>
-            <p className="text-gray-600 text-sm sm:text-base">Case details and management</p>
-          </div>
-
-          {/* Tab Navigation - Styled like Clients page */}
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mb-6">
-            <div className="w-full">
-              {/* Desktop version */}
-              <div className="hidden md:flex items-center px-4 py-4">
-                <div className="flex bg-gray-50 dark:bg-gray-700 p-1 gap-1 overflow-hidden w-full rounded-lg">
-                  {tabs.map((tab) => (
-                    <button
-                      key={tab.id}
-                      className={`relative flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm transition-all duration-300 hover:scale-[1.02] flex-1 ${
-                        activeTab === tab.id
-                          ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg transform scale-[1.02]'
-                          : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:bg-gray-600'
-                      }`}
-                      onClick={() => setActiveTab(tab.id)}
-                    >
-                      <tab.icon className={`w-5 h-5 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
-                      <span className={`whitespace-nowrap font-bold ${activeTab === tab.id ? 'text-white' : 'text-gray-600'}`}>{tab.label}</span>
-                      {activeTab === tab.id && (
-                        <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {/* Mobile version: modern card-based design */}
-              <div className="md:hidden px-6 py-4">
-                <div className="overflow-x-auto scrollbar-hide bg-gray-50 dark:bg-gray-700 rounded-xl p-3 w-full">
-                  <div className="flex gap-2 pb-1">
-                    {tabs.map((tab) => {
-                      const isActive = activeTab === tab.id;
-                      return (
-                        <button
-                          key={tab.id}
-                          className={`relative flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 min-w-[80px] ${
-                            isActive
-                              ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
-                              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:bg-gray-600'
-                          }`}
-                          onClick={() => setActiveTab(tab.id)}
-                        >
-                          <div className="relative">
-                            <tab.icon className={`w-6 h-6 mb-1 ${isActive ? 'text-white' : 'text-gray-500'}`} />
-                          </div>
-                          <span className={`text-xs font-semibold truncate max-w-[70px] ${
-                            isActive ? 'text-white' : 'text-gray-600'
-                          }`}>
-                            {tab.label}
-                          </span>
-                          {isActive && (
-                            <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-1.5 h-1.5 bg-white dark:bg-gray-800 rounded-full"></div>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Tab Content */}
-          <div className="w-full bg-white dark:bg-gray-900 min-h-screen">
-            <div className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0">
-              {renderTabContent()}
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   // Main dashboard view
   return (
     <div ref={mainContainerRef} className="min-h-screen bg-white pt-8">
-      <div className="container mx-auto px-4 py-8">
+      <div className="w-full max-w-[95vw] xl:max-w-[98vw] mx-auto px-2 sm:px-4 md:px-6 lg:px-8 xl:px-12 py-8">
         {/* Header */}
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">Case Manager - German & Austrian Departement</h1>
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">
+            Welcome{currentUserFullName ? `, ${currentUserFullName}` : ''}!
+          </h1>
           <p className="text-gray-600">Manage your cases, tasks, and client communications</p>
         </div>
 
         {/* Dashboard Boxes - Using correct colors from Dashboard.tsx */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-6 mb-8 w-full mt-6 md:mt-0">
           {/* Handler Cases Box */}
-          <div 
+          <div
             className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white relative overflow-hidden p-3 md:p-6"
             onClick={() => {
               setExpanded(expanded === 'cases' ? null : 'cases');
@@ -1085,7 +1785,7 @@ const CaseManagerPageNew: React.FC = () => {
           </div>
 
           {/* New Messages Box */}
-          <div 
+          <div
             className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white relative overflow-hidden p-3 md:p-6"
             onClick={() => setExpanded(expanded === 'messages' ? null : 'messages')}
           >
@@ -1103,7 +1803,7 @@ const CaseManagerPageNew: React.FC = () => {
           </div>
 
           {/* Tasks Due Box */}
-          <div 
+          <div
             className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden p-3 md:p-6"
             onClick={() => {
               console.log('Tasks due box clicked');
@@ -1120,20 +1820,33 @@ const CaseManagerPageNew: React.FC = () => {
               </div>
             </div>
             {/* SVG Bar Chart Placeholder */}
-            <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-12 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 48 32"><rect x="2" y="20" width="4" height="10"/><rect x="10" y="10" width="4" height="20"/><rect x="18" y="16" width="4" height="14"/><rect x="26" y="6" width="4" height="24"/><rect x="34" y="14" width="4" height="16"/></svg>
+            <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-12 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 48 32"><rect x="2" y="20" width="4" height="10" /><rect x="10" y="10" width="4" height="20" /><rect x="18" y="16" width="4" height="14" /><rect x="26" y="6" width="4" height="24" /><rect x="34" y="14" width="4" height="16" /></svg>
           </div>
 
           {/* Documents Pending Box */}
-          <div 
+          <div
             className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white relative overflow-hidden p-3 md:p-6"
-            onClick={() => setExpanded(expanded === 'documents' ? null : 'documents')}
+            onClick={() => {
+              console.log('📄 Documents Pending Box clicked', {
+                expanded,
+                documentsPendingCount,
+                documentsDueLength: documentsDue.length,
+                documentsDue: documentsDue
+              });
+              setExpanded(expanded === 'documents' ? null : 'documents');
+            }}
           >
             <div className="flex items-center gap-2 md:gap-4">
               <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
                 <DocumentTextIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
               </div>
               <div>
-                <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">{documentsPendingCount}</div>
+                <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">
+                  {(() => {
+                    console.log('📄 Rendering documentsPendingCount:', documentsPendingCount);
+                    return documentsPendingCount;
+                  })()}
+                </div>
                 <div className="text-white/80 text-xs md:text-sm font-medium mt-1">Documents Pending</div>
               </div>
             </div>
@@ -1158,7 +1871,7 @@ const CaseManagerPageNew: React.FC = () => {
                   <p className="text-base-content/60 text-sm">Overview of case stages</p>
                 </div>
               </div>
-              
+
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 w-full">
                 <div className="card bg-white shadow-lg hover:shadow-xl transition-shadow duration-300 rounded-xl p-4">
                   <div className="card-body p-0 text-center">
@@ -1166,21 +1879,21 @@ const CaseManagerPageNew: React.FC = () => {
                     <div className="stat-value text-3xl font-bold" style={{ background: 'linear-gradient(to top right, #EC4899, #A855F7, #9333EA)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>{caseStats.inProcess}</div>
                   </div>
                 </div>
-                
+
                 <div className="card bg-white shadow-lg hover:shadow-xl transition-shadow duration-300 rounded-xl p-4">
                   <div className="card-body p-0 text-center">
                     <div className="stat-title text-sm font-semibold mb-3">Applications Sent</div>
                     <div className="stat-value text-3xl font-bold" style={{ background: 'linear-gradient(to top right, #EC4899, #A855F7, #9333EA)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>{caseStats.applicationsSent}</div>
                   </div>
                 </div>
-                
+
                 <div className="card bg-white shadow-lg hover:shadow-xl transition-shadow duration-300 rounded-xl p-4">
                   <div className="card-body p-0 text-center">
                     <div className="stat-title text-sm font-semibold mb-3">Approved</div>
                     <div className="stat-value text-3xl font-bold" style={{ background: 'linear-gradient(to top right, #EC4899, #A855F7, #9333EA)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>{caseStats.approved}</div>
                   </div>
                 </div>
-                
+
                 <div className="card bg-white shadow-lg hover:shadow-xl transition-shadow duration-300 rounded-xl p-4">
                   <div className="card-body p-0 text-center">
                     <div className="stat-title text-sm font-semibold mb-3">Declined</div>
@@ -1200,56 +1913,56 @@ const CaseManagerPageNew: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="text-lg font-bold text-gray-900">My Achievements</h3>
-                  <p className="text-sm text-gray-600">Invoiced amount for the month</p>
+                  <p className="text-sm text-gray-600">Collection due for the month</p>
                 </div>
               </div>
-                              {/* Month/Year Filter */}
-                                        <div className="flex gap-2">
-                          <select
-                            className="select select-sm select-bordered"
-                            value={selectedMonth}
-                            onChange={(e) => setSelectedMonth(parseInt(e.target.value))}
-                          >
-                            <option value={0}>January</option>
-                            <option value={1}>February</option>
-                            <option value={2}>March</option>
-                            <option value={3}>April</option>
-                            <option value={4}>May</option>
-                            <option value={5}>June</option>
-                            <option value={6}>July</option>
-                            <option value={7}>August</option>
-                            <option value={8}>September</option>
-                            <option value={9}>October</option>
-                            <option value={10}>November</option>
-                            <option value={11}>December</option>
-                          </select>
-                          <select
-                            className="select select-sm select-bordered"
-                            value={selectedYear}
-                            onChange={(e) => setSelectedYear(parseInt(e.target.value))}
-                          >
-                            {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 2 + i).map(year => (
-                              <option key={year} value={year}>{year}</option>
-                            ))}
-                          </select>
-                        </div>
+              {/* Month/Year Filter */}
+              <div className="flex gap-2">
+                <select
+                  className="select select-sm select-bordered"
+                  value={selectedMonth}
+                  onChange={(e) => setSelectedMonth(parseInt(e.target.value))}
+                >
+                  <option value={0}>January</option>
+                  <option value={1}>February</option>
+                  <option value={2}>March</option>
+                  <option value={3}>April</option>
+                  <option value={4}>May</option>
+                  <option value={5}>June</option>
+                  <option value={6}>July</option>
+                  <option value={7}>August</option>
+                  <option value={8}>September</option>
+                  <option value={9}>October</option>
+                  <option value={10}>November</option>
+                  <option value={11}>December</option>
+                </select>
+                <select
+                  className="select select-sm select-bordered"
+                  value={selectedYear}
+                  onChange={(e) => setSelectedYear(parseInt(e.target.value))}
+                >
+                  {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 2 + i).map(year => (
+                    <option key={year} value={year}>{year}</option>
+                  ))}
+                </select>
+              </div>
             </div>
-                                  <div className="text-center">
-                        <div className="text-3xl font-bold text-gray-900 mb-2">
-                          ₪{totalBalance.toLocaleString()}
-                        </div>
-                        <div className="text-sm text-gray-600 mb-4">
-                          Total Achieved Amount - {new Date(selectedYear, selectedMonth).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
-                        </div>
-                        <div className="border-t border-gray-200 pt-4">
-                          <div className="text-lg font-semibold text-gray-700 mb-1">
-                            Applications Sent This Month
-                          </div>
-                          <div className="text-2xl font-bold text-purple-600">
-                            0
-                          </div>
-                        </div>
-                      </div>
+            <div className="text-center">
+              <div className="text-3xl font-bold text-gray-900 mb-2">
+                ₪{totalBalance.toLocaleString()}
+              </div>
+              <div className="text-sm text-gray-600 mb-4">
+                Total Due Amount - {new Date(selectedYear, selectedMonth).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+              </div>
+              <div className="border-t border-gray-200 pt-4">
+                <div className="text-lg font-semibold text-gray-700 mb-1">
+                  Applications Sent This Month
+                </div>
+                <div className="text-2xl font-bold text-purple-600">
+                  {applicationsSentThisMonth}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1267,16 +1980,16 @@ const CaseManagerPageNew: React.FC = () => {
                   </div>
                 ) : (
                   tasksDue.map((task) => (
-                    <div 
-                      key={task.id} 
+                    <div
+                      key={task.id}
                       className="bg-white rounded-xl shadow-lg border border-gray-200 hover:shadow-xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 group cursor-pointer"
                       onClick={() => {
-                        // Find the lead for this task
-                        const lead = leads.find(l => l.id === task.lead_id);
-                        if (lead) {
-                          // Set the selected lead and switch to Tasks tab
-                          setSelectedCase(lead);
-                          setActiveTab('tasks');
+                        // Navigate to the case details page
+                        // Use lead_id or legacy_lead_id from task
+                        if (task.lead_id) {
+                          navigate(`/case-manager/${task.lead_id}`);
+                        } else if (task.legacy_lead_id) {
+                          navigate(`/case-manager/${task.legacy_lead_id}`);
                         }
                       }}
                     >
@@ -1332,6 +2045,15 @@ const CaseManagerPageNew: React.FC = () => {
           <div className="mb-6">
             <div className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
               <h3 className="text-xl font-bold text-gray-900 mb-4">Documents Due Today & Tomorrow</h3>
+              {(() => {
+                console.log('📄 Expanded documents view - rendering', {
+                  expanded,
+                  documentsDueLength: documentsDue.length,
+                  documentsPendingCount,
+                  documentsDue: documentsDue
+                });
+                return null;
+              })()}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {documentsDue.length === 0 ? (
                   <div className="col-span-full text-center py-12 text-gray-500">
@@ -1341,16 +2063,33 @@ const CaseManagerPageNew: React.FC = () => {
                   </div>
                 ) : (
                   documentsDue.map((document) => (
-                    <div 
-                      key={document.id} 
+                    <div
+                      key={document.id}
                       className="bg-white rounded-xl shadow-lg border border-gray-200 hover:shadow-xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 group cursor-pointer"
                       onClick={() => {
-                        // Find the lead for this document
-                        const lead = leads.find(l => l.id === document.lead_id);
-                        if (lead) {
-                          // Set the selected lead and switch to Documents tab
-                          setSelectedCase(lead);
-                          setActiveTab('documents');
+                        // Find the lead for this document (handle both new and legacy leads)
+                        let leadIdToFind: string | null = null;
+
+                        if (document.lead_id) {
+                          // New lead
+                          leadIdToFind = document.lead_id;
+                        } else if (document.legacy_lead_id) {
+                          // Legacy lead - add "legacy_" prefix
+                          leadIdToFind = `legacy_${document.legacy_lead_id}`;
+                        }
+
+                        if (leadIdToFind) {
+                          const lead = leads.find(l => l.id === leadIdToFind);
+                          if (lead) {
+                            // Navigate to the case details page
+                            // Remove "legacy_" prefix from ID for URL
+                            const caseId = lead.id.startsWith('legacy_') ? lead.id.replace('legacy_', '') : lead.id;
+                            navigate(`/case-manager/${caseId}`);
+                          } else {
+                            // Lead not in current leads list, but we can still navigate using the ID
+                            const caseId = leadIdToFind.startsWith('legacy_') ? leadIdToFind.replace('legacy_', '') : leadIdToFind;
+                            navigate(`/case-manager/${caseId}`);
+                          }
                         }
                       }}
                     >
@@ -1362,9 +2101,9 @@ const CaseManagerPageNew: React.FC = () => {
                               {document.status}
                             </span>
                             {document.due_date && (
-                                                          <span className="badge bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white border-none">
-                              Due: {new Date(document.due_date).toLocaleDateString()}
-                            </span>
+                              <span className="badge bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white border-none">
+                                Due: {new Date(document.due_date).toLocaleDateString()}
+                              </span>
                             )}
                           </div>
                           {document.lead && (
@@ -1378,14 +2117,14 @@ const CaseManagerPageNew: React.FC = () => {
                         <div className="mb-3">
                           {/* Separation line before title */}
                           <div className="border-b border-gray-200 mb-3"></div>
-                          
+
                           <h2 className="card-title text-xl font-bold group-hover:text-purple-600 transition-colors">
                             {document.document_name}
                           </h2>
                           <p className="text-sm text-gray-600 mt-1">
                             Type: {document.document_type}
                           </p>
-                          
+
                           {/* Requested From Information */}
                           {document.requested_from && (
                             <div className="flex items-center justify-between mt-2">
@@ -1393,7 +2132,7 @@ const CaseManagerPageNew: React.FC = () => {
                               <span className="text-sm font-medium">{document.requested_from}</span>
                             </div>
                           )}
-                          
+
                           {/* Requested By Information */}
                           {document.requested_from_changed_by && (
                             <div className="flex items-center justify-between mt-1">
@@ -1401,7 +2140,7 @@ const CaseManagerPageNew: React.FC = () => {
                               <span className="text-sm font-medium">{document.requested_from_changed_by}</span>
                             </div>
                           )}
-                          
+
                           {/* Requested Date Information */}
                           {document.requested_from_changed_at && (
                             <div className="flex items-center justify-between mt-1">
@@ -1409,7 +2148,7 @@ const CaseManagerPageNew: React.FC = () => {
                               <span className="text-sm font-medium">{new Date(document.requested_from_changed_at).toLocaleDateString()}</span>
                             </div>
                           )}
-                          
+
                           {/* Separation line after type */}
                           <div className="border-b border-gray-200 mt-3"></div>
                         </div>
@@ -1450,7 +2189,7 @@ const CaseManagerPageNew: React.FC = () => {
         {/* Case Cards - Show when cases box is clicked */}
         {showCaseCards && (
           <div className="mb-6">
-            <DashboardTab 
+            <DashboardTab
               leads={leads}
               uploadFiles={uploadFiles}
               uploadingLeadId={uploadingLeadId}

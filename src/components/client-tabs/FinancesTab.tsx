@@ -2799,13 +2799,42 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   };
 
   const handleSaveEditPaymentModal = async (paymentData: any, includeVat: boolean) => {
-    // Set the edit payment data and includeVat state
-    setEditPaymentData(paymentData);
-    setEditPaymentIncludeVat(includeVat);
-    // Call the existing save handler
-    await handleSaveEditPayment();
-    // Close modal after save
-    setEditingPaymentInModal(null);
+    try {
+      // Ensure the payment data has all required fields from the original payment
+      if (!editingPaymentInModal) {
+        console.error('No payment being edited');
+        toast.error('Cannot save payment: No payment selected');
+        return;
+      }
+      
+      // Merge the edited data with the original payment to ensure ID and isLegacy are preserved
+      const paymentToSave = {
+        ...editingPaymentInModal, // Original payment data (includes id, isLegacy, etc.)
+        ...paymentData, // Edited data (value, valueVat, dueDate, etc.)
+        id: editingPaymentInModal.id, // Ensure ID is always from original
+        isLegacy: editingPaymentInModal.isLegacy, // Ensure isLegacy is always from original
+      };
+      
+      console.log('💾 Saving payment:', {
+        originalId: editingPaymentInModal.id,
+        originalIsLegacy: editingPaymentInModal.isLegacy,
+        paymentToSave: paymentToSave,
+      });
+      
+      // Set the edit payment data and includeVat state
+      setEditPaymentData(paymentToSave);
+      setEditPaymentIncludeVat(includeVat);
+      
+      // Call the existing save handler
+      await handleSaveEditPayment();
+      
+      // Close modal after save
+      setEditingPaymentInModal(null);
+    } catch (error) {
+      console.error('Error in handleSaveEditPaymentModal:', error);
+      toast.error('Failed to save payment. Please try again.');
+      // Don't close modal on error so user can retry
+    }
   };
 
   const handleSaveEditPayment = async () => {
@@ -2820,24 +2849,39 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       let originalPayment;
       if (isLegacyPayment) {
         // For legacy payments, fetch from finances_paymentplanrow table
-        const { data: legacyPayment } = await supabase
+        const { data: legacyPayment, error: legacyError } = await supabase
           .from('finances_paymentplanrow')
           .select('*')
           .eq('id', editPaymentData.id)
           .single();
+        if (legacyError) {
+          console.error('Error fetching legacy payment:', legacyError);
+          console.error('Payment ID:', editPaymentData.id);
+          console.error('Payment data:', editPaymentData);
+        }
         originalPayment = legacyPayment;
       } else {
         // For new payments, fetch from payment_plans table
-        const { data: newPayment } = await supabase
+        const { data: newPayment, error: newError } = await supabase
           .from('payment_plans')
           .select('*')
           .eq('id', editPaymentData.id)
           .single();
+        if (newError) {
+          console.error('Error fetching new payment:', newError);
+          console.error('Payment ID:', editPaymentData.id);
+          console.error('Payment data:', editPaymentData);
+        }
         originalPayment = newPayment;
       }
 
       if (!originalPayment) {
-        throw new Error('Original payment not found');
+        console.error('Original payment not found. Payment data:', {
+          id: editPaymentData.id,
+          isLegacy: isLegacyPayment,
+          editPaymentData: editPaymentData
+        });
+        throw new Error(`Original payment not found. Payment ID: ${editPaymentData.id}, Is Legacy: ${isLegacyPayment}`);
       }
 
       // Original payment and edit payment data available for comparison
