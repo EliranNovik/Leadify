@@ -2472,6 +2472,9 @@ const LeadSearchPage: React.FC = () => {
         newLeadsQuery = newLeadsQuery.eq('eligible', true);
       }
       // Country filter for new leads: filter by country_id (database) AND phone number (client-side)
+      // Note: We'll apply country_id filter to the main query, but for phone matching we need
+      // to check leads that match all OTHER filters (without country_id)
+      let countryIdsForFilter: number[] | null = null;
       if (filters.country && filters.country.length > 0) {
         console.log('🌍 Adding country filter for new leads:', filters.country);
         try {
@@ -2484,13 +2487,13 @@ const LeadSearchPage: React.FC = () => {
           if (countryError) {
             console.error('Error looking up country IDs:', countryError);
           } else if (countryData && countryData.length > 0) {
-            const countryIds = countryData.map(c => c.id);
-            if (countryIds.length === 1) {
-              newLeadsQuery = newLeadsQuery.eq('country_id', countryIds[0]);
+            countryIdsForFilter = countryData.map(c => c.id);
+            if (countryIdsForFilter.length === 1) {
+              newLeadsQuery = newLeadsQuery.eq('country_id', countryIdsForFilter[0]);
             } else {
-              newLeadsQuery = newLeadsQuery.in('country_id', countryIds);
+              newLeadsQuery = newLeadsQuery.in('country_id', countryIdsForFilter);
             }
-            console.log('🌍 Applied country_id filter:', countryIds);
+            console.log('🌍 Applied country_id filter:', countryIdsForFilter);
           } else {
             console.log('⚠️ No country IDs found for selected countries');
           }
@@ -3411,19 +3414,294 @@ const LeadSearchPage: React.FC = () => {
           return true;
         });
 
-        // Now we need to also fetch ALL new leads (without country_id filter) to find phone matches
+        // Now we need to also fetch new leads (with all OTHER filters but WITHOUT country_id filter) to find phone matches
         // and combine them with the country_id matches
         try {
-          // Fetch all new leads to check for phone number matches
-          const { data: allNewLeads, error: allLeadsError } = await supabase
+          // Execute the main query first to get leads matching country_id
+          // Then we'll fetch leads matching all OTHER filters (without country_id) and filter by phone
+          // The simplest approach: execute newLeadsQuery first, then build a query without country_id
+          
+          // Build a query with all filters EXCEPT country_id by rebuilding it
+          // We need to apply all the same filters but skip the country_id filter
+          let phoneCheckQuery = supabase
             .from('leads')
-            .select('id, phone, mobile, country_id')
+            .select(`
+              *,
+              misc_category!category_id(
+                id,
+                name,
+                parent_id,
+                misc_maincategory!parent_id(id, name)
+              )
+            `);
+
+          // Apply all the same filters as newLeadsQuery, but skip country_id
+          // Date filters
+          if (filters.fromDate) {
+            phoneCheckQuery = phoneCheckQuery.gte('created_at', buildUtcStartOfDay(filters.fromDate));
+          }
+          if (filters.toDate) {
+            phoneCheckQuery = phoneCheckQuery.lte('created_at', buildUtcEndOfDay(filters.toDate));
+          }
+          // Category filter
+          if (filters.category && filters.category.length > 0) {
+            const categoryIds: number[] = [];
+            const categoryNames: string[] = [];
+            for (const formattedCategoryName of filters.category) {
+              const categoryId = categoryNameToIdMapping.get(formattedCategoryName);
+              if (categoryId !== undefined) {
+                categoryIds.push(categoryId);
+              } else {
+                categoryNames.push(formattedCategoryName.split(' (')[0].trim());
+              }
+            }
+            if (categoryIds.length > 0 && categoryNames.length > 0) {
+              const orConditions = [
+                categoryIds.length === 1 ? `category_id.eq.${categoryIds[0]}` : `category_id.in.(${categoryIds.join(',')})`,
+                categoryNames.length === 1 ? `category.eq.${categoryNames[0]}` : `category.in.(${categoryNames.join(',')})`
+              ];
+              phoneCheckQuery = phoneCheckQuery.or(orConditions.join(','));
+            } else if (categoryIds.length > 0) {
+              if (categoryIds.length === 1) {
+                phoneCheckQuery = phoneCheckQuery.eq('category_id', categoryIds[0]);
+              } else {
+                phoneCheckQuery = phoneCheckQuery.in('category_id', categoryIds);
+              }
+            } else if (categoryNames.length > 0) {
+              if (categoryNames.length === 1) {
+                phoneCheckQuery = phoneCheckQuery.eq('category', categoryNames[0]);
+              } else {
+                phoneCheckQuery = phoneCheckQuery.in('category', categoryNames);
+              }
+            }
+          }
+          // Language filter
+          if (filters.language && filters.language.length > 0) {
+            const hasNAFilter = filters.language.some(lang => lang.toUpperCase() === 'N/A' || lang === 'N/A');
+            const nonNALanguages = filters.language.filter(lang => lang.toUpperCase() !== 'N/A' && lang !== 'N/A');
+            if (hasNAFilter && nonNALanguages.length === 0) {
+              phoneCheckQuery = phoneCheckQuery.is('language_id', null);
+            } else if (hasNAFilter && nonNALanguages.length > 0) {
+              const languageCodeToFullName: Record<string, string> = {
+                'EN': 'English', 'ENGLISH': 'English', 'HE': 'Hebrew', 'HEBREW': 'Hebrew',
+                'DE': 'German', 'GERMAN': 'German', 'FR': 'French', 'FRENCH': 'French',
+                'ES': 'Spanish', 'SPANISH': 'Spanish', 'RU': 'Russian', 'RUSSIAN': 'Russian',
+                'AR': 'Arabic', 'ARABIC': 'Arabic', 'PT': 'Portuguese', 'POR': 'Portuguese', 'PORTUGUESE': 'Portuguese',
+              };
+              const expandedLanguageFilter = new Set<string>();
+              nonNALanguages.forEach(lang => {
+                const upperLang = lang.toUpperCase();
+                expandedLanguageFilter.add(lang);
+                expandedLanguageFilter.add(upperLang);
+                if (languageCodeToFullName[upperLang]) {
+                  expandedLanguageFilter.add(languageCodeToFullName[upperLang]);
+                }
+                Object.entries(languageCodeToFullName).forEach(([code, fullName]) => {
+                  if (fullName.toLowerCase() === lang.toLowerCase()) {
+                    expandedLanguageFilter.add(code);
+                    expandedLanguageFilter.add(fullName);
+                  }
+                });
+              });
+              const expandedFilterArray = Array.from(expandedLanguageFilter);
+              const orConditions = ['language_id.is.null', 'language.is.null', 'language.eq.N/A'];
+              expandedFilterArray.forEach(lang => {
+                orConditions.push(`language.eq.${lang}`);
+              });
+              phoneCheckQuery = phoneCheckQuery.or(orConditions.join(','));
+            } else {
+              const languageCodeToFullName: Record<string, string> = {
+                'EN': 'English', 'ENGLISH': 'English', 'HE': 'Hebrew', 'HEBREW': 'Hebrew',
+                'DE': 'German', 'GERMAN': 'German', 'FR': 'French', 'FRENCH': 'French',
+                'ES': 'Spanish', 'SPANISH': 'Spanish', 'RU': 'Russian', 'RUSSIAN': 'Russian',
+                'AR': 'Arabic', 'ARABIC': 'Arabic', 'PT': 'Portuguese', 'POR': 'Portuguese', 'PORTUGUESE': 'Portuguese',
+              };
+              const expandedLanguageFilter = new Set<string>();
+              nonNALanguages.forEach(lang => {
+                const upperLang = lang.toUpperCase();
+                expandedLanguageFilter.add(lang);
+                expandedLanguageFilter.add(upperLang);
+                if (languageCodeToFullName[upperLang]) {
+                  expandedLanguageFilter.add(languageCodeToFullName[upperLang]);
+                }
+                Object.entries(languageCodeToFullName).forEach(([code, fullName]) => {
+                  if (fullName.toLowerCase() === lang.toLowerCase()) {
+                    expandedLanguageFilter.add(code);
+                    expandedLanguageFilter.add(fullName);
+                  }
+                });
+              });
+              const expandedFilterArray = Array.from(expandedLanguageFilter);
+              phoneCheckQuery = phoneCheckQuery
+                .in('language', expandedFilterArray)
+                .not('language', 'is', null)
+                .neq('language', '')
+                .neq('language', 'N/A');
+            }
+          }
+          // Status filter
+          if (filters.status && filters.status.length > 0) {
+            const includeActive = filters.status.includes('Active');
+            const includeInactive = filters.status.includes('Not active');
+            if (includeActive && !includeInactive) {
+              phoneCheckQuery = phoneCheckQuery.is('unactivated_at', null);
+            } else if (!includeActive && includeInactive) {
+              phoneCheckQuery = phoneCheckQuery.not('unactivated_at', 'is', null);
+            }
+          }
+          // Stage filter
+          if (filters.stage && filters.stage.length > 0) {
+            const stageIds: number[] = [];
+            for (const stage of filters.stage) {
+              const trimmedStage = stage.trim();
+              if (trimmedStage.toLowerCase() === 'created') {
+                stageIds.push(0);
+                continue;
+              }
+              let stageLookup = await supabase
+                .from('lead_stages')
+                .select('id')
+                .ilike('name', trimmedStage)
+                .limit(1);
+              if (!stageLookup.data || stageLookup.data.length === 0) {
+                stageLookup = await supabase
+                  .from('lead_stages')
+                  .select('id')
+                  .ilike('name', `%${trimmedStage}%`)
+                  .limit(1);
+              }
+              if (stageLookup.data && stageLookup.data.length > 0) {
+                const stageId = stageLookup.data[0].id;
+                const numericStageId = typeof stageId === 'number' ? stageId : parseInt(String(stageId), 10);
+                if (!isNaN(numericStageId)) {
+                  stageIds.push(numericStageId);
+                }
+              }
+            }
+            if (stageIds.length > 0) {
+              phoneCheckQuery = phoneCheckQuery.in('stage', stageIds);
+            }
+          }
+          // Source filter
+          if (filters.source && filters.source.length > 0) {
+            if (filters.source.length === 1) {
+              phoneCheckQuery = phoneCheckQuery.eq('source', filters.source[0]);
+            } else {
+              phoneCheckQuery = phoneCheckQuery.in('source', filters.source);
+            }
+          }
+          // Topic filter
+          if (filters.topic && filters.topic.length > 0) {
+            if (filters.topic.length === 1) {
+              phoneCheckQuery = phoneCheckQuery.eq('topic', filters.topic[0]);
+            } else {
+              phoneCheckQuery = phoneCheckQuery.in('topic', filters.topic);
+            }
+          }
+          // Reason filter
+          if (filters.reason && filters.reason.length > 0) {
+            if (filters.reason.length === 1) {
+              phoneCheckQuery = phoneCheckQuery.eq('unactivation_reason', filters.reason[0]);
+            } else {
+              phoneCheckQuery = phoneCheckQuery.in('unactivation_reason', filters.reason);
+            }
+          }
+          // FileId filter
+          if (filters.fileId) {
+            phoneCheckQuery = phoneCheckQuery.ilike('file_id', `%${filters.fileId}%`);
+          }
+          // Content filter
+          if (filters.content) {
+            phoneCheckQuery = phoneCheckQuery.or(`facts.ilike.%${filters.content}%,special_notes.ilike.%${filters.content}%,general_notes.ilike.%${filters.content}%`);
+          }
+          // Role filters (using the same helper function logic)
+          const applyRoleFilterToPhoneQuery = (roleName: string, filterValues: string[], textField: string | null, idField: string | null) => {
+            if (!filterValues || filterValues.length === 0) return;
+            const employeeIds: number[] = [];
+            const unmatchedNames: string[] = [];
+            for (const filterValue of filterValues) {
+              const numericId = parseInt(filterValue, 10);
+              if (!isNaN(numericId)) {
+                employeeIds.push(numericId);
+              } else {
+                const employeeId = nameToIdMapping.get(filterValue);
+                if (employeeId !== undefined) {
+                  employeeIds.push(employeeId);
+                } else {
+                  unmatchedNames.push(filterValue);
+                }
+              }
+            }
+            const orConditions: string[] = [];
+            if (employeeIds.length > 0 && idField) {
+              if (employeeIds.length === 1) {
+                orConditions.push(`${idField}.eq.${employeeIds[0]}`);
+              } else {
+                orConditions.push(`${idField}.in.(${employeeIds.join(',')})`);
+              }
+            }
+            if (unmatchedNames.length > 0 && textField) {
+              if (unmatchedNames.length === 1) {
+                orConditions.push(`${textField}.eq.${unmatchedNames[0]}`);
+              } else {
+                orConditions.push(`${textField}.in.(${unmatchedNames.join(',')})`);
+              }
+            }
+            if (textField && filterValues.length > 0) {
+              if (filterValues.length === 1) {
+                orConditions.push(`${textField}.eq.${filterValues[0]}`);
+              } else {
+                orConditions.push(`${textField}.in.(${filterValues.join(',')})`);
+              }
+            }
+            if (orConditions.length > 0) {
+              if (orConditions.length === 1) {
+                const condition = orConditions[0];
+                if (condition.includes('.eq.')) {
+                  const [field, value] = condition.split('.eq.');
+                  phoneCheckQuery = phoneCheckQuery.eq(field, value);
+                } else if (condition.includes('.in.')) {
+                  const [field, values] = condition.split('.in.');
+                  const valueArray = values.replace(/[()]/g, '').split(',');
+                  phoneCheckQuery = phoneCheckQuery.in(field, valueArray);
+                }
+              } else {
+                phoneCheckQuery = phoneCheckQuery.or(orConditions.join(','));
+              }
+            }
+          };
+          if (filters.scheduler && filters.scheduler.length > 0) {
+            applyRoleFilterToPhoneQuery('Scheduler', filters.scheduler, 'scheduler', null);
+          }
+          if (filters.manager && filters.manager.length > 0) {
+            applyRoleFilterToPhoneQuery('Manager', filters.manager, 'manager', 'meeting_manager_id');
+          }
+          if (filters.lawyer && filters.lawyer.length > 0) {
+            applyRoleFilterToPhoneQuery('Lawyer', filters.lawyer, 'lawyer', 'meeting_lawyer_id');
+          }
+          if (filters.expert && filters.expert.length > 0) {
+            applyRoleFilterToPhoneQuery('Expert', filters.expert, 'expert', 'expert_id');
+          }
+          if (filters.closer && filters.closer.length > 0) {
+            applyRoleFilterToPhoneQuery('Closer', filters.closer, 'closer', null);
+          }
+          if (filters.case_handler && filters.case_handler.length > 0) {
+            applyRoleFilterToPhoneQuery('Case Handler', filters.case_handler, 'handler', 'case_handler_id');
+          }
+          // Eligibility filter
+          if (filters.eligibilityDeterminedOnly) {
+            phoneCheckQuery = phoneCheckQuery.eq('eligible', true);
+          }
+          // NOTE: We intentionally skip country_id filter here
+          
+          // Fetch new leads with all filters EXCEPT country_id to check for phone number matches
+          const { data: filteredLeadsForPhoneCheck, error: filteredLeadsError } = await phoneCheckQuery
             .limit(10000);
 
-          if (!allLeadsError && allNewLeads) {
+          if (!filteredLeadsError && filteredLeadsForPhoneCheck) {
             // Find leads that match by phone but might not match by country_id
             const phoneMatchedLeadIds = new Set<string>();
-            allNewLeads.forEach((lead: any) => {
+            filteredLeadsForPhoneCheck.forEach((lead: any) => {
               const phoneCountryCode = extractCountryCodeFromPhone(lead.phone);
               const mobileCountryCode = extractCountryCodeFromPhone(lead.mobile);
 
@@ -3468,7 +3746,8 @@ const LeadSearchPage: React.FC = () => {
             console.log(`🌍 Combined country filter (country_id + phone) for new leads: ${beforeCountryFilter} → ${filteredNewLeads.length}`, {
               countryIdMatches: countryIdMatchedLeadIds.size,
               phoneMatches: phoneMatchedLeadIds.size,
-              totalMatches: allMatchedLeadIds.size
+              totalMatches: allMatchedLeadIds.size,
+              filteredLeadsForPhoneCheck: filteredLeadsForPhoneCheck.length
             });
           }
         } catch (error) {
