@@ -30,6 +30,7 @@ import {
   DocumentArrowUpIcon,
   ReceiptRefundIcon,
   EnvelopeIcon,
+  BriefcaseIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
@@ -76,6 +77,7 @@ const desktopSidebarItems: SidebarItem[] = [
     subItems: [
       { icon: FolderPlusIcon, label: 'New Handler Cases', path: '/new-handler-cases' },
       { icon: FolderIcon, label: 'My Cases', path: '/my-cases' },
+      { icon: BriefcaseIcon, label: 'Retainer Cases', path: '/retainer-handler-cases' },
       { icon: DocumentChartBarIcon, label: 'Case Manager', path: '/case-manager' },
     ],
   },
@@ -114,6 +116,7 @@ const mobileSidebarItems: SidebarItem[] = [
     subItems: [
       { icon: FolderPlusIcon, label: 'New Handler Cases', path: '/new-handler-cases' },
       { icon: FolderIcon, label: 'My Cases', path: '/my-cases' },
+      { icon: BriefcaseIcon, label: 'Retainer Cases', path: '/retainer-handler-cases' },
       { icon: DocumentChartBarIcon, label: 'Case Manager', path: '/case-manager' },
     ],
   },

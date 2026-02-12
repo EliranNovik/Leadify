@@ -35,6 +35,7 @@ import NewCasesPage from './pages/NewCasesPage';
 import NewHandlerCasesPage from './pages/NewHandlerCasesPage';
 import HandlerManagementPage from './pages/HandlerManagementPage';
 import MyCasesPage from './pages/MyCasesPage';
+import RetainerHandlerCasesPage from './pages/RetainerHandlerCasesPage';
 import CaseManagerPageNew from './components/CaseManagerPageNew';
 import CaseDetailsPage from './pages/CaseDetailsPage';
 import DoubleLeadsPage from './pages/DoubleLeadsPage';
@@ -828,6 +829,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/new-handler-cases" element={<NewHandlerCasesPage />} />
                     <Route path="/handler-management" element={<HandlerManagementPage />} />
                     <Route path="/my-cases" element={<MyCasesPage />} />
+                    <Route path="/retainer-handler-cases" element={<RetainerHandlerCasesPage />} />
                     <Route path="/case-manager" element={<CaseManagerPageNew />} />
                     <Route path="/case-manager/:caseId" element={<CaseDetailsPage />} />
                     <Route path="/double-leads" element={<DoubleLeadsPage />} />

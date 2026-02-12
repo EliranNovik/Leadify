@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ClientTabProps } from '../../types/client';
-import { UserGroupIcon, PencilSquareIcon, UserIcon, CheckIcon, XMarkIcon, CalendarIcon, UserCircleIcon, AcademicCapIcon, HandRaisedIcon, WrenchScrewdriverIcon, CogIcon, LockClosedIcon, LockOpenIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, PencilSquareIcon, UserIcon, CheckIcon, XMarkIcon, CalendarIcon, UserCircleIcon, AcademicCapIcon, HandRaisedIcon, WrenchScrewdriverIcon, CogIcon, LockClosedIcon, LockOpenIcon, BriefcaseIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
 import { fetchStageActorInfo } from '../../lib/leadStageManager';
@@ -220,6 +220,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
         { id: 'expert', title: 'Expert', assignee: '---', fieldName: 'expert', legacyFieldName: 'expert_id' },
         { id: 'closer', title: 'Closer', assignee: '---', fieldName: 'closer', legacyFieldName: 'closer_id' },
         { id: 'handler', title: 'Handler', assignee: '---', fieldName: 'handler', legacyFieldName: 'case_handler_id' },
+        { id: 'retainer_handler', title: 'Retainer Handler', assignee: '---', fieldName: 'retainer_handler', legacyFieldName: 'retainer_handler_id' },
       ];
     }
 
@@ -310,6 +311,15 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
           })(),
         fieldName: 'handler',
         legacyFieldName: 'case_handler_id'
+      },
+      {
+        id: 'retainer_handler',
+        title: 'Retainer Handler',
+        assignee: isLegacyLead
+          ? getEmployeeDisplayName((client as any).retainer_handler_id, employeesToUse)
+          : getEmployeeDisplayName((client as any).retainer_handler_id, employeesToUse) || '---',
+        fieldName: 'retainer_handler',
+        legacyFieldName: 'retainer_handler_id'
       },
     ];
   }, [client, isLegacyLead, allEmployeesProp, allEmployees, getEmployeeDisplayName]);
@@ -531,13 +541,15 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
           console.log(`Legacy role: ${role.legacyFieldName} = ${employeeId} (from "${role.assignee}")`);
         } else {
           // For new leads, check if this role needs ID conversion
-          // Roles that need ID conversion: manager, expert, helper
-          const rolesNeedingIdConversion = ['manager', 'expert', 'helper'];
+          // Roles that need ID conversion: manager, expert, helper, retainer_handler
+          const rolesNeedingIdConversion = ['manager', 'expert', 'helper', 'retainer_handler'];
           if (rolesNeedingIdConversion.includes(role.id)) {
             // Convert display name to employee ID for these roles
             const employeeId = getEmployeeIdFromDisplayName(role.assignee);
-            updateData[role.fieldName] = employeeId;
-            console.log(`New lead role (ID): ${role.fieldName} = ${employeeId} (from "${role.assignee}")`);
+            // For retainer_handler, use retainer_handler_id field name
+            const fieldName = role.id === 'retainer_handler' ? 'retainer_handler_id' : role.fieldName;
+            updateData[fieldName] = employeeId;
+            console.log(`New lead role (ID): ${fieldName} = ${employeeId} (from "${role.assignee}")`);
           } else {
             // For other roles (scheduler, closer, handler), use display name as string
             // Save null when "---" or "Not assigned" is selected, otherwise save the display name
@@ -773,6 +785,8 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
         return HandRaisedIcon;
       case 'handler':
         return CogIcon;
+      case 'retainer_handler':
+        return BriefcaseIcon;
       default:
         return UserIcon;
     }

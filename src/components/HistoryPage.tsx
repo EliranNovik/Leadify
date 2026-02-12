@@ -341,7 +341,7 @@ const HistoryPage: React.FC = () => {
         newRecordKeys: Object.keys(newRecord || {})
       });
 
-      const employeeFields = ['closer', 'expert', 'handler', 'scheduler', 'closer_id', 'expert_id', 'handler_id', 'case_handler_id', 'meeting_scheduler_id', 'manager', 'helper', 'manager_id', 'meeting_manager_id', 'meeting_lawyer_id'];
+      const employeeFields = ['closer', 'expert', 'handler', 'scheduler', 'closer_id', 'expert_id', 'handler_id', 'case_handler_id', 'meeting_scheduler_id', 'manager', 'helper', 'manager_id', 'meeting_manager_id', 'meeting_lawyer_id', 'retainer_handler_id'];
       const noteFields = ['special_notes', 'general_notes', 'notes', 'facts'];
       const numericFields = ['balance', 'proposal_total', 'total', 'total_base', 'vat_value', 'meeting_amount', 'stage', 'status'];
 
@@ -1085,7 +1085,7 @@ const HistoryPage: React.FC = () => {
 
     // Key fields for payments - only show fields that actually changed
     if (tableType === 'payment') {
-      const keyFields = ['value', 'due_date', 'paid', 'ready_to_pay', 'payment_order', 'notes'];
+      const keyFields = ['value', 'due_date', 'paid', 'ready_to_pay', 'payment_order', 'notes', 'cancel_date'];
       console.log('🔍 [detectChanges Payment] Checking keyFields:', keyFields);
 
       keyFields.forEach(field => {
@@ -1122,7 +1122,18 @@ const HistoryPage: React.FC = () => {
 
         if (hasChanged) {
           const fieldName = getFieldDisplayName(field);
-          if (field === 'paid' || field === 'ready_to_pay') {
+          // Special handling for cancel_date - treat as delete action
+          if (field === 'cancel_date') {
+            // If cancel_date changed from NULL to a date, this is a delete action
+            if (normalizedOld == null && normalizedNew != null) {
+              changes.push('__PAYMENT_DELETED__'); // Special marker for delete
+            } else if (normalizedOld != null && normalizedNew == null) {
+              // If cancel_date was removed (unlikely but handle it)
+              changes.push(`removed ${fieldName.toLowerCase()}`);
+            } else {
+              changes.push(`changed ${fieldName.toLowerCase()} from "${oldVal || '(empty)'}" to "${newVal || '(empty)'}"`);
+            }
+          } else if (field === 'paid' || field === 'ready_to_pay') {
             changes.push(`${newVal ? 'marked' : 'unmarked'} ${fieldName.toLowerCase()}`);
           } else if (normalizedOld == null && normalizedNew != null) {
             changes.push(`set ${fieldName.toLowerCase()} to "${newVal}"`);
@@ -1252,7 +1263,25 @@ const HistoryPage: React.FC = () => {
       }
     }
 
+
     if (entry.change_type === 'update') {
+      // Check if this is a payment update where cancel_date was set (soft delete)
+      // This should be checked first, as delete is the primary action
+      if (tableType === 'payment') {
+        const hasCancelDateChange = changes.includes('__PAYMENT_DELETED__');
+        // Also check directly if cancel_date was set (in case it wasn't detected in changes)
+        const cancelDateSet = !prevEntry?.cancel_date && entry.cancel_date;
+        if (hasCancelDateChange || cancelDateSet) {
+          const contactText = contactName ? ` for contact ${contactName}` : '';
+          return {
+            description: `Deleted payment plan${contactText}`,
+            descriptionBold: 'Deleted payment plan',
+            descriptionText: contactText,
+            changeDetails: []
+          };
+        }
+      }
+
       // Check if there's a stage change - if so, only show that and disregard other changes
       const stageChange = changes.find(c => {
         try {
@@ -1666,49 +1695,68 @@ const HistoryPage: React.FC = () => {
         }
       }
 
-      // For payment updates without prevEntry, show current payment plan details
-      if (tableType === 'payment' && !prevEntry && changes.length === 0) {
-        const paymentDetails: string[] = [];
-
-        if (entry.value != null && entry.value !== '') {
-          paymentDetails.push(`Amount: ${entry.value}`);
-        }
-        if (entry.due_date) {
-          try {
-            const date = new Date(entry.due_date);
-            const formattedDate = date.toLocaleDateString('en-US', {
-              year: 'numeric',
-              month: 'short',
-              day: 'numeric'
-            });
-            paymentDetails.push(`Due: ${formattedDate}`);
-          } catch (e) {
-            paymentDetails.push(`Due: ${entry.due_date}`);
-          }
-        }
-        if (entry.paid !== null && entry.paid !== undefined) {
-          paymentDetails.push(`Paid: ${entry.paid ? 'Yes' : 'No'}`);
-        }
-        if (entry.ready_to_pay !== null && entry.ready_to_pay !== undefined) {
-          paymentDetails.push(`Ready to Pay: ${entry.ready_to_pay ? 'Yes' : 'No'}`);
-        }
-        if (entry.payment_order != null && entry.payment_order !== '') {
-          paymentDetails.push(`Order: ${entry.payment_order}`);
-        }
-        if (entry.notes && entry.notes.trim() !== '') {
-          const notesPreview = entry.notes.length > 50 ? entry.notes.substring(0, 50) + '...' : entry.notes;
-          paymentDetails.push(`Notes: ${notesPreview}`);
-        }
-
-        const detailsText = paymentDetails.length > 0 ? ` (${paymentDetails.join(', ')})` : '';
+      // For payment updates, show what was changed with clear text
+      if (tableType === 'payment' && entry.change_type === 'update') {
         const contactText = contactName ? ` for contact ${contactName}` : '';
 
-        return {
-          description: `Updated payment plan${contactText}${detailsText}`,
-          descriptionBold: 'Updated payment plan',
-          descriptionText: contactText + detailsText,
-          changeDetails: []
-        };
+        // If we have detected changes, show them clearly
+        if (changes.length > 0) {
+          // Filter out the delete marker if present
+          const filteredChanges = changes.filter(c => c !== '__PAYMENT_DELETED__');
+
+          if (filteredChanges.length > 0) {
+            return {
+              description: `Updated payment plan${contactText}`,
+              descriptionBold: 'Updated payment plan',
+              descriptionText: contactText,
+              changeDetails: filteredChanges
+            };
+          }
+        }
+
+        // If no prevEntry and no changes detected, show current payment plan details
+        if (!prevEntry && changes.length === 0) {
+          const paymentDetails: string[] = [];
+
+          if (entry.value != null && entry.value !== '') {
+            paymentDetails.push(`Amount: ${entry.value}`);
+          }
+          if (entry.due_date) {
+            try {
+              const date = new Date(entry.due_date);
+              const formattedDate = date.toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+              });
+              paymentDetails.push(`Due: ${formattedDate}`);
+            } catch (e) {
+              paymentDetails.push(`Due: ${entry.due_date}`);
+            }
+          }
+          if (entry.paid !== null && entry.paid !== undefined) {
+            paymentDetails.push(`Paid: ${entry.paid ? 'Yes' : 'No'}`);
+          }
+          if (entry.ready_to_pay !== null && entry.ready_to_pay !== undefined) {
+            paymentDetails.push(`Ready to Pay: ${entry.ready_to_pay ? 'Yes' : 'No'}`);
+          }
+          if (entry.payment_order != null && entry.payment_order !== '') {
+            paymentDetails.push(`Order: ${entry.payment_order}`);
+          }
+          if (entry.notes && entry.notes.trim() !== '') {
+            const notesPreview = entry.notes.length > 50 ? entry.notes.substring(0, 50) + '...' : entry.notes;
+            paymentDetails.push(`Notes: ${notesPreview}`);
+          }
+
+          const detailsText = paymentDetails.length > 0 ? ` (${paymentDetails.join(', ')})` : '';
+
+          return {
+            description: `Updated payment plan${contactText}${detailsText}`,
+            descriptionBold: 'Updated payment plan',
+            descriptionText: contactText + detailsText,
+            changeDetails: []
+          };
+        }
       }
 
       // For other updates, show the changes
@@ -2367,9 +2415,10 @@ const HistoryPage: React.FC = () => {
         payment: processedEntries.filter(e => e.entry.tableType === 'payment').length
       });
 
-      // Second pass: Group payment plan insertions together
-      // Group payment plan insertions that have the same timestamp, employee, and contact
+      // Second pass: Group payment plan insertions and deletions together
+      // Group payment plan insertions/deletions that have the same timestamp, employee, and contact
       const paymentInsertGroups = new Map<string, typeof processedEntries>();
+      const paymentDeleteGroups = new Map<string, typeof processedEntries>();
       const nonPaymentEntries: typeof processedEntries = [];
 
       for (const processed of processedEntries) {
@@ -2396,8 +2445,32 @@ const HistoryPage: React.FC = () => {
             paymentInsertGroups.set(groupKey, []);
           }
           paymentInsertGroups.get(groupKey)!.push(processed);
+        } else if (entry.tableType === 'payment' &&
+          (entry.change_type === 'delete' ||
+            descData.descriptionBold === 'Deleted payment plan' ||
+            entry.cancel_date)) {
+          // Check if this is a payment plan deletion (cancel_date set or description indicates delete)
+          // Create a group key based on timestamp (rounded to nearest second), employee, and contact
+          const timestamp = new Date(entry.changed_at).getTime();
+          const roundedTimestamp = Math.floor(timestamp / 1000) * 1000; // Round to nearest second
+          const employeeId = entry.changed_by || 'System';
+
+          // Get contact identifier (client_id for legacy, client_name for new)
+          let contactId = '';
+          if (entry.client_id) {
+            contactId = String(entry.client_id);
+          } else if (entry.client_name) {
+            contactId = entry.client_name;
+          }
+
+          const groupKey = `payment_delete_${roundedTimestamp}_${employeeId}_${contactId}`;
+
+          if (!paymentDeleteGroups.has(groupKey)) {
+            paymentDeleteGroups.set(groupKey, []);
+          }
+          paymentDeleteGroups.get(groupKey)!.push(processed);
         } else {
-          // Keep non-payment-insert entries separate
+          // Keep non-payment-insert/delete entries separate
           nonPaymentEntries.push(processed);
         }
       }
@@ -2405,6 +2478,11 @@ const HistoryPage: React.FC = () => {
       console.log('🔍 [Payment Grouping] Found payment insert groups:', paymentInsertGroups.size);
       paymentInsertGroups.forEach((group, key) => {
         console.log(`🔍 [Payment Grouping] Group ${key}: ${group.length} entries`);
+      });
+
+      console.log('🔍 [Payment Grouping] Found payment delete groups:', paymentDeleteGroups.size);
+      paymentDeleteGroups.forEach((group, key) => {
+        console.log(`🔍 [Payment Grouping] Delete Group ${key}: ${group.length} entries`);
       });
 
       // Consolidate payment plan insertions
@@ -2474,6 +2552,82 @@ const HistoryPage: React.FC = () => {
         consolidatedPaymentEntries.push({
           entry: {
             ...baseEntry.entry,
+            // Store all original_ids for reference
+            _groupedOriginalIds: group.map(g => g.entry.original_id),
+            _groupedHistoryIds: group.map(g => g.entry.history_id)
+          },
+          descData: consolidatedDesc,
+          employeeDisplayName: baseEntry.employeeDisplayName,
+          contactName: baseEntry.contactName
+        });
+      });
+
+      // Consolidate payment plan deletions
+      paymentDeleteGroups.forEach((group, groupKey) => {
+        if (group.length === 0) return;
+
+        // Sort by original_id to maintain order
+        group.sort((a, b) => {
+          const aId = a.entry.original_id?.toString() || '';
+          const bId = b.entry.original_id?.toString() || '';
+          return aId.localeCompare(bId);
+        });
+
+        // Use the first entry as the base
+        const baseEntry = group[0];
+        const contactName = baseEntry.contactName;
+        const contactText = contactName ? ` for contact ${contactName}` : '';
+
+        // Collect all payment row details that were deleted
+        const paymentRows: string[] = [];
+        group.forEach((processed) => {
+          const entry = processed.entry;
+          const rowDetails: string[] = [];
+
+          if (entry.value != null && entry.value !== '') {
+            rowDetails.push(`Amount: ${entry.value}`);
+          }
+          if (entry.due_date) {
+            try {
+              const date = new Date(entry.due_date);
+              const formattedDate = date.toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+              });
+              rowDetails.push(`Due: ${formattedDate}`);
+            } catch (e) {
+              rowDetails.push(`Due: ${entry.due_date}`);
+            }
+          }
+          if (entry.paid !== null && entry.paid !== undefined) {
+            rowDetails.push(`Paid: ${entry.paid ? 'Yes' : 'No'}`);
+          }
+          if (entry.ready_to_pay !== null && entry.ready_to_pay !== undefined) {
+            rowDetails.push(`Ready: ${entry.ready_to_pay ? 'Yes' : 'No'}`);
+          }
+          if (entry.payment_order != null && entry.payment_order !== '') {
+            rowDetails.push(`Order: ${entry.payment_order}`);
+          }
+
+          if (rowDetails.length > 0) {
+            paymentRows.push(`Row ${paymentRows.length + 1}: ${rowDetails.join(', ')}`);
+          }
+        });
+
+        // Create consolidated description
+        const consolidatedDesc = {
+          description: `Deleted payment plan${contactText} with ${group.length} payment row${group.length !== 1 ? 's' : ''}`,
+          descriptionBold: 'Deleted payment plan',
+          descriptionText: contactText,
+          changeDetails: paymentRows
+        };
+
+        // Create consolidated entry using the first entry's metadata
+        consolidatedPaymentEntries.push({
+          entry: {
+            ...baseEntry.entry,
+            change_type: 'delete', // Ensure it's marked as delete
             // Store all original_ids for reference
             _groupedOriginalIds: group.map(g => g.entry.original_id),
             _groupedHistoryIds: group.map(g => g.entry.history_id)
@@ -2623,7 +2777,9 @@ const HistoryPage: React.FC = () => {
           const roundedTimestamp = Math.floor(timestamp / 1000) * 1000;
           const employeeId = entry.changed_by || 'System';
           const contactId = entry.client_id ? String(entry.client_id) : (entry.client_name || '');
-          key = `payment_insert_group_${roundedTimestamp}_${employeeId}_${contactId}`;
+          // Check if it's a delete or insert group
+          const groupType = entry.change_type === 'delete' || descData.descriptionBold === 'Deleted payment plan' ? 'delete' : 'insert';
+          key = `payment_${groupType}_group_${roundedTimestamp}_${employeeId}_${contactId}`;
         } else if (entry._isInteractionEntry || isInteractionEntry) {
           // Interaction entries need unique keys to prevent deduplication with notes entries
           key = `${entry.original_id}_${tableType}_${entry.change_type}_${entry.changed_at}_${entry.changed_by}_interactions`;
@@ -2804,6 +2960,7 @@ const HistoryPage: React.FC = () => {
       'meeting_manager_id': 'Meeting Manager',
       'helper': 'Helper',
       'meeting_lawyer_id': 'Helper',
+      'retainer_handler_id': 'Retainer Handler',
       'meeting_date': 'Meeting Date',
       'meeting_time': 'Meeting Time',
       'meeting_location': 'Meeting Location',
@@ -2892,7 +3049,7 @@ const HistoryPage: React.FC = () => {
     const badges = {
       'insert': <span className="badge badge-sm text-white" style={{ backgroundColor: '#2563eb' }}>Created</span>,
       'update': <span className="badge badge-sm text-white" style={{ backgroundColor: '#15803d' }}>Updated</span>,
-      'delete': <span className="badge badge-error badge-sm">Deleted</span>
+      'delete': <span className="badge badge-sm text-white" style={{ backgroundColor: '#dc2626' }}>Deleted</span>
     };
     return badges[changeType as keyof typeof badges] || <span className="badge badge-sm">Changed</span>;
   };
@@ -3132,9 +3289,9 @@ const HistoryPage: React.FC = () => {
                                   if (employeeChangeMatch) {
                                     const [, field, oldName, newName] = employeeChangeMatch;
                                     const fieldLower = field.trim().toLowerCase();
-                                    const employeeFields = ['closer', 'expert', 'handler', 'scheduler', 'manager', 'helper', 'meeting_manager', 'meeting_lawyer', 'closer_id', 'expert_id', 'handler_id', 'case_handler_id', 'meeting_scheduler_id', 'meeting_manager_id', 'meeting_lawyer_id', 'case handler', 'case handler id'];
+                                    const employeeFields = ['closer', 'expert', 'handler', 'scheduler', 'manager', 'helper', 'meeting_manager', 'meeting_lawyer', 'closer_id', 'expert_id', 'handler_id', 'case_handler_id', 'meeting_scheduler_id', 'meeting_manager_id', 'meeting_lawyer_id', 'retainer_handler_id', 'case handler', 'case handler id', 'retainer handler', 'retainer handler id'];
 
-                                    if (employeeFields.includes(fieldLower) || fieldLower.includes('handler') || fieldLower.includes('closer') || fieldLower.includes('expert') || fieldLower.includes('scheduler') || fieldLower.includes('manager')) {
+                                    if (employeeFields.includes(fieldLower) || fieldLower.includes('handler') || fieldLower.includes('closer') || fieldLower.includes('expert') || fieldLower.includes('scheduler') || fieldLower.includes('manager') || fieldLower.includes('retainer')) {
                                       // Helper to find employee ID by name (works for both new and legacy leads)
                                       const findEmployeeIdByName = (name: string): number | null => {
                                         if (!name || name === 'Unassigned' || name === '(empty)' || name === '---' || name === '--') return null;

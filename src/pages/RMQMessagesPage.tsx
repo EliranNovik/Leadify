@@ -1782,6 +1782,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) return;
 
+        // Look up user by auth_id (matching Dashboard.tsx pattern)
         const { data: userData, error } = await supabase
           .from('users')
           .select(`
@@ -1802,9 +1803,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             )
           `)
           .eq('auth_id', user.id)
-          .single();
+          .maybeSingle();
 
-        if (error) {
+        if (error || !userData) {
+          console.error('❌ [RMQMessagesPage] Failed to load user data:', {
+            error,
+            authId: user.id,
+            hasUserData: !!userData
+          });
+          toast.error('Failed to load user information. Please ensure your account is properly configured.');
           return;
         }
 
@@ -3475,12 +3482,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         // Update the optimistic message with the real database message
         setMessages(prev => {
           // Find optimistic message by temporary ID or by content match
-          const optimisticIndex = prev.findIndex(m => 
+          const optimisticIndex = prev.findIndex(m =>
             (m.id && m.id > 1000000000000) || // Temporary ID (timestamp)
             (m.conversation_id === selectedConversation.id &&
-             m.sender_id === currentUser.id &&
-             m.content === newMessage.trim() &&
-             m.delivery_status === 'sending')
+              m.sender_id === currentUser.id &&
+              m.content === newMessage.trim() &&
+              m.delivery_status === 'sending')
           );
 
           if (optimisticIndex !== -1) {
@@ -4454,7 +4461,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     // Use a more aggressive check to prevent auto-scroll from interfering
     setShouldAutoScroll(false);
     setIsUserScrolling(true);
-    
+
     // Clear any pending scroll operations
     if (scrollTimeoutRef.current) {
       clearTimeout(scrollTimeoutRef.current);

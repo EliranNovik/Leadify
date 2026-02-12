@@ -39,12 +39,12 @@ const emailTemplates = [
 // Helper to get current user's full name from Supabase
 async function fetchCurrentUserFullName() {
   const { data: { user } } = await supabase.auth.getUser();
-  if (user && user.email) {
+  if (user) {
     const { data, error } = await supabase
       .from('users')
       .select('full_name')
-      .eq('email', user.email)
-      .single();
+      .eq('auth_id', user.id)
+      .maybeSingle();
     if (!error && data?.full_name) {
       return data.full_name;
     }
@@ -530,6 +530,15 @@ const CalendarPage: React.FC = () => {
   // Helper function to get employee display name from ID
   const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
     if (!employeeId || employeeId === '---' || employeeId === '--') return '--';
+    
+    // If allEmployees is empty, log a warning and try to fetch
+    if (allEmployees.length === 0) {
+      console.warn('⚠️ CalendarPage - getEmployeeDisplayName called but allEmployees is empty. Employee ID:', employeeId);
+      // Don't fetch here as it would cause infinite loops - just return the ID
+      // The useEffect should handle fetching
+      return employeeId.toString();
+    }
+    
     // Find employee in the loaded employees array
     // Convert both to string for comparison since employeeId might be bigint
     const employee = allEmployees.find((emp: any) => {
@@ -539,6 +548,11 @@ const CalendarPage: React.FC = () => {
         String(emp.id) === String(employeeId) ||
         Number(emp.id) === Number(employeeId);
     });
+    
+    if (!employee) {
+      console.warn('⚠️ CalendarPage - Employee not found in allEmployees. ID:', employeeId, 'Total employees:', allEmployees.length);
+    }
+    
     return employee ? employee.display_name : employeeId.toString(); // Fallback to ID if not found
   };
 
@@ -1705,8 +1719,41 @@ const CalendarPage: React.FC = () => {
   // Update state when cached data is available
   useEffect(() => {
     if (employeesAndCategoriesData) {
+      console.log('🔍 CalendarPage - Setting employees from cache:', employeesAndCategoriesData.employees.length);
       setAllEmployees(employeesAndCategoriesData.employees);
       setAllCategories(employeesAndCategoriesData.categories);
+    } else {
+      // If cached data is not available, fetch employees directly as fallback
+      console.warn('⚠️ CalendarPage - No cached employee data, fetching directly...');
+      const fetchEmployeesFallback = async () => {
+        try {
+          const { data: allEmployeesData, error: allEmployeesError } = await supabase
+            .from('tenants_employee')
+            .select('id, display_name, user_id, photo_url, photo, bonuses_role')
+            .not('display_name', 'is', null)
+            .order('display_name', { ascending: true });
+
+          if (allEmployeesError) {
+            console.error('❌ CalendarPage - Error fetching employees (fallback):', allEmployeesError);
+            return;
+          }
+
+          if (allEmployeesData && allEmployeesData.length > 0) {
+            const employees = allEmployeesData.map((emp: any) => ({
+              id: emp.id,
+              display_name: emp.display_name,
+              bonuses_role: emp.bonuses_role,
+              photo_url: emp.photo_url || null,
+              photo: emp.photo || null
+            }));
+            console.log('✅ CalendarPage - Fetched employees (fallback):', employees.length);
+            setAllEmployees(employees);
+          }
+        } catch (error) {
+          console.error('❌ CalendarPage - Error in fetchEmployeesFallback:', error);
+        }
+      };
+      fetchEmployeesFallback();
     }
   }, [employeesAndCategoriesData]);
 
