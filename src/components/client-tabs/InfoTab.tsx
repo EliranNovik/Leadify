@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { ClientTabProps } from '../../types/client';
 import { InformationCircleIcon, ExclamationCircleIcon, PencilIcon, CheckIcon, XMarkIcon, PencilSquareIcon, PlusIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
-import TimelineHistoryButtons from './TimelineHistoryButtons';
 
 // Helper function to decode HTML entities
 const decodeHtmlEntities = (text: string): string => {
@@ -1574,7 +1573,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div> */}
       </div>
 
-      <TimelineHistoryButtons client={client} />
     </div>
   );
 };

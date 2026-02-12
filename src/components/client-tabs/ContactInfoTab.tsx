@@ -4,7 +4,6 @@ import { UserIcon, PhoneIcon, EnvelopeIcon, PlusIcon, MinusIcon, DocumentTextIco
 import { supabase } from '../../lib/supabase';
 import { createPortal } from 'react-dom';
 import SignaturePad from 'react-signature-canvas';
-import TimelineHistoryButtons from './TimelineHistoryButtons';
 import { handleContractSigned } from '../../lib/contractAutomation';
 import { getPricePerApplicant } from '../../lib/contractPricing';
 import { useNavigate } from 'react-router-dom';
@@ -4108,7 +4107,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           </div>
         </div>
         
-        <TimelineHistoryButtons client={client} />
       </div>
       
 

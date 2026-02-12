@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ClientTabProps } from '../../types/client';
-import TimelineHistoryButtons from './TimelineHistoryButtons';
 import { CurrencyDollarIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 
@@ -403,7 +402,6 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
         </div>
       </div>
       
-      <TimelineHistoryButtons client={client} />
     </div>
   );
 };

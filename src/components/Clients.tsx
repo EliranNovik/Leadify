@@ -3054,6 +3054,7 @@ const Clients: React.FC<ClientsProps> = ({
           .from('leads')
           .select(`
             *,
+            created_at,
             balance,
             currency_id,
             proposal_total,
@@ -13749,6 +13750,42 @@ const Clients: React.FC<ClientsProps> = ({
                     allEmployees={allEmployees}
                     {...financeProps}
                   />
+                </div>
+              )}
+
+              {/* Created and Updated Dates - Bottom of page */}
+              {selectedClient && (
+                <div className="border-t border-gray-200 pt-4 mt-6">
+                  <div className="flex flex-col sm:flex-row gap-4 text-sm text-gray-600">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">Created:</span>
+                      <span>
+                        {selectedClient.created_at
+                          ? new Date(selectedClient.created_at).toLocaleDateString('en-US', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })
+                          : 'N/A'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">Last updated:</span>
+                      <span>
+                        {(selectedClient.updated_at || selectedClient.created_at)
+                          ? new Date(selectedClient.updated_at || selectedClient.created_at).toLocaleDateString('en-US', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })
+                          : 'N/A'}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
-import TimelineHistoryButtons from './TimelineHistoryButtons';
 import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
@@ -6492,7 +6491,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         </div>, document.body)
       }
 
-      {!hideTimelineHistory && <TimelineHistoryButtons client={client} />}
 
       {/* Stages Drawer for creating a new finance plan */}
       {showStagesDrawer && ReactDOM.createPortal(

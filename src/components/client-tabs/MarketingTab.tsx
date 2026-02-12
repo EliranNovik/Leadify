@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { ClientTabProps } from '../../types/client';
-import TimelineHistoryButtons from './TimelineHistoryButtons';
 import { MegaphoneIcon, MapPinIcon, PencilSquareIcon, CheckIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 
@@ -269,7 +268,6 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
       </div>
       
-      <TimelineHistoryButtons client={client} />
     </div>
   );
 };

@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback, Fragment, useMemo, useRef } from 'react';
 import { ClientInteractionsCache } from '../../types/client';
-import TimelineHistoryButtons from '../client-tabs/TimelineHistoryButtons';
 import EmojiPicker from 'emoji-picker-react';
 import {
   ChatBubbleLeftRightIcon,
@@ -7142,10 +7141,6 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
               </div>
             </div>
             
-            {/* Timeline and History Buttons at bottom */}
-            <div className="mt-8 md:mt-12 pt-6 md:pt-8 border-t border-base-200">
-              <TimelineHistoryButtons client={client} />
-            </div>
           </>
         )}
       </div>

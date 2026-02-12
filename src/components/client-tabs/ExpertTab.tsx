@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ClientTabProps } from '../../types/client';
-import TimelineHistoryButtons from './TimelineHistoryButtons';
 import {
   AcademicCapIcon,
   ShareIcon,
@@ -2932,7 +2931,6 @@ ${combinedText}`;
         onSave={handleSaveExpertNotes}
       />
 
-      <TimelineHistoryButtons client={client} />
     </div>
   );
 };

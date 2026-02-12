@@ -26,6 +26,8 @@ import {
     ChatBubbleLeftRightIcon,
     HandThumbUpIcon,
     HandThumbDownIcon,
+    ClockIcon,
+    ArchiveBoxIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
@@ -704,7 +706,38 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         return baseNumber;
     };
 
+    // Get lead identifier for navigation (same logic as TimelineHistoryButtons)
+    const getLeadIdentifier = (): string | null => {
+        if (!selectedClient) return null;
+        
+        const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+        if (isLegacy) {
+            const clientId = selectedClient.id?.toString();
+            const directId = (selectedClient as any).id;
+            if (typeof directId === 'number') {
+                return directId.toString();
+            }
+            if (clientId && clientId.startsWith('legacy_')) {
+                return clientId.replace('legacy_', '');
+            }
+            return clientId;
+        }
+        return selectedClient.lead_number || (selectedClient as any).manual_id || null;
+    };
 
+    const leadIdentifier = getLeadIdentifier();
+
+    const handleTimelineClick = () => {
+        if (!leadIdentifier) return;
+        const encodedIdentifier = encodeURIComponent(String(leadIdentifier));
+        navigate(`/clients/${encodedIdentifier}/timeline`);
+    };
+
+    const handleHistoryClick = () => {
+        if (!leadIdentifier) return;
+        const encodedIdentifier = encodeURIComponent(String(leadIdentifier));
+        navigate(`/clients/${encodedIdentifier}/history`);
+    };
 
     if (!selectedClient) return null;
 
@@ -787,6 +820,22 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             <div className="flex items-center gap-2">
                                 {renderStageBadge('desktop')}
                             </div>
+
+                            {/* Timeline and History Buttons - Circle Icon Buttons */}
+                            <button
+                                onClick={handleTimelineClick}
+                                className="btn btn-circle btn-outline btn-sm"
+                                title="View Timeline"
+                            >
+                                <ClockIcon className="w-5 h-5" />
+                            </button>
+                            <button
+                                onClick={handleHistoryClick}
+                                className="btn btn-circle btn-outline btn-sm"
+                                title="View History"
+                            >
+                                <ArchiveBoxIcon className="w-5 h-5" />
+                            </button>
 
                             {/* Duplicate Contact Button - Yellow */}
                             {duplicateContacts && duplicateContacts.length > 0 && (

@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ClockIcon, DocumentTextIcon } from '@heroicons/react/24/outline';
+import { ClockIcon, ArchiveBoxIcon } from '@heroicons/react/24/outline';
 import { ClientTabProps } from '../../types/client';
 
 interface TimelineHistoryButtonsProps {
@@ -91,7 +91,7 @@ const TimelineHistoryButtons: React.FC<TimelineHistoryButtonsProps> = ({ client 
             onClick={handleHistoryClick}
             className="btn btn-outline btn-sm flex items-center gap-2"
           >
-            <DocumentTextIcon className="w-4 h-4" />
+            <ArchiveBoxIcon className="w-4 h-4" />
             History
           </button>
         </div>

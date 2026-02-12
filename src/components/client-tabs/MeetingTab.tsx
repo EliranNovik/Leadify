@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
-import TimelineHistoryButtons from './TimelineHistoryButtons';
 import {
   CalendarIcon,
   PencilSquareIcon,
@@ -5587,7 +5586,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
       )}
 
-      <TimelineHistoryButtons client={client} />
 
       {/* Schedule Meeting Drawer */}
       {showScheduleDrawer && (

@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ClientTabProps } from '../../types/client';
-import TimelineHistoryButtons from './TimelineHistoryButtons';
 import { UserGroupIcon, PencilSquareIcon, UserIcon, CheckIcon, XMarkIcon, CalendarIcon, UserCircleIcon, AcademicCapIcon, HandRaisedIcon, WrenchScrewdriverIcon, CogIcon, LockClosedIcon, LockOpenIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
@@ -941,7 +940,6 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
         })}
       </div>
 
-      <TimelineHistoryButtons client={client} />
     </div>
   );
 };
