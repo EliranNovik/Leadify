@@ -54,7 +54,7 @@ const DEFAULTS: Required<SearchOptions> = {
   contactsLimit: 30, // Reduced from 50 for faster queries
   leadsLimit: 25, // Reduced from 40 for faster queries
   legacyLimit: 25, // Reduced from 40 for faster queries
-  timeoutMs: 1500, // Reduced from 3500ms to 1.5s for faster response
+  timeoutMs: 2000, // Increased to 2s for better reliability, especially for lead number searches
 };
 
 // -----------------------------------------------------
@@ -98,18 +98,18 @@ function parseSubLead(raw: string): { master: number | null; suffix: number | nu
  */
 function buildPhoneOr(digits: string): string {
   const d = digitsOnly(digits);
-  
+
   // Require minimum length: 5-6 digits for meaningful suffix matching
   // Shorter queries can match too many false positives
   if (d.length < 5) return "";
-  
+
   const patterns: string[] = [];
-  
+
   // Normalize leading zero: handle both with and without leading zero
   const hadZero = d.startsWith("0");
   const noZero = hadZero ? d.slice(1) : d;
   const withZero = hadZero ? d : `0${d}`;
-  
+
   // Only use the full search string (not fragments)
   // This ensures we match suffixes, not middle fragments
   // Use both with/without leading zero variants
@@ -119,10 +119,10 @@ function buildPhoneOr(digits: string): string {
   if (withZero.length >= 6 && withZero.length <= 16 && withZero !== noZero) {
     patterns.push(withZero);
   }
-  
+
   const uniq = Array.from(new Set(patterns)).filter((p) => p.length >= 5);
   if (uniq.length === 0) return "";
-  
+
   // Use suffix matching: %pattern (no trailing %) means "ends with"
   // This prevents middle-of-number matches
   const clauses = uniq.flatMap((p) => [`phone.ilike.%${p}`, `mobile.ilike.%${p}`]);
@@ -150,19 +150,22 @@ function detectIntent(query: string): SearchIntent | null {
   // - explicit prefix L/C
   // - contains "/" (sub-lead)
   // - pure numeric length 1-6 and not phone-like
+  // - 4-6 digits without prefix are likely lead numbers (not phone numbers which are usually 7+ digits or start with 0)
   const isPureNumeric = rawNoPrefix.length > 0 && /^\d+$/.test(rawNoPrefix) && rawNoPrefix === d;
   const startsWithZero = d.startsWith("0") && d.length >= 4;
+  const isLikelyLeadNumber = isPureNumeric && d.length >= 4 && d.length <= 6 && !startsWithZero;
 
-  const leadLike = hasPrefix || raw.includes("/") || (isPureNumeric && d.length <= 6 && !startsWithZero);
+  const leadLike = hasPrefix || raw.includes("/") || (isPureNumeric && d.length <= 6 && !startsWithZero) || isLikelyLeadNumber;
 
   if (leadLike) {
     return { kind: "lead", raw, digits: rawNoPrefix, hasPrefix, master, suffix };
   }
 
   // Phone intent triggers:
-  // - starts with 0 and 4+ digits
+  // - starts with 0 and 4+ digits (Israeli phone numbers)
   // - 7+ digits always phone
   // - formatted numbers (raw length > digits length) with 4+ digits
+  // - 4-6 digits that start with 0 are phone numbers
   const formatted = raw.length > d.length;
   const phoneLike = (startsWithZero && d.length >= 4) || d.length >= 7 || (formatted && d.length >= 4);
 
@@ -188,6 +191,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
 // -----------------------------------------------------
 
 async function searchNewLeads(intent: SearchIntent, opts: Required<SearchOptions>): Promise<any[]> {
+  const queryStartTime = performance.now();
   const selectFields = "id, lead_number, name, email, phone, mobile, topic, stage, created_at, status";
 
   let qb = supabase.from("leads").select(selectFields);
@@ -201,18 +205,41 @@ async function searchNewLeads(intent: SearchIntent, opts: Required<SearchOptions
         `L${intent.master}/${intent.suffix}`,
         `C${intent.master}/${intent.suffix}`,
       ];
-      console.log(`🔍 [New Lead Sublead Search] Searching for sublead patterns:`, subleadPatterns);
       qb = qb.or(subleadPatterns.map(p => `lead_number.ilike.${p}`).join(","));
     } else {
       // Regular lead number search
       const searchDigits = intent.digits || stripLeadPrefix(intent.raw);
-      const baseOr = [
-        `lead_number.ilike.${searchDigits}%`,
-        `lead_number.ilike.L${searchDigits}%`,
-        `lead_number.ilike.C${searchDigits}%`,
-      ].join(",");
 
-      qb = qb.or(baseOr);
+      // For 4-6 digit searches, prioritize exact matches to avoid partial matches
+      // Example: searching "212421" should NOT match "21242"
+      const isLongQuery = searchDigits.length >= 4 && searchDigits.length <= 6 && /^\d+$/.test(searchDigits);
+
+      if (isLongQuery) {
+        // For 4-6 digit queries, use exact match only (no prefix matching)
+        // This prevents "21242" from matching when searching "212421"
+        const exactPatterns = [
+          `lead_number.eq.L${searchDigits}`,
+          `lead_number.eq.C${searchDigits}`,
+        ];
+
+        // Also try without prefix for legacy compatibility (6-digit numbers)
+        if (searchDigits.length === 6) {
+          exactPatterns.push(`lead_number.eq.${searchDigits}`);
+        }
+
+        const baseOr = exactPatterns.join(",");
+        qb = qb.or(baseOr);
+      } else {
+        // For shorter queries (1-3 digits), use prefix matching
+        const searchPatterns: string[] = [
+          `lead_number.ilike.${searchDigits}%`,
+          `lead_number.ilike.L${searchDigits}%`,
+          `lead_number.ilike.C${searchDigits}%`,
+        ];
+
+        const baseOr = searchPatterns.join(",");
+        qb = qb.or(baseOr);
+      }
 
       // sub-lead: also match master/xxx (when only master is provided, not specific suffix)
       if (intent.master != null) {
@@ -240,17 +267,35 @@ async function searchNewLeads(intent: SearchIntent, opts: Required<SearchOptions
     }
   }
 
-  const { data, error } = await withTimeout(qb.limit(opts.leadsLimit), opts.timeoutMs, "new leads search timeout").catch(
-    () => ({ data: [], error: null as any }),
+  const executeStartTime = performance.now();
+  // Use longer timeout for lead searches (they can be more complex)
+  const timeoutForLeadSearch = intent.kind === "lead" ? opts.timeoutMs * 1.5 : opts.timeoutMs;
+  const { data, error } = await withTimeout(qb.limit(opts.leadsLimit), timeoutForLeadSearch, "new leads search timeout").catch(
+    (err) => {
+      // Return empty array instead of throwing to allow search to continue
+      return { data: [], error: err };
+    },
   );
+  const executeTime = performance.now() - executeStartTime;
 
-  if (error || !data) return [];
+  if (error) {
+    // Don't throw - return empty array to allow other search paths to continue
+    return [];
+  }
+
+  if (!data) {
+    return [];
+  }
+
   return data;
 }
 
 async function searchContacts(intent: SearchIntent, opts: Required<SearchOptions>): Promise<any[]> {
+  const queryStartTime = performance.now();
   // For very short name searches, contacts search is expensive and noisy.
-  if (intent.kind === "name" && intent.raw.trim().length < 2) return [];
+  if (intent.kind === "name" && intent.raw.trim().length < 2) {
+    return [];
+  }
 
   let qb = supabase.from("leads_contact").select("id, name, email, phone, mobile, newlead_id");
 
@@ -274,11 +319,22 @@ async function searchContacts(intent: SearchIntent, opts: Required<SearchOptions
     return [];
   }
 
+  const executeStartTime = performance.now();
   const { data, error } = await withTimeout(qb.limit(opts.contactsLimit), opts.timeoutMs, "contacts search timeout").catch(
-    () => ({ data: [], error: null as any }),
+    (err) => {
+      return { data: [], error: err };
+    },
   );
+  const executeTime = performance.now() - executeStartTime;
 
-  if (error || !data) return [];
+  if (error) {
+    return [];
+  }
+
+  if (!data) {
+    return [];
+  }
+
   return data;
 }
 
@@ -297,19 +353,20 @@ async function findContactsForLeadSearch(
 
   const newLeadIds = newLeadRows.map((l) => l.id).filter(Boolean);
 
-  // legacy: try exact id only for 1-6 digits
+  // legacy: try exact id only for 1-6 digits (including 4-digit queries)
   const legacyExactId = (() => {
     const base = leadIntent.master != null ? String(leadIntent.master) : stripLeadPrefix(leadIntent.raw).split("/")[0];
     if (!base) return null;
     if (!/^\d+$/.test(base)) return null;
-    if (base.length > 6) return null;
-    return parseInt(base, 10);
+    // Allow 1-6 digits (including 4-digit lead numbers)
+    if (base.length < 1 || base.length > 6) return null;
+    const parsed = parseInt(base, 10);
+    if (Number.isNaN(parsed)) return null;
+    return parsed;
   })();
 
   // If searching for a sublead (both master and suffix provided), find the specific sublead
   if (leadIntent.master != null && leadIntent.suffix != null && !Number.isNaN(leadIntent.master) && !Number.isNaN(leadIntent.suffix)) {
-    console.log(`🔍 [Legacy Sublead Search] Searching for sublead: master_id=${leadIntent.master}, suffix=${leadIntent.suffix}`);
-    
     // Fetch all subleads with this master_id
     const { data: subleads } = await withTimeout(
       supabase
@@ -328,13 +385,8 @@ async function findContactsForLeadSearch(
       const targetIndex = leadIntent.suffix - 2;
       if (targetIndex >= 0 && targetIndex < subleads.length) {
         const targetSublead = subleads[targetIndex];
-        console.log(`✅ [Legacy Sublead Search] Found sublead: id=${targetSublead.id}, master_id=${targetSublead.master_id}, suffix=${leadIntent.suffix}`);
         legacyLeads.push(targetSublead);
-      } else {
-        console.log(`⚠️ [Legacy Sublead Search] Suffix ${leadIntent.suffix} not found. Found ${subleads.length} subleads, expected index ${targetIndex}`);
       }
-    } else {
-      console.log(`⚠️ [Legacy Sublead Search] No subleads found for master_id ${leadIntent.master}`);
     }
   } else if (legacyExactId != null && !Number.isNaN(legacyExactId) && (leadIntent.master == null || leadIntent.suffix == null)) {
     // Fetch legacy lead exact match (safe, no range scanning) - for master leads or when suffix not provided
@@ -349,7 +401,6 @@ async function findContactsForLeadSearch(
     ).catch(() => ({ data: [] as any[] }));
 
     if (data && data.length) {
-      console.log(`✅ [Legacy Exact Search] Found legacy lead: id=${data[0].id}, master_id=${data[0].master_id || 'null'}`);
       legacyLeads.push(...data);
     }
   }
@@ -363,7 +414,8 @@ async function findContactsForLeadSearch(
         .from("lead_leadcontact")
         .select("contact_id, newlead_id, lead_id, main")
         .in("newlead_id", newLeadIds)
-        .limit(150), // Reduced from 250 for faster queries
+        .limit(150) // Reduced from 250 for faster queries
+        .then((result) => result)
     );
   }
 
@@ -375,23 +427,34 @@ async function findContactsForLeadSearch(
         .from("lead_leadcontact")
         .select("contact_id, newlead_id, lead_id, main")
         .in("lead_id", legacyIds)
-        .limit(150), // Reduced from 250 for faster queries
+        .limit(150) // Reduced from 250 for faster queries
+        .then((result) => result)
     );
   }
 
-  const junctionResults = await Promise.all(junctionQueries);
-  junctionResults.forEach((r) => {
-    if (r?.data) rels.push(...r.data);
+  // Use allSettled to continue even if some junction queries fail
+  const junctionResults = await Promise.allSettled(junctionQueries);
+
+  junctionResults.forEach((result) => {
+    if (result.status === 'fulfilled') {
+      const r = result.value;
+      if (r?.data) {
+        rels.push(...r.data);
+      }
+    }
   });
 
   const contactIds = Array.from(new Set(rels.map((x) => x.contact_id).filter(Boolean)));
 
   if (contactIds.length) {
-    const { data } = await withTimeout(
+    const { data, error } = await withTimeout(
       supabase.from("leads_contact").select("id, name, email, phone, mobile, newlead_id").in("id", contactIds).limit(opts.contactsLimit),
       opts.timeoutMs,
       "contacts fetch for lead search timeout",
-    ).catch(() => ({ data: [] as any[] }));
+    ).catch((err) => {
+      return { data: [] as any[], error: err };
+    });
+
     if (data) contacts.push(...data);
   }
 
@@ -400,6 +463,8 @@ async function findContactsForLeadSearch(
 
 async function fetchNewLeadsByIds(ids: string[], opts: Required<SearchOptions>): Promise<any[]> {
   if (!ids.length) return [];
+
+  const fetchStartTime = performance.now();
   const { data, error } = await withTimeout(
     supabase
       .from("leads")
@@ -408,13 +473,26 @@ async function fetchNewLeadsByIds(ids: string[], opts: Required<SearchOptions>):
       .limit(opts.leadsLimit),
     opts.timeoutMs,
     "fetch new leads by ids timeout",
-  ).catch(() => ({ data: [], error: null as any }));
-  if (error || !data) return [];
+  ).catch((err) => {
+    return { data: [], error: err };
+  });
+  const fetchTime = performance.now() - fetchStartTime;
+
+  if (error) {
+    return [];
+  }
+
+  if (!data) {
+    return [];
+  }
+
   return data;
 }
 
 async function fetchLegacyLeadsByIds(ids: number[], opts: Required<SearchOptions>): Promise<any[]> {
   if (!ids.length) return [];
+
+  const fetchStartTime = performance.now();
   const { data, error } = await withTimeout(
     supabase
       .from("leads_lead")
@@ -423,8 +501,19 @@ async function fetchLegacyLeadsByIds(ids: number[], opts: Required<SearchOptions
       .limit(opts.legacyLimit),
     opts.timeoutMs,
     "fetch legacy leads by ids timeout",
-  ).catch(() => ({ data: [], error: null as any }));
-  if (error || !data) return [];
+  ).catch((err) => {
+    return { data: [], error: err };
+  });
+  const fetchTime = performance.now() - fetchStartTime;
+
+  if (error) {
+    return [];
+  }
+
+  if (!data) {
+    return [];
+  }
+
   return data;
 }
 
@@ -566,250 +655,376 @@ function markFuzzy(intent: SearchIntent, r: CombinedLead): boolean {
 
 export async function searchLeads(query: string, options: SearchOptions = {}): Promise<CombinedLead[]> {
   const opts = { ...DEFAULTS, ...options };
-  const intent = detectIntent(query);
-  if (!intent) return [];
 
-  // Very short queries: return only fast new lead prefix matches
-  if (intent.kind === "name" && intent.raw.trim().length < 2) {
-    const rows = await searchNewLeads(intent, opts);
-    const mapped = rows.map(mapNewLeadRow);
-    mapped.forEach((r) => (r.isFuzzyMatch = markFuzzy(intent, r)));
-    return mapped.slice(0, opts.limit);
-  }
+  try {
+    const intent = detectIntent(query);
 
-  // 1) Search new leads (always) - parallelize with contacts for non-lead searches
-  let newRows: any[];
-  let contactRows: any[] = [];
-  let rels: any[] = [];
-  let legacyDirectRows: any[] = [];
-
-  if (intent.kind === "lead") {
-    // For lead search: search new leads first, then get contacts via junction
-    newRows = await searchNewLeads(intent, opts);
-    const leadFlow = await findContactsForLeadSearch(intent, newRows, opts);
-    contactRows = leadFlow.contacts;
-    rels = leadFlow.rels;
-    legacyDirectRows = leadFlow.legacyLeads;
-  } else {
-    // For non-lead searches: parallelize new leads and contacts search
-    const [newRowsResult, contactRowsResult] = await Promise.all([
-      searchNewLeads(intent, opts),
-      searchContacts(intent, opts),
-    ]);
-    newRows = newRowsResult;
-    contactRows = contactRowsResult;
-
-    // Junction to collect legacy and extra new leads for found contacts
-    const contactIds = contactRows.map((c) => c.id).filter(Boolean);
-    if (contactIds.length) {
-      const { data } = await withTimeout(
-        supabase
-          .from("lead_leadcontact")
-          .select("contact_id, newlead_id, lead_id, main")
-          .in("contact_id", contactIds)
-          .limit(150), // Reduced from 300 for faster queries
-        opts.timeoutMs,
-        "junction search timeout",
-      ).catch(() => ({ data: [] as any[] }));
-      rels = data || [];
+    if (!intent) {
+      return [];
     }
-  }
 
-  // 3) Fetch missing leads from ids collected via contacts and junction
-  const directNewIds = Array.from(new Set(contactRows.map((c) => c.newlead_id).filter(Boolean)));
-  const junctionNewIds = Array.from(new Set(rels.map((r) => r.newlead_id).filter(Boolean)));
-  const allNewIds = Array.from(new Set([...newRows.map((r: any) => r.id), ...directNewIds, ...junctionNewIds]));
-
-  const junctionLegacyIds = Array.from(new Set(rels.map((r) => r.lead_id).filter((x) => x != null))) as number[];
-  // Combine legacyDirectRows with junction legacy IDs, but avoid duplicates
-  const legacyDirectIds = legacyDirectRows.map((l: any) => l.id);
-  const allLegacyIds = Array.from(new Set([...legacyDirectIds, ...junctionLegacyIds]));
-
-  const [newLeadsExtra, legacyLeadsFetched] = await Promise.all([
-    fetchNewLeadsByIds(allNewIds.filter(Boolean), opts),
-    fetchLegacyLeadsByIds(allLegacyIds.filter((x) => typeof x === "number"), opts),
-  ]);
-
-  // Maps - include legacyDirectRows in the map
-  const newMap = new Map<string, any>(newLeadsExtra.map((l: any) => [l.id, l]));
-  const legacyMap = new Map<number, any>();
-  
-  // Add legacyDirectRows first (they may have been found via sublead search)
-  legacyDirectRows.forEach((l: any) => {
-    legacyMap.set(l.id, l);
-  });
-  
-  // Then add fetched legacy leads (overwrite if duplicate, but legacyDirectRows take precedence)
-  legacyLeadsFetched.forEach((l: any) => {
-    if (!legacyMap.has(l.id)) {
-      legacyMap.set(l.id, l);
+    // Very short queries: return only fast new lead prefix matches
+    if (intent.kind === "name" && intent.raw.trim().length < 2) {
+      const rows = await searchNewLeads(intent, opts);
+      const mapped = rows.map(mapNewLeadRow);
+      mapped.forEach((r) => (r.isFuzzyMatch = markFuzzy(intent, r)));
+      return mapped.slice(0, opts.limit);
     }
-  });
 
-  // Format legacy lead numbers (handle subleads) - batch process all legacy leads
-  const legacyLeadNumberMap = new Map<number, string>();
-  const legacyLeadsToFormat = Array.from(legacyMap.values());
-  const uniqueMasterIds = new Set<number>();
-  legacyLeadsToFormat.forEach((lead: any) => {
-    if (lead.master_id !== null && lead.master_id !== undefined && lead.master_id !== '') {
-      uniqueMasterIds.add(Number(lead.master_id));
-    }
-  });
+    // 1) Search new leads (always) - parallelize with contacts for non-lead searches
+    let newRows: any[];
+    let contactRows: any[] = [];
+    let rels: any[] = [];
+    let legacyDirectRows: any[] = [];
 
-  // Batch fetch subleads for all unique master_ids
-  if (uniqueMasterIds.size > 0) {
-    console.log(`🔢 [LegacyLeadsApi] Formatting ${legacyLeadsToFormat.length} legacy leads, found ${uniqueMasterIds.size} unique master_ids:`, Array.from(uniqueMasterIds));
-    const subleadPromises = Array.from(uniqueMasterIds).map(async (masterId) => {
-      const { data: subleads, error } = await supabase
-        .from('leads_lead')
-        .select('id')
-        .eq('master_id', masterId)
-        .not('master_id', 'is', null)
-        .order('id', { ascending: true });
-      
-      if (error) {
-        console.error(`❌ [LegacyLeadsApi] Error fetching subleads for master_id ${masterId}:`, error);
-        return;
+    if (intent.kind === "lead") {
+      // For lead search: search new leads first, then get contacts via junction
+      try {
+        newRows = await searchNewLeads(intent, opts);
+      } catch (error) {
+        newRows = []; // Continue with empty results
       }
-      
-      if (subleads) {
-        subleads.forEach((sublead: any, index: number) => {
-          // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
-          const suffix = index + 2;
-          legacyLeadNumberMap.set(sublead.id, `${masterId}/${suffix}`);
+
+      let leadFlow;
+      try {
+        leadFlow = await findContactsForLeadSearch(intent, newRows, opts);
+      } catch (error) {
+        leadFlow = { contacts: [], rels: [], legacyLeads: [] }; // Continue with empty results
+      }
+      contactRows = leadFlow.contacts;
+      rels = leadFlow.rels;
+      legacyDirectRows = leadFlow.legacyLeads;
+    } else {
+      // For non-lead searches: parallelize new leads and contacts search
+      let newRowsResult: any[] = [];
+      let contactRowsResult: any[] = [];
+
+      try {
+        const results = await Promise.allSettled([
+          searchNewLeads(intent, opts),
+          searchContacts(intent, opts),
+        ]);
+
+        if (results[0].status === 'fulfilled') {
+          newRowsResult = results[0].value;
+        }
+
+        if (results[1].status === 'fulfilled') {
+          contactRowsResult = results[1].value;
+        }
+      } catch (error) {
+        // Continue with empty results
+      }
+
+      newRows = newRowsResult;
+      contactRows = contactRowsResult;
+
+      // Junction to collect legacy and extra new leads for found contacts
+      const contactIds = contactRows.map((c) => c.id).filter(Boolean);
+      if (contactIds.length) {
+        const { data, error } = await withTimeout(
+          supabase
+            .from("lead_leadcontact")
+            .select("contact_id, newlead_id, lead_id, main")
+            .in("contact_id", contactIds)
+            .limit(150), // Reduced from 300 for faster queries
+          opts.timeoutMs,
+          "junction search timeout",
+        ).catch((err) => {
+          return { data: [] as any[], error: err };
         });
-        console.log(`✅ [LegacyLeadsApi] Fetched ${subleads.length} subleads for master_id ${masterId}`);
+        rels = data || [];
+      }
+    }
+
+    // 3) Fetch missing leads from ids collected via contacts and junction
+    const directNewIds = Array.from(new Set(contactRows.map((c) => c.newlead_id).filter(Boolean)));
+    const junctionNewIds = Array.from(new Set(rels.map((r) => r.newlead_id).filter(Boolean)));
+    const allNewIds = Array.from(new Set([...newRows.map((r: any) => r.id), ...directNewIds, ...junctionNewIds]));
+
+    const junctionLegacyIds = Array.from(new Set(rels.map((r) => r.lead_id).filter((x) => x != null))) as number[];
+    // Combine legacyDirectRows with junction legacy IDs, but avoid duplicates
+    const legacyDirectIds = legacyDirectRows.map((l: any) => l.id);
+    const allLegacyIds = Array.from(new Set([...legacyDirectIds, ...junctionLegacyIds]));
+
+    let newLeadsExtra: any[] = [];
+    let legacyLeadsFetched: any[] = [];
+
+    try {
+      const fetchResults = await Promise.allSettled([
+        allNewIds.length > 0 ? fetchNewLeadsByIds(allNewIds.filter(Boolean), opts) : Promise.resolve([]),
+        allLegacyIds.length > 0 ? fetchLegacyLeadsByIds(allLegacyIds.filter((x) => typeof x === "number"), opts) : Promise.resolve([]),
+      ]);
+
+      if (fetchResults[0].status === 'fulfilled') {
+        newLeadsExtra = fetchResults[0].value;
+      }
+
+      if (fetchResults[1].status === 'fulfilled') {
+        legacyLeadsFetched = fetchResults[1].value;
+      }
+    } catch (error) {
+      // Continue with empty results
+    }
+
+    // Maps - include legacyDirectRows in the map
+    const newMap = new Map<string, any>(newLeadsExtra.map((l: any) => [l.id, l]));
+    const legacyMap = new Map<number, any>();
+
+    // Add legacyDirectRows first (they may have been found via sublead search)
+    legacyDirectRows.forEach((l: any) => {
+      legacyMap.set(l.id, l);
+    });
+
+    // Then add fetched legacy leads (overwrite if duplicate, but legacyDirectRows take precedence)
+    legacyLeadsFetched.forEach((l: any) => {
+      if (!legacyMap.has(l.id)) {
+        legacyMap.set(l.id, l);
       }
     });
 
-    await Promise.all(subleadPromises);
-  }
-
-  // Update legacyMap with formatted lead numbers
-  legacyLeadsToFormat.forEach((lead: any) => {
-    const masterId = lead.master_id;
-    if (masterId !== null && masterId !== undefined && masterId !== '') {
-      const formatted = legacyLeadNumberMap.get(lead.id);
-      if (formatted) {
-        legacyMap.set(lead.id, { ...lead, formattedLeadNumber: formatted });
-        console.log(`✅ [LegacyLeadsApi] Formatted legacy lead ${lead.id} (master_id ${masterId}) as: ${formatted}`);
-      } else {
-        // Fallback: use placeholder
-        legacyMap.set(lead.id, { ...lead, formattedLeadNumber: `${masterId}/?` });
-        console.log(`⚠️ [LegacyLeadsApi] Legacy lead ${lead.id} (master_id ${masterId}) not found in suffix map, using placeholder`);
+    // Format legacy lead numbers (handle subleads) - batch process all legacy leads
+    const legacyLeadNumberMap = new Map<number, string>();
+    const legacyLeadsToFormat = Array.from(legacyMap.values());
+    const uniqueMasterIds = new Set<number>();
+    legacyLeadsToFormat.forEach((lead: any) => {
+      if (lead.master_id !== null && lead.master_id !== undefined && lead.master_id !== '') {
+        uniqueMasterIds.add(Number(lead.master_id));
       }
-    } else {
-      // Master lead: use ID
-      legacyMap.set(lead.id, { ...lead, formattedLeadNumber: String(lead.id) });
+    });
+
+    // Batch fetch subleads for all unique master_ids
+    if (uniqueMasterIds.size > 0) {
+      const subleadPromises = Array.from(uniqueMasterIds).map(async (masterId) => {
+        try {
+          const { data: subleads, error } = await withTimeout(
+            supabase
+              .from('leads_lead')
+              .select('id')
+              .eq('master_id', masterId)
+              .not('master_id', 'is', null)
+              .order('id', { ascending: true }),
+            opts.timeoutMs,
+            `sublead fetch timeout for master_id ${masterId}`
+          ).catch((err) => {
+            return { data: null, error: err };
+          });
+
+          if (error) {
+            return;
+          }
+
+          if (subleads) {
+            subleads.forEach((sublead: any, index: number) => {
+              // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
+              const suffix = index + 2;
+              legacyLeadNumberMap.set(sublead.id, `${masterId}/${suffix}`);
+            });
+          }
+        } catch (error) {
+          // Continue on error
+        }
+      });
+
+      // Use allSettled to continue even if some sublead fetches fail
+      await Promise.allSettled(subleadPromises);
     }
-  });
 
-  const relByContact = new Map<string, any[]>();
-  rels.forEach((r: any) => {
-    if (!r.contact_id) return;
-    const key = String(r.contact_id);
-    if (!relByContact.has(key)) relByContact.set(key, []);
-    relByContact.get(key)!.push(r);
-  });
+    // Update legacyMap with formatted lead numbers
+    legacyLeadsToFormat.forEach((lead: any) => {
+      const masterId = lead.master_id;
+      if (masterId !== null && masterId !== undefined && masterId !== '') {
+        const formatted = legacyLeadNumberMap.get(lead.id);
+        if (formatted) {
+          legacyMap.set(lead.id, { ...lead, formattedLeadNumber: formatted });
+        } else {
+          // Fallback: use placeholder
+          legacyMap.set(lead.id, { ...lead, formattedLeadNumber: `${masterId}/?` });
+        }
+      } else {
+        // Master lead: use ID
+        legacyMap.set(lead.id, { ...lead, formattedLeadNumber: String(lead.id) });
+      }
+    });
 
-  // 4) Build results
-  const results: CombinedLead[] = [];
-  const seen = new Set<string>();
+    const relByContact = new Map<string, any[]>();
+    rels.forEach((r: any) => {
+      if (!r.contact_id) return;
+      const key = String(r.contact_id);
+      if (!relByContact.has(key)) relByContact.set(key, []);
+      relByContact.get(key)!.push(r);
+    });
 
-  // Add new leads directly found (lead rows)
-  newRows.forEach((row: any) => {
-    const l = newMap.get(row.id) || row;
-    const r = mapNewLeadRow(l);
-    const key = `new:${r.id}:lead`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      results.push(r);
-    }
-  });
+    // 4) Build results
+    const results: CombinedLead[] = [];
+    const seen = new Set<string>();
 
-  // Add results from contacts and junction
-  contactRows.forEach((c: any) => {
-    const contactId = String(c.id);
-    const relList = relByContact.get(contactId) || [];
+    // Add new leads directly found (lead rows)
+    newRows.forEach((row: any) => {
+      const l = newMap.get(row.id) || row;
+      const r = mapNewLeadRow(l);
 
-    // Direct new lead relation
-    if (c.newlead_id && newMap.has(c.newlead_id)) {
-      const l = newMap.get(c.newlead_id);
-      const r = mapNewLeadRow({ ...l, name: c.name, email: c.email, phone: c.phone, mobile: c.mobile });
-      r.isContact = true;
-      r.contactName = c.name || "";
-      r.isMainContact = false;
+      // For lead number searches, enrich the lead with contact information if name is empty
+      if (intent.kind === "lead" && (!r.name || r.name.trim() === "")) {
+        // Find contacts associated with this lead
+        const associatedContacts = contactRows.filter((c: any) => {
+          // Check direct relation
+          if (c.newlead_id === l.id) return true;
+          // Check junction relations
+          const contactId = String(c.id);
+          const relList = relByContact.get(contactId) || [];
+          return relList.some((rel: any) => rel.newlead_id === l.id);
+        });
 
-      const key = `new:${r.id}:contact:${contactId}`;
+        // Use the first contact's name if available (prefer main contact)
+        if (associatedContacts.length > 0) {
+          // Sort to prefer main contacts
+          const sortedContacts = associatedContacts.sort((a: any, b: any) => {
+            const aIsMain = relByContact.get(String(a.id))?.some((rel: any) => rel.main === true || rel.main === "true") || false;
+            const bIsMain = relByContact.get(String(b.id))?.some((rel: any) => rel.main === true || rel.main === "true") || false;
+            return bIsMain ? 1 : aIsMain ? -1 : 0;
+          });
+
+          const contact = sortedContacts[0];
+          if (contact && contact.name) {
+            r.name = contact.name;
+            r.email = contact.email || r.email;
+            r.phone = contact.phone || r.phone;
+            r.mobile = contact.mobile || r.mobile;
+          }
+        }
+      }
+
+      const key = `new:${r.id}:lead`;
       if (!seen.has(key)) {
         seen.add(key);
         results.push(r);
       }
+    });
+
+    // For lead number searches, skip contact entries - we only want the lead itself
+    // Contact entries are useful for name/phone searches, but redundant for lead number searches
+    if (intent.kind !== "lead") {
+      // Add results from contacts and junction (only for non-lead searches)
+      contactRows.forEach((c: any) => {
+        const contactId = String(c.id);
+        const relList = relByContact.get(contactId) || [];
+
+        // Direct new lead relation
+        if (c.newlead_id && newMap.has(c.newlead_id)) {
+          const l = newMap.get(c.newlead_id);
+          const r = mapNewLeadRow({ ...l, name: c.name, email: c.email, phone: c.phone, mobile: c.mobile });
+          r.isContact = true;
+          r.contactName = c.name || "";
+          r.isMainContact = false;
+
+          const key = `new:${r.id}:contact:${contactId}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            results.push(r);
+          }
+        }
+
+        // Junction relations
+        relList.forEach((rel: any) => {
+          const isMain = rel.main === true || rel.main === "true";
+
+          if (rel.newlead_id && newMap.has(rel.newlead_id)) {
+            const l = newMap.get(rel.newlead_id);
+            const r = mapNewLeadRow({ ...l, name: c.name, email: c.email, phone: c.phone, mobile: c.mobile });
+            r.isContact = !isMain;
+            r.contactName = c.name || "";
+            r.isMainContact = isMain;
+
+            const key = `new:${r.id}:contact:${contactId}:main:${isMain ? "1" : "0"}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              results.push(r);
+            }
+          }
+
+          if (rel.lead_id != null) {
+            const legacy = legacyMap.get(rel.lead_id);
+            const formattedNumber = legacy?.formattedLeadNumber;
+            const r = legacy ? mapLegacyLeadRow(legacy, formattedNumber) : mapLegacyLeadRow({ id: rel.lead_id });
+            // attach contact data for display
+            r.name = c.name || r.name;
+            r.email = c.email || r.email;
+            r.phone = c.phone || r.phone;
+            r.mobile = c.mobile || r.mobile;
+
+            r.isContact = !isMain;
+            r.contactName = c.name || "";
+            r.isMainContact = isMain;
+
+            const key = `legacy:${r.id}:contact:${contactId}:main:${isMain ? "1" : "0"}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              results.push(r);
+            }
+          }
+        });
+      });
     }
 
-    // Junction relations
-    relList.forEach((rel: any) => {
-      const isMain = rel.main === true || rel.main === "true";
+    // 5) Add legacy lead itself if found (even if no contacts)
+    legacyLeadsFetched.forEach((l: any) => {
+      const legacy = legacyMap.get(l.id);
+      const formattedNumber = legacy?.formattedLeadNumber;
+      // Use the legacy from map (which has formattedLeadNumber) or the original l
+      const legacyToMap = legacy || l;
+      const r = mapLegacyLeadRow(legacyToMap, formattedNumber);
 
-      if (rel.newlead_id && newMap.has(rel.newlead_id)) {
-        const l = newMap.get(rel.newlead_id);
-        const r = mapNewLeadRow({ ...l, name: c.name, email: c.email, phone: c.phone, mobile: c.mobile });
-        r.isContact = !isMain;
-        r.contactName = c.name || "";
-        r.isMainContact = isMain;
+      // For lead number searches, enrich the legacy lead with contact information if name is empty
+      if (intent.kind === "lead" && (!r.name || r.name.trim() === "")) {
+        // Find contacts associated with this legacy lead
+        const associatedContacts = contactRows.filter((c: any) => {
+          // Check junction relations
+          const contactId = String(c.id);
+          const relList = relByContact.get(contactId) || [];
+          return relList.some((rel: any) => rel.lead_id === l.id);
+        });
 
-        const key = `new:${r.id}:contact:${contactId}:main:${isMain ? "1" : "0"}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          results.push(r);
+        // Use the first contact's name if available (prefer main contact)
+        if (associatedContacts.length > 0) {
+          // Sort to prefer main contacts
+          const sortedContacts = associatedContacts.sort((a: any, b: any) => {
+            const aIsMain = relByContact.get(String(a.id))?.some((rel: any) => rel.lead_id === l.id && (rel.main === true || rel.main === "true")) || false;
+            const bIsMain = relByContact.get(String(b.id))?.some((rel: any) => rel.lead_id === l.id && (rel.main === true || rel.main === "true")) || false;
+            return bIsMain ? 1 : aIsMain ? -1 : 0;
+          });
+
+          const contact = sortedContacts[0];
+          if (contact && contact.name) {
+            r.name = contact.name;
+            r.email = contact.email || r.email;
+            r.phone = contact.phone || r.phone;
+            r.mobile = contact.mobile || r.mobile;
+          }
         }
       }
 
-      if (rel.lead_id != null) {
-        const legacy = legacyMap.get(rel.lead_id);
-        const formattedNumber = legacy?.formattedLeadNumber;
-        const r = legacy ? mapLegacyLeadRow(legacy, formattedNumber) : mapLegacyLeadRow({ id: rel.lead_id });
-        // attach contact data for display
-        r.name = c.name || r.name;
-        r.email = c.email || r.email;
-        r.phone = c.phone || r.phone;
-        r.mobile = c.mobile || r.mobile;
-
-        r.isContact = !isMain;
-        r.contactName = c.name || "";
-        r.isMainContact = isMain;
-
-        const key = `legacy:${r.id}:contact:${contactId}:main:${isMain ? "1" : "0"}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          results.push(r);
-        }
+      const key = `legacy:${r.id}:lead`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push(r);
       }
     });
-  });
 
-  // 5) Add legacy lead itself if found (even if no contacts)
-  legacyLeadsFetched.forEach((l: any) => {
-    const legacy = legacyMap.get(l.id);
-    const formattedNumber = legacy?.formattedLeadNumber;
-    // Use the legacy from map (which has formattedLeadNumber) or the original l
-    const legacyToMap = legacy || l;
-    const r = mapLegacyLeadRow(legacyToMap, formattedNumber);
-    const key = `legacy:${r.id}:lead`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      results.push(r);
-    }
-  });
+    // 6) Rank and mark fuzzy
+    results.forEach((r) => {
+      r.isFuzzyMatch = markFuzzy(intent, r);
+    });
 
-  // 6) Rank and mark fuzzy
-  results.forEach((r) => {
-    r.isFuzzyMatch = markFuzzy(intent, r);
-  });
+    results.sort((a, b) => scoreResult(intent, b) - scoreResult(intent, a));
 
-  results.sort((a, b) => scoreResult(intent, b) - scoreResult(intent, a));
+    const finalResults = results.slice(0, opts.limit);
 
-  return results.slice(0, opts.limit);
+    return finalResults;
+  } catch (error) {
+    // Return empty array instead of throwing to prevent UI crashes
+    return [];
+  }
 }
 
 // -----------------------------------------------------
@@ -848,7 +1063,6 @@ export async function fetchAllLeads(): Promise<CombinedLead[]> {
 
     return allLeads;
   } catch (error) {
-    console.error("Error fetching all leads:", error);
     return [];
   }
 }
@@ -894,7 +1108,7 @@ export async function fetchLeadById(
               .eq('master_id', legacyLead.master_id)
               .not('master_id', 'is', null)
               .order('id', { ascending: true });
-            
+
             if (subleads) {
               const currentLeadIndex = subleads.findIndex(sub => sub.id === legacyLead.id);
               if (currentLeadIndex >= 0) {
@@ -903,7 +1117,7 @@ export async function fetchLeadById(
               }
             }
           } catch (error) {
-            console.error('Error calculating sublead suffix in fetchLeadById:', error);
+            // Continue on error
           }
         }
         return mapLegacyLeadRow(legacyLead, formattedNumber);
@@ -940,7 +1154,7 @@ export async function fetchLeadById(
             .eq('master_id', data.master_id)
             .not('master_id', 'is', null)
             .order('id', { ascending: true });
-          
+
           if (subleads) {
             const currentLeadIndex = subleads.findIndex(sub => sub.id === data.id);
             if (currentLeadIndex >= 0) {
@@ -949,13 +1163,12 @@ export async function fetchLeadById(
             }
           }
         } catch (error) {
-          console.error('Error calculating sublead suffix in fetchLeadById:', error);
+          // Continue on error
         }
       }
       return mapLegacyLeadRow(data, formattedNumber);
     }
   } catch (error) {
-    console.error("Error fetching lead by ID:", error);
     return null;
   }
 }
