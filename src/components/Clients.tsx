@@ -60,6 +60,7 @@ import {
   Bars3Icon,
   LinkIcon,
   ArrowRightIcon,
+  ArchiveBoxIcon,
 } from '@heroicons/react/24/outline';
 // Import tab components directly - lazy loading was causing Sidebar/Header to load late
 import InfoTab from './client-tabs/InfoTab';
@@ -1200,7 +1201,18 @@ const Clients: React.FC<ClientsProps> = ({
   const [activeTab, setActiveTab] = usePersistedState('clientsPage_activeTab', 'info', {
     storage: 'sessionStorage',
   });
-  const [isTabBarCollapsed, setIsTabBarCollapsed] = useState(false);
+  const [isTabBarCollapsed, setIsTabBarCollapsed] = useState(true);
+  const tabBarCollapseTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (tabBarCollapseTimeoutRef.current) {
+        clearTimeout(tabBarCollapseTimeoutRef.current);
+      }
+    };
+  }, []);
+  
   const [isStagesOpen, setIsStagesOpen] = useState(false);
   const [isActionsOpen, setIsActionsOpen] = useState(false);
   const [isBalanceModalOpen, setIsBalanceModalOpen] = useState(false);
@@ -2396,6 +2408,39 @@ const Clients: React.FC<ClientsProps> = ({
     return displayNumber.toString();
   };
 
+  // Navigation handlers for timeline and history
+  const getLeadIdentifier = () => {
+    if (!selectedClient) return null;
+    
+    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+    if (isLegacy) {
+      const clientId = selectedClient.id?.toString();
+      const directId = (selectedClient as any).id;
+      if (typeof directId === 'number') {
+        return directId.toString();
+      }
+      if (clientId && clientId.startsWith('legacy_')) {
+        return clientId.replace('legacy_', '');
+      }
+      return clientId;
+    }
+    return selectedClient.lead_number || (selectedClient as any).manual_id || null;
+  };
+
+  const handleTimelineClick = () => {
+    const leadIdentifier = getLeadIdentifier();
+    if (!leadIdentifier) return;
+    const encodedIdentifier = encodeURIComponent(String(leadIdentifier));
+    navigate(`/clients/${encodedIdentifier}/timeline`);
+  };
+
+  const handleHistoryClick = () => {
+    const leadIdentifier = getLeadIdentifier();
+    if (!leadIdentifier) return;
+    const encodedIdentifier = encodeURIComponent(String(leadIdentifier));
+    navigate(`/clients/${encodedIdentifier}/history`);
+  };
+
   // Handler for Payment Received - new Client !!!
   const handlePaymentReceivedNewClient = () => {
     if (!selectedClient) return;
@@ -3221,9 +3266,15 @@ const Clients: React.FC<ClientsProps> = ({
         return;
       }
 
+      // Check if route has changed - must be calculated BEFORE persisted data check
+      const routeChanged = lastRouteRef.current !== currentRoute;
+
       // Check persisted client data before fetching (same pattern as MasterLeadPage)
+      // Only use persisted data if route has NOT changed (e.g., page refresh)
+      // If route changed, always fetch fresh data to avoid showing wrong client
+      // Also skip if we're currently fetching to prevent race conditions
       const effectiveLeadNumber = lead_number || fullLeadNumber || requestedLeadNumber;
-      if (effectiveLeadNumber) {
+      if (effectiveLeadNumber && !routeChanged && !isFetchingRef.current && !isSettingUpClientRef.current) {
         try {
           const persistedKey = `clientsPage_clientData_${effectiveLeadNumber}`;
           const persistedData = sessionStorage.getItem(persistedKey);
@@ -3242,9 +3293,9 @@ const Clients: React.FC<ClientsProps> = ({
               // Legacy: compare numeric ID (effectiveLeadNumber should be the numeric ID from URL)
               matches = persistedClientId === effectiveLeadNumber || persistedClientId === String(effectiveLeadNumber);
             } else {
-              // New: compare by lead_number or manual_id
+              // New: compare by lead_number or manual_id - must match exactly
               matches = persistedLeadNumber === effectiveLeadNumber ||
-                persistedClientId === effectiveLeadNumber ||
+                (persistedClientId === effectiveLeadNumber && effectiveLeadNumber === persistedLeadNumber) ||
                 parsedData.manual_id === effectiveLeadNumber;
             }
 
@@ -3310,9 +3361,6 @@ const Clients: React.FC<ClientsProps> = ({
         }
       }
 
-      // Check if route has changed
-      const routeChanged = lastRouteRef.current !== currentRoute;
-
       // Prevent running if we're currently setting up a client to avoid race conditions
       // If isSettingUpClient is true AND isFetching is true, we're in the middle of a setup - return early
       // If isSettingUpClient is true BUT isFetching is false, the previous setup completed - clear flag and proceed
@@ -3362,18 +3410,20 @@ const Clients: React.FC<ClientsProps> = ({
         isFetchingRef.current = true;
         isSettingUpClientRef.current = true;
         fetchingRouteRef.current = currentRoute; // Track which route we're fetching
-        // Update route ref to prevent duplicate fetches on re-render
-        lastRouteRef.current = currentRoute;
+        // DO NOT update lastRouteRef here - wait until client is successfully loaded
+        // This prevents the persisted data check from running with wrong state
         // Clear selectedClient immediately to reset all child components
         setSelectedClient(null);
         // Continue to fetch data below - don't return early
       } else if (routeChanged && navType === 'POP') {
         // POP navigation but client doesn't match - update route ref and continue
-        lastRouteRef.current = currentRoute;
+        // DO NOT update lastRouteRef here either - wait until client is loaded
       } else {
       }
 
-      if (!routeChanged && selectedClient && lead_number && !location.pathname.includes('/master')) {
+      // Only skip fetch if route hasn't changed AND we have the correct client already loaded
+      // If route changed, we must always fetch to ensure we get the correct client
+      if (!routeChanged && selectedClient && lead_number && !location.pathname.includes('/master') && !isFetchingRef.current && !isSettingUpClientRef.current) {
         // Only skip fetch if we have the same client AND we're not on the master route
         const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
         const currentClientId = isLegacy
@@ -3386,12 +3436,16 @@ const Clients: React.FC<ClientsProps> = ({
           // Legacy lead: compare numeric ID
           if (currentClientId === lead_number) {
             setLocalLoading(false); // Ensure loading is cleared
+            // Update lastRouteRef to prevent future refetches
+            lastRouteRef.current = currentRoute;
             return; // Already have the correct legacy client loaded
           }
         } else {
           // New lead: compare by lead_number or manual_id
           if (currentLeadNumber === lead_number || currentClientId === lead_number) {
             setLocalLoading(false); // Ensure loading is cleared
+            // Update lastRouteRef to prevent future refetches
+            lastRouteRef.current = currentRoute;
             return; // Already have the correct new client loaded
           }
         }
@@ -3711,6 +3765,10 @@ const Clients: React.FC<ClientsProps> = ({
             const timestampKey = `clientsPage_clientData_timestamp_${effectiveLeadNumber}`;
             sessionStorage.setItem(timestampKey, Date.now().toString());
 
+            // Update lastRouteRef ONLY after client is successfully loaded
+            // This prevents race conditions where persisted data check runs with wrong state
+            lastRouteRef.current = currentRoute;
+
             setLocalLoading(false); // Stop loading immediately - don't wait for anything else
 
             // Clear flag immediately since fetch completed and client is set
@@ -3745,6 +3803,8 @@ const Clients: React.FC<ClientsProps> = ({
                 // Set the client
                 const normalizedLatestLead = normalizeClientStage(latestLead);
                 setSelectedClient(normalizedLatestLead);
+                // Update lastRouteRef after client is loaded
+                lastRouteRef.current = location.pathname;
                 persistClientData(normalizedLatestLead);
                 setLocalLoading(false); // Stop loading immediately
 
@@ -4160,13 +4220,9 @@ const Clients: React.FC<ClientsProps> = ({
     } else if (newStage === 'Paid Meeting') {
       await updateLeadStage('Paid Meeting');
     } else if (newStage === 'Communication Started') {
-      const currentStageName = getStageName(selectedClient.stage);
-      if (areStagesEquivalent(currentStageName, 'scheduler_assigned')) {
-        setShowUpdateDrawer(true);
-        (document.activeElement as HTMLElement)?.blur();
-      } else {
-        await updateLeadStage('communication_started');
-      }
+      // Always open the update drawer when clicking Communication Started button
+      setShowUpdateDrawer(true);
+      (document.activeElement as HTMLElement)?.blur();
     } else if (newStage === 'Meeting Ended') {
       setActiveTab('meeting');
       setShowMeetingEndedDrawer(true);
@@ -4772,14 +4828,8 @@ const Clients: React.FC<ClientsProps> = ({
           }}
           onClick={() => {
             if (isSuperuser) {
-              // If current stage is "Communication started", open Update Lead drawer instead of dropdown
-              if (areStagesEquivalent(stageName, 'Communication started')) {
-                setShowUpdateDrawer(true);
-                setStageDropdownAnchor(null);
-                (document.activeElement as HTMLElement)?.blur();
-              } else {
-                setStageDropdownAnchor(prev => (prev === anchor ? null : anchor));
-              }
+              // Always open the dropdown when clicking the stage badge
+              setStageDropdownAnchor(prev => (prev === anchor ? null : anchor));
             }
           }}
           disabled={!isSuperuser}
@@ -12761,30 +12811,93 @@ const Clients: React.FC<ClientsProps> = ({
       {selectedClient && (
         <>
           {/* Sticky Header - appears when scrolled down, positioned below main header */}
-          {/* Extends to left edge but sits below sidebar (lower z-index) */}
+          {/* Centered oval glassy bar */}
           {showStickyHeader && (
-            <div className="fixed top-16 left-0 right-0 z-[35] bg-base-100 shadow-lg border-b border-base-300 transition-all duration-300 ease-in-out">
-              <div className="max-w-7xl mx-auto px-4 py-3">
-                {/* Mobile View - Only lead number and client name */}
-                <div className="md:hidden flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0 flex-1">
+            <div className="fixed top-16 left-0 right-0 z-[35] flex justify-center px-4 transition-all duration-300 ease-in-out">
+              <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/20 dark:border-gray-700/20 px-6 py-3 transition-all duration-300 ease-in-out">
+                {/* Mobile View - Lead number, client name, timeline, history, and duplicate button */}
+                <div className="md:hidden flex items-center justify-center gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
                     <span className="text-base font-bold text-base-content whitespace-nowrap">
-                      #{selectedClient.lead_number || selectedClient.id}
+                      #{getDisplayLeadNumber(selectedClient)}
                     </span>
                     <span className="text-base font-semibold text-base-content/90 truncate">
                       {selectedClient.name || 'Unnamed Lead'}
                     </span>
                   </div>
+                  {/* Timeline and History Buttons */}
+                  <button
+                    onClick={handleTimelineClick}
+                    className="btn btn-circle btn-outline btn-sm"
+                    title="View Timeline"
+                  >
+                    <ClockIcon className="w-5 h-5" />
+                  </button>
+                  <button
+                    onClick={handleHistoryClick}
+                    className="btn btn-circle btn-outline btn-sm"
+                    title="View History"
+                  >
+                    <ArchiveBoxIcon className="w-5 h-5" />
+                  </button>
+                  {/* Duplicate Contact Button */}
+                  {duplicateContacts.length > 0 && (
+                    <div className="relative">
+                      {duplicateContacts.length === 1 ? (
+                        <button
+                          onClick={() => setIsDuplicateModalOpen(true)}
+                          className="btn btn-circle btn-warning btn-sm relative"
+                          title={`Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`}
+                        >
+                          <DocumentDuplicateIcon className="w-5 h-5" />
+                          <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                            1
+                          </span>
+                        </button>
+                      ) : (
+                        <div className="relative">
+                          <button
+                            onClick={() => setIsDuplicateDropdownOpen(!isDuplicateDropdownOpen)}
+                            className="btn btn-circle btn-warning btn-sm relative"
+                            title={`${duplicateContacts.length} Duplicate Contacts`}
+                          >
+                            <DocumentDuplicateIcon className="w-5 h-5" />
+                            <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                              {duplicateContacts.length > 9 ? '9+' : duplicateContacts.length}
+                            </span>
+                          </button>
+                          {isDuplicateDropdownOpen && (
+                            <div className="absolute top-full right-0 mt-2 bg-base-100 rounded-lg shadow-xl border border-base-300 z-50 min-w-[300px] max-h-96 overflow-y-auto">
+                              {duplicateContacts.map((dup, idx) => (
+                                <div
+                                  key={`${dup.contactId}-${dup.leadId}-${idx}`}
+                                  className="p-3 border-b border-base-300 hover:bg-base-200 cursor-pointer"
+                                  onClick={() => {
+                                    navigate(`/clients/${dup.leadNumber}`);
+                                    setIsDuplicateDropdownOpen(false);
+                                  }}
+                                >
+                                  <div className="font-semibold">{dup.contactName}</div>
+                                  <div className="text-sm text-base-content/70">
+                                    Lead {dup.leadNumber}: {dup.leadName}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Desktop View - Full layout with tab navigation */}
-                <div className="hidden md:flex flex-col gap-2">
-                  <div className="flex items-center justify-between gap-4 flex-wrap">
+                <div className="hidden md:flex items-center justify-center gap-4 flex-wrap">
                     {/* Left side: Lead number, name, and duplicate contact badge */}
-                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <div className="flex items-center gap-3 min-w-0">
                       <div className="flex items-center gap-3 min-w-0 flex-wrap">
                         <span className="text-lg font-bold text-base-content whitespace-nowrap">
-                          #{selectedClient.lead_number || selectedClient.id}
+                          #{getDisplayLeadNumber(selectedClient)}
                         </span>
                         <span className="text-lg font-semibold text-base-content/90 truncate">
                           {selectedClient.name || 'Unnamed Lead'}
@@ -12898,41 +13011,6 @@ const Clients: React.FC<ClientsProps> = ({
                       );
                     })()}
 
-                    {/* Right side: Stage badge and topic */}
-                    <div className="flex items-center gap-3 flex-shrink-0">
-                      {/* Stage Badge */}
-                      {(() => {
-                        const stageStr = (selectedClient.stage !== null && selectedClient.stage !== undefined) ? String(selectedClient.stage) : '';
-                        const stageName = getStageName(stageStr);
-                        const stageColor = getStageColour(stageStr);
-                        const textColor = getContrastingTextColor(stageColor);
-                        const backgroundColor = stageColor || '#3b28c7';
-
-                        return (
-                          <span
-                            className="badge text-sm px-4 py-2 font-bold shadow-sm whitespace-nowrap"
-                            style={{
-                              backgroundColor: backgroundColor,
-                              color: textColor,
-                              borderColor: backgroundColor,
-                            }}
-                          >
-                            {stageName}
-                          </span>
-                        );
-                      })()}
-
-                      {/* Topic/Category - same size as stage badge */}
-                      {selectedClient.category && (
-                        <span
-                          className="badge text-sm px-4 py-2 font-bold shadow-sm bg-base-200 text-base-content/90 border-base-300 whitespace-nowrap flex items-center gap-2"
-                        >
-                          <TagIcon className="w-4 h-4 flex-shrink-0" />
-                          <span className="hidden sm:inline">{selectedClient.category}</span>
-                        </span>
-                      )}
-                    </div>
-                  </div>
                 </div>
               </div>
             </div>
@@ -13203,33 +13281,57 @@ const Clients: React.FC<ClientsProps> = ({
           from {
             width: 56px;
             opacity: 0;
+            transform: scale(0.9);
           }
           to {
             width: auto;
             opacity: 1;
+            transform: scale(1);
           }
         }
         @keyframes collapseWidth {
           from {
             width: auto;
             opacity: 1;
+            transform: scale(1);
           }
           to {
             width: 56px;
             opacity: 0;
+            transform: scale(0.9);
           }
+        }
+        .desktop-tabs-navigation .transition-all {
+          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
       `}</style>
           <div className="desktop-tabs-navigation hidden lg:block fixed bottom-0 left-0 right-0 z-50 pb-safe">
             <div className="flex justify-center px-4 pb-4">
+              <div
+                onMouseEnter={() => {
+                  // Clear any pending collapse timeout
+                  if (tabBarCollapseTimeoutRef.current) {
+                    clearTimeout(tabBarCollapseTimeoutRef.current);
+                    tabBarCollapseTimeoutRef.current = null;
+                  }
+                  setIsTabBarCollapsed(false);
+                }}
+                onMouseLeave={() => {
+                  // Add delay before collapsing
+                  tabBarCollapseTimeoutRef.current = setTimeout(() => {
+                    setIsTabBarCollapsed(true);
+                    tabBarCollapseTimeoutRef.current = null;
+                  }, 500); // 500ms delay before closing
+                }}
+                className="relative py-2 px-2 -my-2 -mx-2"
+              >
               {isTabBarCollapsed ? (
                 // Collapsed state: Single circle with active tab icon
                 <button
-                  onClick={() => setIsTabBarCollapsed(false)}
-                  className="bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-full shadow-2xl border-2 border-white/20 w-14 h-14 flex items-center justify-center transition-all duration-500 ease-in-out hover:scale-110"
-                  title="Click to expand"
+                  className="bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-full shadow-2xl border-2 border-white/20 w-14 h-14 flex items-center justify-center transition-all duration-300 ease-in-out hover:scale-110"
+                  title="Hover to expand"
                   style={{
-                    animation: 'fadeInScale 0.5s ease-in-out'
+                    animation: 'fadeInScale 0.3s ease-in-out'
                   }}
                 >
                   <div className="relative">
@@ -13256,14 +13358,14 @@ const Clients: React.FC<ClientsProps> = ({
                 </button>
               ) : (
                 // Expanded state: Full tab bar
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 transition-all duration-300 ease-in-out">
                   <div
                     ref={desktopTabsRef}
-                    className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/20 dark:border-gray-700/20 px-4 py-3 overflow-x-auto scrollbar-hide transition-all duration-500 ease-in-out"
+                    className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/20 dark:border-gray-700/20 px-4 py-3 overflow-x-auto scrollbar-hide transition-all duration-300 ease-in-out"
                     style={{
                       borderRadius: '9999px',
                       maxWidth: '95vw',
-                      animation: 'fadeInScale 0.5s ease-in-out'
+                      animation: 'expandWidth 0.3s ease-in-out'
                     }}
                   >
                     <div className="flex items-center gap-2" style={{ scrollBehavior: 'smooth' }}>
@@ -13275,7 +13377,7 @@ const Clients: React.FC<ClientsProps> = ({
                             : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50/50 dark:hover:bg-gray-700/50'
                             }`}
                           style={{
-                            animation: `fadeInSlide 0.4s ease-out ${index * 0.05}s both`
+                            animation: `fadeInSlide 0.3s ease-out ${index * 0.03}s both`
                           }}
                           onClick={(e) => {
                             e.stopPropagation();
@@ -13302,233 +13404,10 @@ const Clients: React.FC<ClientsProps> = ({
                     </div>
                   </div>
 
-                  {/* Right collapse button */}
-                  <button
-                    onClick={() => setIsTabBarCollapsed(true)}
-                    className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-lg border-2 border-white/20 dark:border-gray-700/20 w-10 h-10 flex items-center justify-center transition-all duration-300 hover:scale-110 hover:bg-white/90 dark:hover:bg-gray-700/90"
-                    title="Collapse tab bar"
-                    style={{
-                      animation: 'fadeInScale 0.4s ease-out 0.1s both'
-                    }}
-                  >
-                    <ChevronDownIcon className="w-5 h-5 text-gray-600 dark:text-gray-400" />
-                  </button>
                 </div>
               )}
+              </div>
             </div>
-          </div>
-          {/* Mobile: Edge-positioned arrow buttons */}
-          <div className="lg:hidden">
-            {/* Right Edge - Menu Button */}
-            <button
-              onClick={() => {
-                setShowMobileMenu(!showMobileMenu);
-                setShowMobileStagesDropdown(false);
-                setShowMobileActionsDropdown(false);
-              }}
-              className="fixed right-2 top-1/2 -translate-y-1/2 z-[45] bg-white rounded-full shadow-lg p-3 transition-all hover:scale-110"
-              style={{ backgroundColor: '#4218CC' }}
-            >
-              <Bars3Icon className="w-6 h-6 text-white" />
-            </button>
-
-            {/* Mobile Menu - Choose Client Info, Stages or Actions */}
-            {showMobileMenu && (
-              <>
-                <div
-                  className="fixed inset-0 z-40 bg-black/20"
-                  onClick={() => setShowMobileMenu(false)}
-                />
-                <div className="fixed right-2 top-1/2 -translate-y-1/2 mr-16 z-50 bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden">
-                  <button
-                    onClick={() => {
-                      setShowMobileMenu(false);
-                      setShowMobileClientInfo(true);
-                      setShowMobileStagesDropdown(false);
-                      setShowMobileActionsDropdown(false);
-                    }}
-                    className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors border-b border-gray-100"
-                  >
-                    <span className="font-semibold" style={{ color: '#4218CC' }}>Client Info</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setShowMobileMenu(false);
-                      setShowMobileStagesDropdown(true);
-                      setShowMobileActionsDropdown(false);
-                      setShowMobileClientInfo(false);
-                    }}
-                    className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors border-b border-gray-100"
-                  >
-                    <span className="font-semibold" style={{ color: '#4218CC' }}>Stages</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setShowMobileMenu(false);
-                      setShowMobileStagesDropdown(false);
-                      setShowMobileActionsDropdown(true);
-                      setShowMobileClientInfo(false);
-                    }}
-                    className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors"
-                  >
-                    <span className="font-semibold" style={{ color: '#4218CC' }}>Actions</span>
-                  </button>
-                </div>
-              </>
-            )}
-
-            {/* Mobile Stages Dropdown */}
-            {showMobileStagesDropdown && (
-              <>
-                <div
-                  className="fixed inset-0 z-40 bg-black/20"
-                  onClick={() => setShowMobileStagesDropdown(false)}
-                />
-                <div className="fixed left-0 top-1/2 -translate-y-1/2 z-50 bg-base-100 rounded-r-2xl shadow-2xl border border-l-0 border-base-300 w-64 max-h-[80vh] overflow-y-auto">
-                  <div className="p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="font-semibold text-base" style={{ color: '#4218CC' }}>Stages</h3>
-                      <button
-                        onClick={() => setShowMobileStagesDropdown(false)}
-                        className="btn btn-ghost btn-sm btn-circle"
-                      >
-                        <XMarkIcon className="w-5 h-5" />
-                      </button>
-                    </div>
-                    {dropdownItems && (
-                      <ul className="menu p-0">
-                        {dropdownItems}
-                      </ul>
-                    )}
-                  </div>
-                </div>
-              </>
-            )}
-
-            {/* Mobile Actions Dropdown */}
-            {showMobileActionsDropdown && (
-              <>
-                <div
-                  className="fixed inset-0 z-40 bg-black/20"
-                  onClick={() => setShowMobileActionsDropdown(false)}
-                />
-                <div className="fixed right-0 top-1/2 -translate-y-1/2 z-50 bg-base-100 rounded-l-2xl shadow-2xl border border-r-0 border-base-300 w-64 max-h-[80vh] overflow-y-auto">
-                  <div className="p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="font-semibold text-base" style={{ color: '#4218CC' }}>Actions</h3>
-                      <button
-                        onClick={() => setShowMobileActionsDropdown(false)}
-                        className="btn btn-ghost btn-sm btn-circle"
-                      >
-                        <XMarkIcon className="w-5 h-5" />
-                      </button>
-                    </div>
-                    <ul className="menu p-0">
-                      {(() => {
-                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                        const isUnactivated = isLegacy
-                          ? (selectedClient?.status === 10)
-                          : (selectedClient?.status === 'inactive');
-                        return isUnactivated;
-                      })() ? (
-                        <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
-                      ) : (
-                        <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
-                      )}
-                      <li>
-                        <a
-                          className="flex items-center gap-3 py-3 hover:bg-base-200 transition-colors rounded-lg"
-                          onClick={async () => {
-                            if (!selectedClient?.id) return;
-
-                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                            const leadId = isLegacyLead
-                              ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
-                              : selectedClient.id;
-                            const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-
-                            if (isInHighlightsState) {
-                              await removeFromHighlights(leadId, isLegacyLead);
-                            } else {
-                              await addToHighlights(leadId, leadNumber, isLegacyLead);
-                            }
-
-                            setShowMobileActionsDropdown(false);
-                          }}
-                        >
-                          {isInHighlightsState ? (
-                            <>
-                              <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                              <span className="font-medium">Remove from Highlights</span>
-                            </>
-                          ) : (
-                            <>
-                              <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                              <span className="font-medium">Add to Highlights</span>
-                            </>
-                          )}
-                        </a>
-                      </li>
-                      <li>
-                        <a
-                          className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                          onClick={() => {
-                            openEditLeadDrawer();
-                            setShowMobileActionsDropdown(false);
-                          }}
-                        >
-                          <PencilSquareIcon className="w-5 h-5 text-blue-500" />
-                          <span className="font-medium">Edit lead</span>
-                        </a>
-                      </li>
-                      <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); setShowMobileActionsDropdown(false); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
-                      {isSuperuser && (
-                        <li>
-                          <a
-                            className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg"
-                            onClick={() => {
-                              setShowDeleteModal(true);
-                              setShowMobileActionsDropdown(false);
-                            }}
-                          >
-                            <TrashIcon className="w-5 h-5 text-red-500" />
-                            <span className="text-red-600 font-medium">Delete Lead</span>
-                          </a>
-                        </li>
-                      )}
-                    </ul>
-                  </div>
-                </div>
-              </>
-            )}
-
-            {/* Mobile Client Information Panel */}
-            {showMobileClientInfo && (
-              <>
-                <div
-                  className="fixed inset-0 z-40 bg-black/20"
-                  onClick={() => setShowMobileClientInfo(false)}
-                />
-                <div className="fixed right-0 top-0 bottom-0 z-50 bg-base-100 shadow-2xl border-l border-base-300 w-80 max-w-[85vw] overflow-y-auto">
-                  <div className="p-4">
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="font-semibold text-lg" style={{ color: '#4218CC' }}>Client Information</h3>
-                      <button
-                        onClick={() => setShowMobileClientInfo(false)}
-                        className="btn btn-ghost btn-sm btn-circle"
-                      >
-                        <XMarkIcon className="w-5 h-5" />
-                      </button>
-                    </div>
-                    <ClientInformationBox
-                      selectedClient={selectedClient}
-                      getEmployeeDisplayName={getEmployeeDisplayName}
-                      onClientUpdate={async () => await refreshClientData(selectedClient?.id)}
-                    />
-                  </div>
-                </div>
-              </>
-            )}
           </div>
 
           {/* Stages, Actions, and Assign to - Mobile Only - Above Tabs - HIDDEN: Using edge arrows instead */}
@@ -13799,7 +13678,7 @@ const Clients: React.FC<ClientsProps> = ({
                 onClick={closeSchedulePanel}
               />
               {/* Panel */}
-              <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
+              <div className="ml-auto w-full md:max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
                 {/* Fixed Header */}
                 <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
                   <h3 className="text-2xl font-bold">Schedule Meeting</h3>
@@ -14200,7 +14079,7 @@ const Clients: React.FC<ClientsProps> = ({
                 onClick={() => setShowUpdateDrawer(false)}
               />
               {/* Drawer */}
-              <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}>
+              <div className="ml-auto w-full md:max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}>
                 {/* Header */}
                 <div className="flex items-center justify-between p-6 pb-4 flex-shrink-0 border-b border-base-300">
                   <h3 className="text-2xl font-bold">Update Lead</h3>
@@ -14849,7 +14728,7 @@ const Clients: React.FC<ClientsProps> = ({
               {/* Overlay */}
               <div className="fixed inset-0 bg-black/30" onClick={() => setShowEditLeadDrawer(false)} />
               {/* Drawer */}
-              <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
+              <div className="ml-auto w-full md:max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
                 <div className="flex items-center justify-between mb-6">
                   <h3 className="text-2xl font-bold">Edit Lead</h3>
                   <button className="btn btn-ghost btn-sm" onClick={() => setShowEditLeadDrawer(false)}>
@@ -15990,7 +15869,7 @@ const Clients: React.FC<ClientsProps> = ({
                   setNotifyClientOnReschedule(false); // Reset to default
                 }}
               />
-              <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
+              <div className="ml-auto w-full md:max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
                 {/* Fixed Header */}
                 <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
                   <h3 className="text-2xl font-bold">Reschedule Meeting</h3>
@@ -16316,7 +16195,8 @@ const Clients: React.FC<ClientsProps> = ({
           />
 
           {/* Mobile Tabs Navigation - Bottom of page, horizontal oval box, horizontally scrollable */}
-          <div className="md:hidden fixed bottom-0 left-0 right-0 z-50 pb-safe">
+          {/* Hide when edit drawer, balance modal, schedule meeting panel, reschedule drawer, or update drawer is open */}
+          <div className={`md:hidden fixed bottom-0 left-0 right-0 z-50 pb-safe ${showEditLeadDrawer || isBalanceModalOpen || showScheduleMeetingPanel || showRescheduleDrawer || showUpdateDrawer ? 'hidden' : ''}`}>
             <div className="flex justify-center px-4 pb-4">
               <div className="bg-white dark:bg-gray-800 rounded-full shadow-2xl border-2 border-gray-200 dark:border-gray-700 px-3 py-3 overflow-x-auto scrollbar-hide" style={{ borderRadius: '9999px', maxWidth: '95vw' }}>
                 <div className="flex items-center gap-2" style={{ scrollBehavior: 'smooth' }}>

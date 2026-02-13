@@ -15,7 +15,10 @@ import {
   XCircleIcon,
   SparklesIcon,
   ArrowPathIcon,
-  ArrowsPointingOutIcon
+  ArrowsPointingOutIcon,
+  Squares2X2Icon,
+  DocumentTextIcon,
+  CpuChipIcon
 } from '@heroicons/react/24/outline';
 import { FolderIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../../lib/supabase';
@@ -2544,6 +2547,7 @@ ${combinedText}`;
                       placeholder="Enter your note..."
                       value={newExpertNoteContent}
                       onChange={(e) => setNewExpertNoteContent(e.target.value)}
+                      dir="rtl"
                     />
                     <div className="flex justify-end gap-2">
                       <button
@@ -2583,6 +2587,7 @@ ${combinedText}`;
                               className="textarea textarea-bordered w-full h-32 mb-3"
                               value={newExpertNoteContent}
                               onChange={(e) => setNewExpertNoteContent(e.target.value)}
+                              dir="rtl"
                             />
                             <div className="flex justify-end gap-2">
                               <button
@@ -2609,11 +2614,12 @@ ${combinedText}`;
                               // Render HTML content
                               <div
                                 className="text-base text-gray-800 leading-relaxed mb-3 prose max-w-none"
+                                dir="rtl"
                                 dangerouslySetInnerHTML={{ __html: note.content }}
                               />
                             ) : (
                               // Render plain text
-                              <p className="text-base text-gray-800 whitespace-pre-wrap leading-relaxed mb-3">{formatNoteText(note.content)}</p>
+                              <p className="text-base text-gray-800 whitespace-pre-wrap leading-relaxed mb-3" dir="rtl">{formatNoteText(note.content)}</p>
                             )}
 
                             {/* Note Footer - Simple and Clean */}
@@ -2755,17 +2761,16 @@ ${combinedText}`;
                 <h4 className="text-lg font-semibold text-black">Lead Summary</h4>
                 <div className="flex items-center gap-2">
                   {/* Toggle between AI Summary and Individual Fields */}
-                  <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
+                  <div className="flex items-center gap-2">
                     <button
                       onClick={() => {
                         setShowAISummary(false);
                         setUseSavedSummary(false);
                       }}
-                      className={`btn btn-sm ${!showAISummary ? 'btn-primary' : 'btn-ghost'}`}
-                      style={!showAISummary ? { backgroundColor: '#3b28c7', color: 'white', border: 'none' } : {}}
+                      className={`btn btn-circle btn-sm transition-all border ${!showAISummary ? 'border-gray-300 bg-gray-50 text-gray-700 shadow-sm' : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50'}`}
                       title="Show individual fields"
                     >
-                      Fields
+                      <DocumentTextIcon className="w-4 h-4" />
                     </button>
                     <button
                       onClick={() => {
@@ -2777,11 +2782,10 @@ ${combinedText}`;
                           setUseSavedSummary(false);
                         }
                       }}
-                      className={`btn btn-sm ${showAISummary ? 'btn-primary' : 'btn-ghost'}`}
-                      style={showAISummary ? { backgroundColor: '#3b28c7', color: 'white', border: 'none' } : {}}
+                      className={`btn btn-circle btn-sm transition-all border ${showAISummary ? 'border-gray-300 bg-gray-50 text-gray-700 shadow-sm' : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50'}`}
                       title="Show AI Summary"
                     >
-                      AI Summary
+                      <CpuChipIcon className="w-4 h-4" />
                     </button>
                   </div>
                   {!showAISummary && (
@@ -2793,15 +2797,9 @@ ${combinedText}`;
                       title="Generate AI Summary"
                     >
                       {isGeneratingSummary ? (
-                        <>
-                          <span className="loading loading-spinner loading-xs"></span>
-                          Generating...
-                        </>
+                        <span className="loading loading-spinner loading-xs"></span>
                       ) : (
-                        <>
-                          <SparklesIcon className="w-4 h-4" />
-                          Generate
-                        </>
+                        <SparklesIcon className="w-4 h-4" />
                       )}
                     </button>
                   )}
@@ -2811,8 +2809,8 @@ ${combinedText}`;
             </div>
             <div className="p-6 flex-1 overflow-y-auto">
               {showAISummary ? (
-                <div className="space-y-4">
-                  <div className="bg-gradient-to-br from-purple-50 to-blue-50 rounded-lg p-4 border border-purple-200">
+                <div className="space-y-4" dir="rtl">
+                  <div className="p-4">
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
                         <SparklesIcon className="w-5 h-5 text-purple-600" />
@@ -2842,62 +2840,65 @@ ${combinedText}`;
                         </button>
                       )}
                     </div>
-                    <div className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
+                    <div className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed" dir="rtl">
                       {aiSummary || (savedAiSummary || 'No AI summary available. Click "Generate" to create one.')}
                     </div>
                     {useSavedSummary && savedAiSummary && (
-                      <div className="mt-3 pt-3 border-t border-purple-200 text-xs text-purple-600">
+                      <div className="mt-3 pt-3 border-t border-purple-200 text-xs text-purple-600" dir="rtl">
                         This is a saved summary. Click "Regenerate" to create a new one.
                       </div>
                     )}
                   </div>
                 </div>
               ) : (
-                <div className="space-y-6">
+                <div className="space-y-6" dir="rtl">
                   {/* Special Notes */}
                   <div className="space-y-2">
                     <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Special Notes</label>
-                    <div className="bg-gray-50 rounded-lg p-4 min-h-[80px] border border-gray-200">
+                    <div className="p-2 min-h-[80px]">
                       {summaryData.specialNotes ? (
-                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{summaryData.specialNotes}</p>
+                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed" dir="rtl">{summaryData.specialNotes}</p>
                       ) : (
-                        <p className="text-sm text-gray-400 italic">No special notes</p>
+                        <p className="text-sm text-gray-400 italic" dir="rtl">No special notes</p>
                       )}
                     </div>
+                    <div className="border-b border-gray-200 mt-4"></div>
                   </div>
 
                   {/* General Notes */}
                   <div className="space-y-2">
                     <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">General Notes</label>
-                    <div className="bg-gray-50 rounded-lg p-4 min-h-[80px] border border-gray-200">
+                    <div className="p-2 min-h-[80px]">
                       {summaryData.generalNotes ? (
-                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{summaryData.generalNotes}</p>
+                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed" dir="rtl">{summaryData.generalNotes}</p>
                       ) : (
-                        <p className="text-sm text-gray-400 italic">No general notes</p>
+                        <p className="text-sm text-gray-400 italic" dir="rtl">No general notes</p>
                       )}
                     </div>
+                    <div className="border-b border-gray-200 mt-4"></div>
                   </div>
 
                   {/* Facts of Case */}
                   <div className="space-y-2">
                     <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Facts of Case</label>
-                    <div className="bg-gray-50 rounded-lg p-4 min-h-[80px] border border-gray-200">
+                    <div className="p-2 min-h-[80px]">
                       {summaryData.facts ? (
-                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{summaryData.facts}</p>
+                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed" dir="rtl">{summaryData.facts}</p>
                       ) : (
-                        <p className="text-sm text-gray-400 italic">No facts available</p>
+                        <p className="text-sm text-gray-400 italic" dir="rtl">No facts available</p>
                       )}
                     </div>
+                    <div className="border-b border-gray-200 mt-4"></div>
                   </div>
 
                   {/* Manager Notes */}
                   <div className="space-y-2">
                     <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Manager Notes</label>
-                    <div className="bg-gray-50 rounded-lg p-4 min-h-[80px] border border-gray-200">
+                    <div className="p-2 min-h-[80px]">
                       {summaryData.managerNotes ? (
-                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{summaryData.managerNotes}</p>
+                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed" dir="rtl">{summaryData.managerNotes}</p>
                       ) : (
-                        <p className="text-sm text-gray-400 italic">No manager notes</p>
+                        <p className="text-sm text-gray-400 italic" dir="rtl">No manager notes</p>
                       )}
                     </div>
                   </div>

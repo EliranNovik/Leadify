@@ -529,7 +529,7 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
       {isOpen && (
         <div className="fixed inset-0 z-50">
           <div className="fixed inset-0 bg-black bg-opacity-50" onClick={onClose}></div>
-          <div className="fixed right-0 top-0 h-full w-96 bg-white shadow-xl transform transition-transform duration-300 ease-in-out">
+          <div className="fixed right-0 top-0 h-full w-full md:w-96 bg-white shadow-xl transform transition-transform duration-300 ease-in-out">
             <div className="p-6 h-full overflow-y-auto">
         <div className="flex justify-between items-center mb-6">
           <h3 className="text-2xl font-bold">Update Lead</h3>

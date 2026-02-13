@@ -5111,16 +5111,25 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   </tr>
                 </thead>
                 <tbody>
-                  {schedulingHistory.map((entry) => (
+                  {schedulingHistory.map((entry) => {
+                    const date = new Date(entry.created_at);
+                    const day = date.getDate().toString().padStart(2, '0');
+                    const month = (date.getMonth() + 1).toString().padStart(2, '0');
+                    const year = date.getFullYear().toString().slice(-2);
+                    const mobileDate = `${day}.${month}.${year}`;
+                    const desktopDate = date.toLocaleDateString('en-US', {
+                      year: 'numeric',
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit'
+                    });
+                    
+                    return (
                     <tr key={entry.id}>
                       <td className="text-sm text-gray-900">
-                        {new Date(entry.created_at).toLocaleDateString('en-US', {
-                          year: 'numeric',
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit'
-                        })}
+                        <span className="md:hidden">{mobileDate}</span>
+                        <span className="hidden md:inline">{desktopDate}</span>
                       </td>
                       <td className="text-sm text-gray-900">{entry.created_by || 'Unknown'}</td>
                       <td className="text-sm text-gray-900 whitespace-pre-line max-w-xs">
@@ -5133,7 +5142,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         {entry.followup || entry.followup_log || <span className="text-gray-400 italic">No notes</span>}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

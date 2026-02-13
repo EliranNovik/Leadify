@@ -6483,10 +6483,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 setShowQuickActionsDropdown(!showQuickActionsDropdown);
                 setShowMobileQuickActionsDropdown(false); // Close mobile dropdown if open
               }}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl font-medium transition-all duration-300 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
+              className="btn btn-sm transition-all duration-300 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white flex items-center gap-2 px-3 rounded-full"
+              title="Quick Actions"
             >
               <BoltIcon className="w-5 h-5 text-white" />
-              <span className="text-sm font-semibold">Quick Actions</span>
               <ChevronDownIcon className={`w-4 h-4 text-white transition-transform duration-200 ${showQuickActionsDropdown ? 'rotate-180' : ''}`} />
             </button>
 

@@ -28,6 +28,10 @@ import {
     HandThumbDownIcon,
     ClockIcon,
     ArchiveBoxIcon,
+    Cog6ToothIcon,
+    EllipsisHorizontalIcon,
+    DocumentTextIcon,
+    LinkIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
@@ -142,14 +146,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     // Local state for employees (matching RolesTab pattern)
     const [localAllEmployees, setLocalAllEmployees] = useState<any[]>(allEmployees || []);
-    
+
     // Update local employees state when prop changes (matching RolesTab exactly)
     useEffect(() => {
         if (allEmployees && allEmployees.length > 0) {
             setLocalAllEmployees(allEmployees);
         }
     }, [allEmployees]);
-    
+
     // Fetch employees if prop is empty (matching RolesTab pattern)
     useEffect(() => {
         if ((!allEmployees || allEmployees.length === 0) && localAllEmployees.length === 0) {
@@ -166,14 +170,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             fetchEmployees();
         }
     }, [allEmployees, localAllEmployees.length]);
-    
+
     // Use prop if available, otherwise use local state (matching RolesTab pattern)
     const employeesToUse = (allEmployees && allEmployees.length > 0) ? allEmployees : localAllEmployees;
 
     // Helper function to get employee by ID or name (matching RolesTab logic exactly)
     const getEmployeeById = (employeeIdOrName: string | number | null | undefined) => {
         // Use the employeesToUse variable defined above (matching RolesTab)
-        
+
         if (!employeeIdOrName || employeeIdOrName === '---' || employeeIdOrName === '--' || employeeIdOrName === '') {
             return null;
         }
@@ -243,15 +247,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     // Helper function to format phone number with dashes for better readability (single row)
     const formatPhoneNumberDisplay = (phone: string | null | undefined): string => {
         if (!phone || phone === '---' || phone.trim() === '') return phone || '---';
-        
+
         // Remove existing formatting to normalize
         const digitsOnly = phone.replace(/[\s\-\(\)]/g, '');
-        
+
         // If it's already formatted nicely with dashes/spaces, return as-is
         if (phone.includes('-') || phone.includes(' ') || phone.includes('(')) {
             return phone;
         }
-        
+
         // Format based on common patterns (all on one line)
         // US/Canada: +1XXXXXXXXXX -> +1 (XXX) XXX-XXXX
         if (digitsOnly.startsWith('+1') || (digitsOnly.startsWith('1') && digitsOnly.length === 11)) {
@@ -260,7 +264,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 return `+1 (${num.substring(0, 3)}) ${num.substring(3, 6)}-${num.substring(6)}`;
             }
         }
-        
+
         // Israeli: +972XXXXXXXXX or 0XXXXXXXXX -> +972 XX-XXX-XXXX or 0XX-XXX-XXXX
         if (digitsOnly.startsWith('+972') || digitsOnly.startsWith('972')) {
             const num = digitsOnly.startsWith('+972') ? digitsOnly.substring(4) : digitsOnly.substring(3);
@@ -268,7 +272,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 return `+972 ${num.substring(0, 2)}-${num.substring(2, 5)}-${num.substring(5)}`;
             }
         }
-        
+
         // UK: +44XXXXXXXXXX -> +44 XXXX XXXXXX
         if (digitsOnly.startsWith('+44') || digitsOnly.startsWith('44')) {
             const num = digitsOnly.startsWith('+44') ? digitsOnly.substring(3) : digitsOnly.substring(2);
@@ -276,7 +280,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 return `+44 ${num.substring(0, 4)} ${num.substring(4)}`;
             }
         }
-        
+
         // Australian: +61XXXXXXXXX -> +61 X XXXX XXXX
         if (digitsOnly.startsWith('+61') || digitsOnly.startsWith('61')) {
             const num = digitsOnly.startsWith('+61') ? digitsOnly.substring(3) : digitsOnly.substring(2);
@@ -284,13 +288,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 return `+61 ${num.substring(0, 1)} ${num.substring(1, 5)} ${num.substring(5)}`;
             }
         }
-        
+
         // Generic formatting for other numbers: add dashes
         if (digitsOnly.length > 6) {
             // Find country code if present
             let countryCode = '';
             let numberPart = digitsOnly;
-            
+
             if (digitsOnly.startsWith('+')) {
                 // Extract country code (1-3 digits after +)
                 const afterPlus = digitsOnly.substring(1);
@@ -310,14 +314,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     }
                 }
             }
-            
+
             // Format the number part with dashes
             let formatted = numberPart;
             if (numberPart.length > 6) {
                 // Format as XXX-XXX-XXXX or similar
                 const chunks: string[] = [];
                 let remaining = numberPart;
-                
+
                 // Take chunks from the end
                 while (remaining.length > 4) {
                     chunks.unshift(remaining.slice(-3));
@@ -326,16 +330,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 if (remaining.length > 0) {
                     chunks.unshift(remaining);
                 }
-                
+
                 formatted = chunks.join('-');
             }
-            
+
             if (countryCode) {
                 return `${countryCode} ${formatted}`;
             }
             return formatted;
         }
-        
+
         // If no special formatting applies, return original
         return phone;
     };
@@ -365,7 +369,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         const [imageError, setImageError] = useState(false);
         const employee = getEmployeeById(employeeId);
         const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : size === 'md' ? 'w-12 h-12 text-sm' : 'w-16 h-16 text-base';
-        
+
         // Debug logging
         if (employeeId && !employee) {
             console.warn('[ClientHeader EmployeeAvatar] No employee found for:', employeeId, 'employeesToUse length:', employeesToUse?.length);
@@ -709,7 +713,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     // Get lead identifier for navigation (same logic as TimelineHistoryButtons)
     const getLeadIdentifier = (): string | null => {
         if (!selectedClient) return null;
-        
+
         const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
         if (isLegacy) {
             const clientId = selectedClient.id?.toString();
@@ -750,9 +754,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     {/* First row: Client name and info */}
                     <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                         <div className="flex items-center gap-4">
-                            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/20 text-white">
-                                <UserIcon className="w-8 h-8" />
-                            </div>
                             <div>
                                 <div className="flex items-center gap-2 mb-1">
                                     <h1 className="text-2xl font-bold text-gray-900 dark:text-white leading-none">
@@ -760,14 +761,22 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         <span className="mx-2 text-gray-300">|</span>
                                         {selectedClient.name || 'Unnamed Lead'}
                                     </h1>
-                                    {/* Master/Sub Links */}
+                                    {/* Master/Sub Links - Icon Button with Count Badge */}
                                     {isSubLead && masterLeadNumber && (
-                                        <span onClick={() => navigate(`/clients/${masterLeadNumber}/master`)} className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 text-xs font-semibold cursor-pointer hover:bg-purple-200">
-                                            Master Dashboard
-                                        </span>
+                                        <button
+                                            onClick={() => navigate(`/clients/${masterLeadNumber}/master`)}
+                                            className="btn btn-square btn-sm relative bg-red-100 hover:bg-red-200 text-red-700 border-red-300"
+                                            title="Master Dashboard"
+                                        >
+                                            <Squares2X2Icon className="w-5 h-5" />
+                                            {/* Count Badge - Always show (1 master + subleads) */}
+                                            <span className="absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full min-w-[1.25rem] h-5 flex items-center justify-center px-1">
+                                                1+
+                                            </span>
+                                        </button>
                                     )}
                                     {isMasterLead && (
-                                        <span
+                                        <button
                                             onClick={() => {
                                                 if (!selectedClient) return;
                                                 // Use the same logic as MasterLeadPage and LeadSearchPage
@@ -784,19 +793,26 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 }
                                                 navigate(`/clients/${encodeURIComponent(identifier)}/master`);
                                             }}
-                                            className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 text-xs font-semibold cursor-pointer hover:bg-blue-200 transition-colors"
-                                            title={`View all ${subLeadsCount} sub-lead${subLeadsCount !== 1 ? 's' : ''}`}
+                                            className="btn btn-square btn-sm relative bg-red-100 hover:bg-red-200 text-red-700 border-red-300"
+                                            title={`View all ${subLeadsCount || 0} sub-lead${subLeadsCount !== 1 ? 's' : ''} and master lead`}
                                         >
-                                            Master Dashboard ({subLeadsCount})
-                                        </span>
+                                            <Squares2X2Icon className="w-5 h-5" />
+                                            {/* Count Badge - Always show total (subleads + master) */}
+                                            <span className="absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full min-w-[1.25rem] h-5 flex items-center justify-center px-1">
+                                                {(subLeadsCount || 0) + 1}
+                                            </span>
+                                        </button>
                                     )}
                                 </div>
                                 <div className="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
                                     {selectedClient.language && (
-                                        <span className="flex items-center gap-1">
-                                            <GlobeAltIcon className="w-4 h-4" />
-                                            {selectedClient.language}
-                                        </span>
+                                        <>
+                                            <span className="flex items-center gap-1">
+                                                <GlobeAltIcon className="w-4 h-4" />
+                                                {selectedClient.language}
+                                            </span>
+                                            <span className="text-gray-400">•</span>
+                                        </>
                                     )}
                                     {/* Category Display/Edit */}
                                     <div className="flex items-center gap-1 relative">
@@ -806,22 +822,32 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             setCategoryInputValue(displayCategory);
                                         }}>
                                             {displayCategory}
-                                            {selectedClient.topic && ` • ${selectedClient.topic}`}
                                             <PencilIcon className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" />
                                         </span>
                                     </div>
+                                    {/* Topic */}
+                                    {selectedClient.topic && (
+                                        <>
+                                            <span className="text-gray-400">•</span>
+                                            <span className="text-sm text-gray-500 dark:text-gray-400 flex items-center gap-1">
+                                                <DocumentTextIcon className="w-4 h-4" />
+                                                {selectedClient.topic}
+                                            </span>
+                                        </>
+                                    )}
+                                    {/* Source */}
+                                    <span className="text-gray-400">•</span>
+                                    <span className="text-sm text-gray-500 dark:text-gray-400 flex items-center gap-1">
+                                        <LinkIcon className="w-4 h-4" />
+                                        {selectedClient ? getSourceDisplayName(selectedClient.source_id, selectedClient.source) || '---' : '---'}
+                                    </span>
                                 </div>
                             </div>
                         </div>
 
-                        {/* Stage Badge and Actions Dropdown - Top Right */}
-                        <div className="flex items-center gap-3">
-                            {/* Stage Badge */}
-                            <div className="flex items-center gap-2">
-                                {renderStageBadge('desktop')}
-                            </div>
-
-                            {/* Timeline and History Buttons - Circle Icon Buttons */}
+                        {/* Stage Badge and Actions Dropdown - Top Right (Desktop only) */}
+                        <div className="hidden md:flex items-center gap-3">
+                            {/* Timeline and History Buttons - Circle Icon Buttons (moved to left of stage badge) */}
                             <button
                                 onClick={handleTimelineClick}
                                 className="btn btn-circle btn-outline btn-sm"
@@ -836,6 +862,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             >
                                 <ArchiveBoxIcon className="w-5 h-5" />
                             </button>
+
+                            {/* Stage Badge */}
+                            <div className="flex items-center gap-2">
+                                {renderStageBadge('desktop')}
+                            </div>
 
                             {/* Duplicate Contact Button - Yellow */}
                             {duplicateContacts && duplicateContacts.length > 0 && (
@@ -852,9 +883,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                             {/* Actions Dropdown */}
                             <div className="dropdown dropdown-end">
-                                <label tabIndex={0} className="btn btn-outline gap-2 bg-white text-gray-700 hover:bg-gray-50 border-gray-200 shadow-sm">
-                                    Actions
-                                    <ChevronDownIcon className="w-4 h-4" />
+                                <label tabIndex={0} className="btn btn-ghost btn-square">
+                                    <EllipsisHorizontalIcon className="w-6 h-6" />
                                 </label>
                                 <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2">
                                     {/* Stage Specific Actions */}
@@ -918,9 +948,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     </div>
 
                     {/* Second row: Email, Phone, Source (horizontally) and Total Value (centered) */}
-                    <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-                        {/* Email, Phone, Source - Horizontally aligned */}
-                        <div className="flex items-center gap-6 flex-wrap">
+                    <div className="flex flex-row items-start md:items-center justify-between gap-4">
+                        {/* Email, Phone - Stack vertically on mobile, horizontally on desktop */}
+                        <div className="flex flex-col md:flex-row md:items-center gap-4 md:gap-6 flex-1">
                             <div className="flex items-center gap-2 group">
                                 <div className="w-10 h-10 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center text-black">
                                     <EnvelopeIcon className="w-5 h-5" />
@@ -967,26 +997,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </p>
                                 </div>
                             </div>
-                            <div className="flex items-center gap-2 group">
-                                <div className="w-10 h-10 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center text-black">
-                                    <GlobeAltIcon className="w-5 h-5" />
-                                </div>
-                                <div className="flex flex-col">
-                                    <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold">Source</p>
-                                    <p className="text-base font-medium text-gray-900 dark:text-gray-100 truncate">
-                                        {selectedClient ? getSourceDisplayName(selectedClient.source_id, selectedClient.source) || '---' : '---'}
-                                    </p>
-                                </div>
-                            </div>
                         </div>
 
-                        {/* Total Value - Centered */}
+                        {/* Total Value - Right side aligned with email on mobile, centered on desktop */}
                         {(() => {
                             const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
 
                             // 1. Currency Resolution - Always try currency_id first, then fallback to proposal_currency/balance_currency, then default to currency_id 1
                             let currency = ''; // Will be set below
-                            
+
                             // Priority 1: Try currency_id (most reliable)
                             if (selectedClient?.currency_id) {
                                 const currencyFromId = getCurrencyName(selectedClient.currency_id);
@@ -994,7 +1013,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     currency = currencyFromId;
                                 }
                             }
-                            
+
                             // Priority 2: For legacy leads, also check currency_id from legacy field
                             if (isLegacyLead && (selectedClient as any)?.currency_id && !currency) {
                                 const currencyFromId = getCurrencyName((selectedClient as any).currency_id);
@@ -1002,12 +1021,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     currency = currencyFromId;
                                 }
                             }
-                            
+
                             // Priority 3: Fallback to proposal_currency or balance_currency if currency_id didn't work
                             if (!currency) {
                                 currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '';
                             }
-                            
+
                             // Priority 4: Default to currency_id 1 (use name column from accounting_currencies)
                             if (!currency || currency.trim() === '') {
                                 const defaultCurrency = allCurrencies.find((curr: any) => {
@@ -1016,8 +1035,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
                                     return !isNaN(currIdNum) && currIdNum === 1;
                                 });
-                                currency = (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '') 
-                                    ? defaultCurrency.name.trim() 
+                                currency = (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '')
+                                    ? defaultCurrency.name.trim()
                                     : '₪'; // Ultimate fallback if currency_id 1 not found
                             }
 
@@ -1075,9 +1094,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             const applicantsCount = (selectedClient as any)?.no_of_applicants || selectedClient?.number_of_applicants_meeting || null;
 
                             return (
-                                <div className="cursor-pointer group relative text-center" onClick={() => setIsBalanceModalOpen(true)}>
+                                <div className="hidden md:block cursor-pointer group relative text-right md:text-center self-start md:self-center" onClick={() => setIsBalanceModalOpen(true)}>
                                     <div className="space-y-2">
-                                        <div className="flex items-center gap-2 justify-center">
+                                        <div className="flex items-center gap-2 justify-end md:justify-center">
                                             <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold">Total Value</p>
                                             {applicantsCount && Number(applicantsCount) > 0 && (
                                                 <span className="badge badge-sm badge-ghost font-medium text-xs px-2 py-0.5 border-gray-200 text-gray-600">
@@ -1086,7 +1105,215 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 </span>
                                             )}
                                         </div>
-                                        <div className="flex items-end gap-2 justify-center">
+                                        <div className="flex items-end gap-2 justify-end md:justify-center">
+                                            <p className="text-3xl font-bold text-gray-900 dark:text-white leading-none tracking-tight">
+                                                {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
+                                            </p>
+                                            {shouldShowVAT && vatAmount > 0 && (
+                                                <p className="text-sm text-gray-600 dark:text-gray-400 pb-1">
+                                                    +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
+                                                </p>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            );
+                        })()}
+                    </div>
+
+                    {/* Stage Badge and Actions Dropdown - Mobile: Below phone */}
+                    <div className="flex md:hidden items-center justify-between gap-3 mt-2">
+                        <div className="flex items-center gap-3">
+                            {/* Stage Badge */}
+                            <div className="flex items-center gap-2">
+                                {renderStageBadge('desktop')}
+                            </div>
+
+                            {/* Duplicate Contact Button - Yellow */}
+                            {duplicateContacts && duplicateContacts.length > 0 && (
+                                <button
+                                    onClick={() => setIsDuplicateModalOpen(true)}
+                                    className="btn btn-circle btn-warning btn-sm"
+                                    title={duplicateContacts.length === 1
+                                        ? `Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`
+                                        : `${duplicateContacts.length} Duplicate Contacts`}
+                                >
+                                    <DocumentDuplicateIcon className="w-5 h-5" />
+                                </button>
+                            )}
+
+                            {/* Actions Dropdown */}
+                            <div className="dropdown dropdown-end">
+                                <label tabIndex={0} className="btn btn-ghost btn-square">
+                                    <EllipsisHorizontalIcon className="w-6 h-6" />
+                                </label>
+                                <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2">
+                                    {/* Stage Specific Actions */}
+                                    {dropdownItems && (
+                                        <>
+                                            {dropdownItems}
+                                            <div className="divider my-1"></div>
+                                        </>
+                                    )}
+
+                                    {/* Activation/Spam Toggle */}
+                                    {(() => {
+                                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                                        const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
+                                        return isUnactivated ? (
+                                            <li><a className="text-green-600 font-medium" onClick={handleActivation}><CheckCircleIcon className="w-4 h-4" /> Activate Case</a></li>
+                                        ) : (
+                                            <li><a className="text-red-600 font-medium" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-4 h-4" /> Deactivate / Spam</a></li>
+                                        );
+                                    })()}
+
+                                    {/* Highlights Toggle */}
+                                    <li>
+                                        <a onClick={async () => {
+                                            if (!selectedClient?.id) return;
+                                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                            const leadId = isLegacyLead ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id) : selectedClient.id;
+                                            const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+
+                                            if (isInHighlightsState) {
+                                                await removeFromHighlights(leadId, isLegacyLead);
+                                            } else {
+                                                await addToHighlights(leadId, leadNumber, isLegacyLead);
+                                            }
+                                            (document.activeElement as HTMLElement | null)?.blur();
+                                        }}>
+                                            {isInHighlightsState ? (
+                                                <><StarIcon className="w-4 h-4 fill-current text-purple-600" /> Remove from Highlights</>
+                                            ) : (
+                                                <><StarIcon className="w-4 h-4" /> Add to Highlights</>
+                                            )}
+                                        </a>
+                                    </li>
+
+                                    <div className="divider my-1"></div>
+
+                                    {/* Edit / Sub-Lead */}
+                                    <li><a onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-4 h-4" /> Edit Details</a></li>
+                                    <li><a onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-4 h-4" /> Create Sub-Lead</a></li>
+
+                                    {/* Delete (Superuser only) */}
+                                    {isSuperuser && (
+                                        <>
+                                            <div className="divider my-1"></div>
+                                            <li><a className="text-red-600 hover:bg-red-50" onClick={() => { setShowDeleteModal(true); (document.activeElement as HTMLElement)?.blur(); }}><TrashIcon className="w-4 h-4" /> Delete Lead</a></li>
+                                        </>
+                                    )}
+                                </ul>
+                            </div>
+                        </div>
+
+                        {/* Total Value - Mobile: Right side of buttons row */}
+                        {(() => {
+                            const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
+
+                            // 1. Currency Resolution - Always try currency_id first, then fallback to proposal_currency/balance_currency, then default to currency_id 1
+                            let currency = ''; // Will be set below
+
+                            // Priority 1: Try currency_id (most reliable)
+                            if (selectedClient?.currency_id) {
+                                const currencyFromId = getCurrencyName(selectedClient.currency_id);
+                                if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
+                                    currency = currencyFromId;
+                                }
+                            }
+
+                            // Priority 2: For legacy leads, also check currency_id from legacy field
+                            if (isLegacyLead && (selectedClient as any)?.currency_id && !currency) {
+                                const currencyFromId = getCurrencyName((selectedClient as any).currency_id);
+                                if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
+                                    currency = currencyFromId;
+                                }
+                            }
+
+                            // Priority 3: Fallback to proposal_currency or balance_currency if currency_id didn't work
+                            if (!currency) {
+                                currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '';
+                            }
+
+                            // Priority 4: Default to currency_id 1 (use name column from accounting_currencies)
+                            if (!currency || currency.trim() === '') {
+                                const defaultCurrency = allCurrencies.find((curr: any) => {
+                                    if (!curr || !curr.id) return false;
+                                    const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
+                                    const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
+                                    return !isNaN(currIdNum) && currIdNum === 1;
+                                });
+                                currency = (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '')
+                                    ? defaultCurrency.name.trim()
+                                    : '₪'; // Ultimate fallback if currency_id 1 not found
+                            }
+
+                            // 2. Base Amount (Gross)
+                            let baseAmount: number;
+                            if (isLegacyLead) {
+                                const currencyId = (selectedClient as any)?.currency_id;
+                                let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                                if (!numericCurrencyId || isNaN(numericCurrencyId)) numericCurrencyId = 1;
+
+                                if (numericCurrencyId === 1) {
+                                    baseAmount = Number((selectedClient as any)?.total_base ?? 0);
+                                } else {
+                                    baseAmount = Number((selectedClient as any)?.total ?? 0);
+                                }
+                            } else {
+                                baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
+                            }
+
+                            // 3. Subcontractor Fee & Net Amount
+                            const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
+                            const mainAmount = baseAmount - subcontractorFee;
+
+                            // 4. VAT
+                            let vatAmount = 0;
+                            let shouldShowVAT = false;
+                            const vatValue = selectedClient?.vat;
+
+                            if (isLegacyLead) {
+                                shouldShowVAT = true;
+                                if (vatValue !== null && vatValue !== undefined) {
+                                    const vatStr = String(vatValue).toLowerCase().trim();
+                                    if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
+                                }
+                                if (shouldShowVAT) {
+                                    vatAmount = baseAmount * 0.18;
+                                }
+                            } else {
+                                shouldShowVAT = true;
+                                if (vatValue !== null && vatValue !== undefined) {
+                                    const vatStr = String(vatValue).toLowerCase().trim();
+                                    if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
+                                }
+
+                                if (shouldShowVAT) {
+                                    if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
+                                        vatAmount = Number(selectedClient.vat_value);
+                                    } else {
+                                        vatAmount = baseAmount * 0.18;
+                                    }
+                                }
+                            }
+
+                            // 5. Applicants
+                            const applicantsCount = (selectedClient as any)?.no_of_applicants || selectedClient?.number_of_applicants_meeting || null;
+
+                            return (
+                                <div className="cursor-pointer group relative text-right" onClick={() => setIsBalanceModalOpen(true)}>
+                                    <div className="space-y-2">
+                                        <div className="flex items-center gap-2 justify-end">
+                                            <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold">Total Value</p>
+                                            {applicantsCount && Number(applicantsCount) > 0 && (
+                                                <span className="badge badge-sm badge-ghost font-medium text-xs px-2 py-0.5 border-gray-200 text-gray-600">
+                                                    <UserIcon className="w-3 h-3 mr-1" />
+                                                    {applicantsCount} Applicants
+                                                </span>
+                                            )}
+                                        </div>
+                                        <div className="flex items-end gap-2 justify-end">
                                             <p className="text-3xl font-bold text-gray-900 dark:text-white leading-none tracking-tight">
                                                 {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
                                             </p>
@@ -1159,6 +1386,293 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     })()}
                 </div>
 
+                {/* Stage Logic Buttons - Mobile: Below timeline/history/stage badge row */}
+                <div className="flex md:hidden items-center gap-3 flex-wrap mt-2">
+                    {/* Check if case is unactivated - show message instead of buttons */}
+                    {(() => {
+                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                        const isUnactivated = isLegacy
+                            ? (selectedClient?.status === 10)
+                            : (selectedClient?.status === 'inactive');
+
+                        if (isUnactivated) {
+                            return (
+                                <div className="px-4 py-2 text-sm text-gray-600">
+                                    Please activate lead in actions first to see the stage buttons.
+                                </div>
+                            );
+                        }
+                        return null;
+                    })()}
+
+                    {/* Stage buttons - only show if case is activated */}
+                    {(() => {
+                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                        const isUnactivated = isLegacy
+                            ? (selectedClient?.status === 10)
+                            : (selectedClient?.status === 'inactive');
+
+                        if (isUnactivated) {
+                            return null; // Don't show any stage buttons if unactivated
+                        }
+
+                        // Check if case is closed - show "No action available" message
+                        if (selectedClient && areStagesEquivalent(currentStageName, 'Case Closed')) {
+                            return (
+                                <div className="px-4 py-2 text-sm text-gray-600">
+                                    No action available
+                                </div>
+                            );
+                        }
+
+                        return (
+                            <>
+                                {/* Handler Set Stage */}
+                                {areStagesEquivalent(currentStageName, 'Handler Set') && (
+                                    <button
+                                        onClick={handleStartCase}
+                                        className="btn btn-primary rounded-full px-6 shadow-lg shadow-indigo-100 hover:shadow-indigo-200 text-white gap-2 text-base transition-all hover:scale-105"
+                                    >
+                                        <PlayIcon className="w-5 h-5" />
+                                        Start Case
+                                    </button>
+                                )}
+
+                                {/* Handler Started Stage */}
+                                {areStagesEquivalent(currentStageName, 'Handler Started') && (
+                                    <>
+                                        <button
+                                            onClick={() => updateLeadStage('Application submitted')}
+                                            className="btn btn-success text-white rounded-full px-5 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 transition-all hover:scale-105"
+                                        >
+                                            <DocumentCheckIcon className="w-5 h-5" />
+                                            Application Submitted
+                                        </button>
+                                        <button
+                                            onClick={() => updateLeadStage('Case Closed')}
+                                            className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                        >
+                                            <CheckCircleIcon className="w-5 h-5" />
+                                            Close Case
+                                        </button>
+                                    </>
+                                )}
+
+                                {/* Application submitted Stage */}
+                                {areStagesEquivalent(currentStageName, 'Application submitted') && (
+                                    <button
+                                        onClick={() => updateLeadStage('Case Closed')}
+                                        className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                    >
+                                        <CheckCircleIcon className="w-5 h-5" />
+                                        Close Case
+                                    </button>
+                                )}
+
+                                {/* Payment request sent Stage */}
+                                {areStagesEquivalent(currentStageName, 'payment_request_sent') && handlePaymentReceivedNewClient && (
+                                    <button
+                                        onClick={handlePaymentReceivedNewClient}
+                                        className="btn btn-success text-white rounded-full px-5 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 transition-all hover:scale-105"
+                                    >
+                                        <CheckCircleIcon className="w-5 h-5" />
+                                        Payment Received - new Client !!!
+                                    </button>
+                                )}
+
+                                {/* Another meeting Stage - Check this first to avoid duplicates */}
+                                {areStagesEquivalent(currentStageName, 'another_meeting') && (
+                                    <>
+                                        {setShowRescheduleDrawer && (
+                                            <button
+                                                onClick={() => setShowRescheduleDrawer(true)}
+                                                className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                            >
+                                                <ArrowPathIcon className="w-5 h-5" />
+                                                Meeting ReScheduling
+                                            </button>
+                                        )}
+                                        {handleStageUpdate && (
+                                            <button
+                                                onClick={() => handleStageUpdate('Meeting Ended')}
+                                                className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                            >
+                                                <CheckCircleIcon className="w-5 h-5" />
+                                                Meeting Ended
+                                            </button>
+                                        )}
+                                    </>
+                                )}
+
+                                {/* Meeting scheduled / Meeting rescheduling Stages - Exclude another_meeting to avoid duplicates */}
+                                {!areStagesEquivalent(currentStageName, 'another_meeting') &&
+                                    (areStagesEquivalent(currentStageName, 'meeting_scheduled') ||
+                                        areStagesEquivalent(currentStageName, 'Meeting rescheduling') ||
+                                        (isStageNumeric && (stageNumeric === 55 || stageNumeric === 21))) && (
+                                        <>
+                                            {/* Schedule Meeting button - only for stage 55, not for "Meeting scheduled" or "Meeting rescheduled" */}
+                                            {!areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
+                                                !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
+                                                handleScheduleMenuClick &&
+                                                scheduleMenuLabel && (
+                                                    <button
+                                                        onClick={handleScheduleMenuClick}
+                                                        className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                    >
+                                                        <CalendarDaysIcon className="w-5 h-5" />
+                                                        {scheduleMenuLabel}
+                                                    </button>
+                                                )}
+                                            {setShowRescheduleDrawer && (
+                                                <button
+                                                    onClick={() => setShowRescheduleDrawer(true)}
+                                                    className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                >
+                                                    <ArrowPathIcon className="w-5 h-5" />
+                                                    Meeting ReScheduling
+                                                </button>
+                                            )}
+                                            {/* Meeting Ended - only show for stage 21 if there are upcoming meetings, and exclude another_meeting */}
+                                            {handleStageUpdate &&
+                                                !areStagesEquivalent(currentStageName, 'another_meeting') &&
+                                                (!(areStagesEquivalent(currentStageName, 'Meeting rescheduling') || (isStageNumeric && stageNumeric === 21)) || hasScheduledMeetings) && (
+                                                    <button
+                                                        onClick={() => handleStageUpdate('Meeting Ended')}
+                                                        className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                    >
+                                                        <CheckCircleIcon className="w-5 h-5" />
+                                                        Meeting Ended
+                                                    </button>
+                                                )}
+                                        </>
+                                    )}
+
+                                {/* Waiting for meeting summary Stage */}
+                                {areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') && openSendOfferModal && (
+                                    <button
+                                        onClick={openSendOfferModal}
+                                        className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                    >
+                                        <DocumentCheckIcon className="w-5 h-5" />
+                                        Send Price Offer
+                                    </button>
+                                )}
+
+                                {/* Communication Started Stage */}
+                                {areStagesEquivalent(currentStageName, 'Communication started') && (
+                                    <>
+                                        {handleScheduleMenuClick && scheduleMenuLabel && (
+                                            <button
+                                                onClick={handleScheduleMenuClick}
+                                                className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                            >
+                                                <CalendarDaysIcon className="w-5 h-5" />
+                                                {scheduleMenuLabel}
+                                            </button>
+                                        )}
+                                    </>
+                                )}
+
+                                {/* Meeting summary + Agreement sent Stage */}
+                                {areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') && (
+                                    <>
+                                        {handleScheduleMenuClick && scheduleMenuLabel && (
+                                            <button
+                                                onClick={handleScheduleMenuClick}
+                                                className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                            >
+                                                <CalendarDaysIcon className="w-5 h-5" />
+                                                {scheduleMenuLabel}
+                                            </button>
+                                        )}
+                                        {handleOpenSignedDrawer && (
+                                            <button
+                                                onClick={handleOpenSignedDrawer}
+                                                className="btn btn-success text-white rounded-full px-5 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 transition-all hover:scale-105"
+                                            >
+                                                <HandThumbUpIcon className="w-5 h-5" />
+                                                Client signed
+                                            </button>
+                                        )}
+                                        {handleOpenDeclinedDrawer && (
+                                            <button
+                                                onClick={handleOpenDeclinedDrawer}
+                                                className="btn btn-error text-white rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                            >
+                                                <HandThumbDownIcon className="w-5 h-5" />
+                                                Client declined
+                                            </button>
+                                        )}
+                                        {openSendOfferModal && (
+                                            <button
+                                                onClick={openSendOfferModal}
+                                                className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                            >
+                                                <PencilSquareIcon className="w-5 h-5" />
+                                                Revised price offer
+                                            </button>
+                                        )}
+                                    </>
+                                )}
+
+                                {/* Client signed agreement Stage */}
+                                {(areStagesEquivalent(currentStageName, 'Client signed agreement') ||
+                                    areStagesEquivalent(currentStageName, 'client signed agreement') ||
+                                    areStagesEquivalent(currentStageName, 'client_signed')) && (
+                                        <button
+                                            onClick={() => updateLeadStage('payment_request_sent')}
+                                            className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                        >
+                                            <CurrencyDollarIcon className="w-5 h-5" />
+                                            Payment request sent
+                                        </button>
+                                    )}
+
+                                {/* General stages - Schedule Meeting and Communication Started */}
+                                {/* Only show for stages that haven't been handled by specific sections above */}
+                                {selectedClient &&
+                                    !areStagesEquivalent(currentStageName, 'Handler Set') &&
+                                    !areStagesEquivalent(currentStageName, 'Handler Started') &&
+                                    !areStagesEquivalent(currentStageName, 'Application submitted') &&
+                                    !areStagesEquivalent(currentStageName, 'payment_request_sent') &&
+                                    !areStagesEquivalent(currentStageName, 'another_meeting') &&
+                                    !areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
+                                    !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
+                                    !areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') &&
+                                    !areStagesEquivalent(currentStageName, 'Communication started') &&
+                                    !areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') &&
+                                    !areStagesEquivalent(currentStageName, 'Success') &&
+                                    !areStagesEquivalent(currentStageName, 'handler_assigned') &&
+                                    !areStagesEquivalent(currentStageName, 'client_signed') &&
+                                    !areStagesEquivalent(currentStageName, 'client signed agreement') &&
+                                    !areStagesEquivalent(currentStageName, 'Client signed agreement') &&
+                                    !(isStageNumeric && (stageNumeric === 21 || stageNumeric === 55)) && (
+                                        <>
+                                            {handleScheduleMenuClick && scheduleMenuLabel && (
+                                                <button
+                                                    onClick={handleScheduleMenuClick}
+                                                    className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                >
+                                                    <CalendarDaysIcon className="w-5 h-5" />
+                                                    {scheduleMenuLabel}
+                                                </button>
+                                            )}
+                                            {handleStageUpdate && (
+                                                <button
+                                                    onClick={() => handleStageUpdate('Communication Started')}
+                                                    className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                >
+                                                    <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                                                    Communication Started
+                                                </button>
+                                            )}
+                                        </>
+                                    )}
+                            </>
+                        );
+                    })()}
+                </div>
+
                 {/* Info Grid - Flattened (No Boxes) */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
 
@@ -1194,7 +1708,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 </div>
 
                 {/* Workflow Actions Bar - Buttons with Logic & General Actions */}
-                <div className="mt-8 pt-6 border-t border-gray-100 dark:border-gray-800 flex flex-wrap items-center justify-between gap-3">
+                <div className="mt-2 md:mt-8 pt-2 md:pt-6 border-t border-gray-100 dark:border-gray-800 flex flex-wrap items-center justify-between gap-3">
                     {/* Left side: Roles (Closer, Handler, Expert, Scheduler) */}
                     <div className="flex items-center gap-4 flex-wrap">
                         {(() => {
@@ -1277,14 +1791,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 // Otherwise, assume handler is already a display name
                                 // But verify it exists in employees list
                                 if (employeesToUse && employeesToUse.length > 0) {
-                                    const employee = employeesToUse.find((emp: any) => 
+                                    const employee = employeesToUse.find((emp: any) =>
                                         emp.display_name && emp.display_name.trim().toLowerCase() === String(handlerValue).trim().toLowerCase()
                                     );
                                     if (employee) {
                                         return employee.display_name;
                                     }
                                 }
-                                
+
                                 return handlerValue || '---';
                             };
 
@@ -1367,7 +1881,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             const handlerId = getHandlerId();
                             const expertId = getExpertId();
                             const schedulerId = getSchedulerId();
-                            
+
                             // Debug logging
                             console.log('[ClientHeader Roles] Employee IDs:', {
                                 closerId,
@@ -1385,11 +1899,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             const isRoleEmpty = (id: string | number | null | undefined, display: string): boolean => {
                                 // Check if display contains "not_assigned" or similar variations
                                 const displayLower = display ? display.toLowerCase().trim() : '';
-                                const isNotAssigned = displayLower.includes('not_assigned') || 
-                                                      displayLower.includes('not assigned') || 
-                                                      displayLower === 'not assigned' ||
-                                                      displayLower === 'unassigned';
-                                
+                                const isNotAssigned = displayLower.includes('not_assigned') ||
+                                    displayLower.includes('not assigned') ||
+                                    displayLower === 'not assigned' ||
+                                    displayLower === 'unassigned';
+
                                 if (!id && (!display || display === '---' || display === '--' || display === 'Not assigned' || display === 'Unassigned' || display.trim() === '' || isNotAssigned)) {
                                     return true;
                                 }
@@ -1403,48 +1917,48 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             return (
                                 <>
                                     {!isRoleEmpty(closerId, closerDisplay) && (
-                                    <div className="flex flex-col items-start">
-                                        <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Closer</p>
-                                        <div className="flex items-center gap-2 h-12">
+                                        <div className="flex flex-col items-start">
+                                            <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Closer</p>
+                                            <div className="flex items-center gap-2 h-12">
                                                 <EmployeeAvatar employeeId={closerId} size="md" />
                                                 <p className="font-medium truncate text-sm leading-5">{formatRoleDisplay(closerDisplay)}</p>
+                                            </div>
                                         </div>
-                                    </div>
                                     )}
                                     {!isRoleEmpty(handlerId, handlerDisplay) && (
-                                    <div className="flex flex-col items-start">
-                                        <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Handler</p>
-                                        <div className="flex items-center gap-2 h-12">
+                                        <div className="flex flex-col items-start">
+                                            <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Handler</p>
+                                            <div className="flex items-center gap-2 h-12">
                                                 <EmployeeAvatar employeeId={handlerId} size="md" />
                                                 <p className="font-medium truncate text-sm leading-5">{formatRoleDisplay(handlerDisplay)}</p>
+                                            </div>
                                         </div>
-                                    </div>
                                     )}
                                     {!isRoleEmpty(expertId, expertDisplay) && (
-                                    <div className="flex flex-col items-start">
-                                        <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Expert</p>
-                                        <div className="flex items-center gap-2 h-12">
+                                        <div className="flex flex-col items-start">
+                                            <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Expert</p>
+                                            <div className="flex items-center gap-2 h-12">
                                                 <EmployeeAvatar employeeId={expertId} size="md" />
                                                 <p className="font-medium truncate text-sm leading-5">{formatRoleDisplay(expertDisplay)}</p>
+                                            </div>
                                         </div>
-                                    </div>
                                     )}
                                     {!isRoleEmpty(schedulerId, schedulerDisplay) && (
-                                    <div className="flex flex-col items-start">
-                                        <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Scheduler</p>
-                                        <div className="flex items-center gap-2 h-12">
+                                        <div className="flex flex-col items-start">
+                                            <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Scheduler</p>
+                                            <div className="flex items-center gap-2 h-12">
                                                 <EmployeeAvatar employeeId={schedulerId} size="md" />
                                                 <p className="font-medium truncate text-sm leading-5">{formatRoleDisplay(schedulerDisplay)}</p>
+                                            </div>
                                         </div>
-                                    </div>
                                     )}
                                 </>
                             );
                         })()}
                     </div>
 
-                    {/* Right side: Stage Logic Buttons (Quick Actions) */}
-                    <div className="flex items-center gap-3 flex-wrap">
+                    {/* Right side: Stage Logic Buttons (Quick Actions) - Desktop */}
+                    <div className="hidden md:flex items-center gap-3 flex-wrap">
                         {/* Check if case is unactivated - show message instead of buttons */}
                         {(() => {
                             const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');

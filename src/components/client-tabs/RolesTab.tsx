@@ -838,7 +838,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
             </button>
           )}
 
-          {/* Set Roles and Set me as closer buttons - Hidden when locked */}
+          {/* Set Roles button - Hidden when locked */}
           {!isRolesLocked && (
             <>
               {isEditing ? (
@@ -867,13 +867,6 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
                   Set Roles
                 </button>
               )}
-              <button
-                className="btn btn-ghost text-primary hover:bg-primary/10 gap-2 px-6 border border-primary/30 shadow-sm hover:scale-105 transition-transform"
-                onClick={handleSetMeAsCloser}
-              >
-                <UserIcon className="w-5 h-5" />
-                Set me as closer
-              </button>
             </>
           )}
         </div>
@@ -902,14 +895,13 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
               {/* Content Section */}
               <div className="p-6">
                 <div className="flex items-center gap-4">
-                  {/* Role Icon */}
-                  <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600">
-                    {React.createElement(getRoleIcon(role.id), { className: "w-6 h-6 text-white" })}
-                  </div>
-
-                  {/* Employee Avatar */}
-                  {hasAssignee && (
+                  {/* Role Icon or Employee Avatar */}
+                  {hasAssignee ? (
                     <EmployeeAvatar employeeId={getEmployeeIdFromRole(role)} size="md" />
+                  ) : (
+                    <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600">
+                      {React.createElement(getRoleIcon(role.id), { className: "w-6 h-6 text-white" })}
+                    </div>
                   )}
 
                   {/* Assignee Name */}
