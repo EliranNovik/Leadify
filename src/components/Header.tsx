@@ -6483,7 +6483,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 setShowQuickActionsDropdown(!showQuickActionsDropdown);
                 setShowMobileQuickActionsDropdown(false); // Close mobile dropdown if open
               }}
-              className="btn btn-sm transition-all duration-300 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white flex items-center gap-2 px-3 rounded-full"
+              className="btn btn-sm transition-all duration-300 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white flex items-center gap-2 px-3 rounded-full border-0"
               title="Quick Actions"
             >
               <BoltIcon className="w-5 h-5 text-white" />

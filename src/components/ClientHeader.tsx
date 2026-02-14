@@ -361,6 +361,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         return employee?.display_name || '---';
     };
 
+    // Track image errors per employee to prevent flickering (persists across re-renders)
+    const imageErrorCache = useRef<Map<string | number, boolean>>(new Map());
+
     // Component to render employee avatar (exact copy from RolesTab)
     const EmployeeAvatar: React.FC<{
         employeeId: string | number | null | undefined;
@@ -369,6 +372,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         const [imageError, setImageError] = useState(false);
         const employee = getEmployeeById(employeeId);
         const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : size === 'md' ? 'w-12 h-12 text-sm' : 'w-16 h-16 text-base';
+
+        // Check cache first to prevent flickering
+        const cacheKey = employeeId?.toString() || '';
+        const cachedError = imageErrorCache.current.get(cacheKey) || false;
 
         // Debug logging
         if (employeeId && !employee) {
@@ -382,8 +389,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         const photoUrl = employee.photo_url || employee.photo;
         const initials = getEmployeeInitials(employee.display_name);
 
-        // If we know there's no photo URL or we have an error, show initials immediately
-        if (imageError || !photoUrl) {
+        // Use cached error if available, otherwise use state
+        const hasError = cachedError || imageError;
+
+        // If we know there's no photo URL or we have a cached error, show initials immediately
+        if (hasError || !photoUrl) {
             return (
                 <div
                     className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
@@ -410,7 +420,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         navigate(`/my-profile/${employee.id}`);
                     }
                 }}
-                onError={() => setImageError(true)}
+                onError={() => {
+                    // Cache the error to prevent flickering on re-renders
+                    if (cacheKey) {
+                        imageErrorCache.current.set(cacheKey, true);
+                    }
+                    setImageError(true);
+                }}
                 title={`View ${employee.display_name}'s profile`}
             />
         );

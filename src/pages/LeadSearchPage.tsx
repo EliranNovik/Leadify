@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
-import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import { MagnifyingGlassIcon, Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 
@@ -906,6 +906,13 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
 };
 
 const LeadSearchPage: React.FC = () => {
+  // State for sticky search button on mobile
+  const [showStickySearchButton, setShowStickySearchButton] = useState(false);
+  const scrollThreshold = 100; // Show sticky button after scrolling 100px
+  
+  // Ref for results section to scroll to after search
+  const resultsRef = useRef<HTMLDivElement>(null);
+
   // Initialize filters with current date - ensure no persistent state interferes
   const todayStr = new Date().toISOString().split('T')[0];
 
@@ -1059,6 +1066,43 @@ const LeadSearchPage: React.FC = () => {
     fetchStageNames().catch(error => {
       console.error('Error initializing stage names:', error);
     });
+  }, []);
+
+  // Handle scroll detection for sticky search button on mobile
+  useEffect(() => {
+    const handleScroll = () => {
+      // Check both window scroll and main element scroll
+      const windowScrollY = window.scrollY || window.pageYOffset || 0;
+
+      // Also check the main element scroll (since App.tsx has overflow-y-auto on main)
+      const mainElement = document.querySelector('main');
+      const mainScrollTop = mainElement ? mainElement.scrollTop : 0;
+
+      // Use whichever is greater (handles both cases)
+      const scrollY = Math.max(windowScrollY, mainScrollTop);
+
+      const shouldShow = scrollY > scrollThreshold;
+      setShowStickySearchButton(shouldShow);
+    };
+
+    // Initial check after a small delay to ensure DOM is ready
+    const timeoutId = setTimeout(handleScroll, 100);
+
+    // Listen to both window and main element scroll
+    window.addEventListener('scroll', handleScroll, { passive: true });
+
+    const mainElement = document.querySelector('main');
+    if (mainElement) {
+      mainElement.addEventListener('scroll', handleScroll, { passive: true });
+    }
+
+    return () => {
+      clearTimeout(timeoutId);
+      window.removeEventListener('scroll', handleScroll);
+      if (mainElement) {
+        mainElement.removeEventListener('scroll', handleScroll);
+      }
+    };
   }, []);
 
   // Fetch stage options from lead_stages table, ordered by ID (lowest to highest)
@@ -4235,6 +4279,13 @@ const LeadSearchPage: React.FC = () => {
       });
 
       setResults(allResults);
+      
+      // Auto-scroll to results section after search completes
+      setTimeout(() => {
+        if (resultsRef.current) {
+          resultsRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 100);
     } catch (error) {
       console.error('Error searching leads:', error);
       alert('Failed to search for leads.');
@@ -4379,30 +4430,129 @@ const LeadSearchPage: React.FC = () => {
 
   return (
     <div className="p-6 md:p-10">
+      {/* Fixed Search Bar with Date Filters - Desktop: always visible, Mobile: appears when scrolled down */}
+      {/* Desktop Version - Always visible */}
+      <div className="hidden md:flex fixed top-16 left-0 right-0 z-[35] justify-center px-4 transition-all duration-300 ease-in-out">
+        <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/20 dark:border-gray-700/20 px-4 py-3 transition-all duration-300 ease-in-out flex items-center gap-2">
+          {/* From Date */}
+          <input
+            type="date"
+            className="input input-bordered input-sm w-32"
+            value={filters.fromDate}
+            onChange={e => handleFilterChange('fromDate', e.target.value)}
+          />
+          {/* To Date */}
+          <input
+            type="date"
+            className="input input-bordered input-sm w-32"
+            value={filters.toDate}
+            onChange={e => handleFilterChange('toDate', e.target.value)}
+          />
+          {/* View Mode Toggle - Cards/Table */}
+          <div className="flex items-center gap-1 bg-base-200 rounded-full p-1">
+            <button
+              className={`btn btn-sm btn-circle transition-all duration-300 ${
+                viewMode === 'cards' 
+                  ? 'btn-primary shadow-md' 
+                  : 'btn-ghost'
+              }`}
+              onClick={() => setViewMode('cards')}
+              title="Cards View"
+            >
+              <Squares2X2Icon className="w-4 h-4" />
+            </button>
+            <button
+              className={`btn btn-sm btn-circle transition-all duration-300 ${
+                viewMode === 'table' 
+                  ? 'btn-primary shadow-md' 
+                  : 'btn-ghost'
+              }`}
+              onClick={() => setViewMode('table')}
+              title="Table View"
+            >
+              <TableCellsIcon className="w-4 h-4" />
+            </button>
+          </div>
+          {/* Search Button - Icon Only */}
+          <button
+            className="btn btn-primary btn-circle btn-sm"
+            onClick={handleSearch}
+            disabled={isSearching}
+            title="Search"
+          >
+            {isSearching ? (
+              <span className="loading loading-spinner loading-sm"></span>
+            ) : (
+              <MagnifyingGlassIcon className="w-5 h-5" />
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Mobile Version - Always visible */}
+      <div className="md:hidden fixed top-16 left-0 right-0 z-[35] flex justify-center px-4 transition-all duration-300 ease-in-out">
+          <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/20 dark:border-gray-700/20 px-3 py-2 transition-all duration-300 ease-in-out flex items-center gap-1.5">
+            {/* From Date */}
+            <input
+              type="date"
+              className="input input-bordered input-xs w-24 text-xs"
+              value={filters.fromDate}
+              onChange={e => handleFilterChange('fromDate', e.target.value)}
+            />
+            {/* To Date */}
+            <input
+              type="date"
+              className="input input-bordered input-xs w-24 text-xs"
+              value={filters.toDate}
+              onChange={e => handleFilterChange('toDate', e.target.value)}
+            />
+            {/* View Mode Toggle - Cards/Table */}
+            <div className="flex items-center gap-1 bg-base-200 rounded-full p-1">
+              <button
+                className={`btn btn-sm btn-circle transition-all duration-300 ${
+                  viewMode === 'cards' 
+                    ? 'btn-primary shadow-md' 
+                    : 'btn-ghost'
+                }`}
+                onClick={() => setViewMode('cards')}
+                title="Cards View"
+              >
+                <Squares2X2Icon className="w-4 h-4" />
+              </button>
+              <button
+                className={`btn btn-sm btn-circle transition-all duration-300 ${
+                  viewMode === 'table' 
+                    ? 'btn-primary shadow-md' 
+                    : 'btn-ghost'
+                }`}
+                onClick={() => setViewMode('table')}
+                title="Table View"
+              >
+                <TableCellsIcon className="w-4 h-4" />
+              </button>
+            </div>
+            {/* Search Button - Icon Only */}
+            <button
+              className="btn btn-primary btn-circle btn-sm"
+              onClick={handleSearch}
+              disabled={isSearching}
+              title="Search"
+            >
+              {isSearching ? (
+                <span className="loading loading-spinner loading-sm"></span>
+              ) : (
+                <MagnifyingGlassIcon className="w-5 h-5" />
+              )}
+            </button>
+          </div>
+        </div>
+
       <h1 className="text-3xl font-bold mb-6">Leads Search</h1>
 
       {/* Search Form */}
       <div className="mb-8">
         <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
-          {/* Date Range Row */}
-          <div className="form-control flex flex-col col-span-2 sm:col-span-1">
-            <label className="label mb-2"><span className="label-text">From date</span></label>
-            <input
-              type="date"
-              className="input input-bordered"
-              value={filters.fromDate}
-              onChange={e => handleFilterChange('fromDate', e.target.value)}
-            />
-          </div>
-          <div className="form-control flex flex-col col-span-2 sm:col-span-1">
-            <label className="label mb-2"><span className="label-text">To date</span></label>
-            <input
-              type="date"
-              className="input input-bordered"
-              value={filters.toDate}
-              onChange={e => handleFilterChange('toDate', e.target.value)}
-            />
-          </div>
+          {/* Date Range Row - Removed (now in fixed bar) */}
           <MainCategoryInput
             label="Main Category"
             field="mainCategory"
@@ -4656,26 +4806,7 @@ const LeadSearchPage: React.FC = () => {
             <input type="text" className="input input-bordered" onChange={e => handleFilterChange('content', e.target.value)} />
           </div>
 
-          {/* View Mode Toggle */}
-          <div className="col-span-2 flex items-end gap-3">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium">View:</span>
-              <div className="btn-group">
-                <button
-                  className={`btn btn-sm ${viewMode === 'cards' ? 'btn-primary' : 'btn-outline'}`}
-                  onClick={() => setViewMode('cards')}
-                >
-                  Cards
-                </button>
-                <button
-                  className={`btn btn-sm ${viewMode === 'table' ? 'btn-primary' : 'btn-outline'}`}
-                  onClick={() => setViewMode('table')}
-                >
-                  Table
-                </button>
-              </div>
-            </div>
-          </div>
+          {/* View Mode Toggle - Removed (now in fixed bar) */}
 
           {/* Column Selector for Table View */}
           {viewMode === 'table' && (
@@ -4688,41 +4819,38 @@ const LeadSearchPage: React.FC = () => {
             />
           )}
 
-          {/* Search Buttons: span both columns on mobile */}
-          <div className="col-span-2 flex items-end gap-3">
-            <button
-              className="btn btn-primary flex-1"
-              onClick={handleSearch}
-              disabled={isSearching}
-            >
-              {isSearching ? 'Searching...' : 'Search'}
-            </button>
-          </div>
+          {/* Search Buttons: Removed (now in fixed bar) */}
         </div>
       </div>
 
       {/* Results */}
-      {searchPerformed && results.length > 0 && (
-        <div>
-          <h2 className="text-2xl font-bold mb-4">
-            Found {results.length} lead{results.length !== 1 && 's'}
-          </h2>
-          {isSearching ? (
-            <div className="flex justify-center p-8">
-              <span className="loading loading-spinner loading-lg"></span>
-            </div>
-          ) : results.length > 0 ? (
-            viewMode === 'table' ? (
-              <TableView leads={results} selectedColumns={selectedColumns} onLeadClick={handleLeadClick} />
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {results.map(renderResultCard)}
+      {searchPerformed && (
+        <div ref={resultsRef}>
+          {results.length > 0 ? (
+            <>
+              <h2 className="text-2xl font-bold mb-4">
+                Found {results.length} lead{results.length !== 1 && 's'}
+              </h2>
+              {isSearching ? (
+                <div className="flex justify-center p-8">
+                  <span className="loading loading-spinner loading-lg"></span>
+                </div>
+              ) : (
+                viewMode === 'table' ? (
+                  <TableView leads={results} selectedColumns={selectedColumns} onLeadClick={handleLeadClick} />
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    {results.map(renderResultCard)}
+                  </div>
+                )
+              )}
+            </>
+          ) : (
+            !isSearching && (
+              <div className="text-center p-8 bg-base-200 rounded-lg">
+                No leads found matching your criteria.
               </div>
             )
-          ) : (
-            <div className="text-center p-8 bg-base-200 rounded-lg">
-              No leads found matching your criteria.
-            </div>
           )}
         </div>
       )}

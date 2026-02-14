@@ -2864,6 +2864,26 @@ const CalendarPage: React.FC = () => {
         setModalSelectedDate(today);
       }
 
+      // Fetch languages if not already loaded (needed for language ID to name conversion)
+      let languagesToUse = allLanguages;
+      if (languagesToUse.length === 0) {
+        try {
+          const { data: languagesData, error: languagesError } = await supabase
+            .from('misc_language')
+            .select('id, name')
+            .order('name', { ascending: true });
+
+          if (!languagesError && languagesData) {
+            setAllLanguages(languagesData);
+            languagesToUse = languagesData;
+          } else if (languagesError) {
+            console.error('Error fetching languages:', languagesError);
+          }
+        } catch (error) {
+          console.error('Exception fetching languages:', error);
+        }
+      }
+
       // Step 1: Fetch only basic meeting data from meetings table (no joins)
       // Only select minimal fields that definitely exist - we'll get the rest from leads/leads_lead tables
       const { data: meetingsData, error: meetingsError } = await supabase
@@ -3182,7 +3202,22 @@ const CalendarPage: React.FC = () => {
             probability: parseFloat(legacyLead.probability || '0'),
             category_id: legacyLead.category_id || null,
             category: getCategoryName(legacyLead.category_id) || legacyLead.category || 'Unassigned',
-            language: legacyLead.language_id || null,
+            language: (() => {
+              // Convert language ID to name
+              const languageId = legacyLead.language_id;
+              if (!languageId) return 'N/A';
+              
+              // Use languages fetched earlier
+              if (languagesToUse.length > 0) {
+                const languageObj = languagesToUse.find((lang: any) => {
+                  return String(lang.id) === String(languageId);
+                });
+                if (languageObj?.name) {
+                  return languageObj.name;
+                }
+              }
+              return 'N/A';
+            })(),
             lead_type: 'legacy' as const
           }
         };
@@ -3212,27 +3247,110 @@ const CalendarPage: React.FC = () => {
           if (meeting.client_id && leadsMap[meeting.client_id]) {
             // Use new lead data from the map
             const lead = leadsMap[meeting.client_id];
+            
+            // Convert language ID to name if needed
+            let language = lead.language || 'N/A';
+            if (language && languagesToUse.length > 0) {
+              // Check if it's a numeric ID
+              const languageId = typeof language === 'string' && /^\d+$/.test(language.trim())
+                ? parseInt(language.trim(), 10)
+                : (typeof language === 'number' ? language : null);
+              
+              if (languageId && !isNaN(languageId)) {
+                const languageObj = languagesToUse.find((lang: any) => String(lang.id) === String(languageId));
+                if (languageObj?.name) {
+                  language = languageObj.name;
+                }
+              }
+            }
+            
+            // Convert manager, helper, scheduler, expert IDs to display names if they're numeric
+            let manager = lead.manager || '--';
+            if (manager && manager !== '--') {
+              if (typeof manager === 'number' || (typeof manager === 'string' && !isNaN(Number(manager)))) {
+                manager = getEmployeeDisplayName(manager) || '--';
+              }
+            }
+            
+            let helper = lead.helper || '--';
+            if (helper && helper !== '--') {
+              if (typeof helper === 'number' || (typeof helper === 'string' && !isNaN(Number(helper)))) {
+                helper = getEmployeeDisplayName(helper) || '--';
+              }
+            }
+            
+            let scheduler = lead.scheduler || '--';
+            if (scheduler && scheduler !== '--') {
+              if (typeof scheduler === 'number' || (typeof scheduler === 'string' && !isNaN(Number(scheduler)))) {
+                scheduler = getEmployeeDisplayName(scheduler) || '--';
+              }
+            }
+            
+            let expert = lead.expert || '--';
+            if (expert && expert !== '--') {
+              if (typeof expert === 'number' || (typeof expert === 'string' && !isNaN(Number(expert)))) {
+                expert = getEmployeeDisplayName(expert) || '--';
+              }
+            }
+            
             leadData = {
               ...lead,
-              lead_type: 'new'
+              lead_type: 'new',
+              manager: manager,
+              helper: helper,
+              scheduler: scheduler,
+              expert: expert,
+              language: language
             };
           } else if (meeting.legacy_lead_id && legacyLeadsMap[String(meeting.legacy_lead_id)]) {
             const legacyLead = legacyLeadsMap[String(meeting.legacy_lead_id)];
+            
+            // Convert language ID to name
+            let language = 'N/A';
+            const languageId = legacyLead.language_id;
+            if (languageId && languagesToUse.length > 0) {
+              const languageObj = languagesToUse.find((lang: any) => {
+                return String(lang.id) === String(languageId);
+              });
+              if (languageObj?.name) {
+                language = languageObj.name;
+              }
+            }
+            
             leadData = {
               ...legacyLead,
               lead_type: 'legacy',
               manager: getEmployeeDisplayName(legacyLead.meeting_manager_id),
               helper: getEmployeeDisplayName(legacyLead.meeting_lawyer_id),
+              scheduler: getEmployeeDisplayName(legacyLead.meeting_scheduler_id),
+              expert: getEmployeeDisplayName(legacyLead.expert_id),
               balance: legacyLead.total,
               balance_currency: legacyLead.meeting_total_currency_id,
-              language: legacyLead.language_id,
+              language: language,
               phone: legacyLead.phone || legacyLead.mobile || '',
               lead_number: legacyLead.lead_number || legacyLead.id?.toString()
             };
           }
 
+          // Convert meeting_manager and helper on the meeting object itself from IDs to display names
+          let meetingManager = meeting.meeting_manager || '--';
+          if (meetingManager && meetingManager !== '--') {
+            if (typeof meetingManager === 'number' || (typeof meetingManager === 'string' && !isNaN(Number(meetingManager)))) {
+              meetingManager = getEmployeeDisplayName(meetingManager) || '--';
+            }
+          }
+          
+          let meetingHelper = meeting.helper || '--';
+          if (meetingHelper && meetingHelper !== '--') {
+            if (typeof meetingHelper === 'number' || (typeof meetingHelper === 'string' && !isNaN(Number(meetingHelper)))) {
+              meetingHelper = getEmployeeDisplayName(meetingHelper) || '--';
+            }
+          }
+
           return {
             ...meeting,
+            meeting_manager: meetingManager,
+            helper: meetingHelper,
             lead: leadData
           };
         });
@@ -3922,191 +4040,18 @@ const CalendarPage: React.FC = () => {
 
   const openAssignStaffModal = async () => {
     setIsAssignStaffModalOpen(true);
-    // Use existing meetings state instead of fetching again
-    // Filter meetings to date range: 7 days ago to 30 days in the future
-    const today = new Date().toISOString().split('T')[0];
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    const thirtyDaysFromNow = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
+    
     // Initialize modal date to today if not set
+    const today = new Date().toISOString().split('T')[0];
     if (!modalSelectedDate) {
       setModalSelectedDate(today);
     }
 
-    // Fetch languages if not already loaded (must be done before processing meetings)
-    let languagesToUse = allLanguages;
-    if (languagesToUse.length === 0) {
-      try {
-        const { data: languagesData, error: languagesError } = await supabase
-          .from('misc_language')
-          .select('id, name')
-          .order('name', { ascending: true });
-
-        if (!languagesError && languagesData) {
-          setAllLanguages(languagesData);
-          languagesToUse = languagesData;
-          console.log('✅ Assign Staff Modal - Loaded languages:', languagesData.length);
-        } else if (languagesError) {
-          console.error('❌ Assign Staff Modal - Error fetching languages:', languagesError);
-        }
-      } catch (error) {
-        console.error('❌ Assign Staff Modal - Exception fetching languages:', error);
-      }
-    } else {
-      console.log('✅ Assign Staff Modal - Using cached languages:', languagesToUse.length);
-    }
-
-    // Process existing meetings to match assign staff modal format
-    // Use the same logic as calendar page for manager, scheduler, helper
-    const processedMeetings = meetings
-      .filter((meeting: any) => {
-        const meetingDate = meeting.meeting_date;
-        return meetingDate && meetingDate >= sevenDaysAgo && meetingDate <= thirtyDaysFromNow;
-      })
-      .map((meeting: any) => {
-        const lead = meeting.lead || {};
-        const isLegacyLead = lead.lead_type === 'legacy' || meeting.legacy_lead_id;
-
-        // Get manager, helper, scheduler, expert - convert IDs to display names if needed
-        let manager = '--';
-        let helper = '--';
-        let scheduler = '--';
-        let expert = '--';
-
-        // Manager: check if it's already a display name or needs conversion
-        const managerValue = lead.manager || meeting.meeting_manager;
-        if (managerValue && managerValue !== '--') {
-          // If it's a number or numeric string, convert to display name
-          if (typeof managerValue === 'number' || (typeof managerValue === 'string' && !isNaN(Number(managerValue)))) {
-            manager = getEmployeeDisplayName(managerValue) || '--';
-          } else {
-            manager = managerValue;
-          }
-        }
-
-        // Helper: check if it's already a display name or needs conversion
-        const helperValue = lead.helper || meeting.helper;
-        if (helperValue && helperValue !== '--') {
-          // If it's a number or numeric string, convert to display name
-          if (typeof helperValue === 'number' || (typeof helperValue === 'string' && !isNaN(Number(helperValue)))) {
-            helper = getEmployeeDisplayName(helperValue) || '--';
-          } else {
-            helper = helperValue;
-          }
-        }
-
-        // Scheduler: check if it's already a display name or needs conversion
-        const schedulerValue = lead.scheduler || meeting.scheduler;
-        if (schedulerValue && schedulerValue !== '--') {
-          // If it's a number or numeric string, convert to display name
-          if (typeof schedulerValue === 'number' || (typeof schedulerValue === 'string' && !isNaN(Number(schedulerValue)))) {
-            scheduler = getEmployeeDisplayName(schedulerValue) || '--';
-          } else {
-            scheduler = schedulerValue;
-          }
-        }
-
-        // Expert: check if it's already a display name or needs conversion
-        const expertValue = lead.expert || meeting.expert;
-        if (expertValue && expertValue !== '--') {
-          // If it's a number or numeric string, convert to display name
-          if (typeof expertValue === 'number' || (typeof expertValue === 'string' && !isNaN(Number(expertValue)))) {
-            expert = getEmployeeDisplayName(expertValue) || '--';
-          } else {
-            expert = expertValue;
-          }
-        }
-
-        // Get IDs for reference (for saving changes)
-        let managerId = lead.manager_id || lead.meeting_manager_id || null;
-        let helperId = lead.helper_id || lead.meeting_lawyer_id || null;
-        let schedulerId = lead.scheduler_id || null;
-        let expertId = lead.expert_id || null;
-
-        // If we don't have IDs but have display names, try to find the ID
-        if (!managerId && manager && manager !== '--') {
-          const emp = allEmployees.find((e: any) => e.display_name === manager);
-          if (emp) managerId = emp.id;
-        }
-        if (!helperId && helper && helper !== '--') {
-          const emp = allEmployees.find((e: any) => e.display_name === helper);
-          if (emp) helperId = emp.id;
-        }
-        if (!schedulerId && scheduler && scheduler !== '--') {
-          const emp = allEmployees.find((e: any) => e.display_name === scheduler);
-          if (emp) schedulerId = emp.id;
-        }
-        if (!expertId && expert && expert !== '--') {
-          const emp = allEmployees.find((e: any) => e.display_name === expert);
-          if (emp) expertId = emp.id;
-        }
-
-        // Get language - same logic as Clients.tsx
-        // For new leads: use language field directly (text value like "HE", "EN", "Hebrew", etc.)
-        // For legacy leads: use language field (which should be name from JOIN) or convert language_id
-        let language = 'N/A';
-
-        // Check all possible sources for language (in priority order)
-        // For new leads: language is stored as text in lead.language
-        // For legacy leads: language is stored as name in lead.language (from JOIN) or we need to convert language_id
-        const languageText = lead.language;
-        const languageId = lead.language_id;
-
-        // First priority: if we have a language text value (for new leads or legacy with JOIN)
-        if (languageText && typeof languageText === 'string' && languageText.trim() !== '' && languageText !== 'N/A' && languageText !== 'null') {
-          // Check if it's a numeric string (ID) or actual text
-          if (!/^\d+$/.test(languageText.trim())) {
-            // It's actual text (like "HE", "EN", "Hebrew", "English"), use it directly
-            language = languageText.trim();
-          } else {
-            // It's a numeric string, treat as ID and convert
-            const numericId = parseInt(languageText.trim(), 10);
-            if (languagesToUse.length > 0) {
-              const languageObj = languagesToUse.find((lang: any) => String(lang.id) === String(numericId));
-              if (languageObj?.name) {
-                language = languageObj.name;
-              }
-            }
-          }
-        }
-        // Second priority: if we have language_id, convert it to name (for legacy leads where JOIN failed)
-        else if (languageId && languagesToUse.length > 0) {
-          const languageObj = languagesToUse.find((lang: any) => {
-            return String(lang.id) === String(languageId);
-          });
-          if (languageObj?.name) {
-            language = languageObj.name;
-          }
-        }
-
-        return {
-          ...meeting,
-          // Use manager, scheduler, helper, expert (converted to display names)
-          meeting_manager: manager,
-          helper: helper,
-          scheduler: scheduler,
-          expert: expert,
-          language: language,
-          // Store IDs for reference (for saving changes)
-          manager_id: managerId,
-          helper_id: helperId,
-          scheduler_id: schedulerId,
-          expert_id: expertId,
-          language_id: lead.language_id || null,
-        };
-      });
-
-    setAssignStaffMeetings(processedMeetings);
-
-    // Extract unique staff names for filter dropdown from allEmployees
-    const allStaffNames = new Set<string>();
-    allEmployees.forEach((emp: any) => {
-      if (emp.display_name) {
-        allStaffNames.add(emp.display_name);
-      }
-    });
-    setAvailableStaff(Array.from(allStaffNames).sort());
-
+    // Fetch fresh data for the assign staff modal
+    // This ensures we have all meetings for the date range (7 days ago to 30 days in the future)
+    // regardless of what was loaded on the calendar page
+    await fetchAssignStaffData();
+    
     fetchEmployeeAvailability();
     // DISABLED: fetchMeetingCountsAndPreviousManagers(); // causing timeouts
   };
@@ -6500,7 +6445,7 @@ const CalendarPage: React.FC = () => {
                                 <th className="text-left text-sm font-semibold text-gray-500">Category</th>
                                 <th className="text-left text-sm font-semibold text-gray-500">Expert</th>
                                 <th className="text-left text-sm font-semibold text-gray-500">Language</th>
-                                <th className="text-left text-sm font-semibold text-gray-500">Balance</th>
+                                <th className="text-left text-sm font-semibold text-gray-500">Value</th>
                                 <th className="text-left text-sm font-semibold text-gray-500">Info</th>
                                 <th className="text-left text-sm font-semibold text-gray-500">
                                   <div className="flex items-center gap-2">
@@ -6587,7 +6532,24 @@ const CalendarPage: React.FC = () => {
                                     </td>
 
                                     {/* Time */}
-                                    <td className="font-medium text-base">{formatTime(meeting.meeting_time)}</td>
+                                    <td className="font-medium text-base">
+                                      {meeting.meeting_time ? (
+                                        <div
+                                          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full"
+                                          style={{
+                                            backgroundColor: resolveStageColour('20') || getStageColour('20') || '#10b981',
+                                            color: getContrastingTextColor(resolveStageColour('20') || getStageColour('20') || '#10b981'),
+                                          }}
+                                        >
+                                          <ClockIcon className="w-4 h-4" />
+                                          <span className="text-sm font-semibold">
+                                            {formatTime(meeting.meeting_time)}
+                                          </span>
+                                        </div>
+                                      ) : (
+                                        'N/A'
+                                      )}
+                                    </td>
 
                                     {/* Location */}
                                     <td className="text-base">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
@@ -6706,12 +6668,98 @@ const CalendarPage: React.FC = () => {
                                     {/* Language */}
                                     <td className="text-base">{meeting.language || meeting.lead?.language || 'N/A'}</td>
 
-                                    {/* Balance */}
+                                    {/* Value */}
                                     <td className="font-medium text-base">
-                                      {meeting.lead?.balance ?
-                                        `${getCurrencySymbol(meeting.lead?.balance_currency)}${meeting.lead.balance.toLocaleString()}` :
-                                        'N/A'
-                                      }
+                                      {(() => {
+                                        // Same logic as calendar page (lines 4567-4649)
+                                        const lead = meeting.lead || {};
+                                        const isLegacy = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
+                                        let balanceValue: any;
+
+                                        if (isLegacy) {
+                                          // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
+                                          const currencyId = (lead as any).currency_id;
+                                          let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                                          if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+                                            numericCurrencyId = 1; // Default to NIS
+                                          }
+                                          if (numericCurrencyId === 1) {
+                                            balanceValue = (lead as any).total_base ?? null;
+                                          } else {
+                                            balanceValue = (lead as any).total ?? null;
+                                          }
+                                        } else {
+                                          balanceValue = lead.balance || (lead as any).proposal_total;
+                                        }
+
+                                        // Get currency symbol - for both legacy and new leads, use balance_currency if available
+                                        // balance_currency is already set as a symbol (₪, $, €, etc.) from fetchAssignStaffData
+                                        let balanceCurrency = lead.balance_currency;
+                                        
+                                        // If balance_currency is already a symbol, use it directly with getCurrencySymbol
+                                        // Otherwise, convert currency_id to currency code first
+                                        if (!balanceCurrency) {
+                                          const currencyId = (lead as any).currency_id;
+                                          if (currencyId) {
+                                            const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                                            // First try to get from currency map (most accurate)
+                                            if (currencyMap && currencyMap[numericCurrencyId]) {
+                                              balanceCurrency = currencyMap[numericCurrencyId].iso_code || currencyMap[numericCurrencyId].name || 'NIS';
+                                            } else {
+                                              // Fallback to hardcoded mapping if currency not found in map
+                                              balanceCurrency = numericCurrencyId === 1 ? 'NIS' :
+                                                numericCurrencyId === 2 ? 'USD' :
+                                                  numericCurrencyId === 3 ? 'EUR' :
+                                                    numericCurrencyId === 4 ? 'GBP' : 'NIS';
+                                            }
+                                          } else {
+                                            // If no currency_id, try meeting currency or default to NIS
+                                            balanceCurrency = meeting.meeting_currency || 'NIS';
+                                          }
+                                        } else {
+                                          // balance_currency is already a symbol, but getCurrencySymbol expects a code
+                                          // Convert symbol back to code for getCurrencySymbol
+                                          if (balanceCurrency === '₪') balanceCurrency = 'NIS';
+                                          else if (balanceCurrency === '$') balanceCurrency = 'USD';
+                                          else if (balanceCurrency === '€') balanceCurrency = 'EUR';
+                                          else if (balanceCurrency === '£') balanceCurrency = 'GBP';
+                                          // If it's already a code, keep it as is
+                                        }
+
+                                        // Fallback to meeting amount if no balance
+                                        if (!balanceValue && meeting.meeting_amount) {
+                                          balanceValue = meeting.meeting_amount;
+                                          balanceCurrency = meeting.meeting_currency || balanceCurrency || 'NIS';
+                                        }
+
+                                        if (balanceValue === '--' || meeting.meeting_amount === '--') {
+                                          return '--';
+                                        }
+
+                                        // Ensure we have a currency (default to NIS)
+                                        if (!balanceCurrency) {
+                                          balanceCurrency = 'NIS';
+                                        }
+
+                                        // Handle 0 values - show currency symbol
+                                        if (balanceValue === 0 || balanceValue === '0' || Number(balanceValue) === 0) {
+                                          return `${getCurrencySymbol(balanceCurrency)}0`;
+                                        }
+
+                                        if (balanceValue && (Number(balanceValue) > 0 || balanceValue !== '0')) {
+                                          const formattedValue = typeof balanceValue === 'number'
+                                            ? balanceValue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+                                            : Number(balanceValue).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+                                          return `${getCurrencySymbol(balanceCurrency)}${formattedValue}`;
+                                        }
+
+                                        if (typeof meeting.meeting_amount === 'number' && meeting.meeting_amount > 0) {
+                                          return `${getCurrencySymbol(meeting.meeting_currency || 'NIS')}${meeting.meeting_amount.toLocaleString()}`;
+                                        }
+
+                                        // Default: show 0 with NIS symbol
+                                        return `${getCurrencySymbol(balanceCurrency)}0`;
+                                      })()}
                                     </td>
 
                                     {/* Info */}
