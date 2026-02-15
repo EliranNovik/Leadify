@@ -58,11 +58,19 @@ const EmailThreadLeadPage: React.FC = () => {
 
   // Dropdown and lead selection state
   const [showActionDropdown, setShowActionDropdown] = useState(false);
+  const [showConnectedLeadsDropdown, setShowConnectedLeadsDropdown] = useState(false);
   const [showLeadSearchModal, setShowLeadSearchModal] = useState(false);
   const [leadSearchQuery, setLeadSearchQuery] = useState('');
   const [leadSearchResults, setLeadSearchResults] = useState<any[]>([]);
   const [isSearchingLeads, setIsSearchingLeads] = useState(false);
   const [actionType, setActionType] = useState<'sublead' | 'contact' | null>(null);
+
+  // Connected leads and contacts state
+  const [connectedLeads, setConnectedLeads] = useState<Array<{ id: string; lead_number: string; name: string; isLegacy: boolean }>>([]);
+  const [connectedContacts, setConnectedContacts] = useState<Array<{ id: number; name: string; lead_number: string; isLegacy: boolean }>>([]);
+  const [isLoadingConnections, setIsLoadingConnections] = useState(false);
+  // Map to track which leads have connections (email -> boolean)
+  const [leadsWithConnections, setLeadsWithConnections] = useState<Map<string, boolean>>(new Map());
 
   // Composer state
   const [newMessage, setNewMessage] = useState('');
@@ -263,6 +271,12 @@ const EmailThreadLeadPage: React.FC = () => {
     'khawaish@usareaimmigrationservices.com',
     'message@shidurit.com',
     'contact@legalimmigrationisrael.com',
+    'sales@newfrontiersenergy.com',
+    'marketing@unsplash.com',
+    'info@citizensinternational.com',
+    'ir@2961969.brevosend.com',
+    'marketing@crocoblock.com',
+    'jay@tlvsalon.com',
   ]);
 
   // Blocked domains to ignore (add domain names here, e.g., 'example.com')
@@ -289,12 +303,79 @@ const EmailThreadLeadPage: React.FC = () => {
     return false;
   };
 
+  // Check if each lead has connections
+  const checkConnectionsForAllLeads = useCallback(async (leadsList: EmailLead[]) => {
+    if (!leadsList || leadsList.length === 0) return;
+
+    try {
+      // Fetch all emails with connections for all sender emails at once
+      const senderEmails = leadsList.map(lead => lead.sender_email).filter(Boolean);
+      if (senderEmails.length === 0) return;
+
+      // Check connections for ALL emails (read and unread) received at office@lawoffice.org.il
+      // This ensures the green icon persists even after emails are marked as read
+      const { data: emailsData, error: emailsError } = await supabase
+        .from('emails')
+        .select('sender_email, client_id, legacy_id, contact_id')
+        .in('sender_email', senderEmails)
+        .ilike('recipient_list', '%office@lawoffice.org.il%')
+        .or('client_id.not.is.null,legacy_id.not.is.null,contact_id.not.is.null');
+
+      if (emailsError) {
+        console.error('Error checking connections for leads:', emailsError);
+        return;
+      }
+
+      // Create a map of email -> hasConnections
+      const connectionsMap = new Map<string, boolean>();
+
+      // Group by sender_email
+      const emailsBySender = new Map<string, any[]>();
+      (emailsData || []).forEach((email: any) => {
+        const sender = email.sender_email?.toLowerCase();
+        if (sender) {
+          if (!emailsBySender.has(sender)) {
+            emailsBySender.set(sender, []);
+          }
+          emailsBySender.get(sender)!.push(email);
+        }
+      });
+
+      // Check each lead
+      leadsList.forEach(lead => {
+        const normalizedEmail = lead.sender_email?.toLowerCase();
+        if (!normalizedEmail) {
+          connectionsMap.set(lead.id, false);
+          return;
+        }
+
+        const emails = emailsBySender.get(normalizedEmail) || [];
+        const hasConnections = emails.some((email: any) =>
+          email.client_id || email.legacy_id || email.contact_id
+        );
+        connectionsMap.set(lead.id, hasConnections);
+      });
+
+      // Merge with existing connections map to preserve state, only update changed leads
+      // This ensures the green icon persists even when leads state is updated (e.g., after marking as read)
+      setLeadsWithConnections(prev => {
+        const merged = new Map(prev);
+        connectionsMap.forEach((hasConnections, leadId) => {
+          merged.set(leadId, hasConnections);
+        });
+        return merged;
+      });
+    } catch (error) {
+      console.error('Error checking connections for all leads:', error);
+    }
+  }, []);
+
   // Fetch email leads (grouped by sender email)
   useEffect(() => {
     const fetchEmailLeads = async () => {
       try {
         setLoading(true);
-        
+
         // Fetch ALL incoming emails to office@lawoffice.org.il
         // IMPORTANT: We do NOT filter by client_id, legacy_id, or contact_id
         // This query returns ALL emails sent to office@lawoffice.org.il, regardless of:
@@ -326,7 +407,7 @@ const EmailThreadLeadPage: React.FC = () => {
         let blockedCount = 0;
         let noSenderCount = 0;
         const blockedSenders = new Map<string, number>(); // Track which senders are being blocked
-        
+
         (emailsData || []).forEach((email: any) => {
           const senderEmail = email.sender_email?.toLowerCase() || '';
           if (!senderEmail) {
@@ -360,7 +441,7 @@ const EmailThreadLeadPage: React.FC = () => {
           if (!email.is_read) {
             lead.unread_count++;
           }
-          
+
           // Update last message if this is more recent
           if (new Date(email.sent_at) > new Date(lead.last_message_at)) {
             lead.last_message_at = email.sent_at;
@@ -374,7 +455,7 @@ const EmailThreadLeadPage: React.FC = () => {
 
         console.log(`📊 Email grouping summary: ${leadsList.length} unique senders, ${blockedCount} blocked, ${noSenderCount} no sender email`);
         console.log(`📊 Total processed: ${leadsList.length} leads from ${emailsData?.length || 0} emails`);
-        
+
         // Log blocked domains to help debug
         if (blockedCount > 0) {
           const topBlockedDomains = Array.from(blockedSenders.entries())
@@ -384,6 +465,9 @@ const EmailThreadLeadPage: React.FC = () => {
         }
 
         setLeads(leadsList);
+
+        // Check connections for all leads
+        checkConnectionsForAllLeads(leadsList);
       } catch (error) {
         console.error('Error fetching email leads:', error);
         toast.error('Failed to load email leads');
@@ -393,7 +477,15 @@ const EmailThreadLeadPage: React.FC = () => {
     };
 
     fetchEmailLeads();
-  }, []);
+  }, [checkConnectionsForAllLeads]);
+
+  // Re-check connections whenever leads change (e.g., after marking emails as read)
+  // This ensures the green icon persists even after state updates
+  useEffect(() => {
+    if (leads.length > 0) {
+      checkConnectionsForAllLeads(leads);
+    }
+  }, [leads, checkConnectionsForAllLeads]);
 
   // Filter leads based on search
   const filteredLeads = leads.filter(lead =>
@@ -411,13 +503,10 @@ const EmailThreadLeadPage: React.FC = () => {
 
     try {
       setChatLoading(true);
-      
-      // Fetch ALL incoming messages to office@lawoffice.org.il from this sender
-      // IMPORTANT: We do NOT filter by client_id, legacy_id, or contact_id
-      // This query returns ALL emails sent to office@lawoffice.org.il from this sender, regardless of:
-      // - Whether they are linked to a lead (client_id or legacy_id)
-      // - Whether they are linked to a contact (contact_id)
-      // - Whether they have no links at all (all ID fields are null)
+
+      // Fetch ONLY incoming messages received to office@lawoffice.org.il from this sender
+      // CRITICAL: We ONLY fetch emails that were received at office@lawoffice.org.il
+      // This ensures we don't show emails from client/contact interactions that weren't sent to office@lawoffice.org.il
       const incomingPromise = supabase
         .from('emails')
         .select(
@@ -429,18 +518,20 @@ const EmailThreadLeadPage: React.FC = () => {
         .order('sent_at', { ascending: true })
         .limit(200);
 
-      // Fetch outgoing messages
+      // Fetch outgoing messages sent FROM office@lawoffice.org.il OR from the logged-in user's email
+      // This includes both office emails and replies sent by the logged-in user from the email leads page
       const outgoingPromise = userEmail
         ? supabase
-            .from('emails')
-            .select(
-              'id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments'
-            )
-            .eq('direction', 'outgoing')
-            .eq('sender_email', userEmail)
-            .ilike('recipient_list', `%${selectedLead.sender_email}%`)
-            .order('sent_at', { ascending: true })
-            .limit(200)
+          .from('emails')
+          .select(
+            'id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments'
+          )
+          .eq('direction', 'outgoing')
+          // Fetch outgoing emails where sender is either office@lawoffice.org.il OR the logged-in user's email
+          .or(`sender_email.ilike.%office@lawoffice.org.il%,sender_email.eq.${userEmail}`)
+          .ilike('recipient_list', `%${selectedLead.sender_email}%`)
+          .order('sent_at', { ascending: true })
+          .limit(200)
         : Promise.resolve({ data: [], error: null });
 
       const [{ data: incomingData, error: incomingError }, { data: outgoingRaw, error: outgoingError }] =
@@ -464,7 +555,7 @@ const EmailThreadLeadPage: React.FC = () => {
             // If it's a string, parse it
             if (typeof email.attachments === 'string') {
               parsedAttachments = JSON.parse(email.attachments);
-            } 
+            }
             // If it's already an array, use it directly
             else if (Array.isArray(email.attachments)) {
               parsedAttachments = email.attachments;
@@ -482,7 +573,7 @@ const EmailThreadLeadPage: React.FC = () => {
             parsedAttachments = [];
           }
         }
-        
+
         // Filter out inline attachments that shouldn't be displayed as separate attachments
         parsedAttachments = parsedAttachments.filter((att: any) => {
           // Only show non-inline attachments or if isInline is false/undefined
@@ -515,14 +606,14 @@ const EmailThreadLeadPage: React.FC = () => {
       // Secondary: message_id (if available)
       const messageMap = new Map<string, EmailMessage & { _dbId: string | number }>();
       const duplicateLog: Array<{ key: string; count: number; message_ids: string[] }> = [];
-      
+
       formattedMessages.forEach((message) => {
         // Create a unique key for deduplication
         // PRIMARY: Use sender_email + sent_at (normalized timestamp) as the main deduplication key
         // This ensures same sender + same time = same email, regardless of message_id
         const sentAt = message.sent_at ? new Date(message.sent_at).toISOString() : '';
         const normalizedSender = (message.sender_email || '').toLowerCase().trim();
-        
+
         // Primary deduplication key: sender + timestamp
         // Round timestamp to nearest second to handle microsecond differences
         let timestampKey = sentAt;
@@ -537,9 +628,9 @@ const EmailThreadLeadPage: React.FC = () => {
             timestampKey = sentAt;
           }
         }
-        
+
         const uniqueKey = `${normalizedSender}_${timestampKey}`;
-        
+
         // Track duplicates for logging
         const existingMessage = messageMap.get(uniqueKey);
         if (existingMessage) {
@@ -555,7 +646,7 @@ const EmailThreadLeadPage: React.FC = () => {
             });
           }
         }
-        
+
         // If we already have this message (same sender + timestamp), keep the one with more complete data
         if (!existingMessage) {
           messageMap.set(uniqueKey, message);
@@ -563,7 +654,7 @@ const EmailThreadLeadPage: React.FC = () => {
           // Prefer message with message_id, or with more complete body_html
           const existingHasMessageId = existingMessage.message_id && existingMessage.message_id.trim();
           const currentHasMessageId = message.message_id && message.message_id.trim();
-          
+
           if (currentHasMessageId && !existingHasMessageId) {
             messageMap.set(uniqueKey, message);
           } else if (existingHasMessageId && !currentHasMessageId) {
@@ -572,7 +663,7 @@ const EmailThreadLeadPage: React.FC = () => {
             // Both have or don't have message_id, prefer the one with more complete body
             const existingBodyLength = (existingMessage.body_html || existingMessage.body_preview || '').length;
             const currentBodyLength = (message.body_html || message.body_preview || '').length;
-            
+
             // If body lengths are equal, prefer the one with later database ID (more recent insert)
             if (currentBodyLength > existingBodyLength) {
               messageMap.set(uniqueKey, message);
@@ -590,8 +681,24 @@ const EmailThreadLeadPage: React.FC = () => {
       });
 
       // Remove _dbId before setting state (it's only for deduplication)
+      // CRITICAL: Additional client-side filtering to ensure ONLY emails with office@lawoffice.org.il in recipient (incoming) or sender (outgoing)
+      // This prevents emails from client/contact interactions that don't involve office@lawoffice.org.il from appearing
       const combinedMessages = Array.from(messageMap.values())
         .map(({ _dbId, ...message }) => message as EmailMessage)
+        .filter((message) => {
+          // For incoming messages: office@lawoffice.org.il must be in recipient_list
+          if (message.direction === 'incoming') {
+            const recipientList = (message.recipient_list || '').toLowerCase();
+            return recipientList.includes('office@lawoffice.org.il');
+          }
+          // For outgoing messages: sender must be office@lawoffice.org.il OR the logged-in user's email
+          if (message.direction === 'outgoing') {
+            const senderEmail = (message.sender_email || '').toLowerCase();
+            const userEmailLower = (userEmail || '').toLowerCase();
+            return senderEmail.includes('office@lawoffice.org.il') || senderEmail === userEmailLower;
+          }
+          return false; // Reject any messages that don't match the criteria
+        })
         .sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
 
       // Debug: Log messages with attachments
@@ -621,7 +728,7 @@ const EmailThreadLeadPage: React.FC = () => {
           });
         }
       }
-      
+
       // Also log if we see duplicate message_ids in the raw data
       const messageIdCounts = new Map<string, number>();
       formattedMessages.forEach(msg => {
@@ -636,7 +743,7 @@ const EmailThreadLeadPage: React.FC = () => {
 
       setMessages(combinedMessages);
       await markEmailsAsRead(selectedLead.sender_email);
-      
+
       // Hydrate email bodies if they're missing or truncated
       if (userId && combinedMessages.length > 0) {
         hydrateEmailBodies(combinedMessages);
@@ -657,10 +764,10 @@ const EmailThreadLeadPage: React.FC = () => {
     const requiresHydration = messages.filter(message => {
       const body = (message.body_html || '').trim();
       const preview = (message.body_preview || '').trim();
-      
+
       // If both are empty or very short, need hydration
       if (!body && !preview) return true;
-      
+
       // If body_html is empty and preview is short or matches subject, need hydration
       if (!body && preview) {
         const normalised = preview.replace(/<br\s*\/?>/gi, '').replace(/&nbsp;/g, ' ').trim();
@@ -669,7 +776,7 @@ const EmailThreadLeadPage: React.FC = () => {
           return true;
         }
       }
-      
+
       return false;
     });
 
@@ -683,7 +790,7 @@ const EmailThreadLeadPage: React.FC = () => {
       requiresHydration.map(async message => {
         const messageId = message.message_id || message.id;
         if (!messageId) return;
-        
+
         try {
           const rawContent = await fetchEmailBodyFromBackend(userId, messageId);
           if (!rawContent || typeof rawContent !== 'string') return;
@@ -714,7 +821,7 @@ const EmailThreadLeadPage: React.FC = () => {
           const messageId = message.message_id || message.id;
           const update = updates[messageId];
           if (!update) return message;
-          
+
           return {
             ...message,
             body_html: update.html,
@@ -728,6 +835,202 @@ const EmailThreadLeadPage: React.FC = () => {
   useEffect(() => {
     fetchMessages();
   }, [fetchMessages]);
+
+  // Fetch connected leads and contacts for the selected email
+  const fetchConnectedLeadsAndContacts = useCallback(async () => {
+    if (!selectedLead?.sender_email) {
+      setConnectedLeads([]);
+      setConnectedContacts([]);
+      return;
+    }
+
+    setIsLoadingConnections(true);
+    try {
+      // Fetch all emails with this sender_email to get client_id, legacy_id, and contact_id
+      const { data: emailsData, error: emailsError } = await supabase
+        .from('emails')
+        .select('client_id, legacy_id, contact_id')
+        .eq('sender_email', selectedLead.sender_email)
+        .or('client_id.not.is.null,legacy_id.not.is.null,contact_id.not.is.null');
+
+      if (emailsError) {
+        console.error('Error fetching connected emails:', emailsError);
+        setConnectedLeads([]);
+        setConnectedContacts([]);
+        return;
+      }
+
+      // Get unique client_ids and legacy_ids
+      const clientIds = new Set<string>();
+      const legacyIds = new Set<number>();
+      const contactIds = new Set<number>();
+
+      (emailsData || []).forEach((email: any) => {
+        if (email.client_id) clientIds.add(email.client_id);
+        if (email.legacy_id) legacyIds.add(email.legacy_id);
+        if (email.contact_id) contactIds.add(email.contact_id);
+      });
+
+      // Fetch leads from new leads table
+      const leadsPromises: Promise<any>[] = [];
+      if (clientIds.size > 0) {
+        leadsPromises.push(
+          supabase
+            .from('leads')
+            .select('id, lead_number, name')
+            .in('id', Array.from(clientIds))
+        );
+      }
+
+      // Fetch leads from legacy leads table
+      if (legacyIds.size > 0) {
+        leadsPromises.push(
+          supabase
+            .from('leads_lead')
+            .select('id, name, master_id')
+            .in('id', Array.from(legacyIds))
+        );
+      }
+
+      const [newLeadsResult, legacyLeadsResult] = await Promise.all(leadsPromises);
+
+      const leadsList: Array<{ id: string; lead_number: string; name: string; isLegacy: boolean }> = [];
+
+      // Process new leads
+      if (newLeadsResult?.data) {
+        newLeadsResult.data.forEach((lead: any) => {
+          leadsList.push({
+            id: lead.id,
+            lead_number: lead.lead_number || lead.id,
+            name: lead.name || 'Unknown',
+            isLegacy: false,
+          });
+        });
+      }
+
+      // Process legacy leads
+      if (legacyLeadsResult?.data) {
+        for (const lead of legacyLeadsResult.data) {
+          let leadNumber: string;
+          if (lead.master_id) {
+            // It's a sublead - calculate suffix
+            const { data: subleads } = await supabase
+              .from('leads_lead')
+              .select('id')
+              .eq('master_id', lead.master_id)
+              .not('master_id', 'is', null)
+              .order('id', { ascending: true });
+
+            if (subleads) {
+              const suffix = subleads.findIndex((sub: any) => sub.id === lead.id) + 2;
+              leadNumber = `${lead.master_id}/${suffix}`;
+            } else {
+              leadNumber = `${lead.master_id}/?`;
+            }
+          } else {
+            // Master lead - use id as lead_number
+            leadNumber = String(lead.id);
+          }
+
+          leadsList.push({
+            id: String(lead.id),
+            lead_number: leadNumber,
+            name: lead.name || 'Unknown',
+            isLegacy: true,
+          });
+        }
+      }
+
+      // Fetch contacts and their associated leads
+      const contactsList: Array<{ id: number; name: string; lead_number: string; isLegacy: boolean }> = [];
+      if (contactIds.size > 0) {
+        const { data: contactsData, error: contactsError } = await supabase
+          .from('leads_contact')
+          .select('id, name, newlead_id, lead_id')
+          .in('id', Array.from(contactIds));
+
+        if (!contactsError && contactsData) {
+          for (const contact of contactsData) {
+            let leadNumber: string | null = null;
+            let isLegacy = false;
+
+            // Check if contact is linked to a new lead
+            if (contact.newlead_id) {
+              const { data: newLead } = await supabase
+                .from('leads')
+                .select('lead_number')
+                .eq('id', contact.newlead_id)
+                .maybeSingle();
+
+              if (newLead) {
+                leadNumber = newLead.lead_number || contact.newlead_id;
+                isLegacy = false;
+              }
+            }
+
+            // Check if contact is linked to a legacy lead
+            if (!leadNumber && contact.lead_id) {
+              const { data: legacyLead } = await supabase
+                .from('leads_lead')
+                .select('id, master_id')
+                .eq('id', contact.lead_id)
+                .maybeSingle();
+
+              if (legacyLead) {
+                if (legacyLead.master_id) {
+                  // Sublead
+                  const { data: subleads } = await supabase
+                    .from('leads_lead')
+                    .select('id')
+                    .eq('master_id', legacyLead.master_id)
+                    .not('master_id', 'is', null)
+                    .order('id', { ascending: true });
+
+                  if (subleads) {
+                    const suffix = subleads.findIndex((sub: any) => sub.id === legacyLead.id) + 2;
+                    leadNumber = `${legacyLead.master_id}/${suffix}`;
+                  } else {
+                    leadNumber = `${legacyLead.master_id}/?`;
+                  }
+                } else {
+                  leadNumber = String(legacyLead.id);
+                }
+                isLegacy = true;
+              }
+            }
+
+            if (leadNumber) {
+              contactsList.push({
+                id: contact.id,
+                name: contact.name || 'Unknown Contact',
+                lead_number: leadNumber,
+                isLegacy,
+              });
+            }
+          }
+        }
+      }
+
+      // Deduplicate leads by lead_number
+      const uniqueLeads = leadsList.filter((lead, index, self) =>
+        index === self.findIndex((l) => l.lead_number === lead.lead_number)
+      );
+
+      setConnectedLeads(uniqueLeads);
+      setConnectedContacts(contactsList);
+    } catch (error) {
+      console.error('Error fetching connected leads and contacts:', error);
+      setConnectedLeads([]);
+      setConnectedContacts([]);
+    } finally {
+      setIsLoadingConnections(false);
+    }
+  }, [selectedLead?.sender_email]);
+
+  // Fetch connected leads/contacts when selectedLead changes
+  useEffect(() => {
+    fetchConnectedLeadsAndContacts();
+  }, [fetchConnectedLeadsAndContacts]);
 
   useEffect(() => {
     if (selectedLead) {
@@ -995,7 +1298,7 @@ const EmailThreadLeadPage: React.FC = () => {
     }
     const diffTime = today.getTime() - date.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    
+
     if (diffDays <= 7) {
       return date.toLocaleDateString('en-US', { weekday: 'long' });
     }
@@ -1058,7 +1361,7 @@ const EmailThreadLeadPage: React.FC = () => {
       ];
 
       // Deduplicate by lead_number
-      const uniqueLeads = allLeads.filter((lead, index, self) => 
+      const uniqueLeads = allLeads.filter((lead, index, self) =>
         index === self.findIndex(l => l.lead_number === lead.lead_number)
       );
 
@@ -1096,7 +1399,7 @@ const EmailThreadLeadPage: React.FC = () => {
       }
 
       const leadName = lead.sender_name?.trim() || lead.sender_email.split('@')[0] || 'Email Lead';
-      
+
       const { data, error } = await supabase.rpc('create_new_lead_v3', {
         p_lead_name: leadName,
         p_lead_email: lead.sender_email,
@@ -1124,7 +1427,7 @@ const EmailThreadLeadPage: React.FC = () => {
       // Update emails to link them to the new lead
       const { error: updateError } = await supabase
         .from('emails')
-        .update({ 
+        .update({
           client_id: newLead.id,
           legacy_id: null
         })
@@ -1137,7 +1440,7 @@ const EmailThreadLeadPage: React.FC = () => {
       }
 
       toast.success(`Lead ${newLead.lead_number} created successfully!`);
-      
+
       setLeads(prevLeads => prevLeads.filter(l => l.id !== lead.id));
       setSelectedLead(null);
       window.location.href = `/clients/${newLead.lead_number}`;
@@ -1208,7 +1511,7 @@ const EmailThreadLeadPage: React.FC = () => {
             .order('manual_id', { ascending: false })
             .limit(1)
             .single();
-          
+
           if (maxLeadData?.manual_id) {
             const maxId = BigInt(String(maxLeadData.manual_id));
             manualId = (maxId + BigInt(1)).toString();
@@ -1310,7 +1613,7 @@ const EmailThreadLeadPage: React.FC = () => {
       // Update emails to link them to the sublead
       const { error: updateError } = await supabase
         .from('emails')
-        .update({ 
+        .update({
           client_id: insertedSubLead.id,
           legacy_id: null
         })
@@ -1323,7 +1626,7 @@ const EmailThreadLeadPage: React.FC = () => {
       }
 
       toast.success(`Sublead ${subLeadNumber} created successfully!`);
-      
+
       setLeads(prevLeads => prevLeads.filter(l => l.id !== selectedLead.id));
       setSelectedLead(null);
       setShowLeadSearchModal(false);
@@ -1336,6 +1639,19 @@ const EmailThreadLeadPage: React.FC = () => {
       toast.error('Failed to create sublead');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Handle navigation to client page
+  const handleNavigateToClient = (leadNumber: string, event: React.MouseEvent) => {
+    const url = `/clients/${leadNumber}`;
+
+    if (event.ctrlKey || event.metaKey) {
+      // Open in new tab
+      window.open(url, '_blank');
+    } else {
+      // Navigate in current tab
+      window.location.href = url;
     }
   };
 
@@ -1381,7 +1697,7 @@ const EmailThreadLeadPage: React.FC = () => {
             .order('id', { ascending: false })
             .limit(1)
             .single();
-          
+
           const nextId = maxIdData ? maxIdData.id + 1 : 1;
           contactResult = await supabase
             .from('leads_contact')
@@ -1431,7 +1747,7 @@ const EmailThreadLeadPage: React.FC = () => {
             .order('id', { ascending: false })
             .limit(1)
             .single();
-          
+
           const nextRelId = maxRelIdData ? maxRelIdData.id + 1 : 1;
           relationshipResult = await supabase
             .from('lead_leadcontact')
@@ -1506,7 +1822,7 @@ const EmailThreadLeadPage: React.FC = () => {
       // Update emails to link them to the target lead
       const { error: updateError } = await supabase
         .from('emails')
-        .update({ 
+        .update({
           client_id: isLegacyLead ? null : targetLeadId,
           legacy_id: isLegacyLead ? targetLeadId : null
         })
@@ -1519,7 +1835,7 @@ const EmailThreadLeadPage: React.FC = () => {
       }
 
       toast.success(`Contact added to lead ${targetLead.lead_number} successfully!`);
-      
+
       setLeads(prevLeads => prevLeads.filter(l => l.id !== selectedLead.id));
       setSelectedLead(null);
       setShowLeadSearchModal(false);
@@ -1603,9 +1919,8 @@ const EmailThreadLeadPage: React.FC = () => {
                           setShowChat(true);
                         }
                       }}
-                      className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors overflow-hidden ${
-                        isSelected ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''
-                      }`}
+                      className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors overflow-hidden ${isSelected ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''
+                        }`}
                     >
                       <div className="flex items-start gap-3 min-w-0 w-full">
                         {/* Avatar */}
@@ -1617,6 +1932,12 @@ const EmailThreadLeadPage: React.FC = () => {
                           ) : (
                             <EnvelopeIcon className="w-5 h-5 md:w-6 md:h-6 text-blue-700" />
                           )}
+                          {/* Connection indicator icon */}
+                          {leadsWithConnections.get(lead.id) && (
+                            <div className="absolute -bottom-1 -right-1 w-5 h-5 md:w-6 md:h-6 rounded-full border-2 border-white flex items-center justify-center shadow-sm" style={{ backgroundColor: '#4218cc' }}>
+                              <LinkIcon className="w-3 h-3 md:w-4 md:h-4 text-white" />
+                            </div>
+                          )}
                         </div>
 
                         {/* Lead Info */}
@@ -1624,8 +1945,8 @@ const EmailThreadLeadPage: React.FC = () => {
                           <div className="flex items-center justify-between gap-2 mb-1 min-w-0">
                             <div className="flex flex-col min-w-0 flex-1">
                               <h3 className="font-semibold text-gray-900 truncate">
-                                {lead.sender_name && lead.sender_name !== lead.sender_email 
-                                  ? lead.sender_name 
+                                {lead.sender_name && lead.sender_name !== lead.sender_email
+                                  ? lead.sender_name
                                   : lead.sender_email || 'Unknown Sender'}
                               </h3>
                               {lead.sender_name && lead.sender_name !== lead.sender_email && (
@@ -1643,14 +1964,14 @@ const EmailThreadLeadPage: React.FC = () => {
                               </span>
                             </div>
                           </div>
-                          
+
                           <p className="text-sm text-gray-600 truncate mb-1 font-medium">
                             {lead.last_subject}
                           </p>
                           <p className="text-sm text-gray-600 truncate">
                             {getMessagePreview(lead.last_message_preview)}
                           </p>
-                          
+
                         </div>
                       </div>
                     </div>
@@ -1687,8 +2008,8 @@ const EmailThreadLeadPage: React.FC = () => {
                       </div>
                       <div className="min-w-0 flex-1">
                         <h3 className="font-semibold text-gray-900 text-sm truncate">
-                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.sender_email 
-                            ? selectedLead.sender_name 
+                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.sender_email
+                            ? selectedLead.sender_name
                             : selectedLead.sender_email || 'Unknown Sender'}
                         </h3>
                         <p className="text-xs text-gray-500 truncate">
@@ -1717,8 +2038,8 @@ const EmailThreadLeadPage: React.FC = () => {
                       </div>
                       <div>
                         <h3 className="font-semibold text-gray-900">
-                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.sender_email 
-                            ? selectedLead.sender_name 
+                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.sender_email
+                            ? selectedLead.sender_name
                             : selectedLead.sender_email || 'Unknown Sender'}
                         </h3>
                         {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.sender_email && (
@@ -1732,6 +2053,97 @@ const EmailThreadLeadPage: React.FC = () => {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
+                      {/* Connected Leads Dropdown - Only show if there are connected leads/contacts */}
+                      {(connectedLeads.length > 0 || connectedContacts.length > 0 || isLoadingConnections) && (
+                        <div className="relative">
+                          <button
+                            className="btn btn-outline"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShowConnectedLeadsDropdown(!showConnectedLeadsDropdown);
+                              setShowActionDropdown(false);
+                            }}
+                          >
+                            <LinkIcon className="w-4 h-4 mr-2" />
+                            Connected Leads
+                            <ChevronDownIcon className="w-4 h-4 ml-2" />
+                          </button>
+                          {showConnectedLeadsDropdown && (
+                            <>
+                              <div
+                                className="fixed inset-0 z-40"
+                                onClick={() => setShowConnectedLeadsDropdown(false)}
+                              />
+                              <ul
+                                className="absolute right-0 top-full mt-2 menu p-2 shadow-lg bg-base-100 rounded-box w-80 max-h-[70vh] overflow-y-auto z-50 border border-gray-200"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {isLoadingConnections ? (
+                                  <li>
+                                    <div className="flex items-center gap-2 text-sm text-gray-500 py-2">
+                                      <span className="loading loading-spinner loading-xs"></span>
+                                      <span>Loading connections...</span>
+                                    </div>
+                                  </li>
+                                ) : (
+                                  <>
+                                    {connectedLeads.map((lead) => (
+                                      <li key={`lead-${lead.id}`}>
+                                        <button
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            setShowConnectedLeadsDropdown(false);
+                                            handleNavigateToClient(lead.lead_number, e);
+                                          }}
+                                          className="flex items-center gap-2 w-full text-left hover:bg-gray-100 rounded px-2 py-2"
+                                        >
+                                          <UserGroupIcon className="w-4 h-4 text-blue-600 flex-shrink-0" />
+                                          <div className="flex-1 min-w-0">
+                                            <div className="text-sm font-medium text-gray-900 truncate">{lead.name}</div>
+                                            <div className="text-xs text-gray-500 truncate">
+                                              {lead.lead_number}
+                                              {lead.isLegacy && <span className="ml-1 text-xs bg-gray-100 text-gray-600 px-1 rounded">Legacy</span>}
+                                            </div>
+                                          </div>
+                                        </button>
+                                      </li>
+                                    ))}
+                                    {connectedContacts.map((contact) => (
+                                      <li key={`contact-${contact.id}`}>
+                                        <button
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            setShowConnectedLeadsDropdown(false);
+                                            handleNavigateToClient(contact.lead_number, e);
+                                          }}
+                                          className="flex items-center gap-2 w-full text-left hover:bg-gray-100 rounded px-2 py-2"
+                                        >
+                                          <LinkIcon className="w-4 h-4 text-purple-600 flex-shrink-0" />
+                                          <div className="flex-1 min-w-0">
+                                            <div className="text-sm font-medium text-gray-900 truncate">{contact.name}</div>
+                                            <div className="text-xs text-gray-500 truncate">
+                                              Lead: {contact.lead_number}
+                                              {contact.isLegacy && <span className="ml-1 text-xs bg-gray-100 text-gray-600 px-1 rounded">Legacy</span>}
+                                            </div>
+                                          </div>
+                                        </button>
+                                      </li>
+                                    ))}
+                                    {connectedLeads.length === 0 && connectedContacts.length === 0 && !isLoadingConnections && (
+                                      <li>
+                                        <div className="text-sm text-gray-500 py-2 text-center">No connected leads or contacts</div>
+                                      </li>
+                                    )}
+                                  </>
+                                )}
+                              </ul>
+                            </>
+                          )}
+                        </div>
+                      )}
+
                       {/* Action Dropdown */}
                       <div className="relative">
                         <button
@@ -1739,6 +2151,7 @@ const EmailThreadLeadPage: React.FC = () => {
                           onClick={(e) => {
                             e.stopPropagation();
                             setShowActionDropdown(!showActionDropdown);
+                            setShowConnectedLeadsDropdown(false);
                           }}
                         >
                           <UserPlusIcon className="w-4 h-4 mr-2" />
@@ -1822,13 +2235,13 @@ const EmailThreadLeadPage: React.FC = () => {
                     </div>
                   ) : (
                     messages.map((message, index) => {
-                      const showDateSeparator = index === 0 || 
+                      const showDateSeparator = index === 0 ||
                         new Date(message.sent_at).toDateString() !== new Date(messages[index - 1].sent_at).toDateString();
                       const isOutgoing = message.direction === 'outgoing';
-                      
+
                       // Create a unique key combining message_id, direction, and sent_at to ensure uniqueness
                       const uniqueKey = `${message.message_id || message.id || 'msg'}_${message.direction}_${message.sent_at}_${index}`;
-                      
+
                       return (
                         <React.Fragment key={uniqueKey}>
                           {showDateSeparator && (
@@ -1838,7 +2251,7 @@ const EmailThreadLeadPage: React.FC = () => {
                               </div>
                             </div>
                           )}
-                          
+
                           <div className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
                             <div className={`text-xs font-semibold mb-1 ${isOutgoing ? 'text-blue-600 text-right' : 'text-gray-600 text-left'}`}>
                               {isOutgoing ? (currentUserFullName || userEmail || 'You') : (message.sender_name || selectedLead?.sender_name || 'Sender')}
@@ -1856,7 +2269,7 @@ const EmailThreadLeadPage: React.FC = () => {
                                   })}
                                 </div>
                               </div>
-                              
+
                               {message.body_html ? (
                                 <div
                                   dangerouslySetInnerHTML={{ __html: message.body_html }}
@@ -1884,12 +2297,12 @@ const EmailThreadLeadPage: React.FC = () => {
                                       if (!attachment || (!attachment.id && !attachment.name)) {
                                         return null; // Skip invalid attachments
                                       }
-                                      
+
                                       const attachmentKey = attachment.id || attachment.name || `${message.id}-${idx}`;
                                       const attachmentName = attachment.name || `Attachment ${idx + 1}`;
                                       const isDownloading =
                                         attachment.id && downloadingAttachments[attachment.id];
-                                      
+
                                       return (
                                         <button
                                           key={attachmentKey}

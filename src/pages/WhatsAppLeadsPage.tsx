@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
@@ -123,6 +123,13 @@ const WhatsAppLeadsPage: React.FC = () => {
   const [leadSearchResults, setLeadSearchResults] = useState<any[]>([]);
   const [isSearchingLeads, setIsSearchingLeads] = useState(false);
   const [actionType, setActionType] = useState<'sublead' | 'contact' | null>(null);
+
+  // Connected leads state
+  const [showConnectedLeadsDropdown, setShowConnectedLeadsDropdown] = useState(false);
+  const [connectedLeads, setConnectedLeads] = useState<Array<{ id: string; lead_number: string; name: string; isLegacy: boolean }>>([]);
+  const [connectedContacts, setConnectedContacts] = useState<Array<{ id: number; name: string; lead_number: string; isLegacy: boolean }>>([]);
+  const [isLoadingConnections, setIsLoadingConnections] = useState(false);
+  const [leadsWithConnections, setLeadsWithConnections] = useState<Map<string, boolean>>(new Map());
 
   // Helper function to fetch user name by ID
   const getUserName = async (userId: string) => {
@@ -1290,6 +1297,240 @@ const WhatsAppLeadsPage: React.FC = () => {
     }
   }, [leadSearchQuery, showLeadSearchModal]);
 
+  // Fetch connected leads and contacts for selected lead
+  const fetchConnectedLeadsAndContacts = useCallback(async () => {
+    if (!selectedLead?.phone_number) {
+      setConnectedLeads([]);
+      setConnectedContacts([]);
+      return;
+    }
+
+    setIsLoadingConnections(true);
+    try {
+      // Fetch WhatsApp messages with this phone number that are connected to leads/contacts
+      const { data: messagesData, error: messagesError } = await supabase
+        .from('whatsapp_messages')
+        .select('lead_id, legacy_id, contact_id')
+        .eq('phone_number', selectedLead.phone_number)
+        .or('lead_id.not.is.null,legacy_id.not.is.null,contact_id.not.is.null');
+
+      if (messagesError) {
+        console.error('Error fetching connected WhatsApp messages:', messagesError);
+        setConnectedLeads([]);
+        setConnectedContacts([]);
+        return;
+      }
+
+      const clientIds = new Set<string>();
+      const legacyIds = new Set<number>();
+      const contactIds = new Set<number>();
+
+      (messagesData || []).forEach((message: any) => {
+        if (message.lead_id) clientIds.add(message.lead_id);
+        if (message.legacy_id) legacyIds.add(message.legacy_id);
+        if (message.contact_id) contactIds.add(message.contact_id);
+      });
+
+      const leadsPromises: Promise<any>[] = [];
+      if (clientIds.size > 0) {
+        leadsPromises.push(
+          supabase
+            .from('leads')
+            .select('id, lead_number, name')
+            .in('id', Array.from(clientIds))
+        );
+      }
+
+      if (legacyIds.size > 0) {
+        leadsPromises.push(
+          supabase
+            .from('leads_lead')
+            .select('id, name, master_id')
+            .in('id', Array.from(legacyIds))
+        );
+      }
+
+      const [newLeadsResult, legacyLeadsResult] = await Promise.all(leadsPromises);
+
+      const fetchedLeads: Array<{ id: string; lead_number: string; name: string; isLegacy: boolean }> = [];
+      if (newLeadsResult && !newLeadsResult.error) {
+        newLeadsResult.data.forEach((lead: any) => {
+          fetchedLeads.push({ id: lead.id, lead_number: lead.lead_number, name: lead.name, isLegacy: false });
+        });
+      }
+
+      if (legacyLeadsResult && !legacyLeadsResult.error) {
+        for (const lead of legacyLeadsResult.data) {
+          let formattedNumber: string = String(lead.id);
+          if (lead.master_id) {
+            const { data: subleads } = await supabase
+              .from('leads_lead')
+              .select('id')
+              .eq('master_id', lead.master_id)
+              .not('master_id', 'is', null)
+              .order('id', { ascending: true });
+
+            if (subleads) {
+              const currentLeadIndex = subleads.findIndex(sub => sub.id === lead.id);
+              if (currentLeadIndex >= 0) {
+                const suffix = currentLeadIndex + 2;
+                formattedNumber = `${lead.master_id}/${suffix}`;
+              }
+            }
+          }
+          fetchedLeads.push({ id: String(lead.id), lead_number: formattedNumber, name: lead.name, isLegacy: true });
+        }
+      }
+      setConnectedLeads(fetchedLeads);
+
+      const fetchedContacts: Array<{ id: number; name: string; lead_number: string; isLegacy: boolean }> = [];
+      if (contactIds.size > 0) {
+        const { data: contactsData, error: contactsError } = await supabase
+          .from('leads_contact')
+          .select('id, name, newlead_id, lead_id')
+          .in('id', Array.from(contactIds));
+
+        if (contactsError) {
+          console.error('Error fetching contacts:', contactsError);
+        } else {
+          for (const contact of contactsData || []) {
+            let contactLeadNumber: string | null = null;
+            let isLegacyContactLead = false;
+
+            if (contact.newlead_id) {
+              const { data: leadData } = await supabase
+                .from('leads')
+                .select('lead_number')
+                .eq('id', contact.newlead_id)
+                .maybeSingle();
+              if (leadData) contactLeadNumber = leadData.lead_number;
+            } else if (contact.lead_id) {
+              const { data: legacyLeadData } = await supabase
+                .from('leads_lead')
+                .select('id, master_id')
+                .eq('id', contact.lead_id)
+                .maybeSingle();
+              if (legacyLeadData) {
+                isLegacyContactLead = true;
+                let formattedNumber: string = String(legacyLeadData.id);
+                if (legacyLeadData.master_id) {
+                  const { data: subleads } = await supabase
+                    .from('leads_lead')
+                    .select('id')
+                    .eq('master_id', legacyLeadData.master_id)
+                    .not('master_id', 'is', null)
+                    .order('id', { ascending: true });
+
+                  if (subleads) {
+                    const currentLeadIndex = subleads.findIndex(sub => sub.id === legacyLeadData.id);
+                    if (currentLeadIndex >= 0) {
+                      const suffix = currentLeadIndex + 2;
+                      formattedNumber = `${legacyLeadData.master_id}/${suffix}`;
+                    }
+                  }
+                }
+                contactLeadNumber = formattedNumber;
+              }
+            }
+
+            if (contactLeadNumber) {
+              fetchedContacts.push({
+                id: contact.id,
+                name: contact.name,
+                lead_number: contactLeadNumber,
+                isLegacy: isLegacyContactLead,
+              });
+            }
+          }
+        }
+      }
+      setConnectedContacts(fetchedContacts);
+
+    } catch (error) {
+      console.error('Error fetching connected leads and contacts:', error);
+    } finally {
+      setIsLoadingConnections(false);
+    }
+  }, [selectedLead?.phone_number]);
+
+  // Check connections for all leads in the list
+  const checkConnectionsForAllLeads = useCallback(async (leadsList: WhatsAppLead[]) => {
+    if (!leadsList || leadsList.length === 0) return;
+
+    try {
+      const phoneNumbers = leadsList.map(lead => lead.phone_number).filter(Boolean);
+      if (phoneNumbers.length === 0) return;
+
+      const { data: messagesData, error: messagesError } = await supabase
+        .from('whatsapp_messages')
+        .select('phone_number, lead_id, legacy_id, contact_id')
+        .in('phone_number', phoneNumbers)
+        .or('lead_id.not.is.null,legacy_id.not.is.null,contact_id.not.is.null');
+
+      if (messagesError) {
+        console.error('Error checking connections for leads:', messagesError);
+        return;
+      }
+
+      const newConnectionsMap = new Map<string, boolean>();
+      
+      const messagesByPhone = new Map<string, any[]>();
+      (messagesData || []).forEach((message: any) => {
+        const phone = message.phone_number?.toLowerCase();
+        if (phone) {
+          if (!messagesByPhone.has(phone)) {
+            messagesByPhone.set(phone, []);
+          }
+          messagesByPhone.get(phone)!.push(message);
+        }
+      });
+
+      leadsList.forEach(lead => {
+        const normalizedPhone = lead.phone_number?.toLowerCase();
+        if (!normalizedPhone) {
+          newConnectionsMap.set(String(lead.id), false);
+          return;
+        }
+
+        const messages = messagesByPhone.get(normalizedPhone) || [];
+        const hasConnections = messages.some((message: any) => 
+          message.lead_id || message.legacy_id || message.contact_id
+        );
+        newConnectionsMap.set(String(lead.id), hasConnections);
+      });
+
+      setLeadsWithConnections(prevMap => {
+        const updatedMap = new Map(prevMap);
+        newConnectionsMap.forEach((value, key) => {
+          updatedMap.set(key, value);
+        });
+        return updatedMap;
+      });
+    } catch (error) {
+      console.error('Error checking connections for all leads:', error);
+    }
+  }, []);
+
+  // Fetch connected leads when selected lead changes
+  useEffect(() => {
+    fetchConnectedLeadsAndContacts();
+  }, [fetchConnectedLeadsAndContacts]);
+
+  // Check connections for all leads when leads list changes
+  useEffect(() => {
+    checkConnectionsForAllLeads(leads);
+  }, [leads, checkConnectionsForAllLeads]);
+
+  // Handle navigation to client page
+  const handleNavigateToClient = (leadNumber: string, e: React.MouseEvent) => {
+    const url = `/clients/${leadNumber}`;
+    if (e.ctrlKey || e.metaKey) {
+      window.open(url, '_blank');
+    } else {
+      window.location.href = url;
+    }
+  };
+
   // Handle create sublead
   const handleCreateSublead = async (parentLead: any) => {
     if (!selectedLead) return;
@@ -2160,6 +2401,18 @@ const WhatsAppLeadsPage: React.FC = () => {
                           ) : (
                             <PhoneIcon className="w-5 h-5 md:w-6 md:h-6 text-green-700 dark:text-white" />
                           )}
+                          {/* Connection indicator icon */}
+                          {leadsWithConnections.get(String(lead.id)) && !locked && (
+                            <div className="absolute -bottom-1 -right-1 w-5 h-5 md:w-6 md:h-6 rounded-full border-2 border-white flex items-center justify-center shadow-sm" style={{ backgroundColor: '#4218cc' }}>
+                              <LinkIcon className="w-3 h-3 md:w-4 md:h-4 text-white" />
+                            </div>
+                          )}
+                          {/* Connection indicator icon (when locked, show at top-right) */}
+                          {leadsWithConnections.get(String(lead.id)) && locked && (
+                            <div className="absolute -top-1 -right-1 w-5 h-5 md:w-6 md:h-6 rounded-full border-2 border-white flex items-center justify-center shadow-sm" style={{ backgroundColor: '#4218cc' }}>
+                              <LinkIcon className="w-3 h-3 md:w-4 md:h-4 text-white" />
+                            </div>
+                          )}
                           {/* Lock icon overlay */}
                           {locked && (
                             <div className="absolute -bottom-1 -right-1 bg-red-500 rounded-full p-1">
@@ -2314,6 +2567,96 @@ const WhatsAppLeadsPage: React.FC = () => {
                             <>
                               <ClockIcon className="w-5 h-5" />
                               <span>{timeLeft}</span>
+                            </>
+                          )}
+                        </div>
+                      )}
+                      {/* Connected Leads Dropdown */}
+                      {(connectedLeads.length > 0 || connectedContacts.length > 0 || isLoadingConnections) && (
+                        <div className="relative">
+                          <button
+                            className="btn btn-outline btn-primary"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShowConnectedLeadsDropdown(!showConnectedLeadsDropdown);
+                              setShowActionDropdown(false);
+                            }}
+                          >
+                            <LinkIcon className="w-4 h-4 mr-2" />
+                            Connected Leads
+                            <ChevronDownIcon className="w-4 h-4 ml-2" />
+                          </button>
+                          {showConnectedLeadsDropdown && (
+                            <>
+                              <div
+                                className="fixed inset-0 z-40"
+                                onClick={() => setShowConnectedLeadsDropdown(false)}
+                              />
+                              <ul
+                                className="absolute right-0 top-full mt-2 menu p-2 shadow-lg bg-base-100 rounded-box w-80 max-h-[70vh] overflow-y-auto z-50 border border-gray-200"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {isLoadingConnections ? (
+                                  <li>
+                                    <div className="flex items-center gap-2 text-sm text-gray-500 py-2">
+                                      <span className="loading loading-spinner loading-xs"></span>
+                                      <span>Loading connections...</span>
+                                    </div>
+                                  </li>
+                                ) : (
+                                  <>
+                                    {connectedLeads.map((lead) => (
+                                      <li key={`lead-${lead.id}`}>
+                                        <button
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            setShowConnectedLeadsDropdown(false);
+                                            handleNavigateToClient(lead.lead_number, e);
+                                          }}
+                                          className="flex items-center gap-2 w-full text-left hover:bg-gray-100 rounded px-2 py-2"
+                                        >
+                                          <UserGroupIcon className="w-4 h-4 text-blue-600 flex-shrink-0" />
+                                          <div className="flex-1 min-w-0">
+                                            <div className="text-sm font-medium text-gray-900 truncate">{lead.name}</div>
+                                            <div className="text-xs text-gray-500 truncate">
+                                              {lead.lead_number}
+                                              {lead.isLegacy && <span className="ml-1 text-xs bg-gray-100 text-gray-600 px-1 rounded">Legacy</span>}
+                                            </div>
+                                          </div>
+                                        </button>
+                                      </li>
+                                    ))}
+                                    {connectedContacts.map((contact) => (
+                                      <li key={`contact-${contact.id}`}>
+                                        <button
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            setShowConnectedLeadsDropdown(false);
+                                            handleNavigateToClient(contact.lead_number, e);
+                                          }}
+                                          className="flex items-center gap-2 w-full text-left hover:bg-gray-100 rounded px-2 py-2"
+                                        >
+                                          <LinkIcon className="w-4 h-4 text-purple-600 flex-shrink-0" />
+                                          <div className="flex-1 min-w-0">
+                                            <div className="text-sm font-medium text-gray-900 truncate">{contact.name}</div>
+                                            <div className="text-xs text-gray-500 truncate">
+                                              Lead: {contact.lead_number}
+                                              {contact.isLegacy && <span className="ml-1 text-xs bg-gray-100 text-gray-600 px-1 rounded">Legacy</span>}
+                                            </div>
+                                          </div>
+                                        </button>
+                                      </li>
+                                    ))}
+                                    {connectedLeads.length === 0 && connectedContacts.length === 0 && !isLoadingConnections && (
+                                      <li>
+                                        <div className="text-sm text-gray-500 py-2 text-center">No connected leads or contacts</div>
+                                      </li>
+                                    )}
+                                  </>
+                                )}
+                              </ul>
                             </>
                           )}
                         </div>
