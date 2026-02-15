@@ -18,7 +18,6 @@ import { CelebrationProvider } from './contexts/CelebrationContext';
 import { MailboxReconnectProvider } from './contexts/MailboxReconnectContext';
 import MoneyRainCelebration from './components/MoneyRainCelebration';
 import MailboxReconnectModal from './components/MailboxReconnectModal';
-import PWAInstallPrompt from './components/PWAInstallPrompt';
 import PWAUpdateNotification from './components/PWAUpdateNotification';
 import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIcon, UserGroupIcon, DocumentArrowUpIcon } from '@heroicons/react/24/outline';
 import Dashboard from './components/Dashboard';
@@ -937,18 +936,17 @@ const AppContent: React.FC = () => {
       <AuthProvider>
         <MailboxReconnectProvider>
           <CelebrationProvider>
-          <Router>
-            <ScrollRestoration />
-            <AppContentInner />
-            <MoneyRainCelebration />
-            <MailboxReconnectModal />
-            <PWAInstallPrompt />
-            <PWAUpdateNotification />
-            <Toaster
-              position="top-center"
-              reverseOrder={false}
-            />
-          </Router>
+            <Router>
+              <ScrollRestoration />
+              <AppContentInner />
+              <MoneyRainCelebration />
+              <MailboxReconnectModal />
+              <PWAUpdateNotification />
+              <Toaster
+                position="top-center"
+                reverseOrder={false}
+              />
+            </Router>
           </CelebrationProvider>
         </MailboxReconnectProvider>
       </AuthProvider>

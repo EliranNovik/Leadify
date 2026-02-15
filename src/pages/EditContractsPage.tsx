@@ -4,6 +4,7 @@ import { MagnifyingGlassIcon, XMarkIcon, DocumentTextIcon, ArrowLeftIcon } from 
 import { supabase } from '../lib/supabase';
 import { usePersistedState } from '../hooks/usePersistedState';
 import { toast } from 'react-hot-toast';
+import { getStageName, getStageColour } from '../lib/stageUtils';
 
 // Reports list for search functionality
 type ReportItem = {
@@ -129,7 +130,6 @@ const EditContractsPage = () => {
   const navigate = useNavigate();
   const today = new Date();
   const todayStr = today.toISOString().split('T')[0];
-  const [searchQuery, setSearchQuery] = useState<string>('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [stageMap, setStageMap] = useState<{ [key: string]: string }>({});
@@ -217,48 +217,31 @@ const EditContractsPage = () => {
     fetchEmployees();
   }, []);
 
-  // Generate search variants for multilingual matching (from Header.tsx)
-  const generateSearchVariants = (query: string): string[] => {
-    const variants: string[] = [query];
-    
-    // Hebrew to English transliteration mapping (common patterns)
-    const hebrewToEnglish: { [key: string]: string } = {
-      'א': 'a', 'ב': 'b', 'ג': 'g', 'ד': 'd', 'ה': 'h', 'ו': 'v', 'ז': 'z', 'ח': 'h',
-      'ט': 't', 'י': 'i', 'כ': 'k', 'ך': 'k', 'ל': 'l', 'מ': 'm', 'ם': 'm', 'נ': 'n',
-      'ן': 'n', 'ס': 's', 'ע': 'a', 'פ': 'p', 'ף': 'p', 'צ': 'ts', 'ץ': 'ts', 'ק': 'k',
-      'ר': 'r', 'ש': 'sh', 'ת': 't'
-    };
-    
-    // English to Hebrew transliteration mapping (reverse)
-    const englishToHebrew: { [key: string]: string } = {
-      'a': 'א', 'b': 'ב', 'g': 'ג', 'd': 'ד', 'h': 'ה', 'v': 'ו', 'z': 'ז',
-      'i': 'י', 'k': 'כ', 'l': 'ל', 'm': 'מ', 'n': 'נ', 's': 'ס', 'p': 'פ',
-      'r': 'ר', 't': 'ת'
-    };
-    
-    // If query contains Hebrew, add English transliteration
-    if (/[\u0590-\u05FF]/.test(query)) {
-      const englishVariant = query.split('').map(char => hebrewToEnglish[char] || char).join('');
-      if (englishVariant !== query) {
-        variants.push(englishVariant);
-      }
+  // Auto-load data for current date on mount
+  useEffect(() => {
+    if (dateFrom || dateTo) {
+      performSearch();
     }
-    
-    // If query is English, add Hebrew transliteration
-    if (/^[a-zA-Z\s]+$/.test(query)) {
-      const hebrewVariant = query.toLowerCase().split('').map(char => englishToHebrew[char] || char).join('');
-      if (hebrewVariant !== query) {
-        variants.push(hebrewVariant);
-      }
-    }
-    
-    return variants;
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run on mount
 
-  // Get stage name by ID
-  const getStageName = (stageId: string | number): string => {
-    const id = String(stageId);
-    return stageMap[id] || `Stage ${id}`;
+  // Helper function to get contrasting text color based on background
+  const getContrastingTextColor = (hexColor?: string | null) => {
+    if (!hexColor) return '#111827';
+    let sanitized = hexColor.trim();
+    if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
+    if (sanitized.length === 3) {
+      sanitized = sanitized.split('').map(char => char + char).join('');
+    }
+    if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
+      return '#111827';
+    }
+    const r = parseInt(sanitized.slice(0, 2), 16) / 255;
+    const g = parseInt(sanitized.slice(2, 4), 16) / 255;
+    const b = parseInt(sanitized.slice(4, 6), 16) / 255;
+
+    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return luminance > 0.55 ? '#111827' : '#ffffff';
   };
 
   // Get employee name by ID
@@ -291,9 +274,7 @@ const EditContractsPage = () => {
     return { startIso, endIso };
   };
 
-  const performSearch = async (query: string) => {
-    const trimmed = query.trim();
-    
+  const performSearch = async () => {
     setIsSearching(true);
 
     try {
@@ -315,7 +296,7 @@ const EditContractsPage = () => {
       }
 
       const { data: allStage60Records, error: stage60Error } = await stage60Query;
-      
+
       if (stage60Error) {
         console.error('Failed to load stage 60 records:', stage60Error);
         throw stage60Error;
@@ -374,56 +355,11 @@ const EditContractsPage = () => {
       // Fetch new leads data
       const allNewLeadIds = Array.from(newLeadIdsSet).filter(Boolean);
       if (allNewLeadIds.length > 0) {
-        let newLeadsQuery = supabase
+        const { data: newLeads, error: newError } = await supabase
           .from('leads')
-          .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, closer_id')
-          .in('id', allNewLeadIds);
-
-        // Apply search filters if query provided
-        if (trimmed.length >= 2) {
-          const lower = trimmed.toLowerCase();
-          const digits = trimmed.replace(/\D/g, '');
-          const isEmail = trimmed.includes('@');
-          const isPureNumeric = /^\d+$/.test(trimmed);
-          const hasPrefix = /^[LC]/i.test(trimmed);
-          const noPrefix = trimmed.replace(/^[LC]/i, '');
-          const isNumericQuery = /^\d+$/.test(noPrefix) && noPrefix.length > 0;
-          const startsWithZero = digits.startsWith('0') && digits.length >= 4;
-          const isLeadNumber = hasPrefix || (isNumericQuery && isPureNumeric && digits.length <= 6 && !startsWithZero);
-          const isPhone = startsWithZero || digits.length >= 7 || (digits.length >= 3 && digits.length <= 6 && !isNumericQuery && !hasPrefix);
-
-          const newLeadConditions: string[] = [];
-          const searchVariants = generateSearchVariants(trimmed);
-
-          // Always search name
-          searchVariants.forEach(variant => {
-            newLeadConditions.push(`name.ilike.%${variant}%`);
-          });
-
-          // Email search
-          if (isEmail || trimmed.length >= 3) {
-            searchVariants.forEach(variant => {
-              newLeadConditions.push(`email.ilike.%${variant}%`);
-            });
-          }
-
-          // Phone number search
-          if (isPhone && digits.length >= 3) {
-            newLeadConditions.push(`phone.ilike.%${digits}%`);
-            newLeadConditions.push(`mobile.ilike.%${digits}%`);
-          } else if (isLeadNumber) {
-            // Lead number search
-            newLeadConditions.push(`lead_number.ilike.%${trimmed}%`);
-            newLeadConditions.push(`lead_number.ilike.L%${trimmed}%`);
-            newLeadConditions.push(`lead_number.ilike.C%${trimmed}%`);
-          }
-
-          if (newLeadConditions.length > 0) {
-            newLeadsQuery = newLeadsQuery.or(newLeadConditions.join(','));
-          }
-        }
-
-        const { data: newLeads, error: newError } = await newLeadsQuery.limit(50);
+          .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, closer_id, master_id')
+          .in('id', allNewLeadIds)
+          .limit(50);
 
         if (newError) {
           console.error('Error fetching new leads:', newError);
@@ -446,6 +382,7 @@ const EditContractsPage = () => {
                 signed_date: signDate,
                 creator_id: creatorId || null,
                 closer: lead.closer_id || null,
+                master_id: lead.master_id || null,
               });
             }
           }
@@ -455,59 +392,11 @@ const EditContractsPage = () => {
       // Fetch legacy leads data
       const allLegacyLeadIds = Array.from(legacyLeadIdsSet);
       if (allLegacyLeadIds.length > 0) {
-        let legacyLeadsQuery = supabase
+        const { data: legacyLeads, error: legacyError } = await supabase
           .from('leads_lead')
-          .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, closer_id')
-          .in('id', allLegacyLeadIds);
-
-        // Apply search filters if query provided
-        if (trimmed.length >= 2) {
-          const lower = trimmed.toLowerCase();
-          const digits = trimmed.replace(/\D/g, '');
-          const isEmail = trimmed.includes('@');
-          const isPureNumeric = /^\d+$/.test(trimmed);
-          const hasPrefix = /^[LC]/i.test(trimmed);
-          const noPrefix = trimmed.replace(/^[LC]/i, '');
-          const isNumericQuery = /^\d+$/.test(noPrefix) && noPrefix.length > 0;
-          const startsWithZero = digits.startsWith('0') && digits.length >= 4;
-          const isLeadNumber = hasPrefix || (isNumericQuery && isPureNumeric && digits.length <= 6 && !startsWithZero);
-          const isPhone = startsWithZero || digits.length >= 7 || (digits.length >= 3 && digits.length <= 6 && !isNumericQuery && !hasPrefix);
-
-          const legacyLeadConditions: string[] = [];
-          const searchVariants = generateSearchVariants(trimmed);
-
-          // Always search name
-          searchVariants.forEach(variant => {
-            legacyLeadConditions.push(`name.ilike.%${variant}%`);
-          });
-
-          // Email search
-          if (isEmail || trimmed.length >= 3) {
-            searchVariants.forEach(variant => {
-              legacyLeadConditions.push(`email.ilike.%${variant}%`);
-            });
-          }
-
-          // Phone number search
-          if (isPhone && digits.length >= 3) {
-            legacyLeadConditions.push(`phone.ilike.%${digits}%`);
-            legacyLeadConditions.push(`mobile.ilike.%${digits}%`);
-          } else if (isLeadNumber) {
-            // Lead number search
-            if (isNumericQuery && digits.length <= 6 && !startsWithZero) {
-              const numId = parseInt(noPrefix, 10);
-              if (!isNaN(numId) && numId > 0) {
-                legacyLeadConditions.push(`id.eq.${numId}`);
-              }
-            }
-          }
-
-          if (legacyLeadConditions.length > 0) {
-            legacyLeadsQuery = legacyLeadsQuery.or(legacyLeadConditions.join(','));
-          }
-        }
-
-        const { data: legacyLeads, error: legacyError } = await legacyLeadsQuery.limit(50);
+          .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, closer_id, master_id')
+          .in('id', allLegacyLeadIds)
+          .limit(50);
 
         if (legacyError) {
           console.error('Error fetching legacy leads:', legacyError);
@@ -532,13 +421,102 @@ const EditContractsPage = () => {
                 legacy_id: lead.id,
                 creator_id: creatorId || null,
                 closer: lead.closer_id || null,
+                master_id: lead.master_id || null,
               });
             }
           }
         }
       }
 
-      setSearchResults(results);
+      // Calculate sublead suffixes for all results
+      // Group leads by master_id to calculate suffixes
+      const subleadSuffixMap = new Map<string, number>(); // lead.id -> suffix
+      const masterIdsWithSubLeads = new Set<string | number>();
+
+      // Group subleads by master_id
+      const subleadsByMaster = new Map<string | number, any[]>();
+      results.forEach((lead) => {
+        if (lead.master_id) {
+          const masterId = lead.master_id;
+          if (!subleadsByMaster.has(masterId)) {
+            subleadsByMaster.set(masterId, []);
+          }
+          subleadsByMaster.get(masterId)!.push(lead);
+          masterIdsWithSubLeads.add(masterId);
+        }
+      });
+
+      // Calculate suffixes for each group of subleads
+      subleadsByMaster.forEach((subleads, masterId) => {
+        // Sort subleads by ID to ensure consistent ordering
+        subleads.sort((a, b) => {
+          const idA = a.lead_type === 'legacy'
+            ? Number(a.legacy_id || a.id?.toString().replace('legacy_', '') || 0)
+            : Number(a.id || 0);
+          const idB = b.lead_type === 'legacy'
+            ? Number(b.legacy_id || b.id?.toString().replace('legacy_', '') || 0)
+            : Number(b.id || 0);
+          return idA - idB;
+        });
+
+        // Assign suffixes starting from 2
+        subleads.forEach((sublead, index) => {
+          const leadKey = sublead.id?.toString() || '';
+          subleadSuffixMap.set(leadKey, index + 2); // First sublead is /2, second is /3, etc.
+        });
+      });
+
+      // Compute display lead numbers for all results
+      const resultsWithDisplayNumbers = results.map((lead) => {
+        const hasNoMasterId = !lead.master_id || String(lead.master_id).trim() === '';
+        const leadKey = lead.id?.toString() || '';
+
+        // Check if this master lead has subleads
+        let hasSubLeads = false;
+        if (hasNoMasterId) {
+          // Check if this lead's ID is in the set of master IDs that have subleads
+          const leadIdForCheck = lead.lead_type === 'legacy'
+            ? (lead.legacy_id || lead.id?.toString().replace('legacy_', ''))
+            : lead.id;
+          hasSubLeads = masterIdsWithSubLeads.has(leadIdForCheck);
+        }
+
+        // Get suffix for subleads
+        const suffix = subleadSuffixMap.get(leadKey);
+
+        // Format lead number
+        let displayNumber = lead.lead_number || lead.manual_id || lead.id || '---';
+        const displayStr = displayNumber.toString();
+        const hasExistingSuffix = displayStr.includes('/');
+        let baseNumber = hasExistingSuffix ? displayStr.split('/')[0] : displayStr;
+
+        // Show "C" prefix for Success stage
+        const isSuccessStage = lead.stage === '100' || lead.stage === 100;
+        if (isSuccessStage && baseNumber && !baseNumber.toString().startsWith('C')) {
+          baseNumber = baseNumber.toString().replace(/^L/, 'C');
+        }
+
+        // Format final display number
+        if (lead.master_id && suffix) {
+          // It's a sublead - use calculated suffix
+          displayNumber = `${baseNumber}/${suffix}`;
+        } else if (hasNoMasterId && hasSubLeads && !hasExistingSuffix) {
+          // It's a master lead with subleads - add /1
+          displayNumber = `${baseNumber}/1`;
+        } else if (hasExistingSuffix) {
+          // Keep existing suffix
+          displayNumber = displayStr;
+        } else {
+          displayNumber = baseNumber;
+        }
+
+        return {
+          ...lead,
+          display_lead_number: displayNumber
+        };
+      });
+
+      setSearchResults(resultsWithDisplayNumbers);
     } catch (error) {
       console.error('Error performing search:', error);
       setSearchResults([]);
@@ -547,20 +525,8 @@ const EditContractsPage = () => {
     }
   };
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (searchQuery.trim()) {
-        performSearch(searchQuery);
-      } else {
-        setSearchResults([]);
-      }
-    }, 300);
-
-    return () => clearTimeout(timer);
-  }, [searchQuery]); // Removed dateFrom and dateTo - now manual search only
-
   const handleManualSearch = () => {
-    performSearch(searchQuery);
+    performSearch();
   };
 
   const handleSaveSignedDate = async (lead: any, newDate: string) => {
@@ -569,57 +535,18 @@ const EditContractsPage = () => {
     try {
       const isLegacy = lead.lead_type === 'legacy';
       const leadId = isLegacy ? lead.legacy_id : lead.id;
-      const leadNumber = lead.lead_number;
 
-      // First, find all leads with the same lead_number (including subleads)
-      let allLeadIds: number[] = [];
-
-      if (isLegacy) {
-        // For legacy leads, find all leads with the same lead_number
-        const { data: matchingLeads, error: findError } = await supabase
-          .from('leads_lead')
-          .select('id')
-          .eq('lead_number', leadNumber);
-
-        if (findError) {
-          console.error('Error finding matching legacy leads:', findError);
-          toast.error('Failed to find matching leads. Please try again.');
-          return;
-        }
-
-        if (matchingLeads) {
-          allLeadIds = matchingLeads.map(l => l.id);
-        }
-      } else {
-        // For new leads, find all leads with the same lead_number
-        const { data: matchingLeads, error: findError } = await supabase
-          .from('leads')
-          .select('id')
-          .eq('lead_number', leadNumber);
-
-        if (findError) {
-          console.error('Error finding matching new leads:', findError);
-          toast.error('Failed to find matching leads. Please try again.');
-          return;
-        }
-
-        if (matchingLeads) {
-          allLeadIds = matchingLeads.map(l => l.id);
-        }
-      }
-
-      if (allLeadIds.length === 0) {
-        toast.error('No matching leads found.');
+      if (!leadId) {
+        toast.error('Invalid lead ID.');
         return;
       }
 
-      // Update ALL stage 60 entries for all leads with the same lead_number
-      // Use the date column (not cdate or another column)
+      // Update the stage 60 entry for this specific lead only
       const { error: updateError } = await supabase
         .from('leads_leadstage')
         .update({ date: newDate })
         .eq('stage', 60)
-        .in(isLegacy ? 'lead_id' : 'newlead_id', allLeadIds);
+        .eq(isLegacy ? 'lead_id' : 'newlead_id', leadId);
 
       if (updateError) {
         console.error('Error updating signed date:', updateError);
@@ -627,18 +554,18 @@ const EditContractsPage = () => {
         return;
       }
 
-      // Update the local state for all matching results
+      // Update the local state for this specific lead
       setSearchResults(prevResults =>
         prevResults.map(l => {
-          // Check if this result has the same lead_number
-          if (l.lead_number === leadNumber) {
+          const resultId = isLegacy ? l.legacy_id : l.id;
+          if (String(resultId) === String(leadId)) {
             return { ...l, signed_date: newDate };
           }
           return l;
         })
       );
 
-      toast.success(`Signed date updated successfully for ${allLeadIds.length} lead(s) with lead number ${leadNumber}!`);
+      toast.success('Signed date updated successfully!');
     } catch (error) {
       console.error('Error saving signed date:', error);
       toast.error('An error occurred while saving. Please try again.');
@@ -708,9 +635,8 @@ const EditContractsPage = () => {
                         setReportsSearchQuery('');
                       }
                     }}
-                    className={`w-full text-left px-4 py-2 rounded-md hover:bg-primary hover:text-white transition-colors flex items-center gap-3 ${
-                      item.route === '/reports/edit-contracts' ? 'bg-primary text-white' : 'bg-gray-50'
-                    }`}
+                    className={`w-full text-left px-4 py-2 rounded-md hover:bg-primary hover:text-white transition-colors flex items-center gap-3 ${item.route === '/reports/edit-contracts' ? 'bg-primary text-white' : 'bg-gray-50'
+                      }`}
                   >
                     <item.icon className="w-5 h-5" />
                     <div className="flex-1">
@@ -732,27 +658,8 @@ const EditContractsPage = () => {
 
       <div className="card bg-base-100 shadow-lg p-6">
         <div className="mb-6">
-          {/* Search Bar and Filters - All on one line */}
+          {/* Date Filters and Search Button */}
           <div className="flex gap-3 items-end">
-            <div className="relative flex-1 max-w-md">
-              <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search by name, email, phone..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                >
-                  <XMarkIcon className="w-5 h-5" />
-                </button>
-              )}
-            </div>
-
             <div className="flex flex-col">
               <span className="text-xs font-semibold mb-1">From Date</span>
               <input
@@ -836,18 +743,37 @@ const EditContractsPage = () => {
                           onClick={() => handleNavigateToLead(lead)}
                           className="font-semibold text-primary hover:underline cursor-pointer"
                         >
-                          {lead.lead_number}
+                          {lead.display_lead_number || lead.lead_number || '---'}
                         </button>
                       </td>
                       <td>{lead.name}</td>
                       <td>
-                        {lead.creator_id 
-                          ? getEmployeeName(lead.creator_id) 
+                        {lead.creator_id
+                          ? getEmployeeName(lead.creator_id)
                           : getEmployeeName(lead.closer)
                         }
                       </td>
                       <td>
-                        <span className="badge badge-primary">{getStageName(lead.stage)}</span>
+                        {(() => {
+                          const stageId = String(lead.stage || '');
+                          const stageName = getStageName(stageId);
+                          const stageColour = getStageColour(stageId);
+                          const textColor = getContrastingTextColor(stageColour);
+                          const backgroundColor = stageColour || '#3b28c7';
+
+                          return (
+                            <span
+                              className="badge badge-sm font-semibold"
+                              style={{
+                                backgroundColor: backgroundColor,
+                                color: backgroundColor ? textColor : undefined,
+                                borderColor: backgroundColor,
+                              }}
+                            >
+                              {stageName}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td>
                         <input
@@ -865,10 +791,10 @@ const EditContractsPage = () => {
           </div>
         )}
 
-        {searchQuery && !isSearching && searchResults.length === 0 && (
+        {!isSearching && searchResults.length === 0 && (dateFrom || dateTo) && (
           <div className="text-center py-12">
             <p className="text-gray-500 text-lg">
-              No leads found matching "{searchQuery}" with stage 60 or above and a signed date.
+              Change filter and search for leads.
             </p>
           </div>
         )}

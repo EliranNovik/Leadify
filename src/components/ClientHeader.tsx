@@ -715,9 +715,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             baseNumber = baseNumber.toString().replace(/^L/, 'C');
         }
 
+        // Add /1 suffix to master leads (frontend only)
+        // A lead is a master if: it has no master_id AND it has subleads
         const hasNoMasterId = !selectedClient.master_id || String(selectedClient.master_id).trim() === '';
-        const isMasterWithSubLeads = hasNoMasterId && (isMasterLead); // Simplified
+        const hasSubLeads = (subLeadsCount || 0) > 0;
+        const isMasterWithSubLeads = hasNoMasterId && (isMasterLead || hasSubLeads);
 
+        // Only add /1 to master leads that actually have subleads
         if (isMasterWithSubLeads && !hasExistingSuffix) {
             return `${baseNumber}/1`;
         } else if (hasExistingSuffix) {

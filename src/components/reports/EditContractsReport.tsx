@@ -4,7 +4,6 @@ import { MagnifyingGlassIcon, XMarkIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../../lib/supabase';
 
 const EditContractsReport = () => {
-  const [searchQuery, setSearchQuery] = useState<string>('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [stageMap, setStageMap] = useState<{ [key: string]: string }>({});
@@ -69,44 +68,6 @@ const EditContractsReport = () => {
     fetchEmployees();
   }, []);
 
-  // Generate search variants for multilingual matching (from Header.tsx)
-  const generateSearchVariants = (query: string): string[] => {
-    const variants: string[] = [query];
-    
-    // Hebrew to English transliteration mapping (common patterns)
-    const hebrewToEnglish: { [key: string]: string } = {
-      'א': 'a', 'ב': 'b', 'ג': 'g', 'ד': 'd', 'ה': 'h', 'ו': 'v', 'ז': 'z', 'ח': 'h',
-      'ט': 't', 'י': 'i', 'כ': 'k', 'ך': 'k', 'ל': 'l', 'מ': 'm', 'ם': 'm', 'נ': 'n',
-      'ן': 'n', 'ס': 's', 'ע': 'a', 'פ': 'p', 'ף': 'p', 'צ': 'ts', 'ץ': 'ts', 'ק': 'k',
-      'ר': 'r', 'ש': 'sh', 'ת': 't'
-    };
-    
-    // English to Hebrew transliteration mapping (reverse)
-    const englishToHebrew: { [key: string]: string } = {
-      'a': 'א', 'b': 'ב', 'g': 'ג', 'd': 'ד', 'h': 'ה', 'v': 'ו', 'z': 'ז',
-      'i': 'י', 'k': 'כ', 'l': 'ל', 'm': 'מ', 'n': 'נ', 's': 'ס', 'p': 'פ',
-      'r': 'ר', 't': 'ת'
-    };
-    
-    // If query contains Hebrew, add English transliteration
-    if (/[\u0590-\u05FF]/.test(query)) {
-      const englishVariant = query.split('').map(char => hebrewToEnglish[char] || char).join('');
-      if (englishVariant !== query) {
-        variants.push(englishVariant);
-      }
-    }
-    
-    // If query is English, add Hebrew transliteration
-    if (/^[a-zA-Z\s]+$/.test(query)) {
-      const hebrewVariant = query.toLowerCase().split('').map(char => englishToHebrew[char] || char).join('');
-      if (hebrewVariant !== query) {
-        variants.push(hebrewVariant);
-      }
-    }
-    
-    return variants;
-  };
-
   // Get stage name by ID
   const getStageName = (stageId: string | number): string => {
     const id = String(stageId);
@@ -120,88 +81,64 @@ const EditContractsReport = () => {
     return employeeMap[id] || 'Unknown';
   };
 
-  const performSearch = async (query: string) => {
-    const trimmed = query.trim();
-    
+  // Helper function to get display lead number (same logic as Clients.tsx)
+  // Simplified version that handles C prefix and existing suffixes
+  // For master leads with /1, we'll compute that when processing results
+  const getDisplayLeadNumber = (lead: any, hasSubLeads: boolean = false): string => {
+    if (!lead) return '---';
+    let displayNumber = lead.lead_number || lead.manual_id || lead.id || '---';
+
+    // Remove any existing / suffix for processing (we'll add /1 if needed)
+    const displayStr = displayNumber.toString();
+    const hasExistingSuffix = displayStr.includes('/');
+
+    // For master leads, we want to show /1, so strip any existing suffix first
+    let baseNumber = hasExistingSuffix ? displayStr.split('/')[0] : displayStr;
+
+    const isSuccessStage = lead.stage === '100' || lead.stage === 100;
+    // Show "C" prefix in UI for both new and legacy leads when stage is Success (100)
+    if (isSuccessStage && baseNumber && !baseNumber.toString().startsWith('C')) {
+      // Replace "L" prefix with "C" for display only
+      baseNumber = baseNumber.toString().replace(/^L/, 'C');
+    }
+
+    // Add /1 suffix to master leads (frontend only)
+    // A lead is a master if: it has no master_id AND it has subleads
+    const hasNoMasterId = !lead.master_id || String(lead.master_id).trim() === '';
+    const isMasterWithSubLeads = hasNoMasterId && hasSubLeads;
+
+    // Only add /1 to master leads that actually have subleads
+    if (isMasterWithSubLeads && !hasExistingSuffix) {
+      displayNumber = `${baseNumber}/1`;
+    } else if (hasExistingSuffix) {
+      // Keep existing suffix for subleads
+      displayNumber = displayStr;
+    } else {
+      displayNumber = baseNumber;
+    }
+
+    return displayNumber.toString();
+  };
+
+  const performSearch = async () => {
     console.log('🔍 [EditContractsReport] performSearch called:', {
-      query: trimmed,
       dateFrom,
       dateTo,
       hasDateFilter: !!(dateFrom || dateTo)
     });
-    
+
     setIsSearching(true);
 
     try {
-      const lower = trimmed.toLowerCase();
-      const digits = trimmed.replace(/\D/g, '');
-      const isEmail = trimmed.includes('@');
-      const isPureNumeric = /^\d+$/.test(trimmed);
-      const hasPrefix = /^[LC]/i.test(trimmed);
-      const noPrefix = trimmed.replace(/^[LC]/i, '');
-      const isNumericQuery = /^\d+$/.test(noPrefix) && noPrefix.length > 0;
-      
-      const startsWithZero = digits.startsWith('0') && digits.length >= 4;
-      const isLeadNumber = hasPrefix || (isNumericQuery && isPureNumeric && digits.length <= 6 && !startsWithZero);
-      const isPhone = startsWithZero || digits.length >= 7 || (digits.length >= 3 && digits.length <= 6 && !isNumericQuery && !hasPrefix);
-
-      const newLeadConditions: string[] = [];
-      const legacyLeadConditions: string[] = [];
-
-      const searchVariants = generateSearchVariants(trimmed);
-
-      // Only add search conditions if there's a query
-      if (trimmed.length >= 2) {
-        // Always search name
-        searchVariants.forEach(variant => {
-          newLeadConditions.push(`name.ilike.%${variant}%`);
-          legacyLeadConditions.push(`name.ilike.%${variant}%`);
-        });
-
-        // Email search
-        if (isEmail || trimmed.length >= 3) {
-          searchVariants.forEach(variant => {
-            newLeadConditions.push(`email.ilike.%${variant}%`);
-            legacyLeadConditions.push(`email.ilike.%${variant}%`);
-          });
-        }
-
-        // Phone number search
-        if (isPhone && digits.length >= 3) {
-          newLeadConditions.push(`phone.ilike.%${digits}%`);
-          newLeadConditions.push(`mobile.ilike.%${digits}%`);
-          legacyLeadConditions.push(`phone.ilike.%${digits}%`);
-          legacyLeadConditions.push(`mobile.ilike.%${digits}%`);
-        } else if (isLeadNumber) {
-          // Lead number search
-          newLeadConditions.push(`lead_number.ilike.%${trimmed}%`);
-          newLeadConditions.push(`lead_number.ilike.L%${trimmed}%`);
-          newLeadConditions.push(`lead_number.ilike.C%${trimmed}%`);
-          
-          if (isNumericQuery && digits.length <= 6 && !startsWithZero) {
-            const numId = parseInt(noPrefix, 10);
-            if (!isNaN(numId) && numId > 0) {
-              legacyLeadConditions.push(`id.eq.${numId}`);
-            }
-          }
-        }
-      }
-
       const results: any[] = [];
 
-      // Search new leads (stage 60 and above)
-      // If no search query, fetch all leads (when date filtering only)
-      if (newLeadConditions.length > 0 || trimmed.length === 0) {
-        let newLeadsQuery = supabase
+      // Fetch all new leads (stage 60 and above)
+      {
+        const { data: newLeads, error: newError } = await supabase
           .from('leads')
-          .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, closer_id')
-          .gt('stage', 60);
-        
-        if (newLeadConditions.length > 0) {
-          newLeadsQuery = newLeadsQuery.or(newLeadConditions.join(','));
-        }
-        
-        const { data: newLeads, error: newError } = await newLeadsQuery.limit(50);
+          .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, closer_id, master_id')
+          .gt('stage', 60)
+          .limit(50);
 
         if (newError) {
           console.error('Error fetching new leads:', newError);
@@ -239,25 +176,20 @@ const EditContractsReport = () => {
                 signed_date: stageData.date,
                 creator_id: stageData.creator_id || null,
                 closer: lead.closer_id || null,
+                master_id: lead.master_id || null,
               });
             }
           }
         }
       }
 
-      // Search legacy leads (stage 60 and above)
-      // If no search query, fetch all leads (when date filtering only)
-      if (legacyLeadConditions.length > 0 || trimmed.length === 0) {
-        let legacyLeadsQuery = supabase
+      // Fetch all legacy leads (stage 60 and above)
+      {
+        const { data: legacyLeads, error: legacyError } = await supabase
           .from('leads_lead')
-          .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, closer_id')
-          .gt('stage', 60);
-        
-        if (legacyLeadConditions.length > 0) {
-          legacyLeadsQuery = legacyLeadsQuery.or(legacyLeadConditions.join(','));
-        }
-        
-        const { data: legacyLeads, error: legacyError } = await legacyLeadsQuery.limit(20);
+          .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, closer_id, master_id')
+          .gt('stage', 60)
+          .limit(20);
 
         if (legacyError) {
           console.error('Error fetching legacy leads:', legacyError);
@@ -266,7 +198,7 @@ const EditContractsReport = () => {
         if (legacyLeads) {
           for (const lead of legacyLeads) {
             const leadNumber = lead.lead_number ? String(lead.lead_number) : String(lead.id);
-            
+
             // Fetch the signed agreement date and creator_id from leads_leadstage
             const { data: stageData } = await supabase
               .from('leads_leadstage')
@@ -298,19 +230,57 @@ const EditContractsReport = () => {
                 legacy_id: lead.id,
                 creator_id: stageData.creator_id || null,
                 closer: lead.closer_id || null,
+                master_id: lead.master_id || null,
               });
             }
           }
         }
       }
 
+      // Compute display lead numbers for all results
+      const resultsWithDisplayNumbers = await Promise.all(
+        results.map(async (lead) => {
+          const hasNoMasterId = !lead.master_id || String(lead.master_id).trim() === '';
+          let hasSubLeads = false;
+
+          // Check if this lead has subleads (only for master leads)
+          if (hasNoMasterId) {
+            try {
+              if (lead.lead_type === 'legacy') {
+                const legacyId = lead.legacy_id || lead.id;
+                const { data: subLeads } = await supabase
+                  .from('leads_lead')
+                  .select('id')
+                  .eq('master_id', legacyId)
+                  .not('master_id', 'is', null);
+                hasSubLeads = (subLeads?.length || 0) > 0;
+              } else {
+                const { data: subLeads } = await supabase
+                  .from('leads')
+                  .select('id')
+                  .eq('master_id', lead.id)
+                  .not('master_id', 'is', null);
+                hasSubLeads = (subLeads?.length || 0) > 0;
+              }
+            } catch (error) {
+              console.error('Error fetching subleads:', error);
+            }
+          }
+
+          return {
+            ...lead,
+            display_lead_number: getDisplayLeadNumber(lead, hasSubLeads)
+          };
+        })
+      );
+
       console.log('✅ [EditContractsReport] Search completed:', {
-        resultsCount: results.length,
-        newLeads: results.filter(r => r.lead_type === 'new').length,
-        legacyLeads: results.filter(r => r.lead_type === 'legacy').length
+        resultsCount: resultsWithDisplayNumbers.length,
+        newLeads: resultsWithDisplayNumbers.filter(r => r.lead_type === 'new').length,
+        legacyLeads: resultsWithDisplayNumbers.filter(r => r.lead_type === 'legacy').length
       });
 
-      setSearchResults(results);
+      setSearchResults(resultsWithDisplayNumbers);
     } catch (error) {
       console.error('❌ [EditContractsReport] Error performing search:', error);
       setSearchResults([]);
@@ -319,20 +289,8 @@ const EditContractsReport = () => {
     }
   };
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (searchQuery.trim()) {
-        performSearch(searchQuery);
-      } else {
-        setSearchResults([]);
-      }
-    }, 300);
-
-    return () => clearTimeout(timer);
-  }, [searchQuery]); // Removed dateFrom and dateTo - now manual search only
-
   const handleManualSearch = () => {
-    performSearch(searchQuery);
+    performSearch();
   };
 
   const handleSaveSignedDate = async (lead: any, newDate: string) => {
@@ -445,29 +403,10 @@ const EditContractsReport = () => {
   return (
     <div className="p-6">
       <div className="mb-6">
-        
-        
-        {/* Search Bar and Filters - All on one line */}
-        <div className="flex gap-3 items-end">
-          <div className="relative flex-1 max-w-md">
-            <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-            <input
-              type="text"
-              placeholder="Search by name, email, phone..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-              >
-                <XMarkIcon className="w-5 h-5" />
-              </button>
-            )}
-          </div>
 
+
+        {/* Date Filters and Search Button */}
+        <div className="flex gap-3 items-end">
           <div className="flex flex-col">
             <span className="text-xs font-semibold mb-1">From Date</span>
             <input
@@ -551,13 +490,13 @@ const EditContractsReport = () => {
                         onClick={() => handleNavigateToLead(lead)}
                         className="font-semibold text-primary hover:underline cursor-pointer"
                       >
-                        {lead.lead_number}
+                        {lead.display_lead_number || lead.lead_number || '---'}
                       </button>
                     </td>
                     <td>{lead.name}</td>
                     <td>
-                      {lead.creator_id 
-                        ? getEmployeeName(lead.creator_id) 
+                      {lead.creator_id
+                        ? getEmployeeName(lead.creator_id)
                         : getEmployeeName(lead.closer)
                       }
                     </td>
@@ -580,10 +519,10 @@ const EditContractsReport = () => {
         </div>
       )}
 
-      {searchQuery && !isSearching && searchResults.length === 0 && (
+      {!isSearching && searchResults.length === 0 && (dateFrom || dateTo) && (
         <div className="text-center py-12">
           <p className="text-gray-500 text-lg">
-            No leads found matching "{searchQuery}" with stage 60 or above and a signed date.
+            No leads found with stage 60 or above and a signed date matching the selected date range.
           </p>
         </div>
       )}
