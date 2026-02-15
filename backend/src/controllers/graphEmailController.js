@@ -19,7 +19,9 @@ const graphEmailController = {
       });
     } catch (error) {
       console.error('❌ Graph email sync failed:', error);
-      res.status(500).json({
+      // Return 401 for expired refresh tokens so frontend can prompt for reconnection
+      const statusCode = error.message?.includes('expired') || error.message?.includes('reconnect') ? 401 : 500;
+      res.status(statusCode).json({
         success: false,
         error: error.message || 'Failed to sync emails from Microsoft Graph',
       });

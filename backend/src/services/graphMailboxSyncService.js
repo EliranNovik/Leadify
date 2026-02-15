@@ -330,7 +330,18 @@ class GraphMailboxSyncService {
       username: tokenRecord.mailbox_address,
     };
 
-    const tokenResponse = await graphAuthService.acquireTokenByRefreshToken(tokenRecord.refresh_token, account);
+    let tokenResponse;
+    try {
+      tokenResponse = await graphAuthService.acquireTokenByRefreshToken(tokenRecord.refresh_token, account);
+    } catch (error) {
+      if (error?.code === 'EXPIRED_REFRESH_TOKEN') {
+        // Clear the expired token so user can reconnect
+        await mailboxTokenService.removeToken(userId);
+        throw new Error('Your mailbox connection has expired. Please reconnect your mailbox to continue syncing emails.');
+      }
+      throw error;
+    }
+    
     if (!tokenResponse?.accessToken) {
       throw new Error('Unable to acquire Microsoft Graph access token');
     }
@@ -1467,12 +1478,22 @@ class GraphMailboxSyncService {
       throw new Error(`Mailbox is not connected for user ${emailOwnerId} (email owner)`);
     }
 
-    const tokenResponse = await graphAuthService.acquireTokenByRefreshToken(tokenRecord.refresh_token, {
-      homeAccountId: tokenRecord.home_account_id,
-      environment: tokenRecord.environment,
-      tenantId: tokenRecord.tenant_id,
-      username: tokenRecord.mailbox_address,
-    });
+    let tokenResponse;
+    try {
+      tokenResponse = await graphAuthService.acquireTokenByRefreshToken(tokenRecord.refresh_token, {
+        homeAccountId: tokenRecord.home_account_id,
+        environment: tokenRecord.environment,
+        tenantId: tokenRecord.tenant_id,
+        username: tokenRecord.mailbox_address,
+      });
+    } catch (error) {
+      if (error?.code === 'EXPIRED_REFRESH_TOKEN') {
+        // Clear the expired token so user can reconnect
+        await mailboxTokenService.removeToken(emailOwnerId);
+        throw new Error('Your mailbox connection has expired. Please reconnect your mailbox to view email content.');
+      }
+      throw error;
+    }
     if (!tokenResponse?.accessToken) throw new Error('Unable to acquire Microsoft Graph access token');
 
     const message = await fetchJson(
@@ -1512,12 +1533,22 @@ class GraphMailboxSyncService {
       throw new Error(`Mailbox is not connected for user ${emailOwnerId} (email owner)`);
     }
 
-    const tokenResponse = await graphAuthService.acquireTokenByRefreshToken(tokenRecord.refresh_token, {
-      homeAccountId: tokenRecord.home_account_id,
-      environment: tokenRecord.environment,
-      tenantId: tokenRecord.tenant_id,
-      username: tokenRecord.mailbox_address,
-    });
+    let tokenResponse;
+    try {
+      tokenResponse = await graphAuthService.acquireTokenByRefreshToken(tokenRecord.refresh_token, {
+        homeAccountId: tokenRecord.home_account_id,
+        environment: tokenRecord.environment,
+        tenantId: tokenRecord.tenant_id,
+        username: tokenRecord.mailbox_address,
+      });
+    } catch (error) {
+      if (error?.code === 'EXPIRED_REFRESH_TOKEN') {
+        // Clear the expired token so user can reconnect
+        await mailboxTokenService.removeToken(emailOwnerId);
+        throw new Error('Your mailbox connection has expired. Please reconnect your mailbox to view email content.');
+      }
+      throw error;
+    }
     if (!tokenResponse?.accessToken) throw new Error('Unable to acquire Microsoft Graph access token');
 
     const attachment = await fetchJson(
@@ -1565,12 +1596,22 @@ class GraphMailboxSyncService {
       throw new Error('Mailbox is not connected for this user');
     }
 
-    const tokenResponse = await graphAuthService.acquireTokenByRefreshToken(tokenRecord.refresh_token, {
-      homeAccountId: tokenRecord.home_account_id,
-      environment: tokenRecord.environment,
-      tenantId: tokenRecord.tenant_id,
-      username: tokenRecord.mailbox_address,
-    });
+    let tokenResponse;
+    try {
+      tokenResponse = await graphAuthService.acquireTokenByRefreshToken(tokenRecord.refresh_token, {
+        homeAccountId: tokenRecord.home_account_id,
+        environment: tokenRecord.environment,
+        tenantId: tokenRecord.tenant_id,
+        username: tokenRecord.mailbox_address,
+      });
+    } catch (error) {
+      if (error?.code === 'EXPIRED_REFRESH_TOKEN') {
+        // Clear the expired token so user can reconnect
+        await mailboxTokenService.removeToken(userId);
+        throw new Error('Your mailbox connection has expired. Please reconnect your mailbox to send emails.');
+      }
+      throw error;
+    }
 
     if (!tokenResponse?.accessToken) {
       throw new Error('Unable to acquire Microsoft Graph access token');

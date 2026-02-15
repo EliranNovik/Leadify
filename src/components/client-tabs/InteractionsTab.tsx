@@ -53,6 +53,7 @@ import {
   getMailboxLoginUrl,
   getMailboxStatus,
 } from '../../lib/mailboxApi';
+import { useMailboxReconnect } from '../../contexts/MailboxReconnectContext';
 import { useAuthContext } from '../../contexts/AuthContext';
 import { fetchLeadContacts } from '../../lib/contactHelpers';
 import type { ContactInfo } from '../../lib/contactHelpers';
@@ -929,6 +930,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   onInteractionCountUpdate,
   allEmployees: allEmployeesProp = [],
 }) => {
+  const { showReconnectModal } = useMailboxReconnect();
+  
   if (!client) {
     return <div className="flex justify-center items-center h-32"><span className="loading loading-spinner loading-md text-primary"></span></div>;
   }
@@ -1206,6 +1209,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [whatsAppInput, setWhatsAppInput] = useState("");
   const [currentUserFullName, setCurrentUserFullName] = useState<string | null>(null);
   const userFullNameLoadedRef = useRef(false);
+  
+  // Track optimistic updates for manual interactions to prevent overwrites
+  const optimisticUpdatesRef = useRef<Map<string | number, {
+    date: string;
+    time: string;
+    raw_date: string;
+  }>>(new Map());
   const [bodyFocused, setBodyFocused] = useState(false);
   const [footerHeight, setFooterHeight] = useState(72);
   const [composeOverlayOpen, setComposeOverlayOpen] = useState(false);
@@ -1910,7 +1920,55 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       return true;
     });
     
-    return filtered.sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
+    // Helper function to get timestamp from interaction date/time (same logic as display)
+    const getInteractionTimestamp = (interaction: Interaction): number => {
+      // Use date and time fields first (same as drawer and timeline display)
+      if (interaction.date && interaction.time) {
+        try {
+          const dateStr = interaction.date;
+          const timeStr = interaction.time;
+          
+          let parsedDate: Date | null = null;
+          
+          // Try DD/MM/YYYY or DD.MM.YY format first (common in en-GB)
+          if (dateStr.includes('/') || dateStr.includes('.')) {
+            const separator = dateStr.includes('/') ? '/' : '.';
+            const parts = dateStr.split(separator);
+            if (parts.length === 3) {
+              const [day, month, year] = parts;
+              const fullYear = year.length === 2 ? `20${year}` : year;
+              parsedDate = new Date(`${fullYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${timeStr}`);
+            }
+          } else if (dateStr.includes('-')) {
+            // Try YYYY-MM-DD format
+            parsedDate = new Date(`${dateStr}T${timeStr}`);
+          } else {
+            // Try to parse as-is
+            parsedDate = new Date(`${dateStr} ${timeStr}`);
+          }
+          
+          if (parsedDate && !isNaN(parsedDate.getTime())) {
+            return parsedDate.getTime();
+          }
+        } catch (error) {
+          // Fall through to raw_date fallback
+        }
+      }
+      
+      // Fallback to raw_date if date/time parsing fails
+      if (interaction.raw_date) {
+        const rawDate = new Date(interaction.raw_date);
+        if (!isNaN(rawDate.getTime())) {
+          return rawDate.getTime();
+        }
+      }
+      
+      // Last resort: use 0 (will sort to bottom)
+      return 0;
+    };
+    
+    // Sort by actual interaction date/time (newest first)
+    return filtered.sort((a, b) => getInteractionTimestamp(b) - getInteractionTimestamp(a));
   }, [interactions]);
 
   useEffect(() => {
@@ -3699,8 +3757,51 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           })()
         ];
 
-        // 1. Manual interactions - fast client-side processing
-        const manualInteractions = (client.manual_interactions || []).map((i: any) => {
+        // 1. Manual interactions - CRITICAL: For new leads, fetch from database to ensure we have latest data
+        // For legacy leads, manual interactions come from leads_leadinteractions table (already fetched above)
+        let manualInteractionsSource = client.manual_interactions || [];
+        
+        if (!isLegacyLead && client.id) {
+          // For new leads, fetch the latest manual_interactions from the database
+          // This ensures we have all interactions, including ones saved in previous sessions
+          try {
+            const { data: latestClientData, error: fetchError } = await supabase
+              .from('leads')
+              .select('manual_interactions')
+              .eq('id', client.id)
+              .single();
+            
+            if (!fetchError && latestClientData?.manual_interactions) {
+              manualInteractionsSource = latestClientData.manual_interactions;
+              console.log(`✅ [InteractionsTab] Fetched ${manualInteractionsSource.length} manual interactions from DB for new lead ${client.id}`);
+            } else if (fetchError) {
+              console.warn('⚠️ [InteractionsTab] Error fetching manual interactions from DB, using client prop:', fetchError);
+            }
+          } catch (error) {
+            console.warn('⚠️ [InteractionsTab] Exception fetching manual interactions from DB, using client prop:', error);
+          }
+        }
+        
+        const manualInteractions = manualInteractionsSource.map((i: any) => {
+          // CRITICAL: Check if we have an optimistic update for this interaction
+          // If so, use the optimistic values (from editData) instead of database values
+          const interactionId = i.id;
+          const optimisticUpdate = optimisticUpdatesRef.current.get(interactionId) || 
+                                   optimisticUpdatesRef.current.get(Number(interactionId));
+          
+          // If we have an optimistic update, use those values (they're from editData, the source of truth)
+          if (optimisticUpdate) {
+            console.log('🔄 [InteractionsTab] Using optimistic update for manual interaction:', {
+              id: interactionId,
+              optimistic: optimisticUpdate,
+              database: { date: i.date, time: i.time, raw_date: i.raw_date }
+            });
+            // Override with optimistic values
+            i.date = optimisticUpdate.date;
+            i.time = optimisticUpdate.time;
+            i.raw_date = optimisticUpdate.raw_date;
+          }
+          
           // Use recipient_name if already set (from when interaction was saved)
           // Otherwise, calculate it based on direction
           let recipientName = i.recipient_name;
@@ -3729,20 +3830,28 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           }
           
           // CRITICAL: Ensure raw_date exists - construct from date and time if missing
+          // IMPORTANT: If raw_date exists, use it directly - don't recalculate from date/time
+          // This ensures that edited interactions preserve their raw_date value
           let rawDate = i.raw_date;
           if (!rawDate && i.date && i.time) {
+            // Only calculate raw_date if it's missing - this preserves edited values
             // Try to parse date and time to create ISO string
             try {
-              // Handle different date formats (DD/MM/YYYY, YYYY-MM-DD, etc.)
+              // Handle different date formats (DD/MM/YYYY, DD.MM.YY, YYYY-MM-DD, etc.)
               const dateStr = i.date;
               const timeStr = i.time;
               
-              // Try DD/MM/YYYY format first (common in en-GB)
               let parsedDate: Date | null = null;
-              if (dateStr.includes('/')) {
-                const [day, month, year] = dateStr.split('/');
-                const fullYear = year.length === 2 ? `20${year}` : year;
-                parsedDate = new Date(`${fullYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${timeStr}`);
+              
+              // Try DD/MM/YYYY or DD.MM.YY format first (common in en-GB)
+              if (dateStr.includes('/') || dateStr.includes('.')) {
+                const separator = dateStr.includes('/') ? '/' : '.';
+                const parts = dateStr.split(separator);
+                if (parts.length === 3) {
+                  const [day, month, year] = parts;
+                  const fullYear = year.length === 2 ? `20${year}` : year;
+                  parsedDate = new Date(`${fullYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${timeStr}`);
+                }
               } else if (dateStr.includes('-')) {
                 // Try YYYY-MM-DD format
                 parsedDate = new Date(`${dateStr}T${timeStr}`);
@@ -3755,10 +3864,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 rawDate = parsedDate.toISOString();
               } else {
                 // Fallback: use current date if parsing fails
+                console.warn('Failed to parse date/time for manual interaction, using current date:', { date: i.date, time: i.time });
                 rawDate = new Date().toISOString();
               }
             } catch (error) {
-              console.warn('Failed to parse date/time for manual interaction:', { date: i.date, time: i.time, error });
+              console.warn('Error parsing date/time for manual interaction:', { date: i.date, time: i.time, error });
               // Fallback: use current date if parsing fails
               rawDate = new Date().toISOString();
             }
@@ -3766,6 +3876,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             // If no date/time at all, use current date as fallback
             rawDate = new Date().toISOString();
           }
+          
+          // CRITICAL: If raw_date exists but date/time don't match, trust raw_date
+          // This ensures that after editing, the raw_date is preserved even if date/time format is different
+          // The raw_date is the source of truth for display purposes
           
           return {
             ...i,
@@ -5803,7 +5917,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       setShowCompose(false);
     } catch (e) {
       console.error('Error in handleSendEmail:', e);
-      toast.error(e instanceof Error ? e.message : 'Failed to send email.');
+      const error = e instanceof Error ? e : new Error('Failed to send email.');
+      const errorMessage = error.message;
+      const statusCode = (error as any).statusCode;
+      
+      // Check if this is an expired token error (401 or message contains "expired" or "reconnect")
+      if (statusCode === 401 || 
+          errorMessage.toLowerCase().includes('expired') || 
+          errorMessage.toLowerCase().includes('reconnect')) {
+        showReconnectModal(errorMessage);
+      } else {
+        toast.error(errorMessage);
+      }
     } finally {
       setSending(false);
     }
@@ -5836,7 +5961,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
       toast.success(`${downloadName} downloaded.`, { id: attachment.id });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Download failed.', { id: attachment.id });
+      const error = err instanceof Error ? err : new Error('Download failed.');
+      const errorMessage = error.message;
+      const statusCode = (error as any).statusCode;
+      
+      // Check if this is an expired token error (401 or message contains "expired" or "reconnect")
+      if (statusCode === 401 || 
+          errorMessage.toLowerCase().includes('expired') || 
+          errorMessage.toLowerCase().includes('reconnect')) {
+        showReconnectModal(errorMessage);
+      } else {
+        toast.error(errorMessage, { id: attachment.id });
+      }
     } finally {
       setDownloadingAttachments(prev => ({ ...prev, [attachment.id]: false }));
     }
@@ -6078,6 +6214,50 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       contentToSave = plainTextToHtml(contentToSave);
     }
 
+    // Calculate raw_date from date and time
+    let rawDate = activeInteraction.raw_date; // Keep existing raw_date as fallback
+    if (editData.date && editData.time) {
+      try {
+        // Handle different date formats (DD/MM/YYYY, DD.MM.YY, YYYY-MM-DD, etc.)
+        const dateStr = editData.date;
+        const timeStr = editData.time;
+        
+        let parsedDate: Date | null = null;
+        
+        // Try DD/MM/YYYY or DD.MM.YY format first (common in en-GB)
+        if (dateStr.includes('/') || dateStr.includes('.')) {
+          const separator = dateStr.includes('/') ? '/' : '.';
+          const parts = dateStr.split(separator);
+          if (parts.length === 3) {
+            const [day, month, year] = parts;
+            const fullYear = year.length === 2 ? `20${year}` : year;
+            parsedDate = new Date(`${fullYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${timeStr}`);
+          }
+        } else if (dateStr.includes('-')) {
+          // Try YYYY-MM-DD format
+          parsedDate = new Date(`${dateStr}T${timeStr}`);
+        } else {
+          // Try to parse as-is
+          parsedDate = new Date(`${dateStr} ${timeStr}`);
+        }
+        
+        if (parsedDate && !isNaN(parsedDate.getTime())) {
+          rawDate = parsedDate.toISOString();
+        } else {
+          // Fallback: use current date if parsing fails
+          console.warn('Failed to parse date/time, using current date:', { date: editData.date, time: editData.time });
+          rawDate = new Date().toISOString();
+        }
+      } catch (error) {
+        console.warn('Error parsing date/time for manual interaction:', { date: editData.date, time: editData.time, error });
+        // Fallback: use current date if parsing fails
+        rawDate = new Date().toISOString();
+      }
+    } else if (!rawDate) {
+      // If no date/time at all, use current date as fallback
+      rawDate = new Date().toISOString();
+    }
+
     // --- Optimistic Update ---
     const previousInteractions = [...interactions];
     const updatedInteractions = interactions.map((interaction) => {
@@ -6086,6 +6266,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           ...interaction,
           date: editData.date,
           time: editData.time,
+          raw_date: rawDate, // Update raw_date with calculated value
           content: contentToSave,
           observation: editData.observation,
           length: editData.length ? `${editData.length}m` : '',
@@ -6094,26 +6275,123 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       }
       return interaction;
     });
-    setInteractions(updatedInteractions);
+    
+    // Sort interactions by raw_date after update
+    const sortedInteractions = updatedInteractions.sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
+    setInteractions(sortedInteractions);
     closeDrawer();
     // --- End Optimistic Update ---
+    
+    // Store the optimistic values for later restoration after refresh
+    const optimisticDate = editData.date;
+    const optimisticTime = editData.time;
+    const optimisticRawDate = rawDate;
+    const optimisticId = activeInteraction.id;
+    
+    // CRITICAL: Store optimistic update in ref so fetchInteractions can preserve it
+    // This ensures that even if fetchInteractions is called (via useEffect), it will use these values
+    optimisticUpdatesRef.current.set(optimisticId, {
+      date: optimisticDate,
+      time: optimisticTime,
+      raw_date: optimisticRawDate,
+    });
+    
+    // Also store by numeric ID if different (for compatibility)
+    if (typeof optimisticId === 'string' && optimisticId.startsWith('manual_')) {
+      const numericId = optimisticId.replace('manual_', '');
+      if (numericId && !isNaN(Number(numericId))) {
+        optimisticUpdatesRef.current.set(Number(numericId), {
+          date: optimisticDate,
+          time: optimisticTime,
+          raw_date: optimisticRawDate,
+        });
+      }
+    }
 
     try {
       if (isManual) {
-        const updatedManualInteraction = updatedInteractions.find(i => i.id === activeInteraction.id);
+        const updatedManualInteraction = sortedInteractions.find(i => i.id === activeInteraction.id);
         if (updatedManualInteraction) {
-          const allManualInteractions = updatedInteractions.filter(i => i.id.toString().startsWith('manual_'));
+          const allManualInteractions = sortedInteractions.filter(i => i.id.toString().startsWith('manual_'));
           
           // Update manual_interactions and latest_interaction timestamp for new leads
           if (!isLegacyLead) {
+            // Prepare manual interactions for database (remove fields that shouldn't be stored)
+            const interactionsToSave = allManualInteractions.map((i: any) => {
+              const { renderedContent, renderedContentFallback, ...interactionToSave } = i;
+              
+              // If this is the interaction we're editing, use the editData values
+              const isEditingThis = i.id === activeInteraction.id || i.id === Number(activeInteraction.id);
+              
+              // Ensure all required fields are present
+              return {
+                ...interactionToSave,
+                // For the interaction being edited, use editData values; otherwise use existing values
+                date: isEditingThis ? editData.date : (interactionToSave.date || ''),
+                time: isEditingThis ? editData.time : (interactionToSave.time || ''),
+                // Ensure raw_date is always present (use calculated value for edited interaction)
+                raw_date: isEditingThis ? rawDate : (interactionToSave.raw_date || new Date().toISOString()),
+                // Ensure editable is set for manual interactions
+                editable: interactionToSave.editable !== undefined ? interactionToSave.editable : true,
+                // Ensure kind is preserved
+                kind: interactionToSave.kind || 'call',
+                // Preserve other fields
+                content: isEditingThis ? contentToSave : interactionToSave.content,
+                observation: isEditingThis ? editData.observation : interactionToSave.observation,
+                length: isEditingThis ? (editData.length ? `${editData.length}m` : '') : interactionToSave.length,
+                direction: isEditingThis ? editData.direction : interactionToSave.direction,
+              };
+            });
+            
+            // Debug: Log what we're saving
+            console.log('💾 [InteractionsTab] Saving manual interactions:', {
+              count: interactionsToSave.length,
+              updatedInteraction: interactionsToSave.find((i: any) => i.id === activeInteraction.id || i.id === Number(activeInteraction.id)),
+              allInteractions: interactionsToSave.map((i: any) => ({
+                id: i.id,
+                kind: i.kind,
+                date: i.date,
+                time: i.time,
+                raw_date: i.raw_date,
+                hasRawDate: !!i.raw_date,
+                editable: i.editable
+              }))
+            });
+            
+            // Verify the updated interaction has the correct date/time before saving
+            const interactionToVerify = interactionsToSave.find((i: any) => i.id === activeInteraction.id || i.id === Number(activeInteraction.id));
+            if (interactionToVerify) {
+              console.log('✅ [InteractionsTab] Verifying saved interaction has correct date/time:', {
+                id: interactionToVerify.id,
+                date: interactionToVerify.date,
+                time: interactionToVerify.time,
+                raw_date: interactionToVerify.raw_date,
+                matchesEditData: interactionToVerify.date === editData.date && interactionToVerify.time === editData.time
+              });
+              
+              // Ensure the date and time match what was edited
+              if (interactionToVerify.date !== editData.date || interactionToVerify.time !== editData.time) {
+                console.warn('⚠️ [InteractionsTab] Date/time mismatch! Fixing before save:', {
+                  editData: { date: editData.date, time: editData.time },
+                  interactionToSave: { date: interactionToVerify.date, time: interactionToVerify.time }
+                });
+                interactionToVerify.date = editData.date;
+                interactionToVerify.time = editData.time;
+                interactionToVerify.raw_date = rawDate; // Use the calculated raw_date
+              }
+            }
+            
             const { error } = await supabase
               .from('leads')
               .update({ 
-                manual_interactions: allManualInteractions,
+                manual_interactions: interactionsToSave,
                 latest_interaction: new Date().toISOString()
               })
               .eq('id', client.id);
             if (error) throw error;
+            
+            // Verify the save was successful
+            console.log('✅ [InteractionsTab] Manual interactions saved successfully');
           } else {
             // For legacy leads, manual interactions are stored in leads_leadinteractions
             // We need to find the interaction ID and update it
@@ -6136,7 +6414,91 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       }
       
       toast.success('Interaction updated!');
-      if (onClientUpdate) await onClientUpdate(); // Silently refresh data
+      
+      // CRITICAL: For manual interactions, DO NOT refresh or fetch interactions
+      // The optimistic update already shows the correct values, and we've saved to the database
+      // Refreshing would overwrite the optimistic update with potentially stale data
+      // Only refresh client data to sync other fields (like latest_interaction timestamp)
+      if (onClientUpdate && !isManual) {
+        // Only refresh for non-manual interactions (emails, etc.)
+        await onClientUpdate();
+      } else if (isManual) {
+        // For manual interactions, verify the database save was successful
+        // but DO NOT refresh interactions - keep the optimistic update
+        setTimeout(async () => {
+          try {
+            // Verify the database has the correct values (but don't refresh interactions)
+            const verifyClient = await supabase
+              .from('leads')
+              .select('manual_interactions')
+              .eq('id', client.id)
+              .single();
+            
+            if (verifyClient.data?.manual_interactions) {
+              const savedInteraction = verifyClient.data.manual_interactions.find(
+                (i: any) => i.id === optimisticId || i.id === Number(optimisticId)
+              );
+              
+              if (savedInteraction) {
+                // Check if the saved values match our optimistic update
+                const savedDate = savedInteraction.date;
+                const savedTime = savedInteraction.time;
+                const savedRawDate = savedInteraction.raw_date;
+                
+                // If the database has different date/time/raw_date than what we saved, update it
+                if (savedDate !== optimisticDate || savedTime !== optimisticTime || savedRawDate !== optimisticRawDate) {
+                  console.warn('⚠️ [InteractionsTab] Database has different date/time/raw_date than saved. Updating database with correct values.', {
+                    optimistic: { date: optimisticDate, time: optimisticTime, raw_date: optimisticRawDate },
+                    database: { date: savedDate, time: savedTime, raw_date: savedRawDate }
+                  });
+                  
+                  // Update the interaction in the database with the correct values
+                  const allManualInteractions = verifyClient.data.manual_interactions.map((i: any) => {
+                    if (i.id === optimisticId || i.id === Number(optimisticId)) {
+                      return {
+                        ...i,
+                        date: optimisticDate,
+                        time: optimisticTime,
+                        raw_date: optimisticRawDate,
+                      };
+                    }
+                    return i;
+                  });
+                  
+                  await supabase
+                    .from('leads')
+                    .update({ 
+                      manual_interactions: allManualInteractions,
+                      latest_interaction: new Date().toISOString()
+                    })
+                    .eq('id', client.id);
+                  
+                  console.log('✅ [InteractionsTab] Database updated with correct date/time/raw_date');
+                } else {
+                  console.log('✅ [InteractionsTab] Database has correct date/time/raw_date');
+                }
+              } else {
+                console.warn('⚠️ [InteractionsTab] Saved interaction not found in database after save');
+              }
+            }
+            
+            // Refresh client data (this might trigger fetchInteractions via useEffect)
+            // But fetchInteractions will now check optimisticUpdatesRef and use those values
+            if (onClientUpdate) {
+              await onClientUpdate();
+            }
+            
+            // Note: The optimistic update is stored in optimisticUpdatesRef
+            // If fetchInteractions is called (via useEffect), it will check this ref
+            // and use the optimistic values instead of database values
+            // This ensures the timeline always shows what the user edited
+            
+          } catch (refreshError) {
+            console.error('Error verifying save:', refreshError);
+            // Keep the optimistic update on error - it's already correct
+          }
+        }, 200);
+      }
     } catch (error) {
       toast.error('Update failed. Reverting changes.');
       setInteractions(previousInteractions); // Revert on failure
@@ -6492,8 +6854,45 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         // NOTE: Manual email interactions should NOT be saved to emails table - only to leads_leadinteractions
       } else {
         // For new leads, save to manual_interactions JSONB column
-        const existingInteractions = client.manual_interactions || [];
-        const updatedInteractions = [...existingInteractions, newInteraction];
+        // CRITICAL: Fetch the latest client data from DB to ensure we have all existing interactions
+        // This prevents missing interactions that were saved in a previous session
+        const { data: latestClientData, error: fetchError } = await supabase
+          .from('leads')
+          .select('manual_interactions')
+          .eq('id', client.id)
+          .single();
+
+        if (fetchError) {
+          console.error('Error fetching latest client data:', fetchError);
+          throw fetchError;
+        }
+
+        // Use the latest interactions from the database, not from the stale client prop
+        const existingInteractions = latestClientData?.manual_interactions || [];
+        
+        // Debug: Log what we're working with
+        console.log('💾 [InteractionsTab] Saving new manual interaction:', {
+          existingCount: existingInteractions.length,
+          newInteractionId: newInteraction.id,
+          newInteractionKind: newInteraction.kind,
+          existingIds: existingInteractions.map((i: any) => i.id)
+        });
+
+        // Check if this interaction ID already exists (shouldn't happen, but safety check)
+        const existingIndex = existingInteractions.findIndex(
+          (i: any) => i.id === newInteraction.id || i.id === Number(newInteraction.id)
+        );
+        
+        let updatedInteractions;
+        if (existingIndex >= 0) {
+          // If it already exists, replace it (shouldn't happen for new interactions)
+          console.warn('⚠️ [InteractionsTab] Interaction ID already exists, replacing:', newInteraction.id);
+          updatedInteractions = [...existingInteractions];
+          updatedInteractions[existingIndex] = newInteraction;
+        } else {
+          // Add the new interaction
+          updatedInteractions = [...existingInteractions, newInteraction];
+        }
 
         // Update manual_interactions and latest_interaction timestamp
         const { error: updateError } = await supabase
@@ -6508,9 +6907,40 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           console.error('Error updating new lead interaction:', updateError);
           throw updateError;
         }
+        
+        // Verify the save by fetching back
+        const { data: verifyData, error: verifyError } = await supabase
+          .from('leads')
+          .select('manual_interactions')
+          .eq('id', client.id)
+          .single();
+        
+        if (verifyError) {
+          console.error('Error verifying save:', verifyError);
+        } else {
+          const savedInteraction = verifyData?.manual_interactions?.find(
+            (i: any) => i.id === newInteraction.id || i.id === Number(newInteraction.id)
+          );
+          if (!savedInteraction) {
+            console.error('❌ [InteractionsTab] New interaction not found after save:', {
+              interactionId: newInteraction.id,
+              savedCount: verifyData?.manual_interactions?.length || 0,
+              savedIds: verifyData?.manual_interactions?.map((i: any) => i.id)
+            });
+          } else {
+            console.log('✅ [InteractionsTab] New interaction verified in database:', {
+              interactionId: newInteraction.id,
+              kind: savedInteraction.kind,
+              date: savedInteraction.date,
+              time: savedInteraction.time
+            });
+          }
+        }
+        
         console.log('✅ New lead interaction saved successfully:', { 
           kind: normalizedMethod,
-          client_id: client.id 
+          client_id: client.id,
+          totalInteractions: updatedInteractions.length
         });
         // Stage evaluation is handled automatically by database triggers
       }
@@ -6522,12 +6952,65 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       // They should NOT be saved to the emails table - only real synced emails from Outlook go there
       toast.success('Interaction saved!');
       
-      // Force refresh of interactions to show the newly saved interaction
-      if (onClientUpdate) {
-        await onClientUpdate(); // Refresh client data
+      // CRITICAL: For new leads, delay the refresh to ensure database write is complete
+      // Also, preserve the optimistic update by checking if the new interaction is already in state
+      if (!isLegacyLead) {
+        // For new leads, wait a bit for the database write to complete, then refresh
+        // But don't overwrite if we already have the new interaction in our optimistic update
+        setTimeout(async () => {
+          try {
+            // Verify the save by fetching from database
+            const { data: verifyData, error: verifyError } = await supabase
+              .from('leads')
+              .select('manual_interactions')
+              .eq('id', client.id)
+              .single();
+            
+            if (verifyError) {
+              console.error('Error verifying save during refresh:', verifyError);
+              return;
+            }
+            
+            // Check if our new interaction is in the database
+            const savedInteraction = verifyData?.manual_interactions?.find(
+              (i: any) => i.id === newInteraction.id || i.id === Number(newInteraction.id)
+            );
+            
+            if (savedInteraction) {
+              console.log('✅ [InteractionsTab] New interaction confirmed in DB, refreshing interactions');
+              // Only refresh if we don't already have this interaction in our state
+              const hasInteraction = interactions.some(
+                (i: any) => i.id === newInteraction.id || i.id === Number(newInteraction.id)
+              );
+              
+              if (!hasInteraction) {
+                // If somehow we don't have it, refresh
+                await fetchInteractions({ bypassCache: true });
+              } else {
+                // We already have it from optimistic update, just refresh client data for other fields
+                if (onClientUpdate) {
+                  await onClientUpdate();
+                }
+              }
+            } else {
+              console.error('❌ [InteractionsTab] New interaction NOT found in DB after save, keeping optimistic update');
+              // Keep the optimistic update, but still refresh client data
+              if (onClientUpdate) {
+                await onClientUpdate();
+              }
+            }
+          } catch (refreshError) {
+            console.error('Error during delayed refresh:', refreshError);
+            // On error, keep the optimistic update
+          }
+        }, 300); // 300ms delay to ensure database write is complete
+      } else {
+        // For legacy leads, refresh immediately
+        if (onClientUpdate) {
+          await onClientUpdate();
+        }
+        await fetchInteractions({ bypassCache: true });
       }
-      // Also trigger a direct fetch to ensure the interaction appears immediately
-      await fetchInteractions({ bypassCache: true });
 
     } catch (error) {
       toast.error('Save failed. Reverting changes.');
@@ -6891,17 +7374,63 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   });
                 }
                 
-                // Date formatting with validation and fallback
+                // Date formatting - USE THE SAME LOGIC AS THE DRAWER
+                // The drawer shows row.date and row.time directly, so we should construct the date from those
+                // This ensures the timeline shows exactly what the drawer shows
                 let dateObj: Date;
-                if (!row.raw_date) {
-                  console.warn('⚠️ Interaction missing raw_date in render, using current date:', { id: row.id, kind: row.kind });
-                  dateObj = new Date();
-                } else {
+                
+                // CRITICAL: Use row.date and row.time to construct the date, just like we do when saving
+                // This ensures consistency with the drawer which shows row.date and row.time
+                if (row.date && row.time) {
+                  try {
+                    // Handle different date formats (DD/MM/YYYY, DD.MM.YY, YYYY-MM-DD, etc.) - SAME AS SAVE LOGIC
+                    const dateStr = row.date;
+                    const timeStr = row.time;
+                    
+                    let parsedDate: Date | null = null;
+                    
+                    // Try DD/MM/YYYY or DD.MM.YY format first (common in en-GB)
+                    if (dateStr.includes('/') || dateStr.includes('.')) {
+                      const separator = dateStr.includes('/') ? '/' : '.';
+                      const parts = dateStr.split(separator);
+                      if (parts.length === 3) {
+                        const [day, month, year] = parts;
+                        const fullYear = year.length === 2 ? `20${year}` : year;
+                        parsedDate = new Date(`${fullYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${timeStr}`);
+                      }
+                    } else if (dateStr.includes('-')) {
+                      // Try YYYY-MM-DD format
+                      parsedDate = new Date(`${dateStr}T${timeStr}`);
+                    } else {
+                      // Try to parse as-is
+                      parsedDate = new Date(`${dateStr} ${timeStr}`);
+                    }
+                    
+                    if (parsedDate && !isNaN(parsedDate.getTime())) {
+                      dateObj = parsedDate;
+                    } else {
+                      // Fallback to raw_date if parsing fails
+                      dateObj = row.raw_date ? new Date(row.raw_date) : new Date();
+                      if (isNaN(dateObj.getTime())) {
+                        dateObj = new Date();
+                      }
+                    }
+                  } catch (error) {
+                    // Fallback to raw_date if parsing fails
+                    dateObj = row.raw_date ? new Date(row.raw_date) : new Date();
+                    if (isNaN(dateObj.getTime())) {
+                      dateObj = new Date();
+                    }
+                  }
+                } else if (row.raw_date) {
+                  // Fallback to raw_date if date/time not available
                   dateObj = new Date(row.raw_date);
                   if (isNaN(dateObj.getTime())) {
-                    console.warn('⚠️ Interaction has invalid raw_date in render, using current date:', { id: row.id, kind: row.kind, raw_date: row.raw_date });
                     dateObj = new Date();
                   }
+                } else {
+                  // Last resort: use current date
+                  dateObj = new Date();
                 }
                 
                 const day = dateObj.getDate().toString().padStart(2, '0');

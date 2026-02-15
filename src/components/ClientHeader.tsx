@@ -1586,6 +1586,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 {scheduleMenuLabel}
                                             </button>
                                         )}
+                                        {handleStageUpdate && (
+                                            <button
+                                                onClick={() => handleStageUpdate('Communication Started')}
+                                                className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                            >
+                                                <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                                                {isStageNumeric && stageNumeric === 15 ? 'Scheduling Notes' : 'Communication Started'}
+                                            </button>
+                                        )}
                                     </>
                                 )}
 
@@ -2155,6 +2164,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 >
                                                     <CalendarDaysIcon className="w-5 h-5" />
                                                     {scheduleMenuLabel}
+                                                </button>
+                                            )}
+                                            {handleStageUpdate && (
+                                                <button
+                                                    onClick={() => handleStageUpdate('Communication Started')}
+                                                    className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                >
+                                                    <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                                                    {isStageNumeric && stageNumeric === 15 ? 'Scheduling Notes' : 'Communication Started'}
                                                 </button>
                                             )}
                                         </>

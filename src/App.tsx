@@ -15,7 +15,9 @@ import EmailThreadModal from './components/EmailThreadModal';
 import ContactSelectorModal from './components/ContactSelectorModal';
 import { supabase } from './lib/supabase';
 import { CelebrationProvider } from './contexts/CelebrationContext';
+import { MailboxReconnectProvider } from './contexts/MailboxReconnectContext';
 import MoneyRainCelebration from './components/MoneyRainCelebration';
+import MailboxReconnectModal from './components/MailboxReconnectModal';
 import PWAInstallPrompt from './components/PWAInstallPrompt';
 import PWAUpdateNotification from './components/PWAUpdateNotification';
 import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIcon, UserGroupIcon, DocumentArrowUpIcon } from '@heroicons/react/24/outline';
@@ -933,11 +935,13 @@ const AppContent: React.FC = () => {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <CelebrationProvider>
+        <MailboxReconnectProvider>
+          <CelebrationProvider>
           <Router>
             <ScrollRestoration />
             <AppContentInner />
             <MoneyRainCelebration />
+            <MailboxReconnectModal />
             <PWAInstallPrompt />
             <PWAUpdateNotification />
             <Toaster
@@ -945,7 +949,8 @@ const AppContent: React.FC = () => {
               reverseOrder={false}
             />
           </Router>
-        </CelebrationProvider>
+          </CelebrationProvider>
+        </MailboxReconnectProvider>
       </AuthProvider>
     </QueryClientProvider>
   );

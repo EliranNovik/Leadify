@@ -226,11 +226,25 @@ class GraphAuthService {
   }
 
   async acquireTokenByRefreshToken(refreshToken, account) {
-    return this.msalClient.acquireTokenByRefreshToken({
-      refreshToken,
-      scopes: GRAPH_SCOPES,
-      account,
-    });
+    try {
+      return await this.msalClient.acquireTokenByRefreshToken({
+        refreshToken,
+        scopes: GRAPH_SCOPES,
+        account,
+      });
+    } catch (error) {
+      // Handle expired refresh token (AADSTS700082)
+      if (error?.errorCode === 'invalid_grant' || 
+          error?.errorMessage?.includes('AADSTS700082') ||
+          error?.errorMessage?.includes('refresh token has expired')) {
+        const expiredTokenError = new Error('Refresh token has expired. Please reconnect your mailbox.');
+        expiredTokenError.code = 'EXPIRED_REFRESH_TOKEN';
+        expiredTokenError.statusCode = 401;
+        throw expiredTokenError;
+      }
+      // Re-throw other errors as-is
+      throw error;
+    }
   }
 
   extractRefreshToken(account) {

@@ -76,7 +76,9 @@ const emailController = {
       res.status(200).json({ success: true, data: result });
     } catch (error) {
       console.error('❌ Send email error:', error);
-      res.status(500).json({ success: false, error: error.message || 'Failed to send email' });
+      // Return 401 for expired refresh tokens so frontend can prompt for reconnection
+      const statusCode = error.message?.includes('expired') || error.message?.includes('reconnect') ? 401 : 500;
+      res.status(statusCode).json({ success: false, error: error.message || 'Failed to send email' });
     }
   },
 };

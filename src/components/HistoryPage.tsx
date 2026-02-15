@@ -341,7 +341,7 @@ const HistoryPage: React.FC = () => {
         newRecordKeys: Object.keys(newRecord || {})
       });
 
-      const employeeFields = ['closer', 'expert', 'handler', 'scheduler', 'closer_id', 'expert_id', 'handler_id', 'case_handler_id', 'meeting_scheduler_id', 'manager', 'helper', 'manager_id', 'meeting_manager_id', 'meeting_lawyer_id', 'retainer_handler_id'];
+      const employeeFields = ['closer', 'expert', 'handler', 'scheduler', 'closer_id', 'expert_id', 'handler_id', 'case_handler_id', 'meeting_scheduler_id', 'manager', 'helper', 'manager_id', 'meeting_manager', 'meeting_manager_id', 'meeting_lawyer_id', 'retainer_handler_id'];
       const noteFields = ['special_notes', 'general_notes', 'notes', 'facts'];
       const numericFields = ['balance', 'proposal_total', 'total', 'total_base', 'vat_value', 'meeting_amount', 'stage', 'status'];
 
@@ -683,7 +683,20 @@ const HistoryPage: React.FC = () => {
                 changes.push('removed handler notes');
               }
             }
-          } else if (field === 'notes' || field === 'facts') {
+          } else if (field === 'facts') {
+            // Handle facts separately - show the actual text content
+            const oldText = oldVal ? String(oldVal).trim() : '';
+            const newText = newVal ? String(newVal).trim() : '';
+            if (oldText !== newText) {
+              if (newText && newText !== '' && newText !== '---' && newText !== '--') {
+                const strippedText = stripHtmlTags(newText);
+                const displayText = strippedText.length > 200 ? strippedText.substring(0, 200) + '...' : strippedText;
+                changes.push(`updated facts: ${displayText}`);
+              } else if (oldText && oldText !== '' && oldText !== '---' && oldText !== '--') {
+                changes.push('removed facts');
+              }
+            }
+          } else if (field === 'notes') {
             // For other notes fields, show that notes were updated
             if (!changes.some(c => c.includes('notes') || c.includes('facts'))) {
               changes.push(`updated ${fieldName.toLowerCase()}`);
@@ -1067,17 +1080,31 @@ const HistoryPage: React.FC = () => {
     if (tableType === 'meeting') {
       const keyFields = ['meeting_date', 'meeting_time', 'meeting_location', 'meeting_manager',
         'meeting_amount', 'status', 'attendance_probability', 'complexity'];
+      const meetingEmployeeFields = ['meeting_manager', 'helper'];
+      
       keyFields.forEach(field => {
         const oldVal = oldRecord[field];
         const newVal = newRecord[field];
         if (oldVal !== newVal) {
           const fieldName = getFieldDisplayName(field);
-          if (oldVal == null && newVal != null) {
-            changes.push(`set ${fieldName.toLowerCase()} to "${newVal}"`);
-          } else if (oldVal != null && newVal == null) {
-            changes.push(`removed ${fieldName.toLowerCase()}`);
+          
+          // Handle employee fields (meeting_manager, helper) with employee name mapping
+          if (meetingEmployeeFields.includes(field)) {
+            const oldEmp = getEmployeeNameFromId(oldVal);
+            const newEmp = getEmployeeNameFromId(newVal);
+            // Only show if there's an actual change (not both "Unassigned")
+            if (oldEmp !== newEmp) {
+              changes.push(`changed ${fieldName.toLowerCase()} from "${oldEmp}" to "${newEmp}"`);
+            }
           } else {
-            changes.push(`changed ${fieldName.toLowerCase()} from "${oldVal}" to "${newVal}"`);
+            // Handle non-employee fields normally
+            if (oldVal == null && newVal != null) {
+              changes.push(`set ${fieldName.toLowerCase()} to "${newVal}"`);
+            } else if (oldVal != null && newVal == null) {
+              changes.push(`removed ${fieldName.toLowerCase()}`);
+            } else {
+              changes.push(`changed ${fieldName.toLowerCase()} from "${oldVal}" to "${newVal}"`);
+            }
           }
         }
       });
@@ -1323,10 +1350,11 @@ const HistoryPage: React.FC = () => {
         }
       }
 
-      // Check if special_notes or general_notes were updated
+      // Check if special_notes, general_notes, or facts were updated
       const specialNotesUpdated = entry.special_notes !== prevEntry?.special_notes;
       const generalNotesUpdated = entry.general_notes !== prevEntry?.general_notes;
-      const notesUpdated = specialNotesUpdated || generalNotesUpdated;
+      const factsUpdated = entry.facts !== prevEntry?.facts;
+      const notesUpdated = specialNotesUpdated || generalNotesUpdated || factsUpdated;
 
       // Check if unactivation fields changed
       // Filter out micro-updates to unactivated_at (millisecond differences)
@@ -1453,6 +1481,7 @@ const HistoryPage: React.FC = () => {
           const filteredChanges = changes.filter(c =>
             !c.includes('special note') &&
             !c.includes('general note') &&
+            !c.includes('facts') &&
             !c.includes('tags') &&
             !c.includes('eligibility status') &&
             !c.includes('section eligibility') &&
@@ -1481,6 +1510,7 @@ const HistoryPage: React.FC = () => {
           const filteredChanges = changes.filter(c =>
             !c.includes('special note') &&
             !c.includes('general note') &&
+            !c.includes('facts') &&
             !c.includes('tags') &&
             !c.includes('eligibility status') &&
             !c.includes('section eligibility') &&
@@ -1500,6 +1530,35 @@ const HistoryPage: React.FC = () => {
         }
       }
 
+      // Handle facts separately
+      if (factsUpdated && tableType === 'lead') {
+        const factsText = entry.facts ? String(entry.facts).trim() : '';
+        if (factsText && factsText !== '' && factsText !== '---' && factsText !== '--') {
+          const strippedText = stripHtmlTags(factsText);
+          const displayText = strippedText.length > 200 ? strippedText.substring(0, 200) + '...' : strippedText;
+          const filteredChanges = changes.filter(c =>
+            !c.includes('special note') &&
+            !c.includes('general note') &&
+            !c.includes('facts') &&
+            !c.includes('tags') &&
+            !c.includes('eligibility status') &&
+            !c.includes('section eligibility') &&
+            !c.includes('expert notes') &&
+            !c.includes('handler notes') &&
+            !c.includes('interaction') &&
+            !c.toLowerCase().includes('unactivated') &&
+            !c.toLowerCase().includes('unactivation')
+          );
+
+          return {
+            description: `updated facts: ${displayText}`,
+            descriptionBold: 'updated facts:',
+            descriptionText: displayText,
+            changeDetails: filteredChanges
+          };
+        }
+      }
+
       // Handle tags separately
       if (tagsUpdated && tableType === 'lead') {
         const tagsText = entry.tags ? String(entry.tags).trim() : '';
@@ -1510,6 +1569,7 @@ const HistoryPage: React.FC = () => {
             !c.includes('tags') &&
             !c.includes('special note') &&
             !c.includes('general note') &&
+            !c.includes('facts') &&
             !c.includes('eligibility status') &&
             !c.includes('section eligibility') &&
             !c.includes('expert notes') &&
@@ -1547,6 +1607,7 @@ const HistoryPage: React.FC = () => {
             !c.includes('eligibility status') &&
             !c.includes('special note') &&
             !c.includes('general note') &&
+            !c.includes('facts') &&
             !c.includes('tags') &&
             !c.includes('section eligibility') &&
             !c.includes('expert notes') &&
@@ -1583,6 +1644,7 @@ const HistoryPage: React.FC = () => {
             !c.includes('section eligibility') &&
             !c.includes('special note') &&
             !c.includes('general note') &&
+            !c.includes('facts') &&
             !c.includes('tags') &&
             !c.includes('eligibility status') &&
             !c.includes('expert notes') &&
@@ -1620,6 +1682,7 @@ const HistoryPage: React.FC = () => {
             !c.includes('expert notes') &&
             !c.includes('special note') &&
             !c.includes('general note') &&
+            !c.includes('facts') &&
             !c.includes('tags') &&
             !c.includes('eligibility status') &&
             !c.includes('section eligibility') &&
@@ -1648,6 +1711,7 @@ const HistoryPage: React.FC = () => {
             !c.includes('handler notes') &&
             !c.includes('special note') &&
             !c.includes('general note') &&
+            !c.includes('facts') &&
             !c.includes('tags') &&
             !c.includes('eligibility status') &&
             !c.includes('section eligibility') &&
@@ -3047,11 +3111,11 @@ const HistoryPage: React.FC = () => {
 
   const getChangeTypeBadge = (changeType: string) => {
     const badges = {
-      'insert': <span className="badge badge-sm text-white" style={{ backgroundColor: '#2563eb' }}>Created</span>,
-      'update': <span className="badge badge-sm text-white" style={{ backgroundColor: '#15803d' }}>Updated</span>,
-      'delete': <span className="badge badge-sm text-white" style={{ backgroundColor: '#dc2626' }}>Deleted</span>
+      'insert': <span className="badge badge-sm text-white border-0" style={{ backgroundColor: '#2563eb' }}>Created</span>,
+      'update': <span className="badge badge-sm text-white border-0" style={{ backgroundColor: '#15803d' }}>Updated</span>,
+      'delete': <span className="badge badge-sm text-white border-0" style={{ backgroundColor: '#dc2626' }}>Deleted</span>
     };
-    return badges[changeType as keyof typeof badges] || <span className="badge badge-sm">Changed</span>;
+    return badges[changeType as keyof typeof badges] || <span className="badge badge-sm border-0">Changed</span>;
   };
 
   const filteredHistory = historyData.filter(entry => {
@@ -3110,22 +3174,22 @@ const HistoryPage: React.FC = () => {
   }
 
   return (
-    <div className="p-8 w-full">
-      <div className="flex items-center gap-4 mb-8">
+    <div className="p-2 md:p-8 w-full">
+      <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-4 mb-4 md:mb-8">
         <button
           onClick={() => navigate(`/clients/${lead_number}`)}
-          className="flex items-center gap-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+          className="flex items-center gap-1 md:gap-2 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors self-start"
         >
           <ArrowLeftIcon className="w-4 h-4" />
-          <span>Back to Client</span>
+          <span className="text-sm md:text-base">Back to Client</span>
         </button>
-        <h1 className="text-3xl font-bold">Change History</h1>
+        <h1 className="text-xl md:text-3xl font-bold">Change History</h1>
       </div>
 
       {client && (
-        <div className="mb-6">
-          <div className="flex items-center justify-between gap-4 mb-2">
-            <h2 className="text-xl font-semibold">
+        <div className="mb-3 md:mb-6">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-4 mb-2">
+            <h2 className="text-base md:text-xl font-semibold">
               {client.name} <span className="text-gray-600 font-normal">#{renderLeadNumber(client, isMasterLead)}</span>
             </h2>
             <div className="flex items-center gap-2 flex-wrap">
@@ -3138,7 +3202,7 @@ const HistoryPage: React.FC = () => {
 
                 return (
                   <span
-                    className="badge badge-lg font-semibold"
+                    className="badge badge-sm md:badge-lg font-semibold"
                     style={{
                       backgroundColor: stageColour || undefined,
                       color: stageColour ? textColor : undefined,
@@ -3159,7 +3223,7 @@ const HistoryPage: React.FC = () => {
 
                 if (hasCategory || hasTopic) {
                   return (
-                    <span className="text-sm text-gray-600 dark:text-gray-400">
+                    <span className="text-xs md:text-sm text-gray-600 dark:text-gray-400">
                       {hasCategory && displayCategory}
                       {hasCategory && hasTopic && ' • '}
                       {hasTopic && client.topic}
@@ -3171,18 +3235,18 @@ const HistoryPage: React.FC = () => {
             </div>
           </div>
           {filteredHistory.length > 0 && (
-            <p className="text-sm text-gray-500">
+            <p className="text-xs md:text-sm text-gray-500">
               <span className="font-medium">Total changes:</span> {filteredHistory.length} entries
             </p>
           )}
         </div>
       )}
 
-      <div className="mb-6 flex gap-4 items-center flex-wrap">
+      <div className="mb-3 md:mb-6 flex flex-col md:flex-row gap-2 md:gap-4 items-stretch md:items-center">
         <select
           value={filterType}
           onChange={(e) => setFilterType(e.target.value as any)}
-          className="select select-bordered w-full max-w-xs"
+          className="select select-bordered select-sm md:select-md w-full md:max-w-xs"
         >
           <option value="all">All Changes</option>
           <option value="lead_changes">Lead Changes</option>
@@ -3190,19 +3254,19 @@ const HistoryPage: React.FC = () => {
           <option value="payment_changes">Payment Changes</option>
         </select>
 
-        <div className="relative flex-1 max-w-xs">
-          <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+        <div className="relative w-full md:flex-1 md:max-w-xs">
+          <MagnifyingGlassIcon className="absolute left-2 md:left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 md:w-5 md:h-5 text-gray-400" />
           <input
             type="text"
             placeholder="Search by employee..."
             value={employeeSearch}
             onChange={(e) => setEmployeeSearch(e.target.value)}
-            className="input input-bordered w-full pl-10"
+            className="input input-bordered input-sm md:input-md w-full pl-8 md:pl-10"
           />
         </div>
       </div>
 
-      <div className="space-y-6">
+      <div className="space-y-3 md:space-y-6">
         {filteredHistory.length === 0 ? (
           <div className="text-center py-12 text-gray-500 bg-base-100 rounded-lg">
             <ArchiveBoxIcon className="w-12 h-12 mx-auto mb-4 text-gray-400" />
@@ -3217,27 +3281,27 @@ const HistoryPage: React.FC = () => {
             );
 
             return sortedDates.map((dateKey) => (
-              <div key={dateKey} className="space-y-3">
-                <div className="sticky top-0 py-2 z-10 mb-4">
-                  <span className="inline-flex items-center px-4 py-2 rounded-full text-sm font-semibold text-gray-700 dark:text-gray-300 bg-white/70 dark:bg-gray-800/70 backdrop-blur-md border border-white/20 dark:border-gray-700/20 shadow-sm">
+              <div key={dateKey} className="space-y-2 md:space-y-3">
+                <div className="sticky top-0 py-1 md:py-2 z-10 mb-2 md:mb-4">
+                  <span className="inline-flex items-center px-2 md:px-4 py-1 md:py-2 rounded-full text-xs md:text-sm font-semibold text-gray-700 dark:text-gray-300 bg-white/70 dark:bg-gray-800/70 backdrop-blur-md border border-white/20 dark:border-gray-700/20 shadow-sm">
                     {dateKey}
                   </span>
                 </div>
                 {groupedHistory[dateKey].map((entry) => (
                   <div
                     key={entry.id}
-                    className="bg-white dark:bg-gray-800 rounded-lg shadow-md hover:shadow-lg transition-all duration-200 p-4 border border-gray-200 dark:border-gray-700 ml-4"
+                    className="bg-white dark:bg-gray-800 rounded-lg shadow-md hover:shadow-lg transition-all duration-200 p-2 md:p-4 border border-gray-200 dark:border-gray-700 ml-0 md:ml-4"
                   >
-                    <div className="flex items-start gap-4">
+                    <div className="flex items-start gap-2 md:gap-4">
                       <div className="mt-1 flex-shrink-0">
                         {getEntryIcon(entry)}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-start justify-between gap-4 mb-2">
+                        <div className="flex items-start justify-between gap-2 md:gap-4 mb-1 md:mb-2">
                           <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-2 flex-wrap">
+                            <div className="flex items-center gap-1 md:gap-2 mb-1 md:mb-2 flex-wrap">
                               {getChangeTypeBadge(entry.change_type)}
-                              <div className="text-base text-gray-900 dark:text-white">
+                              <div className="text-sm md:text-base text-gray-900 dark:text-white">
                                 {entry.descriptionBold && (
                                   <span className="font-semibold">{entry.descriptionBold} </span>
                                 )}
@@ -3252,7 +3316,8 @@ const HistoryPage: React.FC = () => {
                                             return <span className="text-gray-500 italic">No Stage</span>;
                                           }
                                           const stageColour = getStageColour(stageId);
-                                          const textColor = getContrastingTextColor(stageColour);
+                                          // Force white text for "Scheduler assigned"
+                                          const textColor = stageName === 'Scheduler assigned' ? '#ffffff' : getContrastingTextColor(stageColour);
                                           const backgroundColor = stageColour || '#3b28c7';
 
                                           return (
@@ -3289,7 +3354,7 @@ const HistoryPage: React.FC = () => {
                                   if (employeeChangeMatch) {
                                     const [, field, oldName, newName] = employeeChangeMatch;
                                     const fieldLower = field.trim().toLowerCase();
-                                    const employeeFields = ['closer', 'expert', 'handler', 'scheduler', 'manager', 'helper', 'meeting_manager', 'meeting_lawyer', 'closer_id', 'expert_id', 'handler_id', 'case_handler_id', 'meeting_scheduler_id', 'meeting_manager_id', 'meeting_lawyer_id', 'retainer_handler_id', 'case handler', 'case handler id', 'retainer handler', 'retainer handler id'];
+                                    const employeeFields = ['closer', 'expert', 'handler', 'scheduler', 'manager', 'helper', 'meeting_manager', 'meeting manager', 'meeting_lawyer', 'meeting lawyer', 'closer_id', 'expert_id', 'handler_id', 'case_handler_id', 'meeting_scheduler_id', 'meeting_manager_id', 'meeting_lawyer_id', 'retainer_handler_id', 'case handler', 'case handler id', 'retainer handler', 'retainer handler id'];
 
                                     if (employeeFields.includes(fieldLower) || fieldLower.includes('handler') || fieldLower.includes('closer') || fieldLower.includes('expert') || fieldLower.includes('scheduler') || fieldLower.includes('manager') || fieldLower.includes('retainer')) {
                                       // Helper to find employee ID by name (works for both new and legacy leads)
@@ -3339,8 +3404,8 @@ const HistoryPage: React.FC = () => {
 
                             {/* Show specific change details if available */}
                             {entry.changeDetails && entry.changeDetails.length > 0 && (
-                              <div className="ml-2 mb-2 pl-4 border-l-2 border-gray-300 dark:border-gray-600">
-                                <ul className="list-disc list-inside space-y-1 text-sm text-gray-700 dark:text-gray-300">
+                              <div className="ml-1 md:ml-2 mb-1 md:mb-2 pl-2 md:pl-4 border-l-2 border-gray-300 dark:border-gray-600">
+                                <ul className="list-disc list-inside space-y-0.5 md:space-y-1 text-xs md:text-sm text-gray-700 dark:text-gray-300">
                                   {entry.changeDetails.map((change, idx) => {
                                     // Check if this is a stage change (JSON string)
                                     try {
@@ -3357,7 +3422,8 @@ const HistoryPage: React.FC = () => {
                                             return <span className="text-gray-500 italic">No Stage</span>;
                                           }
                                           const stageColour = getStageColour(stageId);
-                                          const textColor = getContrastingTextColor(stageColour);
+                                          // Force white text for "Scheduler assigned"
+                                          const textColor = stageName === 'Scheduler assigned' ? '#ffffff' : getContrastingTextColor(stageColour);
                                           const backgroundColor = stageColour || '#3b28c7';
 
                                           return (
@@ -3393,7 +3459,7 @@ const HistoryPage: React.FC = () => {
                                     if (employeeChangeMatch) {
                                       const [, field, oldName, newName] = employeeChangeMatch;
                                       const fieldLower = field.trim().toLowerCase();
-                                      const employeeFields = ['closer', 'expert', 'handler', 'scheduler', 'manager', 'helper', 'meeting_manager', 'meeting_lawyer', 'closer_id', 'expert_id', 'handler_id', 'case_handler_id', 'meeting_scheduler_id', 'meeting_manager_id', 'meeting_lawyer_id', 'case handler', 'case handler id'];
+                                      const employeeFields = ['closer', 'expert', 'handler', 'scheduler', 'manager', 'helper', 'meeting_manager', 'meeting manager', 'meeting_lawyer', 'meeting lawyer', 'closer_id', 'expert_id', 'handler_id', 'case_handler_id', 'meeting_scheduler_id', 'meeting_manager_id', 'meeting_lawyer_id', 'case handler', 'case handler id'];
 
                                       if (employeeFields.includes(fieldLower) || fieldLower.includes('handler') || fieldLower.includes('closer') || fieldLower.includes('expert') || fieldLower.includes('scheduler') || fieldLower.includes('manager')) {
                                         // Helper to find employee ID by name (works for both new and legacy leads)
@@ -3439,15 +3505,15 @@ const HistoryPage: React.FC = () => {
                               </div>
                             )}
 
-                            <div className="flex items-center gap-4 text-sm text-gray-600 dark:text-gray-400 flex-wrap mt-2">
-                              <span className="flex items-center gap-2">
-                                <EmployeeAvatar employeeId={entry.changed_by !== 'System' ? Number(entry.changed_by) : null} size="md" />
+                            <div className="flex items-center gap-2 md:gap-4 text-xs md:text-sm text-gray-600 dark:text-gray-400 flex-wrap mt-1 md:mt-2">
+                              <span className="flex items-center gap-1 md:gap-2">
+                                <EmployeeAvatar employeeId={entry.changed_by !== 'System' ? Number(entry.changed_by) : null} size="sm" />
                                 <span className="font-medium">
                                   {entry.employeeDisplayName || 'System'}
                                 </span>
                               </span>
                               <span className="flex items-center gap-1">
-                                <ArchiveBoxIcon className="w-4 h-4" />
+                                <ArchiveBoxIcon className="w-3 h-3 md:w-4 md:h-4" />
                                 {formatDate(entry.changed_at)}
                               </span>
                             </div>

@@ -21,12 +21,18 @@ const parseJsonResponse = async (response: Response) => {
       (payload && typeof payload === 'object' && 'error' in payload && (payload as any).error) ||
       response.statusText ||
       'Request failed';
-    throw new Error(typeof message === 'string' ? message : 'Request failed');
+    const error = new Error(typeof message === 'string' ? message : 'Request failed');
+    // Attach status code for error handling
+    (error as any).statusCode = response.status;
+    throw error;
   }
 
   if (payload && typeof payload === 'object' && 'success' in payload) {
     if ((payload as any).success === false) {
-      throw new Error((payload as any).error || 'Request failed');
+      const error = new Error((payload as any).error || 'Request failed');
+      // Attach status code for error handling
+      (error as any).statusCode = response.status;
+      throw error;
     }
     return payload;
   }
