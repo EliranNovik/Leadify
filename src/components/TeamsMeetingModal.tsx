@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { XMarkIcon, CalendarIcon, ClockIcon, UserIcon, VideoCameraIcon, ArrowPathIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import React, { useState, useEffect, useRef } from 'react';
+import { XMarkIcon, CalendarIcon, ClockIcon, UserIcon, VideoCameraIcon, ArrowPathIcon, MagnifyingGlassIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { createStaffTeamsMeeting, getAccessTokenWithFallback } from '../lib/graph';
 import { useMsal } from '@azure/msal-react';
 import { InteractionRequiredAuthError } from '@azure/msal-browser';
@@ -44,6 +44,8 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
   const [filteredEmployees, setFilteredEmployees] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [showEmployeeSearch, setShowEmployeeSearch] = useState(false);
+  const [allStaffSelected, setAllStaffSelected] = useState(false);
+  const employeeDropdownRef = useRef<HTMLDivElement | null>(null);
   const [formData, setFormData] = useState<MeetingFormData>({
     subject: '',
     date: selectedDate ? selectedDate.toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
@@ -85,55 +87,86 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
     if (searchTerm.trim() === '') {
       setFilteredEmployees(employees);
     } else {
-      const filtered = employees.filter(emp => 
+      const filtered = employees.filter(emp =>
         emp.display_name?.toLowerCase().includes(searchTerm.toLowerCase())
       );
       setFilteredEmployees(filtered);
     }
   }, [searchTerm, employees]);
 
+  // Handle clicking outside employee dropdown
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        employeeDropdownRef.current &&
+        !employeeDropdownRef.current.contains(event.target as Node)
+      ) {
+        setShowEmployeeSearch(false);
+      }
+    };
+
+    if (showEmployeeSearch) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [showEmployeeSearch]);
+
+  // Check if all staff are selected
+  useEffect(() => {
+    if (employees.length > 0 && formData.attendees.length > 0) {
+      const allEmails = employees.map(emp => emp.email).filter(Boolean);
+      const allSelected =
+        formData.attendees.length === allEmails.length &&
+        allEmails.length > 0 &&
+        allEmails.every(email => formData.attendees.includes(email));
+      setAllStaffSelected(allSelected);
+    } else if (formData.attendees.length === 0) {
+      setAllStaffSelected(false);
+    }
+  }, [formData.attendees, employees]);
+
   const fetchEmployees = async () => {
     try {
-      
+
       // First, let's try a simpler approach - fetch employees and users separately
       const { data: employeesData, error: employeesError } = await supabase
         .from('tenants_employee')
         .select('id, display_name')
         .not('display_name', 'is', null)
         .order('display_name');
-      
+
       if (employeesError) {
         toast.error('Failed to load employees');
         return;
       }
-      
+
       // Get all employee IDs
       const employeeIds = employeesData?.map(emp => emp.id) || [];
-      
+
       if (employeeIds.length === 0) {
         setEmployees([]);
         setFilteredEmployees([]);
         return;
       }
-      
+
       // Fetch emails from users table
       const { data: usersData, error: usersError } = await supabase
         .from('users')
         .select('employee_id, email')
         .in('employee_id', employeeIds)
         .not('email', 'is', null);
-      
+
       if (usersError) {
         toast.error('Failed to load employee emails');
         return;
       }
-      
+
       // Create a map of employee_id to email
       const emailMap = new Map();
       usersData?.forEach(user => {
         emailMap.set(user.employee_id, user.email);
       });
-      
+
       // Combine employee data with emails
       const processedEmployees = employeesData
         ?.filter(emp => emailMap.has(emp.id)) // Only include employees with emails
@@ -142,8 +175,8 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
           display_name: emp.display_name,
           email: emailMap.get(emp.id)
         })) || [];
-      
-      
+
+
       setEmployees(processedEmployees);
       setFilteredEmployees(processedEmployees);
     } catch (error) {
@@ -165,6 +198,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
         ...prev,
         attendees: [...prev.attendees, email]
       }));
+      setAllStaffSelected(false);
     }
   };
 
@@ -173,14 +207,23 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
       ...prev,
       attendees: prev.attendees.filter(a => a !== email)
     }));
+    setAllStaffSelected(false);
   };
 
   const selectAllEmployees = () => {
+    if (employees.length === 0) {
+      toast.error('No employees available to select', { duration: 3000 });
+      return;
+    }
     const allEmails = employees.map(emp => emp.email); // Use actual emails from database
     setFormData(prev => ({
       ...prev,
       attendees: allEmails
     }));
+    setAllStaffSelected(true);
+    setShowEmployeeSearch(false);
+    setSearchTerm('');
+    toast.success(`All ${allEmails.length} staff members selected`, { duration: 3000 });
   };
 
   const clearAllAttendees = () => {
@@ -188,30 +231,74 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
       ...prev,
       attendees: []
     }));
+    setAllStaffSelected(false);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    
+
+
     if (!formData.subject.trim()) {
       toast.error('Please enter a meeting subject', { duration: 5000 });
       return;
     }
 
     setIsLoading(true);
-    
+
     try {
-      const account = accounts[0];
+      // First, get the authenticated user from Supabase to get their email from database
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (!authUser) {
+        toast.error('Authentication error. Please refresh and try again.', { duration: 5000 });
+        setIsLoading(false);
+        return;
+      }
+
+      // Get user's email from users table using auth_id (not by name)
+      let userEmail: string | null = null;
+      try {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('email')
+          .eq('auth_id', authUser.id)
+          .maybeSingle();
+
+        if (userData?.email) {
+          userEmail = userData.email;
+        }
+      } catch (dbError) {
+        console.error('Error fetching user email from database:', dbError);
+      }
+
+      // Find the MSAL account that matches the database user's email
+      let account = accounts[0]; // Default fallback
+
+      if (userEmail && accounts.length > 0) {
+        // Try to find account matching the database email
+        const matchingAccount = accounts.find(acc =>
+          acc.username?.toLowerCase() === userEmail?.toLowerCase() ||
+          acc.name?.toLowerCase() === userEmail?.toLowerCase()
+        );
+
+        if (matchingAccount) {
+          account = matchingAccount;
+          console.log('✅ Found matching MSAL account for user:', userEmail);
+        } else {
+          console.warn('⚠️ No MSAL account found matching database email:', userEmail, 'Using first account:', accounts[0]?.username);
+          // Still use accounts[0] but log the mismatch
+        }
+      }
+
       if (!account) {
-        toast.error('You must be signed in to create Teams meetings', { duration: 5000 });
+        toast.error('You must be signed in to Microsoft to create Teams meetings. Please click the Microsoft sign in button in the header.', { duration: 8000 });
+        setIsLoading(false);
         return;
       }
 
       // Use the shared staff calendar account for creating meetings
-      
+
       const accessToken = await getAccessTokenWithFallback(
-        instance, 
+        instance,
         {
           ...loginRequest,
           // Override the login request to use the shared calendar account
@@ -220,17 +307,20 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
             // Force authentication for the shared calendar
             login_hint: STAFF_CALENDAR_EMAIL
           }
-        }, 
+        },
         account,
         () => toast.loading('Authenticating with shared calendar...', { duration: 3000 })
       );
-      
+
       if (!accessToken) {
-        toast.error('Failed to authenticate with Microsoft. Please try again.', { duration: 5000 });
+        const errorMessage = userEmail
+          ? `Failed to authenticate with Microsoft. Please ensure you are signed in with the account: ${userEmail}`
+          : 'Failed to authenticate with Microsoft. Please sign in and try again.';
+        toast.error(errorMessage, { duration: 8000 });
         setIsLoading(false);
         return;
       }
-      
+
 
       // Calculate start and end times - create in local timezone
       const startDateTime = new Date(`${formData.date}T${formData.time}:00`);
@@ -260,19 +350,19 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
       };
 
 
-      
+
       let result;
       try {
         result = await createStaffTeamsMeeting(accessToken, meetingDetails);
-        
+
         if (!result || !result.id) {
           throw new Error('Teams meeting creation returned invalid result - no meeting ID');
         }
-        
+
       } catch (outlookError) {
         throw outlookError; // Re-throw to be caught by outer catch block
       }
-      
+
       // Get current user's auth ID for RLS policy compliance
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
@@ -305,7 +395,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
         return;
       }
       const { error: saveError } = await saveOutlookTeamsMeeting(meetingData);
-      
+
       if (saveError) {
         // Check if it's a policy/permission error
         if (saveError.code === 'PGRST301' || saveError.message?.includes('policy') || saveError.message?.includes('permission')) {
@@ -314,10 +404,27 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
           toast.error(`Meeting created in Teams but failed to save to database: ${saveError.message || 'Unknown error'}`, { duration: 8000 });
         }
       } else {
-        toast.success('Teams meeting created successfully and saved to database!', { duration: 5000 });
+        // Format date and time for toast notification
+        const meetingDate = new Date(`${formData.date}T${formData.time}:00`);
+        const formattedDate = meetingDate.toLocaleDateString('en-US', {
+          weekday: 'short',
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric'
+        });
+        const formattedTime = meetingDate.toLocaleTimeString('en-US', {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true
+        });
+
+        toast.success(
+          `Teams meeting created successfully! Scheduled for ${formattedDate} at ${formattedTime}`,
+          { duration: 6000 }
+        );
       }
-      
-      
+
+
       // Only reset form and close modal if everything was successful
       if (!saveError) {
         setFormData({
@@ -335,20 +442,23 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
         });
         onClose();
       }
-      
+
     } catch (error) {
-      
+      console.error('Teams meeting creation error:', error);
+
       if (error instanceof Error) {
         // Check for specific error types
-        if (error.message.includes('insufficient privileges') || error.message.includes('permission')) {
-          toast.error('Permission denied: You do not have access to create meetings in the shared calendar. Please contact your administrator.', { duration: 8000 });
-        } else if (error.message.includes('authentication') || error.message.includes('token')) {
-          toast.error('Authentication failed: Please try signing in again.', { duration: 8000 });
+        if (error.message.includes('insufficient privileges') || error.message.includes('permission') || error.message.includes('Access Denied')) {
+          toast.error('Permission denied: You do not have access to create meetings in the shared calendar. Please contact your administrator to grant you permissions.', { duration: 8000 });
+        } else if (error.message.includes('authentication') || error.message.includes('token') || error.message.includes('login')) {
+          toast.error('Authentication failed: Please ensure you are signed in with the correct Microsoft account and try again.', { duration: 8000 });
+        } else if (error.message.includes('AADSTS') || error.message.includes('consent')) {
+          toast.error('Microsoft authentication error: Please sign out and sign in again, then try creating the meeting.', { duration: 8000 });
         } else {
           toast.error(`Failed to create Teams meeting: ${error.message}`, { duration: 8000 });
         }
       } else {
-        toast.error('Failed to create Teams meeting: Unknown error occurred', { duration: 8000 });
+        toast.error('Failed to create Teams meeting: Unknown error occurred. Please try again or contact support.', { duration: 8000 });
       }
     } finally {
       setIsLoading(false);
@@ -369,140 +479,99 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white w-full h-full max-w-none max-h-none overflow-y-auto">
+    <div className={`fixed inset-0 z-50 flex items-center justify-center ${isOpen ? '' : 'hidden'}`}>
+      {/* Backdrop */}
+      <div
+        className="absolute inset-0 bg-black bg-opacity-50 transition-opacity"
+        onClick={onClose}
+      />
+
+      {/* Modal */}
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-200" style={{ backgroundColor: '#f3f0ff' }}>
-          <div className="flex items-center space-x-3">
-            {/* RMQ 2.0 Text */}
-            <span className="text-lg font-bold" style={{ color: '#4418C4' }}>RMQ 2.0</span>
-            <div className="h-6 w-px bg-gray-300"></div>
-            <div className="p-2 rounded-lg" style={{ backgroundColor: '#e6dfff' }}>
-              <VideoCameraIcon className="h-6 w-6" style={{ color: '#4418C4' }} />
-            </div>
+        <div className="sticky top-0 bg-white border-b border-gray-200 p-6 rounded-t-2xl flex items-center justify-between z-10">
+          <div className="flex items-center gap-3">
+            <VideoCameraIcon className="h-6 w-6 text-primary" />
             <div>
-              <h2 className="text-xl font-semibold text-gray-900">Create Teams Meeting</h2>
+              <h2 className="text-2xl font-bold text-gray-900">Create Teams Meeting</h2>
               <p className="text-sm text-gray-500">Schedule a meeting in Staff Calendar</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+            className="btn btn-sm btn-circle btn-ghost text-gray-600 hover:bg-gray-100"
+            disabled={isLoading}
           >
-            <XMarkIcon className="h-6 w-6 text-gray-400" />
+            <XMarkIcon className="w-6 h-6" />
           </button>
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="p-8 space-y-8 max-w-4xl mx-auto">
+        <form onSubmit={handleSubmit} className="p-6 space-y-6">
           {/* Subject */}
-          <div>
-            <label htmlFor="subject" className="block text-sm font-medium text-gray-700 mb-2">
-              Meeting Subject *
+          <div className="form-control">
+            <label className="label">
+              <span className="label-text font-semibold">Meeting Subject *</span>
             </label>
             <input
               type="text"
               id="subject"
               value={formData.subject}
               onChange={(e) => handleInputChange('subject', e.target.value)}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg transition-colors"
-              style={{ 
-                '--tw-ring-color': '#4418C4',
-                '--tw-border-color': '#4418C4'
-              } as React.CSSProperties}
-              onFocus={(e) => {
-                e.target.style.borderColor = '#4418C4';
-                e.target.style.boxShadow = '0 0 0 2px #4418C4';
-              }}
-              onBlur={(e) => {
-                e.target.style.borderColor = '#d1d5db';
-                e.target.style.boxShadow = 'none';
-              }}
+              className="input input-bordered w-full"
               placeholder="Enter meeting subject..."
               required
             />
           </div>
 
           {/* Date and Time Row */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* Date */}
-            <div>
-              <label htmlFor="date" className="block text-sm font-medium text-gray-700 mb-2">
-                <CalendarIcon className="h-4 w-4 inline mr-1" />
-                Date
+            <div className="form-control">
+              <label className="label">
+                <span className="label-text font-semibold">
+                  <CalendarIcon className="h-4 w-4 inline mr-1" />
+                  Date
+                </span>
               </label>
               <input
                 type="date"
                 id="date"
                 value={formData.date}
                 onChange={(e) => handleInputChange('date', e.target.value)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg transition-colors"
-              style={{ 
-                '--tw-ring-color': '#4418C4',
-                '--tw-border-color': '#4418C4'
-              } as React.CSSProperties}
-              onFocus={(e) => {
-                e.target.style.borderColor = '#4418C4';
-                e.target.style.boxShadow = '0 0 0 2px #4418C4';
-              }}
-              onBlur={(e) => {
-                e.target.style.borderColor = '#d1d5db';
-                e.target.style.boxShadow = 'none';
-              }}
+                className="input input-bordered w-full"
                 required
               />
             </div>
 
             {/* Time */}
-            <div>
-              <label htmlFor="time" className="block text-sm font-medium text-gray-700 mb-2">
-                <ClockIcon className="h-4 w-4 inline mr-1" />
-                Start Time
+            <div className="form-control">
+              <label className="label">
+                <span className="label-text font-semibold">
+                  <ClockIcon className="h-4 w-4 inline mr-1" />
+                  Start Time
+                </span>
               </label>
               <input
                 type="time"
                 id="time"
                 value={formData.time}
                 onChange={(e) => handleInputChange('time', e.target.value)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg transition-colors"
-              style={{ 
-                '--tw-ring-color': '#4418C4',
-                '--tw-border-color': '#4418C4'
-              } as React.CSSProperties}
-              onFocus={(e) => {
-                e.target.style.borderColor = '#4418C4';
-                e.target.style.boxShadow = '0 0 0 2px #4418C4';
-              }}
-              onBlur={(e) => {
-                e.target.style.borderColor = '#d1d5db';
-                e.target.style.boxShadow = 'none';
-              }}
+                className="input input-bordered w-full"
                 required
               />
             </div>
 
             {/* Duration */}
-            <div>
-              <label htmlFor="duration" className="block text-sm font-medium text-gray-700 mb-2">
-                Duration
+            <div className="form-control">
+              <label className="label">
+                <span className="label-text font-semibold">Duration</span>
               </label>
               <select
                 id="duration"
                 value={formData.duration}
                 onChange={(e) => handleInputChange('duration', e.target.value)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg transition-colors"
-              style={{ 
-                '--tw-ring-color': '#4418C4',
-                '--tw-border-color': '#4418C4'
-              } as React.CSSProperties}
-              onFocus={(e) => {
-                e.target.style.borderColor = '#4418C4';
-                e.target.style.boxShadow = '0 0 0 2px #4418C4';
-              }}
-              onBlur={(e) => {
-                e.target.style.borderColor = '#d1d5db';
-                e.target.style.boxShadow = 'none';
-              }}
+                className="select select-bordered w-full"
               >
                 {durationOptions.map(option => (
                   <option key={option.value} value={option.value}>
@@ -514,244 +583,187 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
           </div>
 
           {/* Attendees */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              <UserIcon className="h-4 w-4 inline mr-1" />
-              Attendees
+          <div className="form-control">
+            <label className="label">
+              <span className="label-text font-semibold">
+                <UserIcon className="h-4 w-4 inline mr-1" />
+                Attendees
+              </span>
             </label>
             <div className="space-y-3">
               {/* Quick Actions */}
-              <div className="flex gap-2">
+              <div className="flex gap-2 flex-wrap items-center">
                 <button
                   type="button"
                   onClick={selectAllEmployees}
-                  className="px-3 py-1 text-xs rounded-md transition-colors"
-                  style={{ 
-                    backgroundColor: '#e6dfff', 
-                    color: '#4418C4' 
-                  }}
-                  onMouseEnter={(e) => {
-                    e.target.style.backgroundColor = '#d1c4f0';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.target.style.backgroundColor = '#e6dfff';
-                  }}
+                  className="btn btn-sm btn-outline btn-primary"
                 >
                   Select All Staff
                 </button>
                 <button
                   type="button"
                   onClick={clearAllAttendees}
-                  className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors"
+                  className="btn btn-sm btn-ghost btn-circle"
+                  title="Clear All"
                 >
-                  Clear All
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowEmployeeSearch(!showEmployeeSearch)}
-                  className="px-3 py-1 text-xs rounded-md transition-colors"
-                  style={{ 
-                    backgroundColor: '#e6dfff', 
-                    color: '#4418C4' 
-                  }}
-                  onMouseEnter={(e) => {
-                    e.target.style.backgroundColor = '#d1c4f0';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.target.style.backgroundColor = '#e6dfff';
-                  }}
-                >
-                  {showEmployeeSearch ? 'Hide Search' : 'Search Staff'}
+                  <TrashIcon className="w-4 h-4" />
                 </button>
               </div>
 
-              {/* Employee Search */}
-              {showEmployeeSearch && (
-                <div className="border border-gray-300 rounded-lg p-3 bg-gray-50">
-                  <div className="relative mb-3">
-                    <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                    <input
-                      type="text"
-                      placeholder="Search staff by name..."
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg transition-colors"
-                      onFocus={(e) => {
-                        e.target.style.borderColor = '#4418C4';
-                        e.target.style.boxShadow = '0 0 0 2px #4418C4';
-                      }}
-                      onBlur={(e) => {
-                        e.target.style.borderColor = '#d1d5db';
-                        e.target.style.boxShadow = 'none';
-                      }}
-                    />
-                  </div>
-                  <div className="max-h-40 overflow-y-auto space-y-1">
-                    {filteredEmployees.map((employee) => {
-                      const email = employee.email; // Use actual email from database
-                      const isSelected = formData.attendees.includes(email);
-                      return (
-                        <div
-                          key={employee.id}
-                          className={`flex items-center justify-between p-2 rounded-md cursor-pointer transition-colors ${
-                            isSelected ? '' : 'hover:bg-gray-100'
-                          }`}
-                          style={isSelected ? { 
-                            backgroundColor: '#e6dfff', 
-                            color: '#4418C4' 
-                          } : {}}
-                          onClick={() => isSelected ? removeEmployeeFromAttendees(email) : addEmployeeToAttendees(employee)}
-                        >
-                          <div>
-                            <div className="font-medium">{employee.display_name}</div>
-                            <div className="text-xs text-gray-500">{email}</div>
-                          </div>
-                          {isSelected && (
-                            <div className="w-5 h-5 text-white rounded-full flex items-center justify-center text-xs" style={{ backgroundColor: '#4418C4' }}>
-                              ✓
-                            </div>
-                          )}
+              {/* Employee Dropdown Input (similar to CalendarPage) */}
+              <div className="flex items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
+                <UserIcon className="w-5 h-5 text-gray-500" />
+                <div className="relative flex-1" ref={employeeDropdownRef}>
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    placeholder="Search staff..."
+                    value={allStaffSelected ? 'All staff selected' : searchTerm}
+                    onFocus={() => {
+                      setShowEmployeeSearch(true);
+                      if (allStaffSelected) {
+                        setSearchTerm('');
+                      }
+                    }}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setSearchTerm(value);
+                      setShowEmployeeSearch(true);
+                      setAllStaffSelected(false);
+                    }}
+                    readOnly={allStaffSelected}
+                  />
+                  {showEmployeeSearch && !allStaffSelected && (
+                    <div className="absolute z-30 mt-2 w-full bg-white border border-gray-200 rounded-xl shadow-lg max-h-64 overflow-auto">
+                      {filteredEmployees.length > 0 ? (
+                        filteredEmployees.map((employee) => {
+                          const email = employee.email;
+                          const isSelected = formData.attendees.includes(email);
+                          return (
+                            <button
+                              key={employee.id}
+                              type="button"
+                              className={`w-full text-left px-4 py-2 text-sm hover:bg-gray-100 ${isSelected ? 'bg-primary/10 text-primary' : ''
+                                }`}
+                              onClick={() => {
+                                if (isSelected) {
+                                  removeEmployeeFromAttendees(email);
+                                } else {
+                                  addEmployeeToAttendees(employee);
+                                }
+                                setShowEmployeeSearch(false);
+                                setSearchTerm('');
+                              }}
+                            >
+                              <div className="font-medium">{employee.display_name}</div>
+                              <div className="text-xs text-gray-500">{email}</div>
+                            </button>
+                          );
+                        })
+                      ) : (
+                        <div className="px-4 py-3 text-sm text-gray-500">
+                          No matches
                         </div>
-                      );
-                    })}
-                  </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
 
               {/* Selected Attendees */}
               {formData.attendees.length > 0 && (
                 <div>
-                  <p className="text-xs font-medium text-gray-700 mb-2">Selected attendees ({formData.attendees.length}):</p>
-                  <div className="flex flex-wrap gap-1">
-                    {formData.attendees.map((email) => {
-                      const employee = employees.find(emp => emp.email === email);
-                      return (
-                        <span
-                          key={email}
-                          className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-full"
-                          style={{ backgroundColor: '#e6dfff', color: '#4418C4' }}
-                        >
-                          {employee?.display_name || email}
-                          <button
-                            type="button"
-                            onClick={() => removeEmployeeFromAttendees(email)}
-                            style={{ color: '#4418C4' }}
-                            onMouseEnter={(e) => {
-                              e.target.style.color = '#2d0f8a';
-                            }}
-                            onMouseLeave={(e) => {
-                              e.target.style.color = '#4418C4';
-                            }}
-                          >
-                            ×
-                          </button>
-                        </span>
-                      );
-                    })}
-                  </div>
+                  {allStaffSelected ? (
+                    <div className="p-3 bg-primary/10 border border-primary/20 rounded-lg">
+                      <p className="text-sm font-semibold text-primary">All staff selected ({formData.attendees.length} staff members)</p>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="text-xs font-medium text-gray-700 mb-2">Selected attendees ({formData.attendees.length}):</p>
+                      <div className="flex flex-wrap gap-2">
+                        {formData.attendees.map((email) => {
+                          const employee = employees.find(emp => emp.email === email);
+                          return (
+                            <div
+                              key={email}
+                              className="badge badge-primary badge-lg gap-2"
+                            >
+                              {employee?.display_name || email}
+                              <button
+                                type="button"
+                                onClick={() => removeEmployeeFromAttendees(email)}
+                                className="hover:opacity-70"
+                              >
+                                ×
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </div>
           </div>
 
           {/* Description */}
-          <div>
-            <label htmlFor="description" className="block text-sm font-medium text-gray-700 mb-2">
-              Description
+          <div className="form-control">
+            <label className="label">
+              <span className="label-text font-semibold">Description</span>
             </label>
             <textarea
               id="description"
               value={formData.description}
               onChange={(e) => handleInputChange('description', e.target.value)}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg transition-colors"
-              style={{ 
-                '--tw-ring-color': '#4418C4',
-                '--tw-border-color': '#4418C4'
-              } as React.CSSProperties}
-              onFocus={(e) => {
-                e.target.style.borderColor = '#4418C4';
-                e.target.style.boxShadow = '0 0 0 2px #4418C4';
-              }}
-              onBlur={(e) => {
-                e.target.style.borderColor = '#d1d5db';
-                e.target.style.boxShadow = 'none';
-              }}
+              className="textarea textarea-bordered w-full h-24"
               placeholder="Enter meeting description..."
-              rows={4}
             />
           </div>
 
           {/* Location */}
-          <div>
-            <label htmlFor="location" className="block text-sm font-medium text-gray-700 mb-2">
-              Location
+          <div className="form-control">
+            <label className="label">
+              <span className="label-text font-semibold">Location</span>
             </label>
             <input
               type="text"
               id="location"
               value={formData.location}
               onChange={(e) => handleInputChange('location', e.target.value)}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg transition-colors"
-              style={{ 
-                '--tw-ring-color': '#4418C4',
-                '--tw-border-color': '#4418C4'
-              } as React.CSSProperties}
-              onFocus={(e) => {
-                e.target.style.borderColor = '#4418C4';
-                e.target.style.boxShadow = '0 0 0 2px #4418C4';
-              }}
-              onBlur={(e) => {
-                e.target.style.borderColor = '#d1d5db';
-                e.target.style.boxShadow = 'none';
-              }}
+              className="input input-bordered w-full"
               placeholder="Teams Meeting"
             />
           </div>
 
           {/* Recurring Meeting */}
-          <div>
-            <div className="flex items-center space-x-3 mb-3">
+          <div className="form-control">
+            <label className="label cursor-pointer gap-2">
               <input
                 type="checkbox"
                 id="isRecurring"
                 checked={formData.isRecurring}
                 onChange={(e) => handleInputChange('isRecurring', e.target.checked)}
-                className="h-4 w-4 border-gray-300 rounded"
-                style={{ 
-                  accentColor: '#4418C4',
-                  color: '#4418C4'
-                }}
+                className="checkbox checkbox-primary"
               />
-              <label htmlFor="isRecurring" className="text-sm font-medium text-gray-700">
+              <span className="label-text font-semibold">
                 <ArrowPathIcon className="h-4 w-4 inline mr-1" />
                 Recurring Meeting
-              </label>
-            </div>
+              </span>
+            </label>
 
             {formData.isRecurring && (
-              <div className="ml-7 space-y-4 p-4 bg-gray-50 rounded-lg">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <label htmlFor="recurrencePattern" className="block text-sm font-medium text-gray-700 mb-2">
-                      Recurrence Pattern
+              <div className="ml-7 space-y-4 p-4 bg-base-200 rounded-lg mt-2">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="form-control">
+                    <label className="label">
+                      <span className="label-text font-semibold">Recurrence Pattern</span>
                     </label>
                     <select
                       id="recurrencePattern"
                       value={formData.recurrencePattern}
                       onChange={(e) => handleInputChange('recurrencePattern', e.target.value as 'daily' | 'weekly' | 'monthly')}
-                      className="w-full px-4 py-3 border border-gray-300 rounded-lg transition-colors"
-              style={{ 
-                '--tw-ring-color': '#4418C4',
-                '--tw-border-color': '#4418C4'
-              } as React.CSSProperties}
-              onFocus={(e) => {
-                e.target.style.borderColor = '#4418C4';
-                e.target.style.boxShadow = '0 0 0 2px #4418C4';
-              }}
-              onBlur={(e) => {
-                e.target.style.borderColor = '#d1d5db';
-                e.target.style.boxShadow = 'none';
-              }}
+                      className="select select-bordered w-full"
                     >
                       <option value="daily">Daily</option>
                       <option value="weekly">Weekly</option>
@@ -759,11 +771,11 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
                     </select>
                   </div>
 
-                  <div>
-                    <label htmlFor="recurrenceInterval" className="block text-sm font-medium text-gray-700 mb-2">
-                      Repeat Every
+                  <div className="form-control">
+                    <label className="label">
+                      <span className="label-text font-semibold">Repeat Every</span>
                     </label>
-                    <div className="flex items-center space-x-2">
+                    <div className="flex items-center gap-2">
                       <input
                         type="number"
                         id="recurrenceInterval"
@@ -771,19 +783,19 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
                         max="99"
                         value={formData.recurrenceInterval}
                         onChange={(e) => handleInputChange('recurrenceInterval', parseInt(e.target.value) || 1)}
-                        className="w-20 px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+                        className="input input-bordered w-20"
                       />
                       <span className="text-sm text-gray-600">
                         {formData.recurrencePattern === 'daily' ? 'day(s)' :
-                         formData.recurrencePattern === 'weekly' ? 'week(s)' : 'month(s)'}
+                          formData.recurrencePattern === 'weekly' ? 'week(s)' : 'month(s)'}
                       </span>
                     </div>
                   </div>
                 </div>
 
-                <div>
-                  <label htmlFor="recurrenceEndDate" className="block text-sm font-medium text-gray-700 mb-2">
-                    End Date (Optional)
+                <div className="form-control">
+                  <label className="label">
+                    <span className="label-text font-semibold">End Date (Optional)</span>
                   </label>
                   <input
                     type="date"
@@ -791,70 +803,46 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
                     value={formData.recurrenceEndDate}
                     onChange={(e) => handleInputChange('recurrenceEndDate', e.target.value)}
                     min={formData.date}
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg transition-colors"
-              style={{ 
-                '--tw-ring-color': '#4418C4',
-                '--tw-border-color': '#4418C4'
-              } as React.CSSProperties}
-              onFocus={(e) => {
-                e.target.style.borderColor = '#4418C4';
-                e.target.style.boxShadow = '0 0 0 2px #4418C4';
-              }}
-              onBlur={(e) => {
-                e.target.style.borderColor = '#d1d5db';
-                e.target.style.boxShadow = 'none';
-              }}
+                    className="input input-bordered w-full"
                   />
-                  <p className="text-xs text-gray-500 mt-1">
-                    Leave empty for no end date
-                  </p>
+                  <label className="label">
+                    <span className="label-text-alt text-gray-500">Leave empty for no end date</span>
+                  </label>
                 </div>
               </div>
             )}
           </div>
-
-          {/* Action Buttons */}
-          <div className="flex items-center justify-end space-x-3 pt-4 border-t border-gray-200">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-6 py-3 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg font-medium transition-colors"
-              disabled={isLoading}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isLoading || !formData.subject.trim()}
-              className="px-6 py-3 text-white rounded-lg font-medium disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center space-x-2"
-              style={{ 
-                backgroundColor: isLoading || !formData.subject.trim() ? '#d1d5db' : '#4418C4' 
-              }}
-              onMouseEnter={(e) => {
-                if (!isLoading && formData.subject.trim()) {
-                  e.target.style.backgroundColor = '#2d0f8a';
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (!isLoading && formData.subject.trim()) {
-                  e.target.style.backgroundColor = '#4418C4';
-                }
-              }}
-            >
-              {isLoading ? (
-                <>
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                  <span>Creating...</span>
-                </>
-              ) : (
-                <>
-                  <VideoCameraIcon className="h-4 w-4" />
-                  <span>Create Meeting</span>
-                </>
-              )}
-            </button>
-          </div>
         </form>
+
+        {/* Footer */}
+        <div className="sticky bottom-0 bg-gray-50 p-6 rounded-b-2xl flex justify-end gap-3 border-t">
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn btn-ghost"
+            disabled={isLoading}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            className="btn btn-primary"
+            disabled={isLoading || !formData.subject.trim()}
+          >
+            {isLoading ? (
+              <>
+                <span className="loading loading-spinner loading-sm"></span>
+                Creating...
+              </>
+            ) : (
+              <>
+                <VideoCameraIcon className="w-5 h-5" />
+                Create Meeting
+              </>
+            )}
+          </button>
+        </div>
       </div>
     </div>
   );
