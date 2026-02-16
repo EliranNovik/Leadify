@@ -491,7 +491,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
         {/* Header */}
         <div className="sticky top-0 bg-white border-b border-gray-200 p-6 rounded-t-2xl flex items-center justify-between z-10">
           <div className="flex items-center gap-3">
-            <VideoCameraIcon className="h-6 w-6 text-primary" />
+            <VideoCameraIcon className="h-6 w-6 text-gray-600" />
             <div>
               <h2 className="text-2xl font-bold text-gray-900">Create Teams Meeting</h2>
               <p className="text-sm text-gray-500">Schedule a meeting in Staff Calendar</p>

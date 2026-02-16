@@ -181,6 +181,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [selectedContract, setSelectedContract] = useState<any>(null);
   const [contacts, setContacts] = useState<any[]>([]);
 
+  // Add state for available currencies (moved earlier to be available for useEffect)
+  const [availableCurrencies, setAvailableCurrencies] = useState<Array<{ id: number; name: string; iso_code: string }>>([]);
+
   // Add state and handler for editing subtotal at the top of the component:
   const [isEditingSubtotal, setIsEditingSubtotal] = useState(false);
   const [editableSubtotal, setEditableSubtotal] = useState('');
@@ -368,6 +371,39 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   };
 
 
+  // Helper function to get currency name from accounting_currencies table (similar to ClientHeader)
+  const getCurrencyName = (currencyId: string | number | null | undefined): string => {
+    if (!currencyId || currencyId === null || currencyId === undefined) {
+      return '₪'; // Default fallback
+    }
+
+    // If currencies haven't loaded yet, return default
+    if (!availableCurrencies || availableCurrencies.length === 0) {
+      return '₪'; // Default fallback until currencies load
+    }
+
+    // Convert currencyId to number for comparison (handle bigint)
+    const currencyIdNum = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+    if (isNaN(currencyIdNum)) {
+      return '₪'; // Default fallback
+    }
+
+    // Find currency in loaded currencies - compare as numbers
+    const currency = availableCurrencies.find((curr: any) => {
+      if (!curr || !curr.id) return false;
+      const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
+      const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
+      return !isNaN(currIdNum) && currIdNum === currencyIdNum;
+    });
+
+    if (currency && currency.name && currency.name.trim() !== '') {
+      return currency.name.trim();
+    }
+
+    // Fallback to default if currency not found
+    return '₪';
+  };
+
   // Update autoPlanData currency and contact when client changes
   useEffect(() => {
     if (client) {
@@ -376,9 +412,56 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       let suggestedTotal = 0;
 
       if (isLegacyLead) {
-        // For legacy leads, prefer balance if available
-        currency = mapLeadCurrencyToSymbol(client?.balance_currency || client?.proposal_currency);
-        suggestedTotal = Number(client?.balance || 0);
+        // Use the same logic as ClientHeader for legacy leads
+        // 1. Currency Resolution - Always try currency_id first, then fallback to proposal_currency/balance_currency, then default to currency_id 1
+        let resolvedCurrency = '';
+
+        // Priority 1: Try currency_id (most reliable)
+        if ((client as any)?.currency_id) {
+          const currencyFromId = getCurrencyName((client as any).currency_id);
+          if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
+            resolvedCurrency = currencyFromId;
+          }
+        }
+
+        // Priority 2: For legacy leads, also check currency_id from legacy field
+        if (!resolvedCurrency && (client as any)?.currency_id) {
+          const currencyFromId = getCurrencyName((client as any).currency_id);
+          if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
+            resolvedCurrency = currencyFromId;
+          }
+        }
+
+        // Priority 3: Fallback to proposal_currency or balance_currency if currency_id didn't work
+        if (!resolvedCurrency) {
+          resolvedCurrency = client?.proposal_currency ?? client?.balance_currency ?? '';
+        }
+
+        // Priority 4: Default to currency_id 1 (use name column from accounting_currencies)
+        if (!resolvedCurrency || resolvedCurrency.trim() === '') {
+          const defaultCurrency = availableCurrencies.find((curr: any) => {
+            if (!curr || !curr.id) return false;
+            const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
+            const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
+            return !isNaN(currIdNum) && currIdNum === 1;
+          });
+          resolvedCurrency = (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '')
+            ? defaultCurrency.name.trim()
+            : '₪'; // Ultimate fallback if currency_id 1 not found
+        }
+
+        currency = resolvedCurrency;
+
+        // 2. Base Amount (Gross) - Use same logic as ClientHeader
+        const currencyId = (client as any)?.currency_id;
+        let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+        if (!numericCurrencyId || isNaN(numericCurrencyId)) numericCurrencyId = 1;
+
+        if (numericCurrencyId === 1) {
+          suggestedTotal = Number((client as any)?.total_base ?? 0);
+        } else {
+          suggestedTotal = Number((client as any)?.total ?? 0);
+        }
       } else {
         // For new leads, use proposal_currency and balance
         currency = mapLeadCurrencyToSymbol(client?.proposal_currency);
@@ -390,12 +473,59 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           ? String(suggestedTotal)
           : prev.totalAmount;
 
-        // Initialize payment amounts if not set or if total amount changed
+        // Recalculate payment amounts when total amount changes (to match new currency logic)
+        const total = Number(totalAmount);
+        const prevTotal = Number(prev.totalAmount || 0);
+        const totalChanged = Math.abs(total - prevTotal) > 0.01; // Check if total actually changed
+
         let paymentAmounts = prev.paymentAmounts || [];
-        if (paymentAmounts.length === 0 && totalAmount) {
-          // Calculate initial amounts from percentages
-          const total = Number(totalAmount);
-          paymentAmounts = prev.paymentPercents.map(percent => (total * percent) / 100);
+
+        // Recalculate if:
+        // 1. Payment amounts are empty, OR
+        // 2. Total amount changed (e.g., due to currency_id logic update)
+        if ((paymentAmounts.length === 0 || totalChanged) && totalAmount && total > 0) {
+          // Ensure paymentPercents array is long enough and matches numberOfPayments
+          let percents = [...(prev.paymentPercents || [])];
+
+          // If percents array doesn't match numberOfPayments, recalculate based on count
+          if (percents.length !== prev.numberOfPayments) {
+            const count = prev.numberOfPayments;
+            if (count === 1) {
+              percents = [100];
+            } else if (count === 3) {
+              percents = [50, 25, 25];
+            } else {
+              // Even split that sums to 100
+              const base = Math.floor(100 / count);
+              percents = Array.from({ length: count }, () => base);
+              const remainder = 100 - base * count;
+              for (let i = 0; i < remainder; i++) {
+                percents[i] += 1;
+              }
+            }
+          } else {
+            // Ensure array is long enough
+            while (percents.length < prev.numberOfPayments) {
+              const idx = percents.length;
+              const count = prev.numberOfPayments;
+              let defaultPercent: number;
+              if (count === 1) {
+                defaultPercent = 100;
+              } else if (count === 2) {
+                defaultPercent = 50; // For 2 payments, each should be 50%
+              } else {
+                defaultPercent = idx === 0 ? 50 : idx === count - 1 ? 25 : 25;
+              }
+              percents.push(defaultPercent);
+            }
+          }
+
+          // Calculate amounts from percentages based on new total
+          paymentAmounts = percents.slice(0, prev.numberOfPayments).map(percent => (total * percent) / 100);
+        } else if (paymentAmounts.length === 0 && totalAmount && total > 0) {
+          // Fallback: if no amounts but we have total, calculate from percentages
+          const percents = prev.paymentPercents || [];
+          paymentAmounts = percents.slice(0, prev.numberOfPayments).map(percent => (total * percent) / 100);
         }
 
         return {
@@ -408,7 +538,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         };
       });
     }
-  }, [client]);
+  }, [client, availableCurrencies]);
 
   const saveSubtotal = () => {
     // Update the first row's total to match the edited subtotal
@@ -2606,12 +2736,27 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     if (isLegacyLead) {
       // For legacy leads, include contacts from the contacts array
       // The main contact's ID is the legacy lead ID (numeric)
-      const legacyId = client?.id?.toString().replace('legacy_', '');
+      let legacyId = client?.id?.toString();
+      // Remove 'legacy_' prefix if present
+      if (legacyId?.startsWith('legacy_')) {
+        legacyId = legacyId.replace('legacy_', '');
+      }
       const numericLegacyId = legacyId ? parseInt(legacyId, 10) : null;
 
-      // Add main contact with its ID (the legacy lead's numeric ID)
-      if (client?.name && numericLegacyId && !isNaN(numericLegacyId)) {
-        allContacts.push({ name: client.name, isMain: true, id: numericLegacyId });
+      // ALWAYS add main contact with its ID (the legacy lead's numeric ID) - even if contacts array is empty
+      if (client?.name) {
+        if (numericLegacyId && !isNaN(numericLegacyId)) {
+          allContacts.push({ name: client.name, isMain: true, id: numericLegacyId });
+          console.log('✅ getAllAvailableContacts: Added main legacy contact', { name: client.name, id: numericLegacyId });
+        } else {
+          // Fallback: if we can't parse the ID, still add the contact but without ID
+          allContacts.push({ name: client.name, isMain: true });
+          console.warn('⚠️ getAllAvailableContacts: Could not parse legacy ID, added contact without ID', {
+            clientId: client.id,
+            legacyId,
+            name: client.name
+          });
+        }
       }
 
       // Add additional contacts from contacts array (they have contact_id from leads_contact)
@@ -2621,6 +2766,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             allContacts.push({ name: contact.name, isMain: contact.isMain || false, id: contact.id });
           }
         });
+        console.log('✅ getAllAvailableContacts: Added', contacts.length, 'additional contacts');
       }
     } else {
       // For new leads, use contacts from the contacts state (which are fetched from lead_leadcontact and leads_contact tables)
@@ -2805,7 +2951,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         toast.error('Cannot save payment: No payment selected');
         return;
       }
-      
+
       // Merge the edited data with the original payment to ensure ID and isLegacy are preserved
       const paymentToSave = {
         ...editingPaymentInModal, // Original payment data (includes id, isLegacy, etc.)
@@ -2813,20 +2959,20 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         id: editingPaymentInModal.id, // Ensure ID is always from original
         isLegacy: editingPaymentInModal.isLegacy, // Ensure isLegacy is always from original
       };
-      
+
       console.log('💾 Saving payment:', {
         originalId: editingPaymentInModal.id,
         originalIsLegacy: editingPaymentInModal.isLegacy,
         paymentToSave: paymentToSave,
       });
-      
+
       // Set the edit payment data and includeVat state
       setEditPaymentData(paymentToSave);
       setEditPaymentIncludeVat(includeVat);
-      
+
       // Call the existing save handler
       await handleSaveEditPayment();
-      
+
       // Close modal after save
       setEditingPaymentInModal(null);
     } catch (error) {
@@ -3480,9 +3626,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   // Add collection user state
   const [isCollection, setIsCollection] = useState(false);
 
-  // Add state for available currencies
-  const [availableCurrencies, setAvailableCurrencies] = useState<Array<{ id: number; name: string; iso_code: string }>>([]);
-
   // Shared initializer for new payment data
   const initNewPaymentData = (contactName: string) => {
     // Determine the correct currency for this client
@@ -3834,10 +3977,44 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           contacts: currentContacts.map(c => ({ name: c.name, id: c.id }))
         });
 
-        // Use currentContacts array (from fetchContacts) instead of state
+        // First try to find in currentContacts array (from fetchContacts)
         const normalizedContactName = selectedContactName.trim();
-        const contact = currentContacts.find(c => c.name && c.name.trim() === normalizedContactName);
-        const clientIdForContact = contact?.id ? Number(contact.id) : null;
+        let contact = currentContacts.find(c => c.name && c.name.trim() === normalizedContactName);
+        let clientIdForContact = contact?.id ? Number(contact.id) : null;
+
+        // If not found in currentContacts, try getAllAvailableContacts (which includes main client for legacy leads)
+        if (clientIdForContact === null) {
+          const availableContacts = getAllAvailableContacts();
+          console.log('🔍 handleCreateAutoPlan: Contact not in currentContacts, checking getAllAvailableContacts', {
+            availableContactsCount: availableContacts.length,
+            availableContacts: availableContacts.map(c => ({ name: c.name, id: c.id }))
+          });
+
+          const availableContact = availableContacts.find(c => c.name && c.name.trim() === normalizedContactName);
+          if (availableContact?.id) {
+            clientIdForContact = Number(availableContact.id);
+            console.log('✅ handleCreateAutoPlan: Found contact in getAllAvailableContacts', {
+              name: availableContact.name,
+              id: clientIdForContact
+            });
+          }
+        }
+
+        // Final fallback: if contact name matches client name for legacy lead, use legacy ID
+        if (clientIdForContact === null && isLegacyLead) {
+          const normalizedClientName = (client?.name || '').trim();
+          if (normalizedContactName === normalizedClientName) {
+            const legacyIdStr = client?.id?.toString().replace('legacy_', '');
+            const legacyId = legacyIdStr ? parseInt(legacyIdStr, 10) : null;
+            if (legacyId && !isNaN(legacyId)) {
+              clientIdForContact = legacyId;
+              console.log('✅ handleCreateAutoPlan: Using legacy ID as fallback', {
+                name: normalizedClientName,
+                id: clientIdForContact
+              });
+            }
+          }
+        }
 
         console.log('🔍 handleCreateAutoPlan: client_id result', {
           clientIdForContact,
@@ -3849,7 +4026,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         if (clientIdForContact === null) {
           console.error('⚠️ handleCreateAutoPlan: Failed to get client_id (contact_id) for contact', {
             selectedContactName,
-            availableContacts: currentContacts.map(c => ({ name: c.name, id: c.id }))
+            currentContacts: currentContacts.map(c => ({ name: c.name, id: c.id })),
+            availableContacts: getAllAvailableContacts().map(c => ({ name: c.name, id: c.id })),
+            clientName: client?.name,
+            clientId: client?.id
           });
           toast.error(`Failed to find contact ID for "${selectedContactName}". Please ensure the contact exists.`);
           setIsSavingPaymentRow(false);
@@ -4259,30 +4439,28 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
         {/* Stages Drawer for creating a new finance plan */}
         {showStagesDrawer && ReactDOM.createPortal(
-          <div className="fixed inset-0 z-[100] flex">
+          <div className="fixed inset-0 z-[100] flex items-center justify-center">
             {/* Overlay */}
             <div className="fixed inset-0 bg-black/30" onClick={handleCloseStagesDrawer} />
-            {/* Drawer */}
-            <div className="ml-auto w-full max-w-4xl h-full bg-white shadow-2xl p-0 flex flex-col animate-slideInRight z-[110] overflow-hidden">
+            {/* Modal */}
+            <div className="relative w-full max-w-4xl max-h-[90vh] bg-white rounded-2xl shadow-2xl p-0 flex flex-col z-[110] overflow-hidden mx-4">
               {/* Header */}
-              <div className="bg-gradient-to-r from-purple-700 to-blue-600 text-white p-6 border-b border-purple-200">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h2 className="text-2xl font-bold mb-1">Finance Plan Stages</h2>
-                    <p className="text-purple-100">Client: {client?.name}</p>
-                  </div>
-                  <button className="btn btn-ghost btn-lg text-white hover:bg-white/20" onClick={handleCloseStagesDrawer}>
-                    <XMarkIcon className="w-6 h-6" />
-                  </button>
+              <div className="sticky top-0 bg-white border-b border-gray-200 p-6 flex items-center justify-between z-10">
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-900 mb-1">Finance Plan Stages</h2>
+                  <p className="text-sm text-gray-500">Client: {client?.name}</p>
                 </div>
+                <button className="btn btn-sm btn-circle btn-ghost text-gray-600 hover:bg-gray-100" onClick={handleCloseStagesDrawer}>
+                  <XMarkIcon className="w-6 h-6" />
+                </button>
               </div>
 
               {/* Main Content */}
-              <div className="flex-1 p-6 overflow-y-auto">
+              <div className="flex-1 p-6 overflow-y-auto bg-white">
                 {/* Auto Plan Section */}
-                <div className="bg-white rounded-xl shadow-lg p-6 mb-6 border border-purple-200">
+                <div className="mb-6">
                   <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-                    <ChartPieIcon className="w-5 h-5 text-purple-600" />
+                    <ChartPieIcon className="w-5 h-5 text-gray-600" />
                     Create Auto Finance Plan
                   </h3>
                   <div className="space-y-4">
@@ -4295,7 +4473,59 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                           type="number"
                           className="input input-bordered w-full no-arrows"
                           value={autoPlanData.totalAmount}
-                          onChange={(e) => setAutoPlanData(prev => ({ ...prev, totalAmount: e.target.value }))}
+                          onChange={(e) => {
+                            const newTotal = e.target.value;
+                            const total = Number(newTotal || 0);
+                            setAutoPlanData(prev => {
+                              // Recalculate payment amounts from percentages when total changes
+                              let percents = [...(prev.paymentPercents || [])];
+
+                              // Ensure percents array matches numberOfPayments
+                              if (percents.length !== prev.numberOfPayments) {
+                                const count = prev.numberOfPayments;
+                                if (count === 1) {
+                                  percents = [100];
+                                } else if (count === 3) {
+                                  percents = [50, 25, 25];
+                                } else {
+                                  // Even split that sums to 100
+                                  const base = Math.floor(100 / count);
+                                  percents = Array.from({ length: count }, () => base);
+                                  const remainder = 100 - base * count;
+                                  for (let i = 0; i < remainder; i++) {
+                                    percents[i] += 1;
+                                  }
+                                }
+                              } else {
+                                // Ensure array is long enough
+                                while (percents.length < prev.numberOfPayments) {
+                                  const idx = percents.length;
+                                  const count = prev.numberOfPayments;
+                                  let defaultPercent: number;
+                                  if (count === 1) {
+                                    defaultPercent = 100;
+                                  } else if (count === 2) {
+                                    defaultPercent = 50; // For 2 payments, each should be 50%
+                                  } else {
+                                    defaultPercent = idx === 0 ? 50 : idx === count - 1 ? 25 : 25;
+                                  }
+                                  percents.push(defaultPercent);
+                                }
+                              }
+
+                              // Calculate amounts from percentages based on new total
+                              const paymentAmounts = total > 0
+                                ? percents.slice(0, prev.numberOfPayments).map(percent => (total * percent) / 100)
+                                : Array.from({ length: prev.numberOfPayments }, () => 0);
+
+                              return {
+                                ...prev,
+                                totalAmount: newTotal,
+                                paymentAmounts,
+                                paymentPercents: percents, // Update percents if they were recalculated
+                              };
+                            });
+                          }}
                           placeholder="Enter total amount"
                         />
                       </div>
@@ -4325,24 +4555,24 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                         </select>
                       </div>
                     </div>
-                    <div className="form-control">
-                      <label className="label">
-                        <span className="label-text font-medium">Contact</span>
-                      </label>
-                      <select
-                        className="select select-bordered w-full"
-                        value={autoPlanData.contact}
-                        onChange={(e) => setAutoPlanData(prev => ({ ...prev, contact: e.target.value }))}
-                      >
-                        <option value="">Select contact...</option>
-                        {getAllAvailableContacts().map((contact, idx) => (
-                          <option key={idx} value={contact.name}>
-                            {contact.name} {contact.isMain && '(Main)'}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="form-control">
+                        <label className="label">
+                          <span className="label-text font-medium">Contact</span>
+                        </label>
+                        <select
+                          className="select select-bordered w-full"
+                          value={autoPlanData.contact}
+                          onChange={(e) => setAutoPlanData(prev => ({ ...prev, contact: e.target.value }))}
+                        >
+                          <option value="">Select contact...</option>
+                          {getAllAvailableContacts().map((contact, idx) => (
+                            <option key={idx} value={contact.name}>
+                              {contact.name} {contact.isMain && '(Main)'}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                       <div className="form-control">
                         <label className="label">
                           <span className="label-text font-medium">Number of Payments</span>
@@ -4357,16 +4587,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                               setIsCustomPaymentCount(false);
                               const count = Number(e.target.value);
                               setAutoPlanData(prev => {
+                                const totalAmount = Number(prev.totalAmount || 0);
                                 let percents: number[];
                                 let orders: string[];
+                                let amounts: number[] = [];
+
                                 if (count === 1) {
                                   // For single payment, set to 100%
                                   percents = [100];
                                   orders = ['Single Payment'];
+                                  amounts = totalAmount > 0 ? [totalAmount] : [0];
                                 } else if (count === 3) {
                                   // Special default for 3 payments
                                   percents = [50, 25, 25];
                                   orders = ['First Payment', 'Intermediate Payment', 'Final Payment'];
+                                  amounts = totalAmount > 0
+                                    ? [totalAmount * 0.5, totalAmount * 0.25, totalAmount * 0.25]
+                                    : [0, 0, 0];
                                 } else {
                                   // Even split that sums to 100
                                   const base = Math.floor(100 / count);
@@ -4381,12 +4618,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                     if (i === count - 1) return 'Final Payment';
                                     return 'Intermediate Payment';
                                   });
+                                  // Calculate amounts from percentages
+                                  amounts = totalAmount > 0
+                                    ? percents.map(percent => (totalAmount * percent) / 100)
+                                    : Array.from({ length: count }, () => 0);
                                 }
+
                                 return {
                                   ...prev,
                                   numberOfPayments: count,
                                   paymentPercents: percents,
                                   paymentOrders: orders,
+                                  paymentAmounts: amounts,
                                 };
                               });
                             }
@@ -4474,7 +4717,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             return (
                               <div key={index} className="flex items-center gap-2">
                                 <select
-                                  className="select select-bordered w-40 text-sm"
+                                  className="select select-bordered w-48 text-sm"
                                   value={currentOrder}
                                   onChange={(e) => {
                                     setAutoPlanData(prev => {
