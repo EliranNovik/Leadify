@@ -202,16 +202,22 @@ class GraphAuthService {
 
   async getConnectionStatus(userId) {
     const tokenRecord = await mailboxTokenService.getTokenByUserId(userId).catch(() => null);
-    const state = await mailboxStateService.getState(userId);
-    if (!tokenRecord || !state) {
+    
+    // If no token exists, definitely not connected
+    if (!tokenRecord) {
       return { connected: false };
     }
+    
+    // If token exists, mailbox is connected (state might not exist yet if never synced)
+    // State is created on first sync, but connection exists as soon as token is present
+    const state = await mailboxStateService.getState(userId).catch(() => null);
+    
     return {
       connected: true,
-      mailbox: state.mailbox_address || tokenRecord.mailbox_address,
-      displayName: state.display_name || null,
-      lastSyncedAt: state.last_synced_at || null,
-      subscriptionExpiry: state.subscription_expiry || null,
+      mailbox: state?.mailbox_address || tokenRecord.mailbox_address,
+      displayName: state?.display_name || null,
+      lastSyncedAt: state?.last_synced_at || null,
+      subscriptionExpiry: state?.subscription_expiry || null,
     };
   }
 

@@ -1249,15 +1249,25 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       setIsMailboxLoading(true);
       setMailboxError(null);
       const status = await getMailboxStatus(userId);
-      setMailboxStatus({
-        connected: Boolean(status?.connected),
-        mailbox: status?.mailbox || status?.displayName || null,
-        lastSyncedAt: status?.lastSyncedAt || status?.last_synced_at || null,
-      });
+      // Only update status if we got a valid response
+      // Don't set connected to false on errors - keep previous state to avoid false negatives
+      if (status !== null && status !== undefined) {
+        setMailboxStatus({
+          connected: Boolean(status?.connected),
+          mailbox: status?.mailbox || status?.displayName || null,
+          lastSyncedAt: status?.lastSyncedAt || status?.last_synced_at || null,
+        });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load mailbox status';
       setMailboxError(message);
       console.error('Mailbox status error:', error);
+      // Don't set connected to false on error - might be a transient network issue
+      // Only set to false if we explicitly get a 401 or "not connected" response
+      const statusCode = (error as any).statusCode;
+      if (statusCode === 401 || message.toLowerCase().includes('not connected')) {
+        setMailboxStatus(prev => ({ ...prev, connected: false }));
+      }
     } finally {
       setIsMailboxLoading(false);
     }
@@ -1290,6 +1300,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       isMountedRef.current = false;
     };
   }, []);
+
+  // Refresh mailbox status when client changes (to ensure fresh status for each lead)
+  useEffect(() => {
+    if (client?.id && userId) {
+      // Reset the ref when client changes so status can be refreshed
+      mailboxStatusRequestedRef.current = false;
+      // Refresh status when switching between leads
+      refreshMailboxStatus();
+    }
+  }, [client?.id, userId, refreshMailboxStatus]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -5667,6 +5687,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const syncOnComposeRef = useRef(false);
   useEffect(() => {
     if (showCompose) {
+      // Always refresh mailbox status when compose modal opens to ensure it's current
+      refreshMailboxStatus();
       if (!syncOnComposeRef.current) {
         syncOnComposeRef.current = true;
         runMailboxSync();
@@ -5674,7 +5696,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     } else {
       syncOnComposeRef.current = false;
     }
-  }, [showCompose, runMailboxSync]);
+  }, [showCompose, runMailboxSync, refreshMailboxStatus]);
 
   // Effect to run the slow sync only once when the component mounts
   // DISABLED: Graph sync is too slow and blocks UI loading
@@ -6030,12 +6052,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         fetchEmailsForModal();
       }, fetchDelay);
       
-      if (!mailboxStatusRequestedRef.current) {
-        mailboxStatusRequestedRef.current = true;
-        refreshMailboxStatus();
-      }
+      // Always refresh mailbox status when email modal opens to ensure it's current
+      // This ensures status is fresh for each lead, even if it was checked before
+      refreshMailboxStatus();
     }
-  }, [isEmailModalOpen, client, fetchEmailsForModal, selectedContactForEmail]);
+  }, [isEmailModalOpen, client, fetchEmailsForModal, selectedContactForEmail, refreshMailboxStatus]);
 
   // Separate effect to re-fetch emails when selected contact changes (while modal is open)
   useEffect(() => {
@@ -8033,14 +8054,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-outline"
-                        onClick={runMailboxSync}
-                        disabled={isMailboxLoading || emailsLoading || !mailboxStatus.connected || !userId}
-                      >
-                        {isMailboxLoading ? 'Syncing...' : 'Sync emails'}
-                      </button>
                       {!mailboxStatus.connected && (
                         <button
                           type="button"
