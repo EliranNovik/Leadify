@@ -79,27 +79,28 @@ const SettingsPage: React.FC = () => {
     theme: getValidatedTheme(),
     compactMode: localStorage.getItem('compactMode') === 'true',
     sidebarCollapsed: localStorage.getItem('sidebarCollapsed') === 'true',
-    
+    floatingNavBarAlwaysOpen: localStorage.getItem('floatingNavBarAlwaysOpen') === 'true',
+
     // Notification Settings
     emailNotifications: localStorage.getItem('emailNotifications') !== 'false',
     pushNotifications: localStorage.getItem('pushNotifications') !== 'false',
     leadAlerts: localStorage.getItem('leadAlerts') !== 'false',
     meetingReminders: localStorage.getItem('meetingReminders') !== 'false',
     stageChangeAlerts: localStorage.getItem('stageChangeAlerts') !== 'false',
-    
+
     // CRM Settings
     defaultLeadSource: localStorage.getItem('defaultLeadSource') || 'website',
     autoAssignLeads: localStorage.getItem('autoAssignLeads') === 'true',
     followUpInterval: parseInt(localStorage.getItem('followUpInterval') || '7'),
     defaultCurrency: localStorage.getItem('defaultCurrency') || 'EUR',
     proposalTemplate: localStorage.getItem('proposalTemplate') || 'standard',
-    
-    
+
+
     // Security Settings
     sessionTimeout: parseInt(localStorage.getItem('sessionTimeout') || '480'),
     twoFactorAuth: localStorage.getItem('twoFactorAuth') === 'true',
     activityLogging: localStorage.getItem('activityLogging') !== 'false',
-    
+
     // Data & Privacy
     dataRetention: parseInt(localStorage.getItem('dataRetention') || '365'),
     anonymizeData: localStorage.getItem('anonymizeData') === 'true',
@@ -137,6 +138,13 @@ const SettingsPage: React.FC = () => {
           description: 'Start with sidebar in collapsed state',
           type: 'toggle',
           value: settings.sidebarCollapsed
+        },
+        {
+          id: 'floatingNavBarAlwaysOpen',
+          label: 'Floating Nav Bar Always Open',
+          description: 'Keep the bottom navigation bar fully expanded',
+          type: 'toggle',
+          value: settings.floatingNavBarAlwaysOpen
         }
       ]
     },
@@ -152,8 +160,8 @@ const SettingsPage: React.FC = () => {
             ? pushNotificationPermission === 'granted'
               ? 'Push notifications are enabled'
               : pushNotificationPermission === 'denied'
-              ? 'Permission denied. Enable in browser settings.'
-              : 'Enable browser push notifications for mobile'
+                ? 'Permission denied. Enable in browser settings.'
+                : 'Enable browser push notifications for mobile'
             : 'Not supported in this browser',
           type: 'toggle',
           value: settings.pushNotifications && pushNotificationPermission === 'granted'
@@ -297,11 +305,11 @@ const SettingsPage: React.FC = () => {
     const checkPushSupport = async () => {
       const supported = isPushNotificationSupported();
       setIsPushSupported(supported);
-      
+
       if (supported) {
         const permission = await getNotificationPermission();
         setPushNotificationPermission(permission);
-        
+
         // If permission is granted, ensure subscription exists
         if (permission === 'granted') {
           try {
@@ -346,7 +354,7 @@ const SettingsPage: React.FC = () => {
     }
 
     localStorage.setItem('theme', theme);
-    
+
     // Debug log to help troubleshoot theme issues
     console.log('Theme applied:', theme, {
       isDark,
@@ -456,7 +464,7 @@ const SettingsPage: React.FC = () => {
   const renderSettingItem = (item: SettingItem) => {
     const labelClass = isDarkMode ? 'text-white' : isAltTheme ? 'text-emerald-900' : 'text-base-content';
     const descClass = isDarkMode ? 'text-white/70' : isAltTheme ? 'text-emerald-700' : 'text-base-content/70';
-    const inputClass = isDarkMode 
+    const inputClass = isDarkMode
       ? 'input input-bordered w-full bg-white/10 border-white/20 text-white placeholder-white/50 focus:bg-white/15 focus:border-white/40'
       : isAltTheme
         ? 'input input-bordered w-full bg-white border-emerald-200 text-emerald-900 placeholder-emerald-500 focus:border-lime-500 focus:ring-emerald-400'
@@ -629,49 +637,43 @@ const SettingsPage: React.FC = () => {
   const isDarkMode = settings.theme === 'dark';
   const isAltTheme = settings.theme === 'alternative';
 
-  const pageWrapperClass = `min-h-screen transition-all duration-500 ${
-    activeSection === 'calendar' ? 'p-0 sm:p-6' : 'p-3 sm:p-6'
-  } ${
-    isDarkMode
+  const pageWrapperClass = `min-h-screen transition-all duration-500 ${activeSection === 'calendar' ? 'p-0 sm:p-6' : 'p-3 sm:p-6'
+    } ${isDarkMode
       ? 'bg-gradient-to-br from-[#0b1e3d] via-[#0f4c75] to-[#06b6d4] text-white'
       : isAltTheme
         ? 'bg-[#f7fbf5] text-emerald-900'
         : 'bg-base-100 text-base-content'
-  }`;
+    }`;
 
-  const shellCardClass = `rounded-xl shadow-lg transition-all duration-300 ${
-    isDarkMode
-      ? 'p-3 sm:p-4 bg-white/10 border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
+  const shellCardClass = `rounded-xl shadow-lg transition-all duration-300 ${isDarkMode
+    ? 'p-3 sm:p-4 bg-white/10 border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
+    : isAltTheme
+      ? 'p-3 sm:p-4 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border border-lime-300 shadow-[0_20px_45px_rgba(6,95,70,0.35)]'
+      : 'p-3 sm:p-4'
+    }`;
+
+  const contentShellClass = `rounded-xl transition-all duration-300 ${activeSection === 'calendar'
+    ? (isDarkMode
+      ? 'p-0 sm:p-6 bg-white/10 border-0 sm:border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
       : isAltTheme
-        ? 'p-3 sm:p-4 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border border-lime-300 shadow-[0_20px_45px_rgba(6,95,70,0.35)]'
-        : 'p-3 sm:p-4'
-  }`;
-
-  const contentShellClass = `rounded-xl transition-all duration-300 ${
-    activeSection === 'calendar' 
-      ? (isDarkMode
-          ? 'p-0 sm:p-6 bg-white/10 border-0 sm:border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
-          : isAltTheme
-            ? 'p-0 sm:p-6 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border-0 sm:border border-lime-300 shadow-[0_30px_60px_rgba(6,95,70,0.35)]'
-            : 'p-0 sm:p-6')
-      : (isDarkMode
-          ? 'p-3 sm:p-6 bg-white/10 border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
-          : isAltTheme
-            ? 'p-3 sm:p-6 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border border-lime-300 shadow-[0_30px_60px_rgba(6,95,70,0.35)]'
-            : 'p-3 sm:p-6')
-  }`;
-
-  const innerCardClass = `rounded-lg transition-all duration-300 ${
-    isDarkMode
-      ? 'p-3 sm:p-4 bg-white/5 border border-white/10 shadow-md'
+        ? 'p-0 sm:p-6 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border-0 sm:border border-lime-300 shadow-[0_30px_60px_rgba(6,95,70,0.35)]'
+        : 'p-0 sm:p-6')
+    : (isDarkMode
+      ? 'p-3 sm:p-6 bg-white/10 border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
       : isAltTheme
-        ? 'p-3 sm:p-4 bg-emerald-950/60 border border-lime-400/60 text-white shadow-[0_12px_30px_rgba(0,0,0,0.35)]'
-        : 'p-3 sm:p-4 bg-base-100'
-  }`;
+        ? 'p-3 sm:p-6 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border border-lime-300 shadow-[0_30px_60px_rgba(6,95,70,0.35)]'
+        : 'p-3 sm:p-6')
+    }`;
 
-  const headerBadgeClass = `rounded-xl transition-all duration-300 ${
-    isDarkMode ? 'bg-white/20 text-white' : isAltTheme ? 'bg-gradient-to-r from-emerald-900 to-lime-500 text-white shadow' : 'bg-primary/10 text-primary'
-  }`;
+  const innerCardClass = `rounded-lg transition-all duration-300 ${isDarkMode
+    ? 'p-3 sm:p-4 bg-white/5 border border-white/10 shadow-md'
+    : isAltTheme
+      ? 'p-3 sm:p-4 bg-emerald-950/60 border border-lime-400/60 text-white shadow-[0_12px_30px_rgba(0,0,0,0.35)]'
+      : 'p-3 sm:p-4 bg-base-100'
+    }`;
+
+  const headerBadgeClass = `rounded-xl transition-all duration-300 ${isDarkMode ? 'bg-white/20 text-white' : isAltTheme ? 'bg-gradient-to-r from-emerald-900 to-lime-500 text-white shadow' : 'bg-primary/10 text-primary'
+    }`;
 
   const headerTextClass = isDarkMode ? 'text-white' : isAltTheme ? 'text-emerald-900' : 'text-base-content';
   const mutedTextClass = isDarkMode ? 'text-white/80' : isAltTheme ? 'text-emerald-700' : 'text-base-content/70';
@@ -705,26 +707,46 @@ const SettingsPage: React.FC = () => {
     <>
       <div className={pageWrapperClass}>
         <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="mb-6 sm:mb-8">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4 mb-4">
-            <div className={`hidden sm:flex p-2 sm:p-3 ${headerBadgeClass}`}>
-              <Cog6ToothIcon className={`w-6 h-6 sm:w-8 sm:h-8 ${isDarkMode ? 'text-white' : 'text-primary'}`} />
-            </div>
-            <div className="px-2 sm:px-0">
-              <h1 className={`text-2xl sm:text-3xl font-bold ${headerTextClass}`}>Settings</h1>
-              <p className={`text-sm sm:text-base ${mutedTextClass}`}>Customize your CRM experience</p>
+          {/* Header */}
+          <div className="mb-6 sm:mb-8">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4 mb-4">
+              <div className={`hidden sm:flex p-2 sm:p-3 ${headerBadgeClass}`}>
+                <Cog6ToothIcon className={`w-6 h-6 sm:w-8 sm:h-8 ${isDarkMode ? 'text-white' : 'text-primary'}`} />
+              </div>
+              <div className="px-2 sm:px-0">
+                <h1 className={`text-2xl sm:text-3xl font-bold ${headerTextClass}`}>Settings</h1>
+                <p className={`text-sm sm:text-base ${mutedTextClass}`}>Customize your CRM experience</p>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div className={`grid grid-cols-1 lg:grid-cols-4 ${activeSection === 'calendar' ? 'gap-0 sm:gap-6' : 'gap-4 sm:gap-6'}`}>
-          {/* Settings Navigation */}
-          <div className="lg:col-span-1">
-            <div className={shellCardClass}>
-              {/* Mobile: Horizontal scrolling navigation */}
-              <div className="lg:hidden">
-                <div className="flex gap-2 overflow-x-auto pb-2 hide-scrollbar">
+          <div className={`grid grid-cols-1 lg:grid-cols-4 ${activeSection === 'calendar' ? 'gap-0 sm:gap-6' : 'gap-4 sm:gap-6'}`}>
+            {/* Settings Navigation */}
+            <div className="lg:col-span-1">
+              <div className={shellCardClass}>
+                {/* Mobile: Horizontal scrolling navigation */}
+                <div className="lg:hidden">
+                  <div className="flex gap-2 overflow-x-auto pb-2 hide-scrollbar">
+                    {settingsSections.map((section) => {
+                      const Icon = section.icon;
+                      const isActive = activeSection === section.id;
+                      return (
+                        <button
+                          key={section.id}
+                          onClick={() => setActiveSection(section.id)}
+                          className={`flex-shrink-0 flex items-center gap-2 px-3 py-2 rounded-lg transition-colors duration-200 whitespace-nowrap text-sm ${isActive ? navButtonActive : navButtonBase
+                            }`}
+                        >
+                          <Icon className="w-4 h-4 flex-shrink-0" />
+                          <span>{section.title}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Desktop: Vertical navigation */}
+                <nav className="hidden lg:block space-y-1">
                   {settingsSections.map((section) => {
                     const Icon = section.icon;
                     const isActive = activeSection === section.id;
@@ -732,41 +754,19 @@ const SettingsPage: React.FC = () => {
                       <button
                         key={section.id}
                         onClick={() => setActiveSection(section.id)}
-                        className={`flex-shrink-0 flex items-center gap-2 px-3 py-2 rounded-lg transition-colors duration-200 whitespace-nowrap text-sm ${
-                          isActive ? navButtonActive : navButtonBase
-                        }`}
+                        className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors duration-200 ${isActive ? navButtonActive : navButtonBase
+                          }`}
                       >
-                        <Icon className="w-4 h-4 flex-shrink-0" />
-                        <span>{section.title}</span>
+                        <Icon className="w-5 h-5 flex-shrink-0" />
+                        <span className="text-left">{section.title}</span>
                       </button>
                     );
                   })}
-                </div>
+                </nav>
               </div>
-              
-              {/* Desktop: Vertical navigation */}
-              <nav className="hidden lg:block space-y-1">
-                {settingsSections.map((section) => {
-                  const Icon = section.icon;
-                  const isActive = activeSection === section.id;
-                  return (
-                    <button
-                      key={section.id}
-                      onClick={() => setActiveSection(section.id)}
-                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors duration-200 ${
-                        isActive ? navButtonActive : navButtonBase
-                      }`}
-                    >
-                      <Icon className="w-5 h-5 flex-shrink-0" />
-                      <span className="text-left">{section.title}</span>
-                    </button>
-                  );
-                })}
-              </nav>
-            </div>
-            
-            <style>
-              {`
+
+              <style>
+                {`
                 .hide-scrollbar {
                   -ms-overflow-style: none;
                   scrollbar-width: none;
@@ -775,134 +775,130 @@ const SettingsPage: React.FC = () => {
                   display: none;
                 }
               `}
-            </style>
-          </div>
+              </style>
+            </div>
 
-          {/* Settings Content */}
-          <div className="lg:col-span-3">
-            {activeSettingsSection && (
-              <div className={contentShellClass}>
-                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3 mb-4 sm:mb-6 px-2 sm:px-0">
-                  <activeSettingsSection.icon className={`hidden sm:block w-5 h-5 sm:w-6 sm:h-6 ${isDarkMode ? 'text-white' : 'text-primary'}`} />
-                  <h2 className={`text-xl sm:text-2xl font-semibold ${headerTextClass}`}>
-                    {activeSettingsSection.title}
-                  </h2>
-                </div>
-                
-                <div className="space-y-4 sm:space-y-6">
-                  {/* Show "In progress..." for crm, security, and data sections */}
-                  {(activeSection === 'crm' || activeSection === 'security' || activeSection === 'data') ? (
-                    <div className={`text-center py-8 ${mutedTextClass}`}>
-                      <p className="text-lg">In progress...</p>
-                    </div>
-                  ) : (
-                    <>
-                      {activeSettingsSection.items.map((item) => (
-                        <div key={item.id} className={innerCardClass}>
-                          {renderSettingItem(item)}
-                        </div>
-                      ))}
-                    </>
-                  )}
-                  
-                  {/* Special case for Calendar section - add tabbed interface */}
-                  {activeSection === 'calendar' && (
-                    <div className={`${activeSection === 'calendar' ? 'p-2 sm:p-4' : innerCardClass} ${
-                      isDarkMode
+            {/* Settings Content */}
+            <div className="lg:col-span-3">
+              {activeSettingsSection && (
+                <div className={contentShellClass}>
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3 mb-4 sm:mb-6 px-2 sm:px-0">
+                    <activeSettingsSection.icon className={`hidden sm:block w-5 h-5 sm:w-6 sm:h-6 ${isDarkMode ? 'text-white' : 'text-primary'}`} />
+                    <h2 className={`text-xl sm:text-2xl font-semibold ${headerTextClass}`}>
+                      {activeSettingsSection.title}
+                    </h2>
+                  </div>
+
+                  <div className="space-y-4 sm:space-y-6">
+                    {/* Show "In progress..." for crm, security, and data sections */}
+                    {(activeSection === 'crm' || activeSection === 'security' || activeSection === 'data') ? (
+                      <div className={`text-center py-8 ${mutedTextClass}`}>
+                        <p className="text-lg">In progress...</p>
+                      </div>
+                    ) : (
+                      <>
+                        {activeSettingsSection.items.map((item) => (
+                          <div key={item.id} className={innerCardClass}>
+                            {renderSettingItem(item)}
+                          </div>
+                        ))}
+                      </>
+                    )}
+
+                    {/* Special case for Calendar section - add tabbed interface */}
+                    {activeSection === 'calendar' && (
+                      <div className={`${activeSection === 'calendar' ? 'p-2 sm:p-4' : innerCardClass} ${isDarkMode
                         ? 'bg-white/5 border border-white/10 shadow-md'
                         : isAltTheme
                           ? 'bg-emerald-950/60 border border-lime-400/60 text-white shadow-[0_12px_30px_rgba(0,0,0,0.35)]'
                           : 'bg-base-100'
-                    } rounded-lg transition-all duration-300`}>
-                      {/* Tab Navigation */}
-                      <div className={`flex border-b ${tabBorderClass} mb-4 sm:mb-6 overflow-x-auto`}>
-                        <button
-                          className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${
-                            activeCalendarTab === 'availability' ? tabActiveClass : tabInactiveClass
-                          }`}
-                          onClick={() => setActiveCalendarTab('availability')}
-                        >
-                          <CalendarIcon className="w-3 h-3 sm:w-4 sm:h-4 inline mr-1 sm:mr-2" />
-                          My Availability
-                        </button>
-                        <button
-                          className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${
-                            activeCalendarTab === 'manage' ? tabActiveClass : tabInactiveClass
-                          }`}
-                          onClick={() => setActiveCalendarTab('manage')}
-                        >
-                          <UserGroupIcon className="w-3 h-3 sm:w-4 sm:h-4 inline mr-1 sm:mr-2" />
-                          Manage Others
-                        </button>
-                        <button
-                          className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${
-                            activeCalendarTab === 'outlook' ? tabActiveClass : tabInactiveClass
-                          }`}
-                          onClick={() => setActiveCalendarTab('outlook')}
-                        >
-                          <EnvelopeIcon className="w-3 h-3 sm:w-4 sm:h-4 inline mr-1 sm:mr-2" />
-                          Outlook
-                        </button>
-                      </div>
-                      
-                      {/* Tab Content */}
-                      {activeCalendarTab === 'availability' && (
-                        <div>
-                          <div className="mb-3 sm:mb-4">
-                            <h3 className={`text-base sm:text-lg font-semibold ${headerTextClass} mb-1 sm:mb-2`}>My Availability</h3>
-                            <p className={`${mutedTextClass} text-xs sm:text-sm`}>
-                              Manage your unavailable times and sync with Microsoft Outlook calendar.
-                            </p>
-                          </div>
-                          <EmployeeAvailability />
+                        } rounded-lg transition-all duration-300`}>
+                        {/* Tab Navigation */}
+                        <div className={`flex border-b ${tabBorderClass} mb-4 sm:mb-6 overflow-x-auto`}>
+                          <button
+                            className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${activeCalendarTab === 'availability' ? tabActiveClass : tabInactiveClass
+                              }`}
+                            onClick={() => setActiveCalendarTab('availability')}
+                          >
+                            <CalendarIcon className="w-3 h-3 sm:w-4 sm:h-4 inline mr-1 sm:mr-2" />
+                            My Availability
+                          </button>
+                          <button
+                            className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${activeCalendarTab === 'manage' ? tabActiveClass : tabInactiveClass
+                              }`}
+                            onClick={() => setActiveCalendarTab('manage')}
+                          >
+                            <UserGroupIcon className="w-3 h-3 sm:w-4 sm:h-4 inline mr-1 sm:mr-2" />
+                            Manage Others
+                          </button>
+                          <button
+                            className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${activeCalendarTab === 'outlook' ? tabActiveClass : tabInactiveClass
+                              }`}
+                            onClick={() => setActiveCalendarTab('outlook')}
+                          >
+                            <EnvelopeIcon className="w-3 h-3 sm:w-4 sm:h-4 inline mr-1 sm:mr-2" />
+                            Outlook
+                          </button>
                         </div>
-                      )}
-                      
-                      {activeCalendarTab === 'manage' && (
-                        <div>
-                          <div className="mb-3 sm:mb-4">
-                            <h3 className={`text-base sm:text-lg font-semibold ${headerTextClass} mb-1 sm:mb-2`}>Manage Employee Availability</h3>
-                            <p className={`${mutedTextClass} text-xs sm:text-sm`}>
-                              Set unavailable times and ranges for other team members.
-                            </p>
-                          </div>
-                          <EmployeeAvailabilityManager />
-                        </div>
-                      )}
-                      
-                      {activeCalendarTab === 'outlook' && (
-                        <div className="space-y-6">
-                          <div className="border-b border-base-300 pb-4">
-                            <OutlookSignature />
-                          </div>
-                          <div className="pt-4">
-                            <CompanySignatureTemplate />
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
 
-        {/* Save Notice */}
-        <div className={`mt-4 sm:mt-6 rounded-lg ${saveNoticeClass}`}>
-          <div className={`flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-info'}`}>
-            <svg className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <span className="font-medium text-sm sm:text-base">Auto-Save Enabled</span>
+                        {/* Tab Content */}
+                        {activeCalendarTab === 'availability' && (
+                          <div>
+                            <div className="mb-3 sm:mb-4">
+                              <h3 className={`text-base sm:text-lg font-semibold ${headerTextClass} mb-1 sm:mb-2`}>My Availability</h3>
+                              <p className={`${mutedTextClass} text-xs sm:text-sm`}>
+                                Manage your unavailable times and sync with Microsoft Outlook calendar.
+                              </p>
+                            </div>
+                            <EmployeeAvailability />
+                          </div>
+                        )}
+
+                        {activeCalendarTab === 'manage' && (
+                          <div>
+                            <div className="mb-3 sm:mb-4">
+                              <h3 className={`text-base sm:text-lg font-semibold ${headerTextClass} mb-1 sm:mb-2`}>Manage Employee Availability</h3>
+                              <p className={`${mutedTextClass} text-xs sm:text-sm`}>
+                                Set unavailable times and ranges for other team members.
+                              </p>
+                            </div>
+                            <EmployeeAvailabilityManager />
+                          </div>
+                        )}
+
+                        {activeCalendarTab === 'outlook' && (
+                          <div className="space-y-6">
+                            <div className="border-b border-base-300 pb-4">
+                              <OutlookSignature />
+                            </div>
+                            <div className="pt-4">
+                              <CompanySignatureTemplate />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-          <p className={`${isDarkMode ? 'text-white/70' : 'text-info/80'} text-xs sm:text-sm mt-1`}>
-            All settings are automatically saved to your browser's local storage.
-          </p>
+
+          {/* Save Notice */}
+          <div className={`mt-4 sm:mt-6 rounded-lg ${saveNoticeClass}`}>
+            <div className={`flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-info'}`}>
+              <svg className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span className="font-medium text-sm sm:text-base">Auto-Save Enabled</span>
+            </div>
+            <p className={`${isDarkMode ? 'text-white/70' : 'text-info/80'} text-xs sm:text-sm mt-1`}>
+              All settings are automatically saved to your browser's local storage.
+            </p>
+          </div>
         </div>
       </div>
-    </div>
-  </>
+    </>
   );
 };
 

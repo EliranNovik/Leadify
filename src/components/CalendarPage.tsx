@@ -530,7 +530,7 @@ const CalendarPage: React.FC = () => {
   // Helper function to get employee display name from ID
   const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
     if (!employeeId || employeeId === '---' || employeeId === '--') return '--';
-    
+
     // If allEmployees is empty, log a warning and try to fetch
     if (allEmployees.length === 0) {
       console.warn('⚠️ CalendarPage - getEmployeeDisplayName called but allEmployees is empty. Employee ID:', employeeId);
@@ -538,7 +538,7 @@ const CalendarPage: React.FC = () => {
       // The useEffect should handle fetching
       return employeeId.toString();
     }
-    
+
     // Find employee in the loaded employees array
     // Convert both to string for comparison since employeeId might be bigint
     const employee = allEmployees.find((emp: any) => {
@@ -548,22 +548,19 @@ const CalendarPage: React.FC = () => {
         String(emp.id) === String(employeeId) ||
         Number(emp.id) === Number(employeeId);
     });
-    
+
     if (!employee) {
       console.warn('⚠️ CalendarPage - Employee not found in allEmployees. ID:', employeeId, 'Total employees:', allEmployees.length);
     }
-    
+
     return employee ? employee.display_name : employeeId.toString(); // Fallback to ID if not found
   };
 
   // Helper function to get employee object by ID or display name
   const getEmployeeById = (employeeIdOrName: string | number | null | undefined) => {
     if (!employeeIdOrName || employeeIdOrName === '---' || employeeIdOrName === '--') {
-      console.log('🔍 getEmployeeById - Invalid input:', employeeIdOrName);
       return null;
     }
-
-    console.log('🔍 getEmployeeById - Searching for:', employeeIdOrName, 'Type:', typeof employeeIdOrName, 'Total employees:', allEmployees.length);
 
     // First, try to match by ID (for legacy leads and new leads with ID fields)
     const employeeById = allEmployees.find((emp: any) => {
@@ -581,7 +578,6 @@ const CalendarPage: React.FC = () => {
     });
 
     if (employeeById) {
-      console.log('✅ getEmployeeById - Found by ID:', employeeById.display_name, 'ID:', employeeById.id, 'photo_url:', employeeById.photo_url, 'photo:', employeeById.photo);
       return employeeById;
     }
 
@@ -594,12 +590,10 @@ const CalendarPage: React.FC = () => {
       });
 
       if (employeeByName) {
-        console.log('✅ getEmployeeById - Found by name:', employeeByName.display_name, 'ID:', employeeByName.id, 'photo_url:', employeeByName.photo_url, 'photo:', employeeByName.photo);
         return employeeByName;
       }
     }
 
-    console.log('❌ getEmployeeById - Not found:', employeeIdOrName, 'Sample employee IDs:', allEmployees.slice(0, 5).map(e => ({ id: e.id, name: e.display_name })));
     return null;
   };
 
@@ -1211,13 +1205,20 @@ const CalendarPage: React.FC = () => {
 
   // Helper function to fetch legacy meetings and return them (doesn't update state)
   const fetchLegacyMeetingsForDateRange = async (fromDate: string, toDate: string, employees: any[] = []): Promise<any[]> => {
-    if (!fromDate || !toDate || legacyLoadingDisabled) return [];
+    console.log('🔍 [fetchLegacyMeetingsForDateRange] Called with:', { fromDate, toDate, legacyLoadingDisabled, employeesCount: employees.length });
+
+    if (!fromDate || !toDate || legacyLoadingDisabled) {
+      console.warn('🔍 [fetchLegacyMeetingsForDateRange] Early return:', { fromDate: !!fromDate, toDate: !!toDate, legacyLoadingDisabled });
+      return [];
+    }
 
     try {
       // Limit date range to max 7 days to prevent timeouts on large tables
       const from = new Date(fromDate);
       const to = new Date(toDate);
       const daysDiff = Math.ceil((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
+
+      console.log('🔍 [fetchLegacyMeetingsForDateRange] Date range check:', { daysDiff, from: fromDate, to: toDate });
 
       if (daysDiff > 7) {
         console.warn('Date range too large for legacy meetings, limiting to 7 days');
@@ -1232,6 +1233,7 @@ const CalendarPage: React.FC = () => {
       }
 
       // Fetch legacy leads with minimal fields
+      console.log('🔍 [fetchLegacyMeetingsForDateRange] Querying leads_lead table...');
       const { data: legacyData, error: legacyError } = await supabase
         .from('leads_lead')
         .select(`
@@ -1250,10 +1252,14 @@ const CalendarPage: React.FC = () => {
         .gte('meeting_date', fromDate)
         .lte('meeting_date', toDate)
         .not('meeting_date', 'is', null)
-        .not('name', 'is', null)
-        .or('status.eq.0,status.is.null') // Filter out inactive leads
         .limit(1000)
         .order('meeting_date', { ascending: true });
+
+      console.log('🔍 [fetchLegacyMeetingsForDateRange] Query result:', {
+        dataCount: legacyData?.length || 0,
+        error: legacyError?.message || null,
+        sampleIds: legacyData?.slice(0, 3).map((l: any) => l.id) || []
+      });
 
       if (legacyError) {
         console.error('Error fetching legacy leads:', legacyError);
@@ -1263,10 +1269,34 @@ const CalendarPage: React.FC = () => {
         return [];
       }
 
-      if (!legacyData || legacyData.length === 0) return [];
+      if (!legacyData || legacyData.length === 0) {
+        console.warn('🔍 [fetchLegacyMeetingsForDateRange] No legacy data found for date range:', { fromDate, toDate });
+        return [];
+      }
+
+      // Filter out inactive leads (status = 10 means inactive/spam, stage 91 = inactive/dropped) - do this client-side to avoid query issues
+      const activeLegacyData = legacyData.filter((lead: any) => {
+        const status = lead.status;
+        const stage = lead.stage;
+        // Exclude if status is 10 (inactive/spam) or stage is 91 (inactive/dropped)
+        if (status === 10 || status === '10') return false;
+        if (stage === 91 || stage === '91') return false;
+        // Include if status is 0, null, or undefined (active leads)
+        return status === null || status === undefined || status === 0 || status === '0';
+      });
+
+      console.log('🔍 [fetchLegacyMeetingsForDateRange] After status filter:', {
+        beforeFilter: legacyData.length,
+        afterFilter: activeLegacyData.length
+      });
+
+      if (activeLegacyData.length === 0) {
+        console.warn('🔍 [fetchLegacyMeetingsForDateRange] No active legacy leads after status filter');
+        return [];
+      }
 
       // Process legacy data and convert currency to symbols
-      legacyData.forEach((legacyLead: any) => {
+      activeLegacyData.forEach((legacyLead: any) => {
         // Extract currency data from joined table and convert to symbol
         const currencyRecord = legacyLead.accounting_currencies
           ? (Array.isArray(legacyLead.accounting_currencies) ? legacyLead.accounting_currencies[0] : legacyLead.accounting_currencies)
@@ -1388,6 +1418,11 @@ const CalendarPage: React.FC = () => {
         return meeting;
       });
 
+      console.log('🔍 [fetchLegacyMeetingsForDateRange] Processed legacy meetings:', {
+        count: processedLegacyMeetings.length,
+        sampleIds: processedLegacyMeetings.slice(0, 3).map((m: any) => m.id)
+      });
+
       return processedLegacyMeetings;
     } catch (error: any) {
       console.error('Error in fetchLegacyMeetingsForDateRange:', error);
@@ -1415,8 +1450,22 @@ const CalendarPage: React.FC = () => {
     // Filter out legacy meetings that already exist
     const newLegacyMeetings = legacyMeetings.filter((legacyMeeting: any) => {
       const legacyLeadId = legacyMeeting.id?.toString().replace('legacy_', '');
-      return !existingMeetingIds.has(legacyMeeting.id) &&
-        !existingLegacyLeadIds.has(legacyLeadId);
+      const isDuplicate = existingMeetingIds.has(legacyMeeting.id) || existingLegacyLeadIds.has(legacyLeadId);
+      if (isDuplicate) {
+        console.log('🔍 [combineMeetingsWithoutDuplicates] Filtering out duplicate legacy meeting:', {
+          id: legacyMeeting.id,
+          legacyLeadId,
+          reason: existingMeetingIds.has(legacyMeeting.id) ? 'existingMeetingIds' : 'existingLegacyLeadIds'
+        });
+      }
+      return !isDuplicate;
+    });
+
+    console.log('🔍 [combineMeetingsWithoutDuplicates] Combining:', {
+      regularCount: regularMeetings.length,
+      legacyInputCount: legacyMeetings.length,
+      legacyAfterFilterCount: newLegacyMeetings.length,
+      totalOutput: regularMeetings.length + newLegacyMeetings.length
     });
 
     // Combine all meetings
@@ -1853,8 +1902,9 @@ const CalendarPage: React.FC = () => {
         };
 
         // Determine date range for legacy meetings
-        const dateRangeFrom = appliedFromDate && datesManuallySet ? appliedFromDate : today;
-        const dateRangeTo = appliedToDate && datesManuallySet ? appliedToDate : today;
+        // Always use appliedFromDate/appliedToDate (they persist the current view), fallback to today if not set
+        const dateRangeFrom = appliedFromDate || today;
+        const dateRangeTo = appliedToDate || today;
 
         // Fetch ALL data in parallel: regular meetings + legacy meetings + past stages
         console.log('🔍 Fetching all meetings in parallel...', { dateRangeFrom, dateRangeTo, datesManuallySet });
@@ -1928,7 +1978,8 @@ const CalendarPage: React.FC = () => {
                 )
               `)
               .in('id', clientIds)
-              .is('unactivated_at', null); // Filter out inactive leads
+              .is('unactivated_at', null) // Filter out inactive leads
+              .neq('stage', 91); // Filter out stage 91 (inactive/dropped leads)
 
             if (newLeadsData) {
               // Process each lead and extract currency data from the join
@@ -2020,7 +2071,8 @@ const CalendarPage: React.FC = () => {
                 )
               `)
               .in('id', numericLegacyLeadIds)
-              .or('status.eq.0,status.is.null'); // Filter out inactive leads
+              .or('status.eq.0,status.is.null') // Filter out inactive leads
+              .neq('stage', 91); // Filter out stage 91 (inactive/dropped leads)
 
             if (legacyLeadsData && legacyLeadsData.length > 0) {
               // Process each legacy lead and extract currency data from the join
@@ -2107,6 +2159,36 @@ const CalendarPage: React.FC = () => {
               if (!meeting.meeting_date) return false;
               const date = new Date(meeting.meeting_date);
               if (isNaN(date.getTime())) return false;
+
+              // Filter out meetings with inactive leads early
+              // Staff meetings are always allowed
+              if (meeting.calendar_type === 'staff') {
+                return true;
+              }
+
+              const lead = meeting.lead || {};
+              const legacyLead = meeting.legacy_lead || {};
+
+              // If meeting has a client_id or legacy_lead_id but no lead data, exclude it
+              // This means the lead was filtered out as inactive
+              if ((meeting.client_id || meeting.legacy_lead_id) && !lead.id && !legacyLead.id) {
+                return false;
+              }
+
+              // Check for new leads - exclude if stage is 91 or unactivated_at is set
+              if (lead.id && !lead.id.toString().startsWith('legacy_')) {
+                if (lead.stage === 91 || lead.stage === '91') return false;
+                if (lead.unactivated_at) return false;
+              }
+
+              // Check for legacy leads - exclude if stage is 91 or status is 10
+              if (legacyLead.id || lead.id?.toString().startsWith('legacy_')) {
+                const stage = legacyLead.stage || lead.stage;
+                const status = legacyLead.status || lead.status;
+                if (stage === 91 || stage === '91') return false;
+                if (status === 10 || status === '10') return false;
+              }
+
               return true;
             })
             .map((meeting: any) => {
@@ -2253,7 +2335,15 @@ const CalendarPage: React.FC = () => {
         }
 
         // Combine all meetings: regular + legacy (without duplicates)
+        console.log('🔍 [fetchMeetingsAndStaff] Before combining:', {
+          regularCount: allProcessedMeetings.length,
+          legacyCount: legacyMeetings.length
+        });
         const allMeetingsCombined = combineMeetingsWithoutDuplicates(allProcessedMeetings, legacyMeetings);
+        console.log('🔍 [fetchMeetingsAndStaff] After combining:', {
+          totalCount: allMeetingsCombined.length,
+          legacyInCombined: allMeetingsCombined.filter((m: any) => m.id?.toString().startsWith('legacy_')).length
+        });
 
         // Set ALL meetings at once - this ensures everything appears together
         setMeetings(allMeetingsCombined);
@@ -2487,6 +2577,42 @@ const CalendarPage: React.FC = () => {
         return true;
       });
     }
+
+    // Final filter: Exclude inactive leads (stage 91 or unactivated_at is not null)
+    // Also exclude meetings that have a client_id or legacy_lead_id but no lead (because lead was filtered out as inactive)
+    filtered = filtered.filter(m => {
+      // Staff meetings are always allowed (they don't have leads)
+      if (m.calendar_type === 'staff') {
+        return true;
+      }
+
+      const lead = m.lead || {};
+      const legacyLead = m.legacy_lead || {};
+
+      // If meeting has a client_id or legacy_lead_id but no lead data, exclude it
+      // This means the lead was filtered out as inactive
+      if ((m.client_id || m.legacy_lead_id) && !lead.id && !legacyLead.id) {
+        return false;
+      }
+
+      // Check for new leads
+      if (lead.id && !lead.id.toString().startsWith('legacy_')) {
+        // Exclude if stage is 91 or unactivated_at is set
+        if (lead.stage === 91 || lead.stage === '91') return false;
+        if (lead.unactivated_at) return false;
+      }
+
+      // Check for legacy leads
+      if (legacyLead.id || lead.id?.toString().startsWith('legacy_')) {
+        // Exclude if stage is 91 or status is 10
+        const stage = legacyLead.stage || lead.stage;
+        const status = legacyLead.status || lead.status;
+        if (stage === 91 || stage === '91') return false;
+        if (status === 10 || status === '10') return false;
+      }
+
+      return true;
+    });
 
     // Sort meetings by time (earliest first)
     filtered = filtered.sort((a, b) => {
@@ -2936,6 +3062,7 @@ const CalendarPage: React.FC = () => {
           `)
           .in('id', uniqueClientIds)
           .is('unactivated_at', null) // Filter out inactive leads
+          .neq('stage', 91) // Filter out stage 91 (inactive/dropped leads)
           .limit(500);
 
         if (leadsError) {
@@ -3007,6 +3134,7 @@ const CalendarPage: React.FC = () => {
           `)
           .in('id', uniqueLegacyLeadIds)
           .or('status.eq.0,status.is.null') // Filter out inactive leads
+          .neq('stage', 91) // Filter out stage 91 (inactive/dropped leads)
           .limit(500);
 
         if (legacyLeadsError) {
@@ -3085,6 +3213,7 @@ const CalendarPage: React.FC = () => {
         .not('meeting_date', 'is', null)
         .not('name', 'is', null)
         .or('status.eq.0,status.is.null') // Filter out inactive leads
+        .neq('stage', 91) // Filter out stage 91 (inactive/dropped leads)
         .limit(500);
 
       // Process direct legacy meetings and convert currency to symbols
@@ -3206,7 +3335,7 @@ const CalendarPage: React.FC = () => {
               // Convert language ID to name
               const languageId = legacyLead.language_id;
               if (!languageId) return 'N/A';
-              
+
               // Use languages fetched earlier
               if (languagesToUse.length > 0) {
                 const languageObj = languagesToUse.find((lang: any) => {
@@ -3247,7 +3376,7 @@ const CalendarPage: React.FC = () => {
           if (meeting.client_id && leadsMap[meeting.client_id]) {
             // Use new lead data from the map
             const lead = leadsMap[meeting.client_id];
-            
+
             // Convert language ID to name if needed
             let language = lead.language || 'N/A';
             if (language && languagesToUse.length > 0) {
@@ -3255,7 +3384,7 @@ const CalendarPage: React.FC = () => {
               const languageId = typeof language === 'string' && /^\d+$/.test(language.trim())
                 ? parseInt(language.trim(), 10)
                 : (typeof language === 'number' ? language : null);
-              
+
               if (languageId && !isNaN(languageId)) {
                 const languageObj = languagesToUse.find((lang: any) => String(lang.id) === String(languageId));
                 if (languageObj?.name) {
@@ -3263,7 +3392,7 @@ const CalendarPage: React.FC = () => {
                 }
               }
             }
-            
+
             // Convert manager, helper, scheduler, expert IDs to display names if they're numeric
             let manager = lead.manager || '--';
             if (manager && manager !== '--') {
@@ -3271,28 +3400,28 @@ const CalendarPage: React.FC = () => {
                 manager = getEmployeeDisplayName(manager) || '--';
               }
             }
-            
+
             let helper = lead.helper || '--';
             if (helper && helper !== '--') {
               if (typeof helper === 'number' || (typeof helper === 'string' && !isNaN(Number(helper)))) {
                 helper = getEmployeeDisplayName(helper) || '--';
               }
             }
-            
+
             let scheduler = lead.scheduler || '--';
             if (scheduler && scheduler !== '--') {
               if (typeof scheduler === 'number' || (typeof scheduler === 'string' && !isNaN(Number(scheduler)))) {
                 scheduler = getEmployeeDisplayName(scheduler) || '--';
               }
             }
-            
+
             let expert = lead.expert || '--';
             if (expert && expert !== '--') {
               if (typeof expert === 'number' || (typeof expert === 'string' && !isNaN(Number(expert)))) {
                 expert = getEmployeeDisplayName(expert) || '--';
               }
             }
-            
+
             leadData = {
               ...lead,
               lead_type: 'new',
@@ -3304,7 +3433,7 @@ const CalendarPage: React.FC = () => {
             };
           } else if (meeting.legacy_lead_id && legacyLeadsMap[String(meeting.legacy_lead_id)]) {
             const legacyLead = legacyLeadsMap[String(meeting.legacy_lead_id)];
-            
+
             // Convert language ID to name
             let language = 'N/A';
             const languageId = legacyLead.language_id;
@@ -3316,7 +3445,7 @@ const CalendarPage: React.FC = () => {
                 language = languageObj.name;
               }
             }
-            
+
             leadData = {
               ...legacyLead,
               lead_type: 'legacy',
@@ -3339,7 +3468,7 @@ const CalendarPage: React.FC = () => {
               meetingManager = getEmployeeDisplayName(meetingManager) || '--';
             }
           }
-          
+
           let meetingHelper = meeting.helper || '--';
           if (meetingHelper && meetingHelper !== '--') {
             if (typeof meetingHelper === 'number' || (typeof meetingHelper === 'string' && !isNaN(Number(meetingHelper)))) {
@@ -3455,6 +3584,7 @@ const CalendarPage: React.FC = () => {
           .gte('meeting_date', threeMonthsAgo)
           .lte('meeting_date', thirtyDaysFromNow)
           .or('status.eq.0,status.is.null') // Filter out inactive leads
+          .neq('stage', 91) // Filter out stage 91 (inactive/dropped leads)
           .order('meeting_date', { ascending: true })
           .order('meeting_time', { ascending: true });
 
@@ -4040,7 +4170,7 @@ const CalendarPage: React.FC = () => {
 
   const openAssignStaffModal = async () => {
     setIsAssignStaffModalOpen(true);
-    
+
     // Initialize modal date to today if not set
     const today = new Date().toISOString().split('T')[0];
     if (!modalSelectedDate) {
@@ -4051,7 +4181,7 @@ const CalendarPage: React.FC = () => {
     // This ensures we have all meetings for the date range (7 days ago to 30 days in the future)
     // regardless of what was loaded on the calendar page
     await fetchAssignStaffData();
-    
+
     fetchEmployeeAvailability();
     // DISABLED: fetchMeetingCountsAndPreviousManagers(); // causing timeouts
   };
@@ -6695,7 +6825,7 @@ const CalendarPage: React.FC = () => {
                                         // Get currency symbol - for both legacy and new leads, use balance_currency if available
                                         // balance_currency is already set as a symbol (₪, $, €, etc.) from fetchAssignStaffData
                                         let balanceCurrency = lead.balance_currency;
-                                        
+
                                         // If balance_currency is already a symbol, use it directly with getCurrencySymbol
                                         // Otherwise, convert currency_id to currency code first
                                         if (!balanceCurrency) {

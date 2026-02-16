@@ -1201,7 +1201,9 @@ const Clients: React.FC<ClientsProps> = ({
   const [activeTab, setActiveTab] = usePersistedState('clientsPage_activeTab', 'info', {
     storage: 'sessionStorage',
   });
-  const [isTabBarCollapsed, setIsTabBarCollapsed] = useState(true);
+  // Check if floating nav bar should always be open
+  const floatingNavBarAlwaysOpen = localStorage.getItem('floatingNavBarAlwaysOpen') === 'true';
+  const [isTabBarCollapsed, setIsTabBarCollapsed] = useState(!floatingNavBarAlwaysOpen);
   const tabBarCollapseTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
   // Cleanup timeout on unmount
@@ -13308,7 +13310,7 @@ const Clients: React.FC<ClientsProps> = ({
           <div className="desktop-tabs-navigation hidden lg:block fixed bottom-0 left-0 right-0 z-50 pb-safe">
             <div className="flex justify-center px-4 pb-4">
               <div
-                onMouseEnter={() => {
+                onMouseEnter={floatingNavBarAlwaysOpen ? undefined : () => {
                   // Clear any pending collapse timeout
                   if (tabBarCollapseTimeoutRef.current) {
                     clearTimeout(tabBarCollapseTimeoutRef.current);
@@ -13316,7 +13318,7 @@ const Clients: React.FC<ClientsProps> = ({
                   }
                   setIsTabBarCollapsed(false);
                 }}
-                onMouseLeave={() => {
+                onMouseLeave={floatingNavBarAlwaysOpen ? undefined : () => {
                   // Add delay before collapsing
                   tabBarCollapseTimeoutRef.current = setTimeout(() => {
                     setIsTabBarCollapsed(true);
