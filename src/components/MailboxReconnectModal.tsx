@@ -42,7 +42,7 @@ const MailboxReconnectModal: React.FC = () => {
   if (!isModalOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[10010] flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl max-w-md w-full mx-4 p-6 relative">
         {/* Close button */}
         <button

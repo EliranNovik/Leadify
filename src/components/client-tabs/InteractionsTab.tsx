@@ -5760,7 +5760,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       return;
     }
     if (!mailboxStatus.connected) {
-      toast.error('Connect your mailbox before sending emails.');
+      showReconnectModal('Your mailbox is not connected. Please reconnect to send emails.');
       return;
     }
 
@@ -5921,11 +5921,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       const errorMessage = error.message;
       const statusCode = (error as any).statusCode;
       
-      // Check if this is an expired token error (401 or message contains "expired" or "reconnect")
+      // Check if this is a mailbox connection/expired token error
+      // Show reconnect modal for: 401 status, expired tokens, reconnect messages, disconnected mailbox, or sync errors
       if (statusCode === 401 || 
           errorMessage.toLowerCase().includes('expired') || 
-          errorMessage.toLowerCase().includes('reconnect')) {
-        showReconnectModal(errorMessage);
+          errorMessage.toLowerCase().includes('reconnect') ||
+          errorMessage.toLowerCase().includes('disconnected') ||
+          errorMessage.toLowerCase().includes('not connected') ||
+          errorMessage.toLowerCase().includes('out of sync') ||
+          errorMessage.toLowerCase().includes('sync')) {
+        showReconnectModal(errorMessage || 'Your mailbox connection is not working. Please reconnect to send emails.');
       } else {
         toast.error(errorMessage);
       }
