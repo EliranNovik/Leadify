@@ -193,7 +193,12 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
       });
 
       if (employee && employee.display_name) {
-        return employee.display_name;
+        // Normalize "Not_assigned", "Not assigned", etc. to '---'
+        const displayName = employee.display_name;
+        if (displayName.toLowerCase() === 'not_assigned' || displayName.toLowerCase() === 'not assigned') {
+          return '---';
+        }
+        return displayName;
       }
 
       // If not found, log for debugging
@@ -289,7 +294,15 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
         id: 'handler',
         title: 'Handler',
         assignee: isLegacyLead
-          ? getEmployeeDisplayName((client as any).case_handler_id, employeesToUse)
+          ? (() => {
+            // For legacy leads, get display name from case_handler_id
+            const handlerDisplayName = getEmployeeDisplayName((client as any).case_handler_id, employeesToUse);
+            // Normalize "Not_assigned", "Not assigned", etc. to '---'
+            if (!handlerDisplayName || handlerDisplayName === '---' || handlerDisplayName.toLowerCase() === 'not_assigned' || handlerDisplayName.toLowerCase() === 'not assigned') {
+              return '---';
+            }
+            return handlerDisplayName;
+          })()
           : (() => {
             // For new leads: handler can be stored as employee_id in handler column OR as display_name
             // Also check case_handler_id if available
@@ -298,16 +311,30 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
 
             // If case_handler_id exists, use it (most reliable)
             if ((client as any).case_handler_id) {
-              return getEmployeeDisplayName((client as any).case_handler_id, employeesToUse);
+              const handlerDisplayName = getEmployeeDisplayName((client as any).case_handler_id, employeesToUse);
+              // Normalize "Not_assigned", "Not assigned", etc. to '---'
+              if (!handlerDisplayName || handlerDisplayName === '---' || handlerDisplayName.toLowerCase() === 'not_assigned' || handlerDisplayName.toLowerCase() === 'not assigned') {
+                return '---';
+              }
+              return handlerDisplayName;
             }
 
             // If handler is numeric (employee ID), map it
             if (handlerValue && (typeof handlerValue === 'number' || (typeof handlerValue === 'string' && !isNaN(Number(handlerValue)) && handlerValue.toString().trim() !== ''))) {
-              return getEmployeeDisplayName(handlerValue, employeesToUse);
+              const handlerDisplayName = getEmployeeDisplayName(handlerValue, employeesToUse);
+              // Normalize "Not_assigned", "Not assigned", etc. to '---'
+              if (!handlerDisplayName || handlerDisplayName === '---' || handlerDisplayName.toLowerCase() === 'not_assigned' || handlerDisplayName.toLowerCase() === 'not assigned') {
+                return '---';
+              }
+              return handlerDisplayName;
             }
 
             // Otherwise, assume handler is already a display name
-            return handlerValue || '---';
+            // Normalize "Not_assigned", "Not assigned", etc. to '---'
+            if (!handlerValue || handlerValue === '---' || handlerValue.toLowerCase() === 'not_assigned' || handlerValue.toLowerCase() === 'not assigned') {
+              return '---';
+            }
+            return handlerValue;
           })(),
         fieldName: 'handler',
         legacyFieldName: 'case_handler_id'

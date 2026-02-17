@@ -638,7 +638,7 @@ const CalendarPage: React.FC = () => {
         '2xl': 'w-28 h-28 text-xl'
       };
       return (
-        <div className={`${sizeMap[size]} rounded-full flex items-center justify-center bg-gray-200 text-gray-500 font-semibold`}>
+        <div className={`${sizeMap[size]} rounded-full flex items-center justify-center bg-gray-200 text-gray-500 font-semibold flex-shrink-0`}>
           --
         </div>
       );
@@ -661,7 +661,7 @@ const CalendarPage: React.FC = () => {
     // If we know there's no photo URL or we have a cached error, show initials immediately
     if (hasError || !photoUrl) {
       return (
-        <div className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold`}>
+        <div className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold flex-shrink-0`}>
           {initials}
         </div>
       );
@@ -672,7 +672,7 @@ const CalendarPage: React.FC = () => {
       <img
         src={photoUrl}
         alt={employee.display_name}
-        className={`${sizeClasses} rounded-full object-cover`}
+        className={`${sizeClasses} rounded-full object-cover flex-shrink-0`}
         onError={(e) => {
           // Cache the error to prevent flickering on re-renders
           if (cacheKey) {
@@ -2526,24 +2526,30 @@ const CalendarPage: React.FC = () => {
         // Get display names (convert IDs if needed)
         const managerDisplayName = getDisplayNameOrValue(lead.manager);
         const helperDisplayName = getDisplayNameOrValue(lead.helper);
+        const schedulerDisplayName = getDisplayNameOrValue(lead.scheduler || lead.scheduler_id);
         const expertDisplayName = getDisplayNameOrValue(lead.expert);
         const meetingManagerDisplayName = getDisplayNameOrValue(m.meeting_manager);
         const meetingHelperDisplayName = getDisplayNameOrValue(m.helper);
+        const meetingSchedulerDisplayName = getDisplayNameOrValue(m.scheduler || (m as any).scheduler_id);
         const meetingExpertDisplayName = getDisplayNameOrValue(m.expert);
 
         // Normalize all fields for comparison (trim and lowercase)
         const normalizedManager = managerDisplayName.toLowerCase();
         const normalizedHelper = helperDisplayName.toLowerCase();
+        const normalizedScheduler = schedulerDisplayName.toLowerCase();
         const normalizedExpert = expertDisplayName.toLowerCase();
         const normalizedMeetingManager = meetingManagerDisplayName.toLowerCase();
         const normalizedMeetingHelper = meetingHelperDisplayName.toLowerCase();
+        const normalizedMeetingScheduler = meetingSchedulerDisplayName.toLowerCase();
         const normalizedMeetingExpert = meetingExpertDisplayName.toLowerCase();
 
         const matches = (
           normalizedManager === normalizedSelectedStaff ||
           normalizedHelper === normalizedSelectedStaff ||
+          normalizedScheduler === normalizedSelectedStaff ||
           normalizedMeetingManager === normalizedSelectedStaff ||
           normalizedMeetingHelper === normalizedSelectedStaff ||
+          normalizedMeetingScheduler === normalizedSelectedStaff ||
           normalizedExpert === normalizedSelectedStaff ||
           normalizedMeetingExpert === normalizedSelectedStaff
         );
@@ -3476,10 +3482,24 @@ const CalendarPage: React.FC = () => {
             }
           }
 
+          // Convert scheduler from leadData to meeting object for filtering (works for both new and legacy leads)
+          // Get scheduler from leadData (which is set for both new and legacy leads) or from meeting if it exists
+          const schedulerFromLead = leadData?.scheduler;
+          const schedulerFromMeeting = (meeting as any).scheduler;
+          let meetingScheduler = schedulerFromLead || schedulerFromMeeting || '--';
+          if (meetingScheduler && meetingScheduler !== '--') {
+            // If it's already a display name (string that's not a number), use it as is
+            // If it's a number/ID, convert it to display name
+            if (typeof meetingScheduler === 'number' || (typeof meetingScheduler === 'string' && !isNaN(Number(meetingScheduler)))) {
+              meetingScheduler = getEmployeeDisplayName(meetingScheduler) || '--';
+            }
+          }
+
           return {
             ...meeting,
             meeting_manager: meetingManager,
             helper: meetingHelper,
+            scheduler: meetingScheduler,
             lead: leadData
           };
         });
@@ -3503,6 +3523,8 @@ const CalendarPage: React.FC = () => {
       const uniqueStaffNames = staffData?.map(employee => employee.display_name).filter(Boolean) || [];
 
 
+      console.log('🔍 [fetchAssignStaffData] ⭐ Setting assignStaffMeetings:', allMeetings.length, 'meetings');
+      console.log('🔍 [fetchAssignStaffData] ⭐ Setting availableStaff:', uniqueStaffNames.length, 'staff members');
       setAssignStaffMeetings(allMeetings);
       setAvailableStaff(uniqueStaffNames);
     } catch (error: any) {
@@ -4193,27 +4215,109 @@ const CalendarPage: React.FC = () => {
   };
 
 
+  // Helper function to normalize employee value (ID or name) to display name for comparison
+  const normalizeEmployeeValue = (value: any): string => {
+    if (!value || value === '--' || value === '---') return '--';
+
+    // If it's a number or numeric string, convert to display name
+    if (typeof value === 'number' || (typeof value === 'string' && !isNaN(Number(value)))) {
+      const displayName = getEmployeeDisplayName(value);
+      console.log(`🔍 [normalizeEmployeeValue] Converted ID ${value} to display name:`, displayName);
+      return displayName || '--';
+    }
+
+    // If it's already a string that's not a number, it might be:
+    // 1. A display name (use as-is)
+    // 2. A partial name that needs to be matched to an employee
+    if (typeof value === 'string') {
+      const stringValue = value.trim();
+
+      // Try to find employee by name (case-insensitive partial match)
+      const matchingEmployee = allEmployees.find((emp: any) => {
+        const empName = emp.display_name || emp.name || '';
+        return empName.toLowerCase().includes(stringValue.toLowerCase()) ||
+          stringValue.toLowerCase().includes(empName.toLowerCase());
+      });
+
+      if (matchingEmployee) {
+        const displayName = matchingEmployee.display_name || matchingEmployee.name || stringValue;
+        console.log(`🔍 [normalizeEmployeeValue] Matched text "${stringValue}" to employee display name:`, displayName);
+        return displayName;
+      }
+
+      // If no match found, return as-is (might already be a display name)
+      console.log(`🔍 [normalizeEmployeeValue] Using text value as-is (no employee match):`, stringValue);
+      return stringValue;
+    }
+
+    return String(value);
+  };
+
   // Helper function to filter meetings by date and staff (for assign staff modal)
   const getFilteredMeetings = () => {
+    console.log('🔍🔍🔍 [getFilteredMeetings] ⭐⭐ FUNCTION CALLED ⭐⭐');
+    console.log('🔍 [getFilteredMeetings] selectedStaffFilter:', selectedStaffFilter);
+    console.log('🔍 [getFilteredMeetings] modalSelectedDate:', modalSelectedDate);
+    console.log('🔍 [getFilteredMeetings] assignStaffMeetings count:', assignStaffMeetings.length);
+    console.log('🔍 [getFilteredMeetings] isAssignStaffModalOpen:', isAssignStaffModalOpen);
 
     let filtered = assignStaffMeetings.filter(m => m.meeting_date === modalSelectedDate);
-
+    console.log('🔍 [getFilteredMeetings] After date filter:', filtered.length, 'meetings');
 
     if (selectedStaffFilter) {
       const beforeCount = filtered.length;
-      filtered = filtered.filter(m => {
+      console.log('🔍 [getFilteredMeetings] ⭐ FILTER IS ACTIVE - Filtering by staff:', selectedStaffFilter, 'Total meetings before filter:', beforeCount);
+
+      filtered = filtered.filter((m, index) => {
         const lead = m.lead || {};
+
+        // Debug: Log raw scheduler values
+        const rawSchedulerLead = lead.scheduler;
+        const rawSchedulerMeeting = m.scheduler;
+        const rawSchedulerIdLead = lead.scheduler_id;
+        const rawSchedulerIdMeeting = (m as any).scheduler_id;
+
+        console.log(`🔍 [getFilteredMeetings] Meeting ${index} (ID: ${m.id}):`, {
+          leadType: lead.lead_type,
+          rawSchedulerLead,
+          rawSchedulerMeeting,
+          rawSchedulerIdLead,
+          rawSchedulerIdMeeting,
+          leadSchedulerType: typeof rawSchedulerLead,
+          meetingSchedulerType: typeof rawSchedulerMeeting,
+          fullLead: lead,
+          fullMeeting: m
+        });
+
+        // Normalize all employee values to display names for consistent comparison
+        const normalizedManager = normalizeEmployeeValue(lead.manager || m.meeting_manager);
+        const normalizedHelper = normalizeEmployeeValue(lead.helper || m.helper);
+        const normalizedScheduler = normalizeEmployeeValue(lead.scheduler || m.scheduler || lead.scheduler_id || (m as any).scheduler_id);
+        const normalizedExpert = normalizeEmployeeValue(lead.expert || m.expert);
+
+        console.log(`🔍 [getFilteredMeetings] Meeting ${index} normalized values:`, {
+          normalizedManager,
+          normalizedHelper,
+          normalizedScheduler,
+          normalizedExpert,
+          selectedStaffFilter
+        });
+
         const matches = (
-          lead.manager === selectedStaffFilter ||
-          lead.helper === selectedStaffFilter ||
-          m.meeting_manager === selectedStaffFilter ||
-          m.helper === selectedStaffFilter ||
-          m.expert === selectedStaffFilter ||
-          lead.expert === selectedStaffFilter
+          normalizedManager === selectedStaffFilter ||
+          normalizedHelper === selectedStaffFilter ||
+          normalizedScheduler === selectedStaffFilter ||
+          normalizedExpert === selectedStaffFilter
         );
+
+        console.log(`🔍 [getFilteredMeetings] Meeting ${index} match result:`, matches);
+
         return matches;
       });
 
+      console.log('🔍 [getFilteredMeetings] ⭐ FILTER COMPLETE - Filtered meetings count:', filtered.length, 'out of', beforeCount);
+    } else {
+      console.log('🔍 [getFilteredMeetings] No staff filter selected - showing all meetings for date');
     }
 
     // Sort by meeting time (earliest first)
@@ -4490,7 +4594,7 @@ const CalendarPage: React.FC = () => {
                 {meeting.calendar_type === 'staff' ? 'STAFF' : (lead.lead_number || meeting.lead_number)}
               </span>
               <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-              <h3 className="text-sm md:text-base font-extrabold text-gray-900 group-hover:text-primary transition-colors flex-1 break-words">{lead.name || meeting.name}</h3>
+              <h3 className="text-xs md:text-sm font-extrabold text-gray-900 group-hover:text-primary transition-colors flex-1 break-words line-clamp-2">{lead.name || meeting.name}</h3>
               {/* Calendar type badge - next to client name */}
               {(() => {
                 const badge = getCalendarTypeBadgeStyles(meeting.calendar_type);
@@ -5088,21 +5192,21 @@ const CalendarPage: React.FC = () => {
             <div className="flex items-center gap-1 sm:gap-2">
               {meeting.calendar_type === 'staff' ? (
                 <>
-                  <span className="text-black text-base sm:text-lg">
+                  <span className="text-black text-sm sm:text-base break-words line-clamp-2">
                     {lead.name || meeting.name}
                   </span>
                 </>
               ) : (
                 <>
-                  <div className="flex flex-col">
+                  <div className="flex flex-col min-w-0 flex-1">
                     <Link
                       to={buildClientRoute(lead)}
-                      className="hover:opacity-80 text-base sm:text-lg"
+                      className="hover:opacity-80 text-sm sm:text-base break-words line-clamp-2"
                       style={{ color: '#3b28c7' }}
                     >
                       {lead.name || meeting.name}
                     </Link>
-                    <span className="text-sm sm:text-base text-gray-500 font-semibold">
+                    <span className="text-xs sm:text-sm text-gray-500 font-semibold whitespace-nowrap">
                       ({lead.lead_number || meeting.lead_number})
                     </span>
                   </div>
@@ -5111,7 +5215,7 @@ const CalendarPage: React.FC = () => {
             </div>
           </td>
           {/* Category Column */}
-          <td className="text-sm sm:text-base">
+          <td className="text-xs sm:text-sm">
             {getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A'}
           </td>
           {/* Value Column - Third */}
@@ -6523,7 +6627,11 @@ const CalendarPage: React.FC = () => {
                   <label className="text-sm font-semibold">Filter by Staff:</label>
                   <select
                     value={selectedStaffFilter}
-                    onChange={(e) => setSelectedStaffFilter(e.target.value)}
+                    onChange={(e) => {
+                      const newValue = e.target.value;
+                      console.log('🔍 [Staff Filter Dropdown] Changed to:', newValue);
+                      setSelectedStaffFilter(newValue);
+                    }}
                     className="select bg-white text-gray-800 border-0 focus:outline-none w-48"
                   >
                     <option value="">All Staff</option>
