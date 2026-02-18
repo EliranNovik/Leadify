@@ -1252,11 +1252,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       // Only update status if we got a valid response
       // Don't set connected to false on errors - keep previous state to avoid false negatives
       if (status !== null && status !== undefined) {
-        setMailboxStatus({
-          connected: Boolean(status?.connected),
-          mailbox: status?.mailbox || status?.displayName || null,
-          lastSyncedAt: status?.lastSyncedAt || status?.last_synced_at || null,
-        });
+      setMailboxStatus({
+        connected: Boolean(status?.connected),
+        mailbox: status?.mailbox || status?.displayName || null,
+        lastSyncedAt: status?.lastSyncedAt || status?.last_synced_at || null,
+      });
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load mailbox status';
@@ -6054,8 +6054,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       
       // Always refresh mailbox status when email modal opens to ensure it's current
       // This ensures status is fresh for each lead, even if it was checked before
-      refreshMailboxStatus();
-    }
+        refreshMailboxStatus();
+      }
   }, [isEmailModalOpen, client, fetchEmailsForModal, selectedContactForEmail, refreshMailboxStatus]);
 
   // Separate effect to re-fetch emails when selected contact changes (while modal is open)

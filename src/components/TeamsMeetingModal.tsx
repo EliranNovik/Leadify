@@ -87,7 +87,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
     if (searchTerm.trim() === '') {
       setFilteredEmployees(employees);
     } else {
-      const filtered = employees.filter(emp =>
+      const filtered = employees.filter(emp => 
         emp.display_name?.toLowerCase().includes(searchTerm.toLowerCase())
       );
       setFilteredEmployees(filtered);
@@ -127,46 +127,46 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
 
   const fetchEmployees = async () => {
     try {
-
+      
       // First, let's try a simpler approach - fetch employees and users separately
       const { data: employeesData, error: employeesError } = await supabase
         .from('tenants_employee')
         .select('id, display_name')
         .not('display_name', 'is', null)
         .order('display_name');
-
+      
       if (employeesError) {
         toast.error('Failed to load employees');
         return;
       }
-
+      
       // Get all employee IDs
       const employeeIds = employeesData?.map(emp => emp.id) || [];
-
+      
       if (employeeIds.length === 0) {
         setEmployees([]);
         setFilteredEmployees([]);
         return;
       }
-
+      
       // Fetch emails from users table
       const { data: usersData, error: usersError } = await supabase
         .from('users')
         .select('employee_id, email')
         .in('employee_id', employeeIds)
         .not('email', 'is', null);
-
+      
       if (usersError) {
         toast.error('Failed to load employee emails');
         return;
       }
-
+      
       // Create a map of employee_id to email
       const emailMap = new Map();
       usersData?.forEach(user => {
         emailMap.set(user.employee_id, user.email);
       });
-
+      
       // Combine employee data with emails
       const processedEmployees = employeesData
         ?.filter(emp => emailMap.has(emp.id)) // Only include employees with emails
@@ -175,8 +175,8 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
           display_name: emp.display_name,
           email: emailMap.get(emp.id)
         })) || [];
-
-
+      
+      
       setEmployees(processedEmployees);
       setFilteredEmployees(processedEmployees);
     } catch (error) {
@@ -236,15 +236,15 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-
-
+    
+    
     if (!formData.subject.trim()) {
       toast.error('Please enter a meeting subject', { duration: 5000 });
       return;
     }
 
     setIsLoading(true);
-
+    
     try {
       // First, get the authenticated user from Supabase to get their email from database
       const { data: { user: authUser } } = await supabase.auth.getUser();
@@ -296,9 +296,9 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
       }
 
       // Use the shared staff calendar account for creating meetings
-
+      
       const accessToken = await getAccessTokenWithFallback(
-        instance,
+        instance, 
         {
           ...loginRequest,
           // Override the login request to use the shared calendar account
@@ -307,11 +307,11 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
             // Force authentication for the shared calendar
             login_hint: STAFF_CALENDAR_EMAIL
           }
-        },
+        }, 
         account,
         () => toast.loading('Authenticating with shared calendar...', { duration: 3000 })
       );
-
+      
       if (!accessToken) {
         const errorMessage = userEmail
           ? `Failed to authenticate with Microsoft. Please ensure you are signed in with the account: ${userEmail}`
@@ -320,7 +320,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
         setIsLoading(false);
         return;
       }
-
+      
 
       // Calculate start and end times - create in local timezone
       const startDateTime = new Date(`${formData.date}T${formData.time}:00`);
@@ -350,19 +350,19 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
       };
 
 
-
+      
       let result;
       try {
         result = await createStaffTeamsMeeting(accessToken, meetingDetails);
-
+        
         if (!result || !result.id) {
           throw new Error('Teams meeting creation returned invalid result - no meeting ID');
         }
-
+        
       } catch (outlookError) {
         throw outlookError; // Re-throw to be caught by outer catch block
       }
-
+      
       // Get current user's auth ID for RLS policy compliance
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
@@ -395,7 +395,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
         return;
       }
       const { error: saveError } = await saveOutlookTeamsMeeting(meetingData);
-
+      
       if (saveError) {
         // Check if it's a policy/permission error
         if (saveError.code === 'PGRST301' || saveError.message?.includes('policy') || saveError.message?.includes('permission')) {
@@ -423,8 +423,8 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
           { duration: 6000 }
         );
       }
-
-
+      
+      
       // Only reset form and close modal if everything was successful
       if (!saveError) {
         setFormData({
@@ -442,10 +442,10 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
         });
         onClose();
       }
-
+      
     } catch (error) {
       console.error('Teams meeting creation error:', error);
-
+      
       if (error instanceof Error) {
         // Check for specific error types
         if (error.message.includes('insufficient privileges') || error.message.includes('permission') || error.message.includes('Access Denied')) {
@@ -530,8 +530,8 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
             <div className="form-control">
               <label className="label">
                 <span className="label-text font-semibold">
-                  <CalendarIcon className="h-4 w-4 inline mr-1" />
-                  Date
+                <CalendarIcon className="h-4 w-4 inline mr-1" />
+                Date
                 </span>
               </label>
               <input
@@ -548,8 +548,8 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
             <div className="form-control">
               <label className="label">
                 <span className="label-text font-semibold">
-                  <ClockIcon className="h-4 w-4 inline mr-1" />
-                  Start Time
+                <ClockIcon className="h-4 w-4 inline mr-1" />
+                Start Time
                 </span>
               </label>
               <input
@@ -586,8 +586,8 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
           <div className="form-control">
             <label className="label">
               <span className="label-text font-semibold">
-                <UserIcon className="h-4 w-4 inline mr-1" />
-                Attendees
+              <UserIcon className="h-4 w-4 inline mr-1" />
+              Attendees
               </span>
             </label>
             <div className="space-y-3">
@@ -614,8 +614,8 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
               <div className="flex items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
                 <UserIcon className="w-5 h-5 text-gray-500" />
                 <div className="relative flex-1" ref={employeeDropdownRef}>
-                  <input
-                    type="text"
+                    <input
+                      type="text"
                     className="input input-bordered w-full"
                     placeholder="Search staff..."
                     value={allStaffSelected ? 'All staff selected' : searchTerm}
@@ -630,7 +630,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
                       setSearchTerm(value);
                       setShowEmployeeSearch(true);
                       setAllStaffSelected(false);
-                    }}
+                      }}
                     readOnly={allStaffSelected}
                   />
                   {showEmployeeSearch && !allStaffSelected && (
@@ -638,10 +638,10 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
                       {filteredEmployees.length > 0 ? (
                         filteredEmployees.map((employee) => {
                           const email = employee.email;
-                          const isSelected = formData.attendees.includes(email);
-                          return (
+                      const isSelected = formData.attendees.includes(email);
+                      return (
                             <button
-                              key={employee.id}
+                          key={employee.id}
                               type="button"
                               className={`w-full text-left px-4 py-2 text-sm hover:bg-gray-100 ${isSelected ? 'bg-primary/10 text-primary' : ''
                                 }`}
@@ -655,20 +655,20 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
                                 setSearchTerm('');
                               }}
                             >
-                              <div className="font-medium">{employee.display_name}</div>
-                              <div className="text-xs text-gray-500">{email}</div>
+                            <div className="font-medium">{employee.display_name}</div>
+                            <div className="text-xs text-gray-500">{email}</div>
                             </button>
                           );
                         })
                       ) : (
                         <div className="px-4 py-3 text-sm text-gray-500">
                           No matches
-                        </div>
+                          </div>
                       )}
-                    </div>
-                  )}
-                </div>
-              </div>
+                            </div>
+                          )}
+                        </div>
+                  </div>
 
               {/* Selected Attendees */}
               {formData.attendees.length > 0 && (
@@ -679,27 +679,27 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
                     </div>
                   ) : (
                     <>
-                      <p className="text-xs font-medium text-gray-700 mb-2">Selected attendees ({formData.attendees.length}):</p>
+                  <p className="text-xs font-medium text-gray-700 mb-2">Selected attendees ({formData.attendees.length}):</p>
                       <div className="flex flex-wrap gap-2">
-                        {formData.attendees.map((email) => {
-                          const employee = employees.find(emp => emp.email === email);
-                          return (
+                    {formData.attendees.map((email) => {
+                      const employee = employees.find(emp => emp.email === email);
+                      return (
                             <div
-                              key={email}
+                          key={email}
                               className="badge badge-primary badge-lg gap-2"
-                            >
-                              {employee?.display_name || email}
-                              <button
-                                type="button"
-                                onClick={() => removeEmployeeFromAttendees(email)}
+                        >
+                          {employee?.display_name || email}
+                          <button
+                            type="button"
+                            onClick={() => removeEmployeeFromAttendees(email)}
                                 className="hover:opacity-70"
-                              >
-                                ×
-                              </button>
+                          >
+                            ×
+                          </button>
                             </div>
-                          );
-                        })}
-                      </div>
+                      );
+                    })}
+                  </div>
                     </>
                   )}
                 </div>
@@ -750,7 +750,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
                 <ArrowPathIcon className="h-4 w-4 inline mr-1" />
                 Recurring Meeting
               </span>
-            </label>
+              </label>
 
             {formData.isRecurring && (
               <div className="ml-7 space-y-4 p-4 bg-base-200 rounded-lg mt-2">
@@ -787,7 +787,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
                       />
                       <span className="text-sm text-gray-600">
                         {formData.recurrencePattern === 'daily' ? 'day(s)' :
-                          formData.recurrencePattern === 'weekly' ? 'week(s)' : 'month(s)'}
+                         formData.recurrencePattern === 'weekly' ? 'week(s)' : 'month(s)'}
                       </span>
                     </div>
                   </div>
@@ -816,33 +816,33 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
 
         {/* Footer */}
         <div className="sticky bottom-0 bg-gray-50 p-6 rounded-b-2xl flex justify-end gap-3 border-t">
-          <button
-            type="button"
-            onClick={onClose}
+            <button
+              type="button"
+              onClick={onClose}
             className="btn btn-ghost"
-            disabled={isLoading}
-          >
-            Cancel
-          </button>
-          <button
+              disabled={isLoading}
+            >
+              Cancel
+            </button>
+            <button
             type="button"
             onClick={handleSubmit}
             className="btn btn-primary"
-            disabled={isLoading || !formData.subject.trim()}
-          >
-            {isLoading ? (
-              <>
+              disabled={isLoading || !formData.subject.trim()}
+            >
+              {isLoading ? (
+                <>
                 <span className="loading loading-spinner loading-sm"></span>
                 Creating...
-              </>
-            ) : (
-              <>
+                </>
+              ) : (
+                <>
                 <VideoCameraIcon className="w-5 h-5" />
                 Create Meeting
-              </>
-            )}
-          </button>
-        </div>
+                </>
+              )}
+            </button>
+          </div>
       </div>
     </div>
   );

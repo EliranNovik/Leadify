@@ -6,6 +6,7 @@ import { convertToNIS } from '../lib/currencyConversion';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 import { ChevronDownIcon, ChevronRightIcon, EyeIcon, ChartBarIcon, UserGroupIcon, BuildingOfficeIcon, SpeakerWaveIcon, CurrencyDollarIcon, PencilIcon, CheckIcon, XMarkIcon, GlobeAltIcon, FlagIcon, BriefcaseIcon, HomeIcon, AcademicCapIcon, RocketLaunchIcon, MapPinIcon, DocumentTextIcon, ScaleIcon, ShieldCheckIcon, BanknotesIcon, CogIcon, HeartIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, UsersIcon, Squares2X2Icon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import EmployeeRoleLeadsModal from '../components/EmployeeRoleLeadsModal';
+import EmployeeFieldAssignmentsModal from '../components/EmployeeFieldAssignmentsModal';
 import DynamicIsland from '../components/DynamicIsland';
 import DynamicTab from '../components/DynamicTab';
 import { calculateSignedPortionAmount } from '../utils/rolePercentageCalculator';
@@ -112,6 +113,11 @@ const SalesContributionPage = () => {
   const firstDayOfMonth = formatDateLocal(new Date(today.getFullYear(), today.getMonth(), 1));
   const lastDayOfMonth = formatDateLocal(new Date(today.getFullYear(), today.getMonth() + 1, 0));
 
+  // Calculate previous month and year for salary filter default
+  const previousMonthDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+  const previousMonth = previousMonthDate.getMonth() + 1; // 1-12
+  const previousYear = previousMonthDate.getFullYear();
+
   const [filters, setFilters] = usePersistedFilters('salesContribution_filters', {
     fromDate: firstDayOfMonth,
     toDate: lastDayOfMonth,
@@ -138,10 +144,10 @@ const SalesContributionPage = () => {
   });
   const [employeeSearchTerm, setEmployeeSearchTerm] = useState('');
 
-  // Salary filter state (defaults to current month/year)
+  // Salary filter state (defaults to previous month/year)
   const [salaryFilter, setSalaryFilter] = usePersistedState('salesContribution_salaryFilter', {
-    month: today.getMonth() + 1, // 1-12
-    year: today.getFullYear(),
+    month: previousMonth, // 1-12
+    year: previousYear,
   }, {
     storage: 'sessionStorage',
   });
@@ -162,6 +168,14 @@ const SalesContributionPage = () => {
   const [isDynamicIslandOpen, setIsDynamicIslandOpen] = useState(false);
   const [savingRolePercentages, setSavingRolePercentages] = useState(false);
   const [loadingRolePercentages, setLoadingRolePercentages] = useState(false);
+
+  // Employee field assignments modal state
+  const [fieldAssignmentsModalOpen, setFieldAssignmentsModalOpen] = useState(false);
+  const [selectedEmployeeForModal, setSelectedEmployeeForModal] = useState<{
+    id: number;
+    name: string;
+    photoUrl?: string;
+  } | null>(null);
 
 
   // Fetch department percentages and income from database
@@ -596,6 +610,10 @@ const SalesContributionPage = () => {
   const [loadingRoleData, setLoadingRoleData] = useState<Set<string>>(new Set());
   const [categoryBreakdownCache, setCategoryBreakdownCache] = useState<Map<string, any[]>>(new Map());
   const [loadingCategoryBreakdown, setLoadingCategoryBreakdown] = useState<Set<string>>(new Set());
+  const [categoryEmployeesCache, setCategoryEmployeesCache] = useState<Map<string, any[]>>(new Map());
+  const [loadingCategoryEmployees, setLoadingCategoryEmployees] = useState<Set<string>>(new Set());
+  // Track which role sections are expanded/collapsed: Map<fieldName_roleName, boolean>
+  const [expandedRoleSections, setExpandedRoleSections] = useState<Map<string, boolean>>(new Map());
   const [modalOpen, setModalOpen] = useState(false);
   const [modalEmployeeId, setModalEmployeeId] = useState<number | null>(null);
   const [modalEmployeeName, setModalEmployeeName] = useState<string>('');
@@ -1985,6 +2003,314 @@ const SalesContributionPage = () => {
     });
   }, []);
 
+  // Fetch employees for a main category from employee_field_assignments table
+  const fetchCategoryEmployees = useCallback(async (mainCategoryName: string) => {
+    const cacheKey = `${mainCategoryName}`;
+
+    // Check cache first
+    if (categoryEmployeesCache.has(cacheKey)) {
+      // If already cached, make sure loading state is cleared
+      setLoadingCategoryEmployees(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(mainCategoryName);
+        return newSet;
+      });
+      return;
+    }
+
+    // Note: Loading state should already be set by toggleRowExpansion
+    // But set it here too as a safety measure if called directly
+    // Don't check if already loading - we want to proceed even if loading state is set
+    // (because toggleRowExpansion sets it before calling this function)
+    setLoadingCategoryEmployees(prev => {
+      if (prev.has(mainCategoryName)) {
+        return prev; // Already set, don't create new Set
+      }
+      const newSet = new Set(prev);
+      newSet.add(mainCategoryName);
+      return newSet;
+    });
+
+    try {
+      let categoryIds: number[] = [];
+
+      // Handle "Germany & Austria" - fetch both categories
+      if (mainCategoryName === 'Germany & Austria') {
+        const { data: germanyData, error: germanyError } = await supabase
+          .from('misc_maincategory')
+          .select('id, name')
+          .eq('name', 'Germany')
+          .maybeSingle();
+
+        const { data: austriaData, error: austriaError } = await supabase
+          .from('misc_maincategory')
+          .select('id, name')
+          .eq('name', 'Austria')
+          .maybeSingle();
+
+        if (germanyError || austriaError) {
+          console.error(`Error fetching Germany/Austria categories:`, germanyError || austriaError);
+          return;
+        }
+
+        if (germanyData?.id) categoryIds.push(germanyData.id);
+        if (austriaData?.id) categoryIds.push(austriaData.id);
+
+        if (categoryIds.length === 0) {
+          setCategoryEmployeesCache(prev => {
+            const newCache = new Map(prev);
+            newCache.set(cacheKey, []);
+            return newCache;
+          });
+          return;
+        }
+      } else if (mainCategoryName === 'General') {
+        // Handle "General" - fetch all general categories
+        const generalCategoryNames = ['Damages', 'Other Citizenships', 'German\\Austrian', 'Referral Commission'];
+
+        for (const categoryName of generalCategoryNames) {
+          const { data: categoryData, error: categoryError } = await supabase
+            .from('misc_maincategory')
+            .select('id, name')
+            .eq('name', categoryName)
+            .maybeSingle();
+
+          if (categoryError) {
+            console.error(`Error fetching ${categoryName} category:`, categoryError);
+            continue;
+          }
+
+          if (categoryData?.id) {
+            categoryIds.push(categoryData.id);
+          }
+        }
+
+        if (categoryIds.length === 0) {
+          setCategoryEmployeesCache(prev => {
+            const newCache = new Map(prev);
+            newCache.set(cacheKey, []);
+            return newCache;
+          });
+          return;
+        }
+      } else {
+        // First, fetch the main category by name to get its ID
+        const { data: mainCategoryData, error: mainCategoryError } = await supabase
+          .from('misc_maincategory')
+          .select('id, name')
+          .eq('name', mainCategoryName)
+          .maybeSingle();
+
+        if (mainCategoryError) {
+          console.error(`Error fetching main category ${mainCategoryName}:`, mainCategoryError);
+          return;
+        }
+
+        if (!mainCategoryData || !mainCategoryData.id) {
+          // Category not found
+          setCategoryEmployeesCache(prev => {
+            const newCache = new Map(prev);
+            newCache.set(cacheKey, []);
+            return newCache;
+          });
+          return;
+        }
+
+        categoryIds = [mainCategoryData.id];
+      }
+
+      // Fetch from both tables
+      const { data: assignmentsData, error: assignmentsError } = await supabase
+        .from('employee_field_assignments')
+        .select('employee_id, field_percentage, department_role, field_id')
+        .in('field_id', categoryIds)
+        .eq('is_active', true);
+
+      const { data: contributionsData, error: contributionsError } = await supabase
+        .from('employee_handlers_sales_contributions')
+        .select('employee_id, handlers_sales_percentage, department_role, field_id')
+        .in('field_id', categoryIds)
+        .eq('is_active', true);
+
+      if (assignmentsError) {
+        console.error(`Error fetching employee assignments for category ${mainCategoryName}:`, assignmentsError);
+        return;
+      }
+
+      if (contributionsError) {
+        console.error(`Error fetching handlers/sales contributions for category ${mainCategoryName}:`, contributionsError);
+        // Continue with assignments only
+      }
+
+      // Get unique employee IDs from both tables
+      const employeeIdsSet = new Set<number>();
+      if (assignmentsData) {
+        assignmentsData.forEach((a: any) => {
+          const empId = Number(a.employee_id);
+          if (!isNaN(empId) && empId > 0) employeeIdsSet.add(empId);
+        });
+      }
+      if (contributionsData) {
+        contributionsData.forEach((c: any) => {
+          const empId = Number(c.employee_id);
+          if (!isNaN(empId) && empId > 0) employeeIdsSet.add(empId);
+        });
+      }
+
+      const employeeIds = Array.from(employeeIdsSet);
+
+      if (employeeIds.length === 0) {
+        setCategoryEmployeesCache(prev => {
+          const newCache = new Map(prev);
+          newCache.set(cacheKey, []);
+          return newCache;
+        });
+        return;
+      }
+
+      // Simple maps: employee_id -> role -> percentage
+      // First table: employee_field_assignments
+      const fieldPercentagesMap = new Map<number, Map<string, number>>(); // empId -> role -> percentage
+      // Second table: employee_handlers_sales_contributions
+      const otherPercentagesMap = new Map<number, Map<string, number>>(); // empId -> role -> percentage
+      // All roles from both tables for grouping
+      const allRolesMap = new Map<number, Set<string>>(); // empId -> Set of roles
+
+      // Process first table (employee_field_assignments)
+      if (assignmentsData) {
+        assignmentsData.forEach((assignment: any) => {
+          const empId = Number(assignment.employee_id);
+          const role = assignment.department_role;
+          const percentage = Number(assignment.field_percentage) || 0;
+
+          if (!fieldPercentagesMap.has(empId)) {
+            fieldPercentagesMap.set(empId, new Map());
+          }
+          if (!allRolesMap.has(empId)) {
+            allRolesMap.set(empId, new Set());
+          }
+
+          if (role && percentage > 0) {
+            const roleMap = fieldPercentagesMap.get(empId)!;
+            // Keep max percentage if multiple entries for same role
+            const current = roleMap.get(role) || 0;
+            roleMap.set(role, Math.max(current, percentage));
+            allRolesMap.get(empId)!.add(role);
+          }
+        });
+      }
+
+      // Process second table (employee_handlers_sales_contributions)
+      if (contributionsData) {
+        contributionsData.forEach((contribution: any) => {
+          const empId = Number(contribution.employee_id);
+          const role = contribution.department_role;
+          const percentage = Number(contribution.handlers_sales_percentage) || 0;
+
+          if (!otherPercentagesMap.has(empId)) {
+            otherPercentagesMap.set(empId, new Map());
+          }
+          if (!allRolesMap.has(empId)) {
+            allRolesMap.set(empId, new Set());
+          }
+
+          if (role && percentage > 0) {
+            const roleMap = otherPercentagesMap.get(empId)!;
+            // Keep max percentage if multiple entries for same role
+            const current = roleMap.get(role) || 0;
+            roleMap.set(role, Math.max(current, percentage));
+            allRolesMap.get(empId)!.add(role);
+          }
+        });
+      }
+
+      // Fetch employee details
+      const { data: employeesData, error: employeesError } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name, department_id, photo_url, tenant_departement!department_id(name)')
+        .in('id', employeeIds);
+
+      if (employeesError) {
+        console.error(`Error fetching employees for category ${mainCategoryName}:`, employeesError);
+        return;
+      }
+
+      // Fetch salary data for these employees (EXACT same logic as employee view)
+      const salaryDataMap = new Map<number, { salaryBrutto: number; totalSalaryCost: number }>();
+      // Only fetch salary if filter is set and we have employees
+      // This is optional - calculation should work even without salary data
+      if (salaryFilter?.month && salaryFilter?.year && employeeIds.length > 0) {
+        try {
+          const salaryMonth = salaryFilter.month; // 1-12
+          const salaryYear = salaryFilter.year;
+
+          // Fetch salary data for all employees
+          const { data: salaryData, error: salaryError } = await supabase
+            .from('employee_salary')
+            .select('employee_id, net_salary, gross_salary')
+            .eq('salary_month', salaryMonth)
+            .eq('salary_year', salaryYear)
+            .in('employee_id', employeeIds);
+
+          if (!salaryError && salaryData) {
+            salaryData.forEach((salary: any) => {
+              const employeeId = Number(salary.employee_id);
+              salaryDataMap.set(employeeId, {
+                salaryBrutto: Number(salary.net_salary || 0),
+                totalSalaryCost: Number(salary.gross_salary || 0),
+              });
+            });
+          } else if (salaryError) {
+            console.error('Error fetching salary data:', salaryError);
+            // Don't throw - salary data is optional
+          }
+        } catch (error) {
+          console.error('Error in salary data fetch:', error);
+          // Don't throw - salary data is optional, calculation should continue
+        }
+      }
+
+      // Format employee data with salary information and assignment data
+      const formattedEmployees = (employeesData || []).map((emp: any) => {
+        const dept = Array.isArray(emp.tenant_departement) ? emp.tenant_departement[0] : emp.tenant_departement;
+        const salaryData = salaryDataMap.get(emp.id);
+
+        // Get Maps for this employee
+        const fieldPercentages = fieldPercentagesMap.get(emp.id) || new Map<string, number>();
+        const otherPercentages = otherPercentagesMap.get(emp.id) || new Map<string, number>();
+        const allRoles = allRolesMap.get(emp.id) || new Set<string>();
+
+        return {
+          id: emp.id,
+          display_name: emp.display_name,
+          department: dept?.name || 'Unknown',
+          photo_url: emp.photo_url || null,
+          salaryBrutto: salaryData?.salaryBrutto || 0,
+          totalSalaryCost: salaryData?.totalSalaryCost || 0,
+          // Store Maps for easy lookup
+          fieldPercentages: fieldPercentages, // From employee_field_assignments
+          otherPercentages: otherPercentages, // From employee_handlers_sales_contributions
+          department_roles: Array.from(allRoles), // All roles from both tables
+        };
+      });
+
+      // Cache the result
+      setCategoryEmployeesCache(prev => {
+        const newCache = new Map(prev);
+        newCache.set(cacheKey, formattedEmployees);
+        return newCache;
+      });
+    } catch (error) {
+      console.error(`Error fetching category employees for ${mainCategoryName}:`, error);
+    } finally {
+      setLoadingCategoryEmployees(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(mainCategoryName);
+        return newSet;
+      });
+    }
+  }, [categoryEmployeesCache, salaryFilter]);
+
   // Fetch category breakdown for a main category (field view)
   const fetchCategoryBreakdown = useCallback(async (mainCategoryName: string) => {
     const cacheKey = `${mainCategoryName}_${filters.fromDate || ''}_${filters.toDate || ''}`;
@@ -2004,15 +2330,19 @@ const SalesContributionPage = () => {
     // Define main categories that should be shown separately (same as in processFieldViewData)
     const separateMainCategories = new Set([
       'Immigration Israel',
-      'Germany',
+      'Germany & Austria',
       'Small without meetin',
       'Uncategorized',
       'USA',
-      'Austria',
-      'Damages',
       'Commer/Civil/Adm/Fam',
-      'Other Citizenships',
       'Poland',
+      'General'
+    ]);
+
+    // Categories that should be grouped into "General"
+    const generalCategories = new Set([
+      'Damages',
+      'Other Citizenships',
       'German\\Austrian',
       'Referral Commission'
     ]);
@@ -2020,8 +2350,8 @@ const SalesContributionPage = () => {
     // Helper function to check if a lead should be included
     const shouldIncludeLead = (leadMainCategory: string): boolean => {
       if (mainCategoryName === 'General') {
-        // For General, include leads that are NOT in the separate list
-        return !separateMainCategories.has(leadMainCategory);
+        // For General, include leads that are in the generalCategories set
+        return generalCategories.has(leadMainCategory);
       } else {
         // For specific categories, only include exact matches
         return leadMainCategory === mainCategoryName;
@@ -2304,32 +2634,168 @@ const SalesContributionPage = () => {
     }
   }, [filters.fromDate, filters.toDate, categoryBreakdownCache, categoryNameToDataMap, allCategories, categoriesLoaded]);
 
+  // Toggle role section expansion/collapse
+  const toggleRoleSection = useCallback((fieldName: string, roleName: string) => {
+    const sectionKey = `${fieldName}_${roleName}`;
+    setExpandedRoleSections(prev => {
+      const newMap = new Map(prev);
+      newMap.set(sectionKey, !prev.get(sectionKey));
+      return newMap;
+    });
+  }, []);
+
   // Toggle row expansion
   const toggleRowExpansion = useCallback((employeeId: number, employeeName: string) => {
     const employeeKey = viewMode === 'field' ? employeeName : `${employeeId}`;
 
+    // Update expanded rows state immediately - this triggers re-render
     setExpandedRows(prev => {
       const newSet = new Set(prev);
-      if (newSet.has(employeeKey)) {
+      const wasExpanded = newSet.has(employeeKey);
+
+      if (wasExpanded) {
         newSet.delete(employeeKey);
       } else {
         newSet.add(employeeKey);
-        // Fetch data based on view mode
-        if (viewMode === 'field') {
-          // For field view, fetch category breakdown
-          const categoryKey = `${employeeName}_${filters.fromDate || ''}_${filters.toDate || ''}`;
-          if (!categoryBreakdownCache.has(categoryKey)) {
-            fetchCategoryBreakdown(employeeName);
-          }
-        } else {
-          // For employee view, data should already be loaded from handleSearch batch calculation
-          // No need to fetch individually - this would cause popcorn effect
-          // The batch calculation in handleSearch already handles all employees and populates the cache
+
+        // If expanding and in field view, trigger data fetch asynchronously
+        if (viewMode === 'field' && !categoryEmployeesCache.has(employeeName) && !loadingCategoryEmployees.has(employeeName)) {
+          // Set loading state immediately - this happens synchronously
+          setLoadingCategoryEmployees(prevLoading => {
+            const newLoadingSet = new Set(prevLoading);
+            newLoadingSet.add(employeeName);
+            return newLoadingSet;
+          });
+
+          // Fetch data asynchronously - use microtask to ensure it doesn't block
+          queueMicrotask(() => {
+            fetchCategoryEmployees(employeeName).catch(error => {
+              console.error('Error fetching category employees:', error);
+              // Remove loading state on error
+              setLoadingCategoryEmployees(prevLoading => {
+                const newLoadingSet = new Set(prevLoading);
+                newLoadingSet.delete(employeeName);
+                return newLoadingSet;
+              });
+            });
+          });
         }
       }
+
       return newSet;
     });
-  }, [viewMode, roleDataCache, categoryBreakdownCache, fetchCategoryBreakdown, filters.fromDate, filters.toDate, totalIncome]);
+  }, [viewMode, categoryEmployeesCache, loadingCategoryEmployees, fetchCategoryEmployees]);
+
+  // Auto-expand/collapse fields based on search in fields view
+  useEffect(() => {
+    if (viewMode === 'field' && employeeSearchTerm.trim()) {
+      const searchLower = employeeSearchTerm.toLowerCase().trim();
+
+      // First, trigger loading for all fields that don't have employees loaded yet
+      fieldViewData.forEach((fieldData) => {
+        const categoryKey = fieldData.departmentName;
+        if (!categoryEmployeesCache.has(categoryKey) && !loadingCategoryEmployees.has(categoryKey)) {
+          fetchCategoryEmployees(categoryKey);
+        }
+      });
+
+      // Then check which fields have matching employees
+      const newExpandedRows = new Set<string>();
+      fieldViewData.forEach((fieldData) => {
+        const categoryKey = fieldData.departmentName;
+        const categoryEmployees = categoryEmployeesCache.get(categoryKey) || [];
+
+        // Check if any employee in this field matches the search
+        const hasMatchingEmployee = categoryEmployees.some((emp: any) => {
+          const nameMatch = emp.display_name?.toLowerCase().includes(searchLower);
+          return nameMatch;
+        });
+
+        if (hasMatchingEmployee) {
+          newExpandedRows.add(categoryKey);
+        }
+      });
+
+      setExpandedRows(newExpandedRows);
+    } else if (viewMode === 'field' && !employeeSearchTerm.trim()) {
+      // Clear expanded rows when search is cleared
+      setExpandedRows(new Set());
+    }
+  }, [employeeSearchTerm, viewMode, fieldViewData, categoryEmployeesCache, loadingCategoryEmployees, fetchCategoryEmployees]);
+
+  // Re-check search when categoryEmployeesCache updates (after employees are loaded)
+  useEffect(() => {
+    if (viewMode === 'field' && employeeSearchTerm.trim()) {
+      const searchLower = employeeSearchTerm.toLowerCase().trim();
+      const newExpandedRows = new Set<string>();
+
+      fieldViewData.forEach((fieldData) => {
+        const categoryKey = fieldData.departmentName;
+        const categoryEmployees = categoryEmployeesCache.get(categoryKey) || [];
+
+        const hasMatchingEmployee = categoryEmployees.some((emp: any) => {
+          const nameMatch = emp.display_name?.toLowerCase().includes(searchLower);
+          return nameMatch;
+        });
+
+        if (hasMatchingEmployee) {
+          newExpandedRows.add(categoryKey);
+        }
+      });
+
+      setExpandedRows(newExpandedRows);
+    }
+  }, [categoryEmployeesCache, viewMode, employeeSearchTerm, fieldViewData]);
+
+  // Pre-fetch all category employees when switching to field view or when fieldViewData is loaded
+  useEffect(() => {
+    if (viewMode === 'field' && fieldViewData.size > 0) {
+      // Collect all fields that need to be fetched
+      const fieldsToFetch: string[] = [];
+      fieldViewData.forEach((fieldData) => {
+        const fieldName = fieldData.departmentName;
+        // Only fetch if not already cached and not currently loading
+        if (!categoryEmployeesCache.has(fieldName) && !loadingCategoryEmployees.has(fieldName)) {
+          fieldsToFetch.push(fieldName);
+        }
+      });
+
+      // Pre-fetch all fields in the background, with a small delay to batch requests
+      if (fieldsToFetch.length > 0) {
+        // Set loading state for all fields at once
+        setLoadingCategoryEmployees(prev => {
+          const newSet = new Set(prev);
+          fieldsToFetch.forEach(fieldName => newSet.add(fieldName));
+          return newSet;
+        });
+
+        // Fetch all fields in parallel, but with a small delay to not overwhelm the system
+        Promise.all(
+          fieldsToFetch.map((fieldName, index) =>
+            new Promise<void>((resolve) => {
+              // Stagger requests slightly to avoid overwhelming the database
+              setTimeout(() => {
+                fetchCategoryEmployees(fieldName)
+                  .then(() => resolve())
+                  .catch(error => {
+                    console.error(`Error pre-fetching employees for ${fieldName}:`, error);
+                    // Remove loading state on error
+                    setLoadingCategoryEmployees(prev => {
+                      const newSet = new Set(prev);
+                      newSet.delete(fieldName);
+                      return newSet;
+                    });
+                    resolve();
+                  });
+              }, index * 50); // 50ms delay between each fetch
+            })
+          )
+        ).catch(error => {
+          console.error('Error in batch pre-fetch:', error);
+        });
+      }
+    }
+  }, [viewMode, fieldViewData, categoryEmployeesCache, loadingCategoryEmployees, fetchCategoryEmployees]);
 
   const handleSearch = async () => {
     // Wait for categories to be loaded before processing
@@ -3995,19 +4461,23 @@ const SalesContributionPage = () => {
         }
         console.log('🔍 Field View - All main categories from DB:', Array.from(allMainCategoryNames));
 
-        // Define main categories that should be shown separately (not in General)
+        // Define main categories that should be shown separately
         // These are the main categories we want to display as individual fields
+        // Germany and Austria are combined into "Germany & Austria"
+        // Damages, Other Citizenships, German\Austrian, and Referral Commission are grouped into "General"
         const separateMainCategories = new Set([
           'Immigration Israel',
-          'Germany',
+          'Germany & Austria',
           'Small without meetin',
-          'Uncategorized',
           'USA',
-          'Austria',
-          'Damages',
           'Commer/Civil/Adm/Fam',
+          'Poland'
+        ]);
+
+        // Categories that should be grouped into "General"
+        const generalCategories = new Set([
+          'Damages',
           'Other Citizenships',
-          'Poland',
           'German\\Austrian',
           'Referral Commission'
         ]);
@@ -4023,6 +4493,7 @@ const SalesContributionPage = () => {
         }>();
 
         // Initialize all separate categories with zero values so they always appear
+        // Note: We don't initialize all categories here - only those that have data will appear
         separateMainCategories.forEach(categoryName => {
           fieldDataMap.set(categoryName, {
             mainCategoryName: categoryName,
@@ -4035,12 +4506,23 @@ const SalesContributionPage = () => {
           });
         });
 
+        // Initialize General field
+        fieldDataMap.set('General', {
+          mainCategoryName: 'General',
+          signed: 0,
+          signedNormalized: 0,
+          signedPortion: 0,
+          salaryBudget: 0,
+          due: 0,
+          dueNormalized: 0,
+        });
+
         // Helper functions are now imported from salesContributionCalculator
 
         // Process new leads
         newLeadsMap.forEach((lead: any) => {
           // Get main category name using utility function
-          const mainCategoryName = resolveMainCategory(
+          let mainCategoryName = resolveMainCategory(
             lead.category, // category text field
             lead.category_id, // category ID
             lead.misc_category, // joined misc_category data
@@ -4048,14 +4530,14 @@ const SalesContributionPage = () => {
             categoryNameToDataMap
           );
 
-          // Debug logging for uncategorized leads
-          if (mainCategoryName === 'Uncategorized' && lead.category && lead.category.trim() !== '') {
-            console.warn('⚠️ Field View - New lead categorized as Uncategorized:', {
-              leadId: lead.id,
-              categoryText: lead.category,
-              categoryId: lead.category_id,
-              hasMiscCategory: !!lead.misc_category
-            });
+          // Skip uncategorized leads
+          if (mainCategoryName === 'Uncategorized') {
+            return;
+          }
+
+          // Route categories that should go to General
+          if (generalCategories.has(mainCategoryName)) {
+            mainCategoryName = 'General';
           }
 
           // Calculate amount using utility function
@@ -4081,7 +4563,7 @@ const SalesContributionPage = () => {
         // Process legacy leads
         legacyLeadsMap.forEach((lead: any) => {
           // Get main category name using utility function
-          const mainCategoryName = resolveMainCategory(
+          let mainCategoryName = resolveMainCategory(
             lead.category, // category text field
             lead.category_id, // category ID
             lead.misc_category, // joined misc_category data
@@ -4089,14 +4571,14 @@ const SalesContributionPage = () => {
             categoryNameToDataMap
           );
 
-          // Debug logging for uncategorized leads
-          if (mainCategoryName === 'Uncategorized' && lead.category && lead.category.trim() !== '') {
-            console.warn('⚠️ Field View - Legacy lead categorized as Uncategorized:', {
-              leadId: lead.id,
-              categoryText: lead.category,
-              categoryId: lead.category_id,
-              hasMiscCategory: !!lead.misc_category
-            });
+          // Skip uncategorized leads
+          if (mainCategoryName === 'Uncategorized') {
+            return;
+          }
+
+          // Route categories that should go to General
+          if (generalCategories.has(mainCategoryName)) {
+            mainCategoryName = 'General';
           }
 
           // Calculate amount using utility function
@@ -4126,11 +4608,11 @@ const SalesContributionPage = () => {
 
         try {
           // Step 1: Fetch all payment plans for new leads with handlers, filtered by due_date
+          // IMPORTANT: Show both paid and unpaid payments (same as CollectionDueReportPage)
           let newPaymentsQuery = supabase
             .from('payment_plans')
             .select('lead_id, value, currency, due_date')
             .eq('ready_to_pay', true)
-            .eq('paid', false)
             .not('due_date', 'is', null)
             .is('cancel_date', null);
 
@@ -4261,11 +4743,19 @@ const SalesContributionPage = () => {
 
               // Step 7: Add due amounts to categories (separate categories are already initialized)
               categoryDueMap.forEach((dueAmount, mainCategoryName) => {
+                // Skip Uncategorized
+                if (mainCategoryName === 'Uncategorized') {
+                  return;
+                }
+
+                // Route categories that should go to General
+                const targetCategory = generalCategories.has(mainCategoryName) ? 'General' : mainCategoryName;
+
                 // Separate categories are already initialized, so they should exist
                 // But also allow adding to any category that exists (for categories with signed data)
-                if (fieldDataMap.has(mainCategoryName)) {
-                  const existingDue = fieldDataMap.get(mainCategoryName)!.due;
-                  fieldDataMap.get(mainCategoryName)!.due = existingDue + dueAmount;
+                if (fieldDataMap.has(targetCategory)) {
+                  const existingDue = fieldDataMap.get(targetCategory)!.due;
+                  fieldDataMap.get(targetCategory)!.due = existingDue + dueAmount;
 
                   // Debug logging for "Small without meetin"
                   if (mainCategoryName === 'Small without meetin') {
@@ -4305,13 +4795,15 @@ const SalesContributionPage = () => {
           }
 
           // Step 1: Fetch all payment plans for legacy leads with handlers, filtered by due_date
+          // IMPORTANT: For legacy leads, we ONLY filter by due_date (not ready_to_pay flag or actual_date)
+          // If due_date exists, the payment is ready to pay, regardless of ready_to_pay flag value
+          // This ensures we include ALL payments with due_date set, whether ready_to_pay is true or false, paid or unpaid
+          // (same as CollectionDueReportPage)
           let legacyPaymentsQuery = supabase
             .from('finances_paymentplanrow')
             .select('lead_id, value, value_base, currency_id, due_date, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)')
-            .is('actual_date', null)
-            .eq('ready_to_pay', true)
-            .not('due_date', 'is', null)
-            .is('cancel_date', null);
+            .not('due_date', 'is', null) // ONLY filter by due_date - fetch all payments with due_date set (regardless of ready_to_pay flag)
+            .is('cancel_date', null); // Exclude cancelled payments only - show both paid and unpaid payments
 
           if (fromDateTime) {
             legacyPaymentsQuery = legacyPaymentsQuery.gte('due_date', fromDateTime);
@@ -4420,11 +4912,19 @@ const SalesContributionPage = () => {
 
               // Step 6: Add due amounts to categories (separate categories are already initialized)
               categoryDueMap.forEach((dueAmount, mainCategoryName) => {
+                // Skip Uncategorized
+                if (mainCategoryName === 'Uncategorized') {
+                  return;
+                }
+
+                // Route categories that should go to General
+                const targetCategory = generalCategories.has(mainCategoryName) ? 'General' : mainCategoryName;
+
                 // Separate categories are already initialized, so they should exist
                 // But also allow adding to any category that exists (for categories with signed data)
-                if (fieldDataMap.has(mainCategoryName)) {
-                  const existingDue = fieldDataMap.get(mainCategoryName)!.due;
-                  fieldDataMap.get(mainCategoryName)!.due = existingDue + dueAmount;
+                if (fieldDataMap.has(targetCategory)) {
+                  const existingDue = fieldDataMap.get(targetCategory)!.due;
+                  fieldDataMap.get(targetCategory)!.due = existingDue + dueAmount;
 
                   // Debug logging for "Small without meetin"
                   if (mainCategoryName === 'Small without meetin') {
@@ -4610,25 +5110,14 @@ const SalesContributionPage = () => {
           .map(([name, data]) => ({ category: name, due: data.due, dueNormalized: data.dueNormalized }));
         console.log('🔍 Field View - All categories with due amounts:', categoriesWithDue);
 
-        // Separate main categories into those that should be shown separately and those that go to General
-        const generalFieldData = {
-          mainCategoryName: 'General',
-          signed: 0,
-          signedNormalized: 0,
-          signedPortion: 0,
-          salaryBudget: 0,
-          due: 0,
-          dueNormalized: 0,
-        };
-
         // Log all main categories found
         console.log('🔍 Field View - All main categories found in data:', Array.from(fieldDataMap.keys()));
         console.log('🔍 Field View - All main categories from DB:', Array.from(allMainCategoryNames));
         console.log('🔍 Field View - Separate categories list:', Array.from(separateMainCategories));
 
         // Convert to DepartmentData format for consistency
+        // Show all categories individually - no grouping into General
         const fieldViewDataMap = new Map<string, DepartmentData>();
-        const categoriesGoingToGeneral: string[] = [];
 
         // Debug: Log due amounts before processing
         console.log('🔍 Field View - Due amounts before processing:',
@@ -4637,86 +5126,151 @@ const SalesContributionPage = () => {
             .map(([name, data]) => ({ category: name, due: data.due }))
         );
 
-        // First, process all categories that have data
+        // Combine Germany and Austria into "Germany & Austria"
+        const germanyData = fieldDataMap.get('Germany') || {
+          mainCategoryName: 'Germany',
+          signed: 0,
+          signedNormalized: 0,
+          signedPortion: 0,
+          salaryBudget: 0,
+          due: 0,
+          dueNormalized: 0,
+        };
+        const austriaData = fieldDataMap.get('Austria') || {
+          mainCategoryName: 'Austria',
+          signed: 0,
+          signedNormalized: 0,
+          signedPortion: 0,
+          salaryBudget: 0,
+          due: 0,
+          dueNormalized: 0,
+        };
+
+        // Create combined "Germany & Austria" field
+        const combinedGermanyAustria = {
+          mainCategoryName: 'Germany & Austria',
+          signed: germanyData.signed + austriaData.signed,
+          signedNormalized: 0, // Will be calculated below
+          signedPortion: (categorySignedPortionMap.get('Germany') || 0) + (categorySignedPortionMap.get('Austria') || 0),
+          salaryBudget: 0, // Will be calculated below
+          due: germanyData.due + austriaData.due,
+          dueNormalized: germanyData.dueNormalized + austriaData.dueNormalized,
+        };
+        combinedGermanyAustria.signedNormalized = combinedGermanyAustria.signed * normalizationRatio;
+        combinedGermanyAustria.salaryBudget = combinedGermanyAustria.signedPortion * 0.4;
+
+        // Process all categories that have data - show each one individually
         fieldDataMap.forEach((fieldData, mainCategoryName) => {
+          // Skip Uncategorized
+          if (mainCategoryName === 'Uncategorized') {
+            return;
+          }
+
+          // Skip Germany and Austria - they will be combined
+          if (mainCategoryName === 'Germany' || mainCategoryName === 'Austria') {
+            return;
+          }
+
+          // Skip general categories - they will be grouped into General
+          if (generalCategories.has(mainCategoryName)) {
+            return;
+          }
+
           const signedNormalized = fieldData.signed * normalizationRatio;
           const signedPortion = categorySignedPortionMap.get(mainCategoryName) || 0;
           const salaryBudget = signedPortion * 0.4;
 
-          // Check if this main category should be shown separately or go to General
-          const shouldShowSeparately = separateMainCategories.has(mainCategoryName);
-
-          if (shouldShowSeparately) {
-            // Show this main category as its own field
-            fieldViewDataMap.set(mainCategoryName, {
-              departmentName: mainCategoryName,
-              employees: [{
-                employeeId: 0,
-                employeeName: mainCategoryName,
-                department: '',
-                signed: fieldData.signed,
-                signedNormalized: signedNormalized,
-                dueNormalized: fieldData.dueNormalized,
-                signedPortion: signedPortion,
-                salaryBudget: salaryBudget,
-                salaryBrutto: 0,
-                totalSalaryCost: 0,
-                maxIncentives: (salaryBudget ?? 0) - 0, // salaryBudget - totalSalaryCost (0 in field view)
-                due: fieldData.due || 0, // Ensure we use the calculated due amount
-                duePortion: 0,
-                total: fieldData.signed,
-                totalPortionDue: 0,
-                percentOfIncome: 0,
-                normalized: fieldData.signed,
-              }],
-              totals: {
-                signed: fieldData.signed,
-                signedNormalized: signedNormalized,
-                dueNormalized: fieldData.dueNormalized,
-                signedPortion: signedPortion,
-                contribution: signedPortion, // For field view, contribution equals signedPortion
-                salaryBudget: salaryBudget,
-                salaryBrutto: 0,
-                totalSalaryCost: 0,
-                maxIncentives: (salaryBudget ?? 0) - 0, // salaryBudget - totalSalaryCost (0 in field view)
-                due: fieldData.due || 0, // Ensure we use the calculated due amount
-                duePortion: 0,
-                total: fieldData.signed,
-                totalPortionDue: 0,
-                percentOfIncome: 0,
-                normalized: fieldData.signed,
-              },
-            });
-          } else {
-            // Add to General field
-            categoriesGoingToGeneral.push(mainCategoryName);
-            generalFieldData.signed += fieldData.signed;
-            generalFieldData.signedPortion += signedPortion;
-            generalFieldData.due += fieldData.due;
-            generalFieldData.dueNormalized += fieldData.dueNormalized;
-          }
+          // Show this main category as its own field
+          fieldViewDataMap.set(mainCategoryName, {
+            departmentName: mainCategoryName,
+            employees: [{
+              employeeId: 0,
+              employeeName: mainCategoryName,
+              department: '',
+              signed: fieldData.signed,
+              signedNormalized: signedNormalized,
+              dueNormalized: fieldData.dueNormalized,
+              signedPortion: signedPortion,
+              salaryBudget: salaryBudget,
+              salaryBrutto: 0,
+              totalSalaryCost: 0,
+              maxIncentives: (salaryBudget ?? 0) - 0, // salaryBudget - totalSalaryCost (0 in field view)
+              due: fieldData.due || 0, // Ensure we use the calculated due amount
+              duePortion: 0,
+              total: fieldData.signed,
+              totalPortionDue: 0,
+              percentOfIncome: 0,
+              normalized: fieldData.signed,
+            }],
+            totals: {
+              signed: fieldData.signed,
+              signedNormalized: signedNormalized,
+              dueNormalized: fieldData.dueNormalized,
+              signedPortion: signedPortion,
+              contribution: signedPortion, // For field view, contribution equals signedPortion
+              salaryBudget: salaryBudget,
+              salaryBrutto: 0,
+              totalSalaryCost: 0,
+              maxIncentives: (salaryBudget ?? 0) - 0, // salaryBudget - totalSalaryCost (0 in field view)
+              due: fieldData.due || 0, // Ensure we use the calculated due amount
+              duePortion: 0,
+              total: fieldData.signed,
+              totalPortionDue: 0,
+              percentOfIncome: 0,
+              normalized: fieldData.signed,
+            },
+          });
         });
 
-        // Now, process all main categories from DB that don't have data but should go to General
-        allMainCategoryNames.forEach((mainCategoryName) => {
-          // Skip if already processed (has data) or if it's in separate list
-          if (fieldDataMap.has(mainCategoryName) || separateMainCategories.has(mainCategoryName)) {
-            return;
-          }
+        // Add combined "Germany & Austria" field if it has any data
+        if (combinedGermanyAustria.signed > 0 || combinedGermanyAustria.due > 0) {
+          fieldViewDataMap.set('Germany & Austria', {
+            departmentName: 'Germany & Austria',
+            employees: [{
+              employeeId: 0,
+              employeeName: 'Germany & Austria',
+              department: '',
+              signed: combinedGermanyAustria.signed,
+              signedNormalized: combinedGermanyAustria.signedNormalized,
+              dueNormalized: combinedGermanyAustria.dueNormalized,
+              signedPortion: combinedGermanyAustria.signedPortion,
+              salaryBudget: combinedGermanyAustria.salaryBudget,
+              salaryBrutto: 0,
+              totalSalaryCost: 0,
+              maxIncentives: (combinedGermanyAustria.salaryBudget ?? 0) - 0,
+              due: combinedGermanyAustria.due || 0,
+              duePortion: 0,
+              total: combinedGermanyAustria.signed,
+              totalPortionDue: 0,
+              percentOfIncome: 0,
+              normalized: combinedGermanyAustria.signed,
+            }],
+            totals: {
+              signed: combinedGermanyAustria.signed,
+              signedNormalized: combinedGermanyAustria.signedNormalized,
+              dueNormalized: combinedGermanyAustria.dueNormalized,
+              signedPortion: combinedGermanyAustria.signedPortion,
+              contribution: combinedGermanyAustria.signedPortion,
+              salaryBudget: combinedGermanyAustria.salaryBudget,
+              salaryBrutto: 0,
+              totalSalaryCost: 0,
+              maxIncentives: (combinedGermanyAustria.salaryBudget ?? 0) - 0,
+              due: combinedGermanyAustria.due || 0,
+              duePortion: 0,
+              total: combinedGermanyAustria.signed,
+              totalPortionDue: 0,
+              percentOfIncome: 0,
+              normalized: combinedGermanyAustria.signed,
+            },
+          });
+        }
 
-          // This main category exists in DB but has no data in current date range - add to General
-          categoriesGoingToGeneral.push(mainCategoryName);
-          console.log('🔍 Field View - Adding main category with no data to General:', mainCategoryName);
-        });
-
-        // Log for debugging
-        console.log('🔍 Field View - Categories going to General:', categoriesGoingToGeneral);
-        console.log('🔍 Field View - General field data:', generalFieldData);
-
-        // Calculate General field totals - always show General if there are categories going to it
-        if (categoriesGoingToGeneral.length > 0 || generalFieldData.signed > 0) {
-          const generalSignedNormalized = generalFieldData.signed * normalizationRatio;
-          const generalSalaryBudget = generalFieldData.signedPortion * 0.4;
+        // Add "General" field if it has any data (should be last, after Poland)
+        const generalData = fieldDataMap.get('General');
+        if (generalData && (generalData.signed > 0 || generalData.due > 0)) {
+          const signedNormalized = generalData.signed * normalizationRatio;
+          const signedPortion = categorySignedPortionMap.get('General') || 0;
+          const salaryBudget = signedPortion * 0.4;
 
           fieldViewDataMap.set('General', {
             departmentName: 'General',
@@ -4724,42 +5278,39 @@ const SalesContributionPage = () => {
               employeeId: 0,
               employeeName: 'General',
               department: '',
-              signed: generalFieldData.signed,
-              signedNormalized: generalSignedNormalized,
-              dueNormalized: generalFieldData.dueNormalized,
-              signedPortion: generalFieldData.signedPortion,
-              salaryBudget: generalSalaryBudget,
+              signed: generalData.signed,
+              signedNormalized: signedNormalized,
+              dueNormalized: generalData.dueNormalized,
+              signedPortion: signedPortion,
+              salaryBudget: salaryBudget,
               salaryBrutto: 0,
               totalSalaryCost: 0,
-              maxIncentives: (generalSalaryBudget ?? 0) - 0, // salaryBudget - totalSalaryCost (0 in field view)
-              due: generalFieldData.due,
+              maxIncentives: (salaryBudget ?? 0) - 0,
+              due: generalData.due || 0,
               duePortion: 0,
-              total: generalFieldData.signed,
+              total: generalData.signed,
               totalPortionDue: 0,
               percentOfIncome: 0,
-              normalized: generalFieldData.signed,
+              normalized: generalData.signed,
             }],
             totals: {
-              signed: generalFieldData.signed,
-              signedNormalized: generalSignedNormalized,
-              dueNormalized: generalFieldData.dueNormalized,
-              signedPortion: generalFieldData.signedPortion,
-              contribution: generalFieldData.signedPortion, // For field view, contribution equals signedPortion
-              salaryBudget: generalSalaryBudget,
+              signed: generalData.signed,
+              signedNormalized: signedNormalized,
+              dueNormalized: generalData.dueNormalized,
+              signedPortion: signedPortion,
+              contribution: signedPortion,
+              salaryBudget: salaryBudget,
               salaryBrutto: 0,
               totalSalaryCost: 0,
-              maxIncentives: (generalSalaryBudget ?? 0) - 0, // salaryBudget - totalSalaryCost (0 in field view)
-              due: generalFieldData.due,
+              maxIncentives: (salaryBudget ?? 0) - 0,
+              due: generalData.due || 0,
               duePortion: 0,
-              total: generalFieldData.signed,
+              total: generalData.signed,
               totalPortionDue: 0,
               percentOfIncome: 0,
-              normalized: generalFieldData.signed,
+              normalized: generalData.signed,
             },
           });
-          console.log('✅ Field View - General field added to map');
-        } else {
-          console.log('⚠️ Field View - No categories going to General, General field not created');
         }
 
         // Debug: Log final due amounts before setting state
@@ -4932,123 +5483,135 @@ const SalesContributionPage = () => {
     );
   };
 
-  // Get icon for main category
-  // Function to get the appropriate icon for each main category (matching DepartmentList logic)
-  const getCategoryIcon = (categoryName: string): React.ReactNode => {
-    const name = categoryName.toLowerCase();
+  // Helper function to wrap icon in white circle with 3D shadow effect
+  const wrapIconInCircle = (icon: React.ReactNode): React.ReactNode => {
+    return (
+      <div className="flex items-center justify-center w-12 h-12 rounded-full bg-white shadow-[0_4px_6px_-1px_rgba(0,0,0,0.1),0_2px_4px_-1px_rgba(0,0,0,0.06),0_0_0_1px_rgba(0,0,0,0.05),inset_0_1px_0_0_rgba(255,255,255,0.1)]">
+        {icon}
+      </div>
+    );
+  };
 
+  // Get icon for main category
+  // Function to get a unique icon for each field/category
+  const getCategoryIcon = (categoryName: string): React.ReactNode => {
+    const name = categoryName.toLowerCase().trim();
+
+    // Exact field name matching - each field gets its own unique icon
+    if (name === 'immigration israel') {
+      return wrapIconInCircle(<HomeIcon className="w-6 h-6 text-blue-500" />);
+    }
+    if (name === 'germany & austria') {
+      return wrapIconInCircle(<GlobeAltIcon className="w-6 h-6 text-blue-500" />);
+    }
+    if (name === 'small without meetin') {
+      return wrapIconInCircle(<DocumentTextIcon className="w-6 h-6 text-green-500" />);
+    }
+    if (name === 'usa') {
+      return wrapIconInCircle(<ShieldCheckIcon className="w-6 h-6 text-blue-500" />);
+    }
+    if (name === 'damages') {
+      return wrapIconInCircle(<ExclamationTriangleIcon className="w-6 h-6 text-red-500" />);
+    }
+    if (name === 'commer/civil/adm/fam' || name === 'commer\\civil\\adm\\fam') {
+      return wrapIconInCircle(<ScaleIcon className="w-6 h-6 text-purple-500" />);
+    }
+    if (name === 'other citizenships') {
+      return wrapIconInCircle(<RocketLaunchIcon className="w-6 h-6 text-indigo-500" />);
+    }
+    if (name === 'poland') {
+      return wrapIconInCircle(<MapPinIcon className="w-6 h-6 text-red-500" />);
+    }
+    if (name === 'german\\austrian' || name === 'german/austrian') {
+      return wrapIconInCircle(<GlobeAltIcon className="w-6 h-6 text-green-500" />);
+    }
+    if (name === 'referral commission') {
+      return wrapIconInCircle(<CurrencyDollarIcon className="w-6 h-6 text-yellow-500" />);
+    }
+
+    // Fallback for other categories (using pattern matching)
     // General category - grid icon
     if (name === 'general') {
-      return <Squares2X2Icon className="w-8 h-8 text-gray-500" />;
+      return wrapIconInCircle(<Squares2X2Icon className="w-6 h-6 text-gray-500" />);
     }
 
     // Staff Meeting gets a special icon
     if (name.includes('staff')) {
-      return <UsersIcon className="w-8 h-8 text-blue-500" />;
+      return wrapIconInCircle(<UsersIcon className="w-6 h-6 text-blue-500" />);
     }
 
     // Legal-related categories
     if (name.includes('legal') || name.includes('law') || name.includes('attorney')) {
-      return <ScaleIcon className="w-8 h-8 text-blue-500" />;
-    }
-
-    // Immigration to Israel - Israel flag emoji
-    if (name.includes('israel') || name.includes('israeli') || name.includes('aliyah') || (name.includes('immigration') && name.includes('israel'))) {
-      return <span className="text-3xl" role="img" aria-label="Israel flag">🇮🇱</span>;
-    }
-
-    // USA Immigration - USA flag emoji
-    if (name.includes('usa') || name.includes('united states') || name.includes('america') || name.includes('us immigration')) {
-      return <span className="text-3xl" role="img" aria-label="USA flag">🇺🇸</span>;
-    }
-
-    // Small cases - different icon from Austria/Germany
-    if (name.includes('small cases') || name.includes('small case') || (name.includes('small') && name.includes('meeting'))) {
-      return <DocumentTextIcon className="w-8 h-8 text-green-500" />;
-    }
-
-    // Germany - Germany flag emoji
-    if (name.includes('germany') || name.includes('german')) {
-      return <span className="text-3xl" role="img" aria-label="Germany flag">🇩🇪</span>;
-    }
-
-    // Austria - Austria flag emoji
-    if (name.includes('austria')) {
-      return <span className="text-3xl" role="img" aria-label="Austria flag">🇦🇹</span>;
-    }
-
-    // General immigration-related categories
-    if (name.includes('immigration') || name.includes('citizenship') || name.includes('visa') || name.includes('passport')) {
-      return <GlobeAltIcon className="w-8 h-8 text-blue-500" />;
+      return wrapIconInCircle(<ScaleIcon className="w-6 h-6 text-blue-500" />);
     }
 
     // Business/Corporate categories
     if (name.includes('business') || name.includes('corporate') || name.includes('commercial')) {
-      return <BriefcaseIcon className="w-8 h-8 text-purple-500" />;
+      return wrapIconInCircle(<BriefcaseIcon className="w-6 h-6 text-purple-500" />);
     }
 
     // HR/Personnel categories
     if (name.includes('hr') || name.includes('human') || name.includes('personnel')) {
-      return <UserGroupIcon className="w-8 h-8 text-blue-500" />;
+      return wrapIconInCircle(<UserGroupIcon className="w-6 h-6 text-blue-500" />);
     }
 
     // Finance/Accounting categories
     if (name.includes('finance') || name.includes('accounting') || name.includes('financial') || name.includes('money')) {
-      return <BanknotesIcon className="w-8 h-8 text-green-500" />;
+      return wrapIconInCircle(<BanknotesIcon className="w-6 h-6 text-green-500" />);
     }
 
     // Marketing categories
     if (name.includes('marketing') || name.includes('sales') || name.includes('advertising')) {
-      return <ChartBarIcon className="w-8 h-8 text-blue-500" />;
+      return wrapIconInCircle(<ChartBarIcon className="w-6 h-6 text-blue-500" />);
     }
 
     // IT/Technology categories
     if (name.includes('it') || name.includes('technology') || name.includes('tech') || name.includes('computer')) {
-      return <CogIcon className="w-8 h-8 text-gray-500" />;
+      return wrapIconInCircle(<CogIcon className="w-6 h-6 text-gray-500" />);
     }
 
     // Education/Training categories
     if (name.includes('education') || name.includes('training') || name.includes('learning') || name.includes('academy')) {
-      return <AcademicCapIcon className="w-8 h-8 text-blue-500" />;
+      return wrapIconInCircle(<AcademicCapIcon className="w-6 h-6 text-blue-500" />);
     }
 
     // Healthcare/Medical categories
     if (name.includes('health') || name.includes('medical') || name.includes('healthcare') || name.includes('clinic')) {
-      return <HeartIcon className="w-8 h-8 text-red-500" />;
+      return wrapIconInCircle(<HeartIcon className="w-6 h-6 text-red-500" />);
     }
 
     // Real Estate categories
     if (name.includes('real estate') || name.includes('property') || name.includes('housing')) {
-      return <HomeIcon className="w-8 h-8 text-blue-500" />;
+      return wrapIconInCircle(<HomeIcon className="w-6 h-6 text-blue-500" />);
     }
 
     // Security categories
     if (name.includes('security') || name.includes('safety') || name.includes('protection')) {
-      return <ShieldCheckIcon className="w-8 h-8 text-blue-500" />;
+      return wrapIconInCircle(<ShieldCheckIcon className="w-6 h-6 text-blue-500" />);
     }
 
     // Operations categories
     if (name.includes('operations') || name.includes('operational') || name.includes('management')) {
-      return <WrenchScrewdriverIcon className="w-8 h-8 text-gray-500" />;
+      return wrapIconInCircle(<WrenchScrewdriverIcon className="w-6 h-6 text-gray-500" />);
     }
 
     // Documentation/Administration categories
     if (name.includes('admin') || name.includes('administration') || name.includes('document') || name.includes('paperwork')) {
-      return <ClipboardDocumentListIcon className="w-8 h-8 text-gray-500" />;
+      return wrapIconInCircle(<ClipboardDocumentListIcon className="w-6 h-6 text-gray-500" />);
     }
 
     // Unassigned/Uncategorized
     if (name.includes('unassigned') || name.includes('unknown') || name.includes('uncategorized') || name.includes('other')) {
-      return <ExclamationTriangleIcon className="w-8 h-8 text-gray-500" />;
+      return wrapIconInCircle(<ExclamationTriangleIcon className="w-6 h-6 text-gray-500" />);
     }
 
     // Default icon for any other category
-    return <BuildingOfficeIcon className="w-8 h-8 text-purple-500" />;
+    return wrapIconInCircle(<BuildingOfficeIcon className="w-6 h-6 text-purple-500" />);
   };
 
   const renderTable = (deptData: DepartmentData, hideTitle?: boolean) => {
     const isFieldView = hideTitle === true;
-    const colSpanValue = isFieldView ? 11 : 12; // Updated for Contribution Fixed column
+    const colSpanValue = isFieldView ? 9 : 12; // Updated for field view: 9 columns
 
     // Calculate summary box amount for this department
     const departmentPercentage = departmentPercentages.get(deptData.departmentName) || 0;
@@ -5071,39 +5634,62 @@ const SalesContributionPage = () => {
           <table className="table w-full min-w-[800px] md:min-w-0 md:table-fixed">
             <thead>
               <tr>
-                <th className={`${isFieldView ? 'w-[20%]' : 'w-[20%]'} text-[10px] md:text-sm whitespace-nowrap`}>{isFieldView ? 'Category' : 'Employee'}</th>
-                {!isFieldView && <th className="w-[12%] min-w-[100px] text-[10px] md:text-sm px-2">
-                  <div className="whitespace-normal leading-tight">Department</div>
-                </th>}
-                <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Signed</th>
-                <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Due</th>
-                <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Signed Norm</th>
-                <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Due Norm</th>
-                <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Contribution</th>
-                <th className="text-right w-[10%] text-[10px] md:text-sm">
-                  <div className="flex flex-col items-end">
-                    <span>Contribution</span>
-                    <span>Fixed</span>
-                  </div>
-                </th>
-                <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Salary Budget</th>
-                <th className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm whitespace-nowrap">
-                  Salary (B)
-                  {salaryFilter?.month && salaryFilter?.year && (
-                    <div className="text-[9px] md:text-xs font-normal text-gray-500 mt-1">
-                      {new Date(2000, (salaryFilter.month || 1) - 1, 1).toLocaleString('default', { month: 'short' })} {salaryFilter.year}
-                    </div>
-                  )}
-                </th>
-                <th className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm whitespace-nowrap">
-                  Total Cost
-                  {salaryFilter?.month && salaryFilter?.year && (
-                    <div className="text-[9px] md:text-xs font-normal text-gray-500 mt-1">
-                      {new Date(2000, (salaryFilter.month || 1) - 1, 1).toLocaleString('default', { month: 'short' })} {salaryFilter.year}
-                    </div>
-                  )}
-                </th>
-                <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Max Incentives</th>
+                {isFieldView ? (
+                  <>
+                    <th className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">Field (Category)</th>
+                    <th className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap">Signed</th>
+                    <th className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap">Due</th>
+                    <th className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap">Due Norm</th>
+                    <th className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">Field Salary Budget</th>
+                    <th className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">Actual Salary Budget</th>
+                    <th className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                      Salary (B)
+                      {salaryFilter?.month && salaryFilter?.year && (
+                        <div className="text-[9px] md:text-xs font-normal text-gray-500 mt-1">
+                          {new Date(2000, (salaryFilter.month || 1) - 1, 1).toLocaleString('default', { month: 'short' })} {salaryFilter.year}
+                        </div>
+                      )}
+                    </th>
+                    <th className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">Field %</th>
+                    <th className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">Other %</th>
+                  </>
+                ) : (
+                  <>
+                    <th className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">Employee</th>
+                    <th className="w-[12%] min-w-[100px] text-[10px] md:text-sm px-2">
+                      <div className="whitespace-normal leading-tight">Department</div>
+                    </th>
+                    <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Signed</th>
+                    <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Due</th>
+                    <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Signed Norm</th>
+                    <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Due Norm</th>
+                    <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Contribution</th>
+                    <th className="text-right w-[10%] text-[10px] md:text-sm">
+                      <div className="flex flex-col items-end">
+                        <span>Contribution</span>
+                        <span>Fixed</span>
+                      </div>
+                    </th>
+                    <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Salary Budget</th>
+                    <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">
+                      Salary (B)
+                      {salaryFilter?.month && salaryFilter?.year && (
+                        <div className="text-[9px] md:text-xs font-normal text-gray-500 mt-1">
+                          {new Date(2000, (salaryFilter.month || 1) - 1, 1).toLocaleString('default', { month: 'short' })} {salaryFilter.year}
+                        </div>
+                      )}
+                    </th>
+                    <th className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm whitespace-nowrap">
+                      Total Cost
+                      {salaryFilter?.month && salaryFilter?.year && (
+                        <div className="text-[9px] md:text-xs font-normal text-gray-500 mt-1">
+                          {new Date(2000, (salaryFilter.month || 1) - 1, 1).toLocaleString('default', { month: 'short' })} {salaryFilter.year}
+                        </div>
+                      )}
+                    </th>
+                    <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Max Incentives</th>
+                  </>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -5134,213 +5720,902 @@ const SalesContributionPage = () => {
                         className="cursor-pointer hover:bg-base-200"
                         onClick={() => toggleRowExpansion(emp.employeeId, emp.employeeName)}
                       >
-                        <td className={`${isFieldView ? 'w-[20%]' : 'w-[20%]'} text-[10px] md:text-sm whitespace-nowrap`}>
-                          <div className="flex items-center gap-1 md:gap-2">
-                            {isExpanded ? (
-                              <ChevronDownIcon className="w-3 h-3 md:w-4 md:h-4 text-gray-500 flex-shrink-0" />
-                            ) : (
-                              <ChevronRightIcon className="w-3 h-3 md:w-4 md:h-4 text-gray-500 flex-shrink-0" />
-                            )}
-                            {isFieldView ? (
-                              <div className="flex items-center justify-center w-6 h-6 md:w-10 md:h-10 rounded-full bg-base-200 flex-shrink-0">
-                                {getCategoryIcon(emp.employeeName)}
+                        {isFieldView ? (
+                          <>
+                            <td className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">
+                              <div className="flex items-center gap-1 md:gap-2">
+                                {isExpanded ? (
+                                  <ChevronDownIcon className="w-3 h-3 md:w-4 md:h-4 text-gray-500 flex-shrink-0" />
+                                ) : (
+                                  <ChevronRightIcon className="w-3 h-3 md:w-4 md:h-4 text-gray-500 flex-shrink-0" />
+                                )}
+                                <div className="flex items-center justify-center w-6 h-6 md:w-10 md:h-10 rounded-full bg-base-200 flex-shrink-0">
+                                  {getCategoryIcon(emp.employeeName)}
+                                </div>
+                                <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{emp.employeeName}</span>
                               </div>
-                            ) : (
-                              <div className="flex-shrink-0">
-                                <EmployeeAvatar employeeId={emp.employeeId} size="lg" />
+                            </td>
+                            <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.signed)}</td>
+                            <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.due || 0)}</td>
+                            <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.dueNormalized || 0)}</td>
+                            <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency((emp.dueNormalized || 0) * 0.4)}</td>
+                            <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                            <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                            <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                            <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                          </>
+                        ) : (
+                          <>
+                            <td className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">
+                              <div className="flex items-center gap-1 md:gap-2">
+                                {isExpanded ? (
+                                  <ChevronDownIcon className="w-3 h-3 md:w-4 md:h-4 text-gray-500 flex-shrink-0" />
+                                ) : (
+                                  <ChevronRightIcon className="w-3 h-3 md:w-4 md:h-4 text-gray-500 flex-shrink-0" />
+                                )}
+                                <div className="flex-shrink-0">
+                                  <EmployeeAvatar employeeId={emp.employeeId} size="lg" />
+                                </div>
+                                <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{emp.employeeName}</span>
                               </div>
-                            )}
-                            <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{emp.employeeName}</span>
-                          </div>
-                        </td>
-                        {!isFieldView && <td className="w-[12%] min-w-[100px] text-[10px] md:text-sm px-2 align-top py-2">
-                          <div className="break-words leading-tight" style={{
-                            wordBreak: 'break-word',
-                            overflowWrap: 'break-word',
-                            maxWidth: '100px',
-                            lineHeight: '1.2',
-                            hyphens: 'auto'
-                          }}>
-                            {emp.department}
-                          </div>
-                        </td>}
-                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.signed)}</td>
-                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.due || 0)}</td>
-                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.signedNormalized || 0)}</td>
-                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.dueNormalized || 0)}</td>
-                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.contribution || 0)}</td>
-                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(0)}</td>
-                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">
-                          <div className="flex flex-col items-end">
-                            <span>{formatCurrency(emp.salaryBudget || 0)}</span>
-                            <span className="text-[9px] md:text-xs text-gray-500">40%</span>
-                          </div>
-                        </td>
-                        <td className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm whitespace-nowrap">
-                          <div className="flex flex-col items-end">
-                            <span>{formatCurrency(emp.salaryBrutto || 0)}</span>
-                            {emp.signedPortion > 0 ? (
-                              <span className={`text-[9px] md:text-xs ${((emp.salaryBrutto || 0) / emp.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
-                                {((emp.salaryBrutto || 0) / emp.signedPortion * 100).toFixed(1)}%
-                              </span>
-                            ) : (
-                              <span className="text-[9px] md:text-xs text-gray-500">-</span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm whitespace-nowrap">
-                          <div className="flex flex-col items-end">
-                            <span>{formatCurrency(emp.totalSalaryCost || 0)}</span>
-                            {emp.signedPortion > 0 ? (
-                              <span className={`text-[9px] md:text-xs ${((emp.totalSalaryCost || 0) / emp.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
-                                {((emp.totalSalaryCost || 0) / emp.signedPortion * 100).toFixed(1)}%
-                              </span>
-                            ) : (
-                              <span className="text-[9px] md:text-xs text-gray-500">-</span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">
+                            </td>
+                            <td className="w-[12%] min-w-[100px] text-[10px] md:text-sm px-2 align-top py-2">
+                              <div className="break-words leading-tight" style={{
+                                wordBreak: 'break-word',
+                                overflowWrap: 'break-word',
+                                maxWidth: '100px',
+                                lineHeight: '1.2',
+                                hyphens: 'auto'
+                              }}>
+                                {emp.department}
+                              </div>
+                            </td>
+                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.signed)}</td>
+                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.due || 0)}</td>
+                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.signedNormalized || 0)}</td>
+                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.dueNormalized || 0)}</td>
+                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.contribution || 0)}</td>
+                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(0)}</td>
+                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">
+                              <div className="flex flex-col items-end">
+                                <span>{formatCurrency(emp.salaryBudget || 0)}</span>
+                                <span className="text-[9px] md:text-xs text-gray-500">40%</span>
+                              </div>
+                            </td>
+                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">
+                              <div className="flex flex-col items-end">
+                                <span>{formatCurrency(emp.salaryBrutto || 0)}</span>
+                                {emp.signedPortion > 0 ? (
+                                  <span className={`text-[9px] md:text-xs ${((emp.salaryBrutto || 0) / emp.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                                    {((emp.salaryBrutto || 0) / emp.signedPortion * 100).toFixed(1)}%
+                                  </span>
+                                ) : (
+                                  <span className="text-[9px] md:text-xs text-gray-500">-</span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm whitespace-nowrap">
+                              <div className="flex flex-col items-end">
+                                <span>{formatCurrency(emp.totalSalaryCost || 0)}</span>
+                                {emp.signedPortion > 0 ? (
+                                  <span className={`text-[9px] md:text-xs ${((emp.totalSalaryCost || 0) / emp.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                                    {((emp.totalSalaryCost || 0) / emp.signedPortion * 100).toFixed(1)}%
+                                  </span>
+                                ) : (
+                                  <span className="text-[9px] md:text-xs text-gray-500">-</span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">
+                              {(() => {
+                                const salaryBudget = emp.salaryBudget ?? 0;
+                                const totalSalaryCost = emp.totalSalaryCost ?? 0;
+                                const maxIncentives = salaryBudget - totalSalaryCost;
+                                return (
+                                  <span className={maxIncentives >= 0 ? 'text-green-500' : 'text-red-500'}>
+                                    {formatCurrency(maxIncentives)}
+                                  </span>
+                                );
+                              })()}
+                            </td>
+                          </>
+                        )}
+                      </tr>
+                      {isExpanded && isFieldView && (
+                        <>
                           {(() => {
-                            const salaryBudget = emp.salaryBudget ?? 0;
-                            const totalSalaryCost = emp.totalSalaryCost ?? 0;
-                            const maxIncentives = salaryBudget - totalSalaryCost;
+                            const categoryKey = emp.employeeName;
+                            // Retrieve and ensure Maps are properly converted (in case they were serialized)
+                            const rawCategoryEmployees = categoryEmployeesCache.get(categoryKey) || [];
+                            const categoryEmployees = rawCategoryEmployees.map((emp: any) => {
+                              // Convert Maps if they were serialized to objects
+                              const fieldPercentages = emp.fieldPercentages;
+                              const otherPercentages = emp.otherPercentages;
+
+                              let fieldPercentagesMap: Map<string, number>;
+                              if (fieldPercentages instanceof Map) {
+                                fieldPercentagesMap = fieldPercentages;
+                              } else if (typeof fieldPercentages === 'object' && fieldPercentages !== null) {
+                                fieldPercentagesMap = new Map(Object.entries(fieldPercentages));
+                              } else {
+                                fieldPercentagesMap = new Map();
+                              }
+
+                              let otherPercentagesMap: Map<string, number>;
+                              if (otherPercentages instanceof Map) {
+                                otherPercentagesMap = otherPercentages;
+                              } else if (typeof otherPercentages === 'object' && otherPercentages !== null) {
+                                otherPercentagesMap = new Map(Object.entries(otherPercentages));
+                              } else {
+                                otherPercentagesMap = new Map();
+                              }
+
+                              return {
+                                ...emp,
+                                fieldPercentages: fieldPercentagesMap,
+                                otherPercentages: otherPercentagesMap,
+                              };
+                            });
+                            const isLoading = loadingCategoryEmployees.has(emp.employeeName);
+
+                            // Show loading state immediately if data is being fetched or not yet loaded
+                            // The fetch is triggered by toggleRowExpansion, so we just need to show the state here
+                            if (isLoading || (!categoryEmployeesCache.has(categoryKey) && categoryEmployees.length === 0)) {
+                              return (
+                                <tr>
+                                  <td colSpan={colSpanValue} className="p-4 bg-base-100">
+                                    <div className="flex items-center justify-center py-4">
+                                      <span className="loading loading-spinner loading-md"></span>
+                                      <span className="ml-2">Loading employees...</span>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            }
+
+                            if (categoryEmployees.length === 0) {
+                              return (
+                                <tr>
+                                  <td colSpan={colSpanValue} className="p-4 bg-base-100 text-center text-gray-500">
+                                    No employees assigned to this category
+                                  </td>
+                                </tr>
+                              );
+                            }
+
+                            // Filter employees by search term if searching
+                            const filteredEmployees = employeeSearchTerm.trim()
+                              ? categoryEmployees.filter((employee: any) => {
+                                const searchLower = employeeSearchTerm.toLowerCase().trim();
+                                return employee.display_name?.toLowerCase().includes(searchLower);
+                              })
+                              : categoryEmployees;
+
+                            if (filteredEmployees.length === 0 && employeeSearchTerm.trim()) {
+                              return (
+                                <tr>
+                                  <td colSpan={colSpanValue} className="p-4 bg-base-100 text-center text-gray-500">
+                                    No employees found matching "{employeeSearchTerm}"
+                                  </td>
+                                </tr>
+                              );
+                            }
+
+                            // Helper functions to get percentages from Maps
+                            const getFieldPercentage = (emp: any, role: string): string => {
+                              const fieldPercentages = emp.fieldPercentages || new Map();
+                              const percentage = fieldPercentages.get(role);
+                              if (percentage !== undefined && percentage !== null && percentage > 0) {
+                                return `${percentage.toFixed(2)}%`;
+                              }
+                              return '—';
+                            };
+
+                            const getOtherPercentage = (emp: any, role: string): string => {
+                              const otherPercentages = emp.otherPercentages || new Map();
+                              const percentage = otherPercentages.get(role);
+                              if (percentage !== undefined && percentage !== null && percentage > 0) {
+                                return `${percentage.toFixed(2)}%`;
+                              }
+                              return '—';
+                            };
+
+                            const getEffectivePercentage = (emp: any, role: string): number => {
+                              // Prefer otherPercentages (from employee_handlers_sales_contributions), fallback to fieldPercentages
+                              const otherPercentages = emp.otherPercentages || new Map();
+                              const otherPct = otherPercentages.get(role);
+                              if (otherPct !== undefined && otherPct !== null && otherPct > 0) {
+                                return otherPct;
+                              }
+                              const fieldPercentages = emp.fieldPercentages || new Map();
+                              const fieldPct = fieldPercentages.get(role);
+                              if (fieldPct !== undefined && fieldPct !== null && fieldPct > 0) {
+                                return fieldPct;
+                              }
+                              return 0;
+                            };
+
+                            // Group employees by main role (Sales, Handlers, Partners, Marketing, Finance)
+                            // Check roles from both tables
+                            const salesEmployees = filteredEmployees.filter((emp: any) => {
+                              const roles = emp.department_roles || [];
+                              return roles.includes('Sales');
+                            });
+                            const handlersEmployees = filteredEmployees.filter((emp: any) => {
+                              const roles = emp.department_roles || [];
+                              return roles.includes('Handlers');
+                            });
+                            const partnersEmployees = filteredEmployees.filter((emp: any) => {
+                              const roles = emp.department_roles || [];
+                              return roles.includes('Partners');
+                            });
+                            const marketingEmployees = filteredEmployees.filter((emp: any) => {
+                              const roles = emp.department_roles || [];
+                              return roles.includes('Marketing');
+                            });
+                            const financeEmployees = filteredEmployees.filter((emp: any) => {
+                              const roles = emp.department_roles || [];
+                              return roles.includes('Finance');
+                            });
+                            const otherEmployees = filteredEmployees.filter((emp: any) => {
+                              const roles = emp.department_roles || [];
+                              return !roles.includes('Sales') &&
+                                !roles.includes('Handlers') &&
+                                !roles.includes('Partners') &&
+                                !roles.includes('Marketing') &&
+                                !roles.includes('Finance');
+                            });
+
                             return (
-                              <span className={maxIncentives >= 0 ? 'text-green-500' : 'text-red-500'}>
-                                {formatCurrency(maxIncentives)}
-                              </span>
+                              <>
+                                {/* Sales Section */}
+                                {salesEmployees.length > 0 && (() => {
+                                  const sectionKey = `${categoryKey}_Sales`;
+                                  const isExpanded = expandedRoleSections.get(sectionKey) !== false; // Default to expanded
+                                  const totalActualSalaryBudget = salesEmployees.reduce((sum, emp) => {
+                                    const effectivePercentage = getEffectivePercentage(emp, 'Sales');
+                                    const salaryBrutto = emp.salaryBrutto || 0;
+                                    return sum + ((effectivePercentage / 100) * salaryBrutto);
+                                  }, 0);
+                                  const totalSalaryB = salesEmployees.reduce((sum, emp) => sum + (emp.salaryBrutto || 0), 0);
+
+                                  return (
+                                    <>
+                                      <tr className={!isExpanded ? 'bg-blue-50' : ''}>
+                                        <td
+                                          className="p-2 bg-blue-50 text-blue-700 font-semibold text-sm cursor-pointer hover:bg-blue-100 transition-colors"
+                                          onClick={() => toggleRoleSection(categoryKey, 'Sales')}
+                                        >
+                                          <span className="flex items-center gap-2">
+                                            {isExpanded ? '▼' : '▶'} Sales
+                                          </span>
+                                        </td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                          {!isExpanded && formatCurrency(totalActualSalaryBudget)}
+                                        </td>
+                                        <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          {!isExpanded && formatCurrency(totalSalaryB)}
+                                        </td>
+                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                      </tr>
+                                      {isExpanded && salesEmployees.map((employee: any, empIndex: number) => (
+                                        <tr key={`sales-${empIndex}`} className="bg-base-50 hover:bg-base-100">
+                                          <td className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">
+                                            <div className="flex items-center gap-2 pl-6">
+                                              {employee.photo_url ? (
+                                                <img
+                                                  src={employee.photo_url}
+                                                  alt={employee.display_name}
+                                                  className="w-12 h-12 md:w-14 md:h-14 rounded-full object-cover flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setSelectedEmployeeForModal({
+                                                      id: employee.employee_id || employee.id,
+                                                      name: employee.display_name,
+                                                      photoUrl: employee.photo_url
+                                                    });
+                                                    setFieldAssignmentsModalOpen(true);
+                                                  }}
+                                                  onError={(e) => {
+                                                    const target = e.target as HTMLImageElement;
+                                                    target.style.display = 'none';
+                                                    const fallback = target.nextElementSibling as HTMLElement;
+                                                    if (fallback) fallback.style.display = 'flex';
+                                                  }}
+                                                />
+                                              ) : null}
+                                              <div
+                                                className={`w-12 h-12 md:w-14 md:h-14 rounded-full bg-green-100 text-green-700 font-semibold flex items-center justify-center text-sm md:text-base flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity ${employee.photo_url ? 'hidden' : ''}`}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setSelectedEmployeeForModal({
+                                                    id: employee.employee_id || employee.id,
+                                                    name: employee.display_name,
+                                                    photoUrl: employee.photo_url
+                                                  });
+                                                  setFieldAssignmentsModalOpen(true);
+                                                }}
+                                              >
+                                                {employee.display_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase()}
+                                              </div>
+                                              <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{employee.display_name}</span>
+                                            </div>
+                                          </td>
+                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {(() => {
+                                              const effectivePercentage = getEffectivePercentage(employee, 'Sales');
+                                              const salaryBrutto = employee.salaryBrutto || 0;
+                                              const actualSalaryBudget = (effectivePercentage / 100) * salaryBrutto;
+                                              return formatCurrency(actualSalaryBudget);
+                                            })()}
+                                          </td>
+                                          <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {formatCurrency(employee.salaryBrutto || 0)}
+                                          </td>
+                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {getFieldPercentage(employee, 'Sales')}
+                                          </td>
+                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {getOtherPercentage(employee, 'Sales')}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </>
+                                  );
+                                })()}
+
+                                {/* Handlers Section */}
+                                {handlersEmployees.length > 0 && (() => {
+                                  const sectionKey = `${categoryKey}_Handlers`;
+                                  const isExpanded = expandedRoleSections.get(sectionKey) !== false; // Default to expanded
+                                  const totalActualSalaryBudget = handlersEmployees.reduce((sum, emp) => {
+                                    const effectivePercentage = getEffectivePercentage(emp, 'Handlers');
+                                    const salaryBrutto = emp.salaryBrutto || 0;
+                                    return sum + ((effectivePercentage / 100) * salaryBrutto);
+                                  }, 0);
+                                  const totalSalaryB = handlersEmployees.reduce((sum, emp) => sum + (emp.salaryBrutto || 0), 0);
+
+                                  return (
+                                    <>
+                                      <tr className={!isExpanded ? 'bg-green-50' : ''}>
+                                        <td
+                                          className="p-2 bg-green-50 text-green-700 font-semibold text-sm cursor-pointer hover:bg-green-100 transition-colors"
+                                          onClick={() => toggleRoleSection(categoryKey, 'Handlers')}
+                                        >
+                                          <span className="flex items-center gap-2">
+                                            {isExpanded ? '▼' : '▶'} Handlers
+                                          </span>
+                                        </td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                          {!isExpanded && formatCurrency(totalActualSalaryBudget)}
+                                        </td>
+                                        <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          {!isExpanded && formatCurrency(totalSalaryB)}
+                                        </td>
+                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                      </tr>
+                                      {isExpanded && handlersEmployees.map((employee: any, empIndex: number) => (
+                                        <tr key={`handlers-${empIndex}`} className="bg-base-50 hover:bg-base-100">
+                                          <td className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">
+                                            <div className="flex items-center gap-2 pl-6">
+                                              {employee.photo_url ? (
+                                                <img
+                                                  src={employee.photo_url}
+                                                  alt={employee.display_name}
+                                                  className="w-12 h-12 md:w-14 md:h-14 rounded-full object-cover flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setSelectedEmployeeForModal({
+                                                      id: employee.employee_id || employee.id,
+                                                      name: employee.display_name,
+                                                      photoUrl: employee.photo_url
+                                                    });
+                                                    setFieldAssignmentsModalOpen(true);
+                                                  }}
+                                                  onError={(e) => {
+                                                    const target = e.target as HTMLImageElement;
+                                                    target.style.display = 'none';
+                                                    const fallback = target.nextElementSibling as HTMLElement;
+                                                    if (fallback) fallback.style.display = 'flex';
+                                                  }}
+                                                />
+                                              ) : null}
+                                              <div
+                                                className={`w-12 h-12 md:w-14 md:h-14 rounded-full bg-green-100 text-green-700 font-semibold flex items-center justify-center text-sm md:text-base flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity ${employee.photo_url ? 'hidden' : ''}`}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setSelectedEmployeeForModal({
+                                                    id: employee.employee_id || employee.id,
+                                                    name: employee.display_name,
+                                                    photoUrl: employee.photo_url
+                                                  });
+                                                  setFieldAssignmentsModalOpen(true);
+                                                }}
+                                              >
+                                                {employee.display_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase()}
+                                              </div>
+                                              <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{employee.display_name}</span>
+                                            </div>
+                                          </td>
+                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {(() => {
+                                              const effectivePercentage = getEffectivePercentage(employee, 'Handlers');
+                                              const salaryBrutto = employee.salaryBrutto || 0;
+                                              const actualSalaryBudget = (effectivePercentage / 100) * salaryBrutto;
+                                              return formatCurrency(actualSalaryBudget);
+                                            })()}
+                                          </td>
+                                          <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {formatCurrency(employee.salaryBrutto || 0)}
+                                          </td>
+                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {getFieldPercentage(employee, 'Handlers')}
+                                          </td>
+                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {getOtherPercentage(employee, 'Handlers')}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </>
+                                  );
+                                })()}
+
+                                {/* Partners Section */}
+                                {partnersEmployees.length > 0 && (() => {
+                                  const sectionKey = `${categoryKey}_Partners`;
+                                  const isExpanded = expandedRoleSections.get(sectionKey) === true; // Default to collapsed
+                                  const totalActualSalaryBudget = partnersEmployees.reduce((sum, emp) => {
+                                    const effectivePercentage = getEffectivePercentage(emp, 'Partners');
+                                    const salaryBrutto = emp.salaryBrutto || 0;
+                                    return sum + ((effectivePercentage / 100) * salaryBrutto);
+                                  }, 0);
+                                  const totalSalaryB = partnersEmployees.reduce((sum, emp) => sum + (emp.salaryBrutto || 0), 0);
+
+                                  return (
+                                    <>
+                                      <tr className={!isExpanded ? 'bg-purple-50' : ''}>
+                                        <td
+                                          className="p-2 bg-purple-50 text-purple-700 font-semibold text-sm cursor-pointer hover:bg-purple-100 transition-colors"
+                                          onClick={() => toggleRoleSection(categoryKey, 'Partners')}
+                                        >
+                                          <span className="flex items-center gap-2">
+                                            {isExpanded ? '▼' : '▶'} Partners
+                                          </span>
+                                        </td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                          {!isExpanded && formatCurrency(totalActualSalaryBudget)}
+                                        </td>
+                                        <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          {!isExpanded && formatCurrency(totalSalaryB)}
+                                        </td>
+                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                      </tr>
+                                      {isExpanded && partnersEmployees.map((employee: any, empIndex: number) => (
+                                        <tr key={`partners-${empIndex}`} className="bg-base-50 hover:bg-base-100">
+                                          <td className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">
+                                            <div className="flex items-center gap-2 pl-6">
+                                              {employee.photo_url ? (
+                                                <img
+                                                  src={employee.photo_url}
+                                                  alt={employee.display_name}
+                                                  className="w-12 h-12 md:w-14 md:h-14 rounded-full object-cover flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setSelectedEmployeeForModal({
+                                                      id: employee.employee_id || employee.id,
+                                                      name: employee.display_name,
+                                                      photoUrl: employee.photo_url
+                                                    });
+                                                    setFieldAssignmentsModalOpen(true);
+                                                  }}
+                                                  onError={(e) => {
+                                                    const target = e.target as HTMLImageElement;
+                                                    target.style.display = 'none';
+                                                    const fallback = target.nextElementSibling as HTMLElement;
+                                                    if (fallback) fallback.style.display = 'flex';
+                                                  }}
+                                                />
+                                              ) : null}
+                                              <div
+                                                className={`w-12 h-12 md:w-14 md:h-14 rounded-full bg-green-100 text-green-700 font-semibold flex items-center justify-center text-sm md:text-base flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity ${employee.photo_url ? 'hidden' : ''}`}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setSelectedEmployeeForModal({
+                                                    id: employee.employee_id || employee.id,
+                                                    name: employee.display_name,
+                                                    photoUrl: employee.photo_url
+                                                  });
+                                                  setFieldAssignmentsModalOpen(true);
+                                                }}
+                                              >
+                                                {employee.display_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase()}
+                                              </div>
+                                              <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{employee.display_name}</span>
+                                            </div>
+                                          </td>
+                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {(() => {
+                                              const effectivePercentage = getEffectivePercentage(employee, 'Partners');
+                                              const salaryBrutto = employee.salaryBrutto || 0;
+                                              const actualSalaryBudget = (effectivePercentage / 100) * salaryBrutto;
+                                              return formatCurrency(actualSalaryBudget);
+                                            })()}
+                                          </td>
+                                          <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {formatCurrency(employee.salaryBrutto || 0)}
+                                          </td>
+                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {getFieldPercentage(employee, 'Partners')}
+                                          </td>
+                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {getOtherPercentage(employee, 'Partners')}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </>
+                                  );
+                                })()}
+
+                                {/* Marketing Section */}
+                                {marketingEmployees.length > 0 && (() => {
+                                  const sectionKey = `${categoryKey}_Marketing`;
+                                  const isExpanded = expandedRoleSections.get(sectionKey) === true; // Default to collapsed
+                                  const totalActualSalaryBudget = marketingEmployees.reduce((sum, emp) => {
+                                    const effectivePercentage = getEffectivePercentage(emp, 'Marketing');
+                                    const salaryBrutto = emp.salaryBrutto || 0;
+                                    return sum + ((effectivePercentage / 100) * salaryBrutto);
+                                  }, 0);
+                                  const totalSalaryB = marketingEmployees.reduce((sum, emp) => sum + (emp.salaryBrutto || 0), 0);
+
+                                  return (
+                                    <>
+                                      <tr className={!isExpanded ? 'bg-yellow-50' : ''}>
+                                        <td
+                                          className="p-2 bg-yellow-50 text-yellow-700 font-semibold text-sm cursor-pointer hover:bg-yellow-100 transition-colors"
+                                          onClick={() => toggleRoleSection(categoryKey, 'Marketing')}
+                                        >
+                                          <span className="flex items-center gap-2">
+                                            {isExpanded ? '▼' : '▶'} Marketing
+                                          </span>
+                                        </td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                          {!isExpanded && formatCurrency(totalActualSalaryBudget)}
+                                        </td>
+                                        <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          {!isExpanded && formatCurrency(totalSalaryB)}
+                                        </td>
+                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                      </tr>
+                                      {isExpanded && marketingEmployees.map((employee: any, empIndex: number) => (
+                                        <tr key={`marketing-${empIndex}`} className="bg-base-50 hover:bg-base-100">
+                                          <td className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">
+                                            <div className="flex items-center gap-2 pl-6">
+                                              {employee.photo_url ? (
+                                                <img
+                                                  src={employee.photo_url}
+                                                  alt={employee.display_name}
+                                                  className="w-12 h-12 md:w-14 md:h-14 rounded-full object-cover flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setSelectedEmployeeForModal({
+                                                      id: employee.employee_id || employee.id,
+                                                      name: employee.display_name,
+                                                      photoUrl: employee.photo_url
+                                                    });
+                                                    setFieldAssignmentsModalOpen(true);
+                                                  }}
+                                                  onError={(e) => {
+                                                    const target = e.target as HTMLImageElement;
+                                                    target.style.display = 'none';
+                                                    const fallback = target.nextElementSibling as HTMLElement;
+                                                    if (fallback) fallback.style.display = 'flex';
+                                                  }}
+                                                />
+                                              ) : null}
+                                              <div
+                                                className={`w-12 h-12 md:w-14 md:h-14 rounded-full bg-green-100 text-green-700 font-semibold flex items-center justify-center text-sm md:text-base flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity ${employee.photo_url ? 'hidden' : ''}`}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setSelectedEmployeeForModal({
+                                                    id: employee.employee_id || employee.id,
+                                                    name: employee.display_name,
+                                                    photoUrl: employee.photo_url
+                                                  });
+                                                  setFieldAssignmentsModalOpen(true);
+                                                }}
+                                              >
+                                                {employee.display_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase()}
+                                              </div>
+                                              <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{employee.display_name}</span>
+                                            </div>
+                                          </td>
+                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {(() => {
+                                              const effectivePercentage = getEffectivePercentage(employee, 'Marketing');
+                                              const salaryBrutto = employee.salaryBrutto || 0;
+                                              const actualSalaryBudget = (effectivePercentage / 100) * salaryBrutto;
+                                              return formatCurrency(actualSalaryBudget);
+                                            })()}
+                                          </td>
+                                          <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {formatCurrency(employee.salaryBrutto || 0)}
+                                          </td>
+                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {getFieldPercentage(employee, 'Marketing')}
+                                          </td>
+                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {getOtherPercentage(employee, 'Marketing')}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </>
+                                  );
+                                })()}
+
+                                {/* Finance Section */}
+                                {financeEmployees.length > 0 && (() => {
+                                  const sectionKey = `${categoryKey}_Finance`;
+                                  const isExpanded = expandedRoleSections.get(sectionKey) === true; // Default to collapsed
+                                  const totalActualSalaryBudget = financeEmployees.reduce((sum, emp) => {
+                                    const effectivePercentage = getEffectivePercentage(emp, 'Finance');
+                                    const salaryBrutto = emp.salaryBrutto || 0;
+                                    return sum + ((effectivePercentage / 100) * salaryBrutto);
+                                  }, 0);
+                                  const totalSalaryB = financeEmployees.reduce((sum, emp) => sum + (emp.salaryBrutto || 0), 0);
+
+                                  return (
+                                    <>
+                                      <tr className={!isExpanded ? 'bg-orange-50' : ''}>
+                                        <td
+                                          className="p-2 bg-orange-50 text-orange-700 font-semibold text-sm cursor-pointer hover:bg-orange-100 transition-colors"
+                                          onClick={() => toggleRoleSection(categoryKey, 'Finance')}
+                                        >
+                                          <span className="flex items-center gap-2">
+                                            {isExpanded ? '▼' : '▶'} Finance
+                                          </span>
+                                        </td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                          {!isExpanded && formatCurrency(totalActualSalaryBudget)}
+                                        </td>
+                                        <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          {!isExpanded && formatCurrency(totalSalaryB)}
+                                        </td>
+                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                      </tr>
+                                      {isExpanded && financeEmployees.map((employee: any, empIndex: number) => (
+                                        <tr key={`finance-${empIndex}`} className="bg-base-50 hover:bg-base-100">
+                                          <td className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">
+                                            <div className="flex items-center gap-2 pl-6">
+                                              {employee.photo_url ? (
+                                                <img
+                                                  src={employee.photo_url}
+                                                  alt={employee.display_name}
+                                                  className="w-12 h-12 md:w-14 md:h-14 rounded-full object-cover flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setSelectedEmployeeForModal({
+                                                      id: employee.employee_id || employee.id,
+                                                      name: employee.display_name,
+                                                      photoUrl: employee.photo_url
+                                                    });
+                                                    setFieldAssignmentsModalOpen(true);
+                                                  }}
+                                                  onError={(e) => {
+                                                    const target = e.target as HTMLImageElement;
+                                                    target.style.display = 'none';
+                                                    const fallback = target.nextElementSibling as HTMLElement;
+                                                    if (fallback) fallback.style.display = 'flex';
+                                                  }}
+                                                />
+                                              ) : null}
+                                              <div
+                                                className={`w-12 h-12 md:w-14 md:h-14 rounded-full bg-green-100 text-green-700 font-semibold flex items-center justify-center text-sm md:text-base flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity ${employee.photo_url ? 'hidden' : ''}`}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setSelectedEmployeeForModal({
+                                                    id: employee.employee_id || employee.id,
+                                                    name: employee.display_name,
+                                                    photoUrl: employee.photo_url
+                                                  });
+                                                  setFieldAssignmentsModalOpen(true);
+                                                }}
+                                              >
+                                                {employee.display_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase()}
+                                              </div>
+                                              <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{employee.display_name}</span>
+                                            </div>
+                                          </td>
+                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {(() => {
+                                              const effectivePercentage = getEffectivePercentage(employee, 'Finance');
+                                              const salaryBrutto = employee.salaryBrutto || 0;
+                                              const actualSalaryBudget = (effectivePercentage / 100) * salaryBrutto;
+                                              return formatCurrency(actualSalaryBudget);
+                                            })()}
+                                          </td>
+                                          <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {formatCurrency(employee.salaryBrutto || 0)}
+                                          </td>
+                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {getFieldPercentage(employee, 'Finance')}
+                                          </td>
+                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                            {getOtherPercentage(employee, 'Finance')}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </>
+                                  );
+                                })()}
+
+                                {/* Other Roles Section (if any employees don't have Sales, Handlers, Partners, Marketing, or Finance) */}
+                                {otherEmployees.length > 0 && (
+                                  <>
+                                    {otherEmployees.map((employee: any, empIndex: number) => (
+                                      <tr key={`other-${empIndex}`} className="bg-base-50 hover:bg-base-100">
+                                        <td className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <div className="flex items-center gap-2 pl-6">
+                                            {employee.photo_url ? (
+                                              <img
+                                                src={employee.photo_url}
+                                                alt={employee.display_name}
+                                                className="w-12 h-12 md:w-14 md:h-14 rounded-full object-cover flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setSelectedEmployeeForModal({
+                                                    id: employee.employee_id || employee.id,
+                                                    name: employee.display_name,
+                                                    photoUrl: employee.photo_url
+                                                  });
+                                                  setFieldAssignmentsModalOpen(true);
+                                                }}
+                                                onError={(e) => {
+                                                  const target = e.target as HTMLImageElement;
+                                                  target.style.display = 'none';
+                                                  const fallback = target.nextElementSibling as HTMLElement;
+                                                  if (fallback) fallback.style.display = 'flex';
+                                                }}
+                                              />
+                                            ) : null}
+                                            <div
+                                              className={`w-12 h-12 md:w-14 md:h-14 rounded-full bg-green-100 text-green-700 font-semibold flex items-center justify-center text-sm md:text-base flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity ${employee.photo_url ? 'hidden' : ''}`}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setSelectedEmployeeForModal({
+                                                  id: employee.employee_id || employee.id,
+                                                  name: employee.display_name,
+                                                  photoUrl: employee.photo_url
+                                                });
+                                                setFieldAssignmentsModalOpen(true);
+                                              }}
+                                            >
+                                              {employee.display_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase()}
+                                            </div>
+                                            <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{employee.display_name}</span>
+                                          </div>
+                                        </td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                          {(() => {
+                                            const fieldPercentage = employee.field_percentage || 0;
+                                            const salaryBrutto = employee.salaryBrutto || 0;
+                                            const actualSalaryBudget = (fieldPercentage / 100) * salaryBrutto;
+                                            return formatCurrency(actualSalaryBudget);
+                                          })()}
+                                        </td>
+                                        <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          {formatCurrency(employee.salaryBrutto || 0)}
+                                        </td>
+                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          {employee.field_percentage !== undefined && employee.field_percentage !== null
+                                            ? `${employee.field_percentage.toFixed(2)}%`
+                                            : '—'}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </>
+                                )}
+                              </>
                             );
                           })()}
-                        </td>
-                      </tr>
-                      {isExpanded && (
+                        </>
+                      )}
+                      {isExpanded && !isFieldView && (
                         <tr>
                           <td colSpan={colSpanValue} className="p-0 bg-base-100">
                             <div className="p-4 border-t-2 border-primary">
-                              {isFieldView ? (
-                                <>
-                                  <h3 className="text-lg font-semibold mb-3">Category Breakdown for {emp.employeeName}</h3>
-                                  {(() => {
-                                    const categoryKey = `${emp.employeeName}_${filters.fromDate || ''}_${filters.toDate || ''}`;
-                                    const categoryData = categoryBreakdownCache.get(categoryKey) || [];
-                                    const isLoading = loadingCategoryBreakdown.has(emp.employeeName);
-
-                                    // Fetch data if not cached and not loading
-                                    if (!isLoading && categoryData.length === 0 && !categoryBreakdownCache.has(categoryKey)) {
-                                      fetchCategoryBreakdown(emp.employeeName);
-                                    }
-
-                                    if (isLoading) {
-                                      return (
-                                        <div className="flex items-center justify-center py-8">
-                                          <span className="loading loading-spinner loading-md"></span>
-                                          <span className="ml-2">Loading category data...</span>
-                                        </div>
-                                      );
-                                    }
-
-                                    return (
-                                      <div className="overflow-x-auto">
-                                        <table className="table w-full table-fixed">
-                                          <thead>
-                                            <tr>
-                                              <th className="w-[30%]">Category</th>
-                                              <th className="w-[20%]">Lead</th>
-                                              <th className="w-[30%]">Client Name</th>
-                                              <th className="text-right w-[20%]">Total</th>
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            {categoryData.length === 0 ? (
-                                              <tr>
-                                                <td colSpan={4} className="text-center text-gray-500">
-                                                  No leads found for this category
-                                                </td>
-                                              </tr>
-                                            ) : (
-                                              categoryData.map((categoryGroup: any, groupIndex: number) => (
-                                                <React.Fragment key={groupIndex}>
-                                                  {/* Category header row */}
-                                                  <tr className="bg-base-200 font-semibold">
-                                                    <td className="w-[30%]" colSpan={3}>{categoryGroup.category}</td>
-                                                    <td className="text-right w-[20%]">{formatCurrency(categoryGroup.total)}</td>
-                                                  </tr>
-                                                  {/* Individual leads in this category */}
-                                                  {categoryGroup.leads.map((lead: any, leadIndex: number) => (
-                                                    <tr key={`${groupIndex}-${leadIndex}`} className="hover:bg-base-100">
-                                                      <td className="w-[30%]"></td>
-                                                      <td className="w-[20%]">
-                                                        <button
-                                                          onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            navigate(`/clients/${lead.lead}`);
-                                                          }}
-                                                          className="link link-primary"
-                                                        >
-                                                          {lead.lead}
-                                                        </button>
-                                                      </td>
-                                                      <td className="w-[30%]">{lead.clientName}</td>
-                                                      <td className="text-right w-[20%]">{formatCurrency(lead.total)}</td>
-                                                    </tr>
-                                                  ))}
-                                                </React.Fragment>
-                                              ))
-                                            )}
-                                          </tbody>
-                                        </table>
-                                      </div>
-                                    );
-                                  })()}
-                                </>
+                              <h3 className="text-lg font-semibold mb-3">Role Breakdown for {emp.employeeName}</h3>
+                              {isLoadingRoleData ? (
+                                <div className="flex items-center justify-center py-8">
+                                  <span className="loading loading-spinner loading-md"></span>
+                                  <span className="ml-2">Loading role data...</span>
+                                </div>
                               ) : (
-                                <>
-                                  <h3 className="text-lg font-semibold mb-3">Role Breakdown for {emp.employeeName}</h3>
-                                  {isLoadingRoleData ? (
-                                    <div className="flex items-center justify-center py-8">
-                                      <span className="loading loading-spinner loading-md"></span>
-                                      <span className="ml-2">Loading role data...</span>
-                                    </div>
-                                  ) : (
-                                    <div className="overflow-x-auto">
-                                      <table className="table w-full table-fixed">
-                                        <thead>
-                                          <tr>
-                                            <th className="w-[40%]">Role</th>
-                                            <th className="text-right w-[25%]">Signed Total</th>
-                                            <th className="text-right w-[25%]">Due Total</th>
-                                            <th className="w-[10%]">Action</th>
-                                          </tr>
-                                        </thead>
-                                        <tbody>
-                                          {roleData.map((roleItem: any, index: number) => (
-                                            <tr key={index}>
-                                              <td className="w-[40%]">{roleItem.role}</td>
-                                              <td className="text-right w-[25%]">{formatCurrency(roleItem.signedTotal)}</td>
-                                              <td className="text-right w-[25%]">{formatCurrency(roleItem.dueTotal)}</td>
-                                              <td className="w-[10%]">
-                                                <button
-                                                  onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    setModalEmployeeId(emp.employeeId);
-                                                    setModalEmployeeName(emp.employeeName);
-                                                    // Pass the role combination (may contain multiple roles)
-                                                    setModalRole(roleItem.role);
-                                                    setModalOpen(true);
-                                                  }}
-                                                  className="btn btn-ghost btn-xs btn-circle"
-                                                  title="View leads"
-                                                >
-                                                  <EyeIcon className="w-4 h-4" />
-                                                </button>
-                                              </td>
-                                            </tr>
-                                          ))}
-                                        </tbody>
-                                      </table>
-                                    </div>
-                                  )}
-                                </>
+                                <div className="overflow-x-auto">
+                                  <table className="table w-full table-fixed">
+                                    <thead>
+                                      <tr>
+                                        <th className="w-[40%]">Role</th>
+                                        <th className="text-right w-[25%]">Signed Total</th>
+                                        <th className="text-right w-[25%]">Due Total</th>
+                                        <th className="w-[10%]">Action</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {roleData.map((roleItem: any, index: number) => (
+                                        <tr key={index}>
+                                          <td className="w-[40%]">{roleItem.role}</td>
+                                          <td className="text-right w-[25%]">{formatCurrency(roleItem.signedTotal)}</td>
+                                          <td className="text-right w-[25%]">{formatCurrency(roleItem.dueTotal)}</td>
+                                          <td className="w-[10%]">
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setModalEmployeeId(emp.employeeId);
+                                                setModalEmployeeName(emp.employeeName);
+                                                // Pass the role combination (may contain multiple roles)
+                                                setModalRole(roleItem.role);
+                                                setModalOpen(true);
+                                              }}
+                                              className="btn btn-ghost btn-xs btn-circle"
+                                              title="View leads"
+                                            >
+                                              <EyeIcon className="w-4 h-4" />
+                                            </button>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
                               )}
                             </div>
                           </td>
@@ -5364,56 +6639,158 @@ const SalesContributionPage = () => {
                 )}
               {/* Totals row */}
               <tr className="font-bold bg-base-200">
-                <td className={`${isFieldView ? 'w-[20%]' : 'w-[25%]'} text-[10px] md:text-sm`}>Total</td>
-                {!isFieldView && <td className="w-[15%] text-[10px] md:text-sm"></td>}
-                <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
-                <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
-                <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
-                <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
-                <td className="text-right w-[10%] text-[10px] md:text-sm">{formatCurrency(deptData.totals.contribution || 0)}</td>
-                <td className="text-right w-[10%] text-[10px] md:text-sm">{formatCurrency(0)}</td>
-                <td className="text-right w-[10%] text-[10px] md:text-sm">
-                  <div className="flex flex-col items-end">
-                    <span>{formatCurrency(deptData.totals.salaryBudget || 0)}</span>
-                    <span className="text-[9px] md:text-xs text-gray-500">40%</span>
-                  </div>
-                </td>
-                <td className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm">
-                  <div className="flex flex-col items-end">
-                    <span>{formatCurrency(deptData.totals.salaryBrutto || 0)}</span>
-                    {deptData.totals.signedPortion > 0 ? (
-                      <span className={`text-[9px] md:text-xs ${((deptData.totals.salaryBrutto || 0) / deptData.totals.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
-                        {((deptData.totals.salaryBrutto || 0) / deptData.totals.signedPortion * 100).toFixed(1)}%
-                      </span>
-                    ) : (
-                      <span className="text-[9px] md:text-xs text-gray-500">-</span>
-                    )}
-                  </div>
-                </td>
-                <td className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm">
-                  <div className="flex flex-col items-end">
-                    <span>{formatCurrency(deptData.totals.totalSalaryCost || 0)}</span>
-                    {deptData.totals.signedPortion > 0 ? (
-                      <span className={`text-[9px] md:text-xs ${((deptData.totals.totalSalaryCost || 0) / deptData.totals.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
-                        {((deptData.totals.totalSalaryCost || 0) / deptData.totals.signedPortion * 100).toFixed(1)}%
-                      </span>
-                    ) : (
-                      <span className="text-[9px] md:text-xs text-gray-500">-</span>
-                    )}
-                  </div>
-                </td>
-                <td className="text-right w-[10%] text-[10px] md:text-sm">
-                  {(() => {
-                    const salaryBudget = deptData.totals.salaryBudget ?? 0;
-                    const totalSalaryCost = deptData.totals.totalSalaryCost ?? 0;
-                    const maxIncentives = salaryBudget - totalSalaryCost;
-                    return (
-                      <span className={maxIncentives >= 0 ? 'text-green-500' : 'text-red-500'}>
-                        {formatCurrency(maxIncentives)}
-                      </span>
-                    );
-                  })()}
-                </td>
+                {isFieldView ? (
+                  <>
+                    <td className="w-[20%] text-[10px] md:text-sm">Total</td>
+                    <td className="text-right w-[12%] text-[10px] md:text-sm"></td>
+                    <td className="text-right w-[12%] text-[10px] md:text-sm"></td>
+                    <td className="text-right w-[12%] text-[10px] md:text-sm"></td>
+                    <td className="text-right w-[11%] text-[10px] md:text-sm">
+                      {(() => {
+                        // Calculate total Field Salary Budget (40% of Due Norm)
+                        return formatCurrency((deptData.totals.dueNormalized || 0) * 0.4);
+                      })()}
+                    </td>
+                    <td className="text-right w-[11%] text-[10px] md:text-sm">
+                      {(() => {
+                        // Calculate total Actual Salary Budget from all employees in this field
+                        const fieldName = deptData.departmentName;
+                        const rawEmployees = categoryEmployeesCache.get(fieldName) || [];
+                        // Normalize Maps in case they were serialized
+                        const employees = rawEmployees.map((emp: any) => {
+                          const fieldPercentages = emp.fieldPercentages;
+                          const otherPercentages = emp.otherPercentages;
+
+                          let fieldPercentagesMap: Map<string, number>;
+                          if (fieldPercentages instanceof Map) {
+                            fieldPercentagesMap = fieldPercentages;
+                          } else if (typeof fieldPercentages === 'object' && fieldPercentages !== null) {
+                            fieldPercentagesMap = new Map(Object.entries(fieldPercentages));
+                          } else {
+                            fieldPercentagesMap = new Map();
+                          }
+
+                          let otherPercentagesMap: Map<string, number>;
+                          if (otherPercentages instanceof Map) {
+                            otherPercentagesMap = otherPercentages;
+                          } else if (typeof otherPercentages === 'object' && otherPercentages !== null) {
+                            otherPercentagesMap = new Map(Object.entries(otherPercentages));
+                          } else {
+                            otherPercentagesMap = new Map();
+                          }
+
+                          return {
+                            ...emp,
+                            fieldPercentages: fieldPercentagesMap,
+                            otherPercentages: otherPercentagesMap,
+                          };
+                        });
+
+                        const totalActualSalaryBudget = employees.reduce((sum, emp) => {
+                          // Get max percentage from all roles for this employee (prefer otherPercentages, fallback to fieldPercentages)
+                          let maxPercentage = 0;
+                          const roles = emp.department_roles || [];
+                          for (const role of roles) {
+                            // Prefer otherPercentages (from employee_handlers_sales_contributions)
+                            const otherPct = emp.otherPercentages.get(role);
+                            if (otherPct !== undefined && otherPct !== null && otherPct > 0) {
+                              maxPercentage = Math.max(maxPercentage, otherPct);
+                            } else {
+                              // Fallback to fieldPercentages
+                              const fieldPct = emp.fieldPercentages.get(role);
+                              if (fieldPct !== undefined && fieldPct !== null && fieldPct > 0) {
+                                maxPercentage = Math.max(maxPercentage, fieldPct);
+                              }
+                            }
+                          }
+                          return sum + ((maxPercentage / 100) * (emp.salaryBrutto || 0));
+                        }, 0);
+                        const totalFieldSalaryBudget = (deptData.totals.dueNormalized || 0) * 0.4;
+                        const percentageDiff = totalFieldSalaryBudget > 0
+                          ? ((totalActualSalaryBudget - totalFieldSalaryBudget) / totalFieldSalaryBudget) * 100
+                          : 0;
+                        // Green when actual <= field (under/at budget - good), Red when actual > field (over budget - bad)
+                        const isGreen = totalActualSalaryBudget <= totalFieldSalaryBudget;
+                        return (
+                          <div className="flex flex-col items-end">
+                            <span className={isGreen ? 'text-green-600' : 'text-red-600'}>
+                              {formatCurrency(totalActualSalaryBudget)}
+                            </span>
+                            <span className={`text-[9px] md:text-xs ${isGreen ? 'text-green-500' : 'text-red-500'}`}>
+                              {percentageDiff >= 0 ? '+' : ''}{percentageDiff.toFixed(1)}%
+                            </span>
+                          </div>
+                        );
+                      })()}
+                    </td>
+                    <td className="text-right w-[11%] text-[10px] md:text-sm">
+                      {(() => {
+                        // Calculate total Salary (B) from all employees in this field
+                        const fieldName = deptData.departmentName;
+                        const employees = categoryEmployeesCache.get(fieldName) || [];
+                        const totalSalaryBrutto = employees.reduce((sum, emp) => {
+                          return sum + (emp.salaryBrutto || 0);
+                        }, 0);
+                        return formatCurrency(totalSalaryBrutto);
+                      })()}
+                    </td>
+                    <td className="text-right w-[11%] text-[10px] md:text-sm"></td>
+                    <td className="text-right w-[11%] text-[10px] md:text-sm"></td>
+                  </>
+                ) : (
+                  <>
+                    <td className="w-[25%] text-[10px] md:text-sm">Total</td>
+                    <td className="w-[15%] text-[10px] md:text-sm"></td>
+                    <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
+                    <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
+                    <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
+                    <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
+                    <td className="text-right w-[10%] text-[10px] md:text-sm">{formatCurrency(deptData.totals.contribution || 0)}</td>
+                    <td className="text-right w-[10%] text-[10px] md:text-sm">{formatCurrency(0)}</td>
+                    <td className="text-right w-[10%] text-[10px] md:text-sm">
+                      <div className="flex flex-col items-end">
+                        <span>{formatCurrency(deptData.totals.salaryBudget || 0)}</span>
+                        <span className="text-[9px] md:text-xs text-gray-500">40%</span>
+                      </div>
+                    </td>
+                    <td className="text-right w-[10%] text-[10px] md:text-sm">
+                      <div className="flex flex-col items-end">
+                        <span>{formatCurrency(deptData.totals.salaryBrutto || 0)}</span>
+                        {deptData.totals.signedPortion > 0 ? (
+                          <span className={`text-[9px] md:text-xs ${((deptData.totals.salaryBrutto || 0) / deptData.totals.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                            {((deptData.totals.salaryBrutto || 0) / deptData.totals.signedPortion * 100).toFixed(1)}%
+                          </span>
+                        ) : (
+                          <span className="text-[9px] md:text-xs text-gray-500">-</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm">
+                      <div className="flex flex-col items-end">
+                        <span>{formatCurrency(deptData.totals.totalSalaryCost || 0)}</span>
+                        {deptData.totals.signedPortion > 0 ? (
+                          <span className={`text-[9px] md:text-xs ${((deptData.totals.totalSalaryCost || 0) / deptData.totals.signedPortion * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                            {((deptData.totals.totalSalaryCost || 0) / deptData.totals.signedPortion * 100).toFixed(1)}%
+                          </span>
+                        ) : (
+                          <span className="text-[9px] md:text-xs text-gray-500">-</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="text-right w-[10%] text-[10px] md:text-sm">
+                      {(() => {
+                        const salaryBudget = deptData.totals.salaryBudget ?? 0;
+                        const totalSalaryCost = deptData.totals.totalSalaryCost ?? 0;
+                        const maxIncentives = salaryBudget - totalSalaryCost;
+                        return (
+                          <span className={maxIncentives >= 0 ? 'text-green-500' : 'text-red-500'}>
+                            {formatCurrency(maxIncentives)}
+                          </span>
+                        );
+                      })()}
+                    </td>
+                  </>
+                )}
               </tr>
             </tbody>
           </table>
@@ -5551,7 +6928,7 @@ const SalesContributionPage = () => {
               </label>
               <select
                 className="select select-bordered select-sm md:select-md w-full md:text-base"
-                value={salaryFilter?.month || today.getMonth() + 1}
+                value={salaryFilter?.month || previousMonth}
                 onChange={(e) => setSalaryFilter({
                   ...salaryFilter,
                   month: parseInt(e.target.value, 10)
@@ -5571,7 +6948,7 @@ const SalesContributionPage = () => {
               </label>
               <select
                 className="select select-bordered select-sm md:select-md w-full md:text-base"
-                value={salaryFilter?.year || today.getFullYear()}
+                value={salaryFilter?.year || previousYear}
                 onChange={(e) => setSalaryFilter({
                   ...salaryFilter,
                   year: parseInt(e.target.value, 10)
@@ -5690,12 +7067,53 @@ const SalesContributionPage = () => {
               })
           ) : (
             // Field View - show tables by main category
-            Array.from(fieldViewData.values())
+            Array.from(fieldViewData.values()).sort((a, b) => {
+              // General should ALWAYS be last, no matter what
+              if (a.departmentName === 'General') return 1; // General always comes after
+              if (b.departmentName === 'General') return -1; // Other fields come before General
+
+              // Define field order for other fields
+              const fieldOrder = [
+                'Immigration Israel',
+                'Germany & Austria',
+                'Small without meetin',
+                'USA',
+                'Commer/Civil/Adm/Fam',
+                'Poland'
+              ];
+
+              const indexA = fieldOrder.indexOf(a.departmentName);
+              const indexB = fieldOrder.indexOf(b.departmentName);
+
+              // If both are in the order list, sort by their position
+              if (indexA !== -1 && indexB !== -1) {
+                return indexA - indexB;
+              }
+
+              // If only one is in the order list, prioritize it
+              if (indexA !== -1) return -1;
+              if (indexB !== -1) return 1;
+
+              // If neither is in the order list, sort alphabetically
+              return a.departmentName.localeCompare(b.departmentName);
+            })
               .filter((fieldData) => {
-                // If there's a search term, filter by category name
+                // If there's a search term, check if this field has employees matching the search
                 if (employeeSearchTerm.trim()) {
                   const searchLower = employeeSearchTerm.toLowerCase().trim();
-                  return fieldData.departmentName.toLowerCase().includes(searchLower);
+                  const categoryKey = fieldData.departmentName;
+                  const categoryEmployees = categoryEmployeesCache.get(categoryKey) || [];
+
+                  // Check if any employee in this field matches the search
+                  const hasMatchingEmployee = categoryEmployees.some((emp: any) => {
+                    const nameMatch = emp.display_name?.toLowerCase().includes(searchLower);
+                    return nameMatch;
+                  });
+
+                  // Also check if field name matches
+                  const fieldNameMatch = fieldData.departmentName.toLowerCase().includes(searchLower);
+
+                  return hasMatchingEmployee || fieldNameMatch;
                 }
                 return true;
               })
@@ -5727,6 +7145,29 @@ const SalesContributionPage = () => {
           role={modalRole}
           fromDate={filters.fromDate}
           toDate={filters.toDate}
+        />
+      )}
+
+      {/* Employee Field Assignments Modal */}
+      {selectedEmployeeForModal && (
+        <EmployeeFieldAssignmentsModal
+          isOpen={fieldAssignmentsModalOpen}
+          onClose={() => {
+            setFieldAssignmentsModalOpen(false);
+            setSelectedEmployeeForModal(null);
+          }}
+          employeeId={selectedEmployeeForModal.id}
+          employeeName={selectedEmployeeForModal.name}
+          employeePhotoUrl={selectedEmployeeForModal.photoUrl}
+          onSave={() => {
+            // Clear the cache for this employee's field assignments
+            // This will force a refresh when the category is expanded again
+            categoryEmployeesCache.clear();
+            // Optionally trigger a refresh of the current view
+            if (viewMode === 'field') {
+              // The data will refresh when user expands the category again
+            }
+          }}
         />
       )}
     </div>

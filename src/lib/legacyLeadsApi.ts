@@ -26,6 +26,7 @@ export interface CombinedLead {
   language: string;
   balance: string;
   lead_type: "legacy" | "new";
+  matchType?: "exact" | "prefix" | "contains" | "fuzzy";
   unactivation_reason: string | null;
   deactivate_note: string | null;
   isFuzzyMatch: boolean;
@@ -210,24 +211,35 @@ async function searchNewLeads(intent: SearchIntent, opts: Required<SearchOptions
       // Regular lead number search
       const searchDigits = intent.digits || stripLeadPrefix(intent.raw);
 
-      // For 4-6 digit searches, prioritize exact matches to avoid partial matches
-      // Example: searching "212421" should NOT match "21242"
-      const isLongQuery = searchDigits.length >= 4 && searchDigits.length <= 6 && /^\d+$/.test(searchDigits);
+      // For 4-5 digit searches, use both exact and prefix matching to allow finding longer leads
+      // For 6 digit searches, use exact match only to avoid partial matches
+      // Example: searching "212421" should NOT match "21242", but "11234" should find "112345"
+      const isSixDigitQuery = searchDigits.length === 6 && /^\d+$/.test(searchDigits);
+      const isFourOrFiveDigitQuery = searchDigits.length >= 4 && searchDigits.length <= 5 && /^\d+$/.test(searchDigits);
 
-      if (isLongQuery) {
-        // For 4-6 digit queries, use exact match only (no prefix matching)
-        // This prevents "21242" from matching when searching "212421"
+      if (isSixDigitQuery) {
+        // For 6-digit queries, use exact match only (no prefix matching)
+        // This prevents "212421" from matching when searching "21242"
         const exactPatterns = [
           `lead_number.eq.L${searchDigits}`,
           `lead_number.eq.C${searchDigits}`,
+          `lead_number.eq.${searchDigits}`, // Also try without prefix for legacy compatibility
         ];
 
-        // Also try without prefix for legacy compatibility (6-digit numbers)
-        if (searchDigits.length === 6) {
-          exactPatterns.push(`lead_number.eq.${searchDigits}`);
-        }
-
         const baseOr = exactPatterns.join(",");
+        qb = qb.or(baseOr);
+      } else if (isFourOrFiveDigitQuery) {
+        // For 4-5 digit queries, use both exact and prefix matching
+        // This allows "11234" to find "112345" while still finding exact matches
+        const searchPatterns: string[] = [
+          `lead_number.eq.L${searchDigits}`, // Exact match with L prefix
+          `lead_number.eq.C${searchDigits}`, // Exact match with C prefix
+          `lead_number.ilike.${searchDigits}%`, // Prefix match without prefix
+          `lead_number.ilike.L${searchDigits}%`, // Prefix match with L prefix
+          `lead_number.ilike.C${searchDigits}%`, // Prefix match with C prefix
+        ];
+
+        const baseOr = searchPatterns.join(",");
         qb = qb.or(baseOr);
       } else {
         // For shorter queries (1-3 digits), use prefix matching
@@ -389,7 +401,30 @@ async function findContactsForLeadSearch(
       }
     }
   } else if (legacyExactId != null && !Number.isNaN(legacyExactId) && (leadIntent.master == null || leadIntent.suffix == null)) {
-    // Fetch legacy lead exact match (safe, no range scanning) - for master leads or when suffix not provided
+    // For 1-5 digit queries, also search by lead_number prefix (not just exact ID)
+    // This allows "11" to find "1123" and "11234" to find "112345"
+    const searchDigits = leadIntent.digits || stripLeadPrefix(leadIntent.raw);
+    const isPrefixQuery = searchDigits.length >= 1 && searchDigits.length <= 5;
+
+    if (isPrefixQuery) {
+      // Search by lead_number prefix for 1-5 digit queries
+      // This allows prefix matching for all lead number lengths
+      const { data: prefixData } = await withTimeout(
+        supabase
+          .from("leads_lead")
+          .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, lead_number")
+          .ilike("lead_number", `${searchDigits}%`)
+          .limit(20), // Limit to avoid too many results
+        opts.timeoutMs,
+        "legacy prefix search timeout",
+      ).catch(() => ({ data: [] as any[] }));
+
+      if (prefixData && prefixData.length) {
+        legacyLeads.push(...prefixData);
+      }
+    }
+
+    // Also try exact ID match (for cases where ID matches the query)
     const { data } = await withTimeout(
       supabase
         .from("leads_lead")
@@ -401,7 +436,13 @@ async function findContactsForLeadSearch(
     ).catch(() => ({ data: [] as any[] }));
 
     if (data && data.length) {
-      legacyLeads.push(...data);
+      // Avoid duplicates
+      const existingIds = new Set(legacyLeads.map(l => l.id));
+      data.forEach(l => {
+        if (!existingIds.has(l.id)) {
+          legacyLeads.push(l);
+        }
+      });
     }
   }
 

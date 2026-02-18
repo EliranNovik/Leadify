@@ -516,7 +516,9 @@ const webhookController = {
         });
       }
 
+      // COMMENTED OUT: Duplicate lead checking - disabled per user request
       // Check for duplicate leads - check both leads table and leads_contact table
+      /*
       const duplicateFields = [];
       let existingLead = null;
 
@@ -773,6 +775,7 @@ const webhookController = {
           });
         }
       }
+      */
 
       // Look up language_id and country_id before creating the lead
       const languageId = await lookupLanguageId(formData.language);
