@@ -1,12 +1,14 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
 import Meetings from './Meetings';
 import AISuggestions from './AISuggestions';
 import AISuggestionsModal from './AISuggestionsModal';
 import OverdueFollowups from './OverdueFollowups';
-import WaitingForPriceOfferMyLeadsWidget from './WaitingForPriceOfferMyLeadsWidget';
-import ClosedDealsWithoutPaymentPlanWidget from './ClosedDealsWithoutPaymentPlanWidget';
 import UnavailableEmployeesModal from './UnavailableEmployeesModal';
 import ClockInBox from './ClockInBox';
+
+// Lazy load bottom components for faster initial render
+const WaitingForPriceOfferMyLeadsWidget = lazy(() => import('./WaitingForPriceOfferMyLeadsWidget'));
+const ClosedDealsWithoutPaymentPlanWidget = lazy(() => import('./ClosedDealsWithoutPaymentPlanWidget'));
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
 import { supabase, isAuthError, sessionManager, handleSessionExpiration } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
@@ -67,6 +69,12 @@ const Dashboard: React.FC = () => {
   // Get auth state from context to skip redundant checks
   const { user: authUser, isInitialized } = useAuthContext();
   const { isExternalUser, isLoading: isLoadingExternal, userName: externalUserName, userImage: externalUserImage } = useExternalUser();
+
+  // EARLY RETURN: Check for external user immediately to prevent flash of regular dashboard
+  // This must be before any other logic to ensure external users see their dashboard instantly
+  if (isExternalUser) {
+    return <ExternalUserDashboard userName={externalUserName} />;
+  }
 
   // Get the current month name
   const currentMonthName = new Date().toLocaleString('en-US', { month: 'long' });
@@ -178,29 +186,34 @@ const Dashboard: React.FC = () => {
   // isInitialized is checked directly in render below
 
   // Fetch meeting locations and their default links for join buttons
+  // DEFERRED: Load after initial render
   useEffect(() => {
-    const fetchMeetingLocations = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('tenants_meetinglocation')
-          .select('name, default_link');
+    // Defer to next tick to allow initial render
+    const timeoutId = setTimeout(() => {
+      const fetchMeetingLocations = async () => {
+        try {
+          const { data, error } = await supabase
+            .from('tenants_meetinglocation')
+            .select('name, default_link');
 
-        if (error) {
-          return;
-        }
-
-        const map: Record<string, string> = {};
-        (data || []).forEach((loc: any) => {
-          if (loc.name && loc.default_link) {
-            map[loc.name] = loc.default_link;
+          if (error) {
+            return;
           }
-        });
-        setMeetingLocationLinks(map);
-      } catch (err) {
-      }
-    };
 
-    fetchMeetingLocations();
+          const map: Record<string, string> = {};
+          (data || []).forEach((loc: any) => {
+            if (loc.name && loc.default_link) {
+              map[loc.name] = loc.default_link;
+            }
+          });
+          setMeetingLocationLinks(map);
+        } catch (err) {
+        }
+      };
+
+      fetchMeetingLocations();
+    }, 0);
+    return () => clearTimeout(timeoutId);
   }, []);
 
   // Fetch detailed unavailable employees data for table
@@ -1038,9 +1051,11 @@ const Dashboard: React.FC = () => {
   const [meetingsLoading, setMeetingsLoading] = useState(false);
   const [meetingsInNextHour, setMeetingsInNextHour] = useState(0);
   const [nextHourMeetings, setNextHourMeetings] = useState<any[]>([]);
-  // Fetch meetings on initial mount and refresh every minute
+  // Fetch meetings on initial mount and refresh every minute - DEFERRED
   useEffect(() => {
-    const fetchMeetings = async () => {
+    // Defer to next tick to allow initial render
+    const timeoutId = setTimeout(() => {
+      const fetchMeetings = async () => {
       setMeetingsLoading(true);
       try {
         // First, fetch current user's employee_id, display name, and email
@@ -1654,15 +1669,18 @@ const Dashboard: React.FC = () => {
       setMeetingsLoading(false);
     };
 
-    // Fetch immediately on mount
-    fetchMeetings();
-
-    // Refresh meetings every minute to update the "next hour" count
-    const interval = setInterval(() => {
+      // Fetch immediately on mount
       fetchMeetings();
-    }, 60000); // 60 seconds
 
-    return () => clearInterval(interval);
+      // Refresh meetings every minute to update the "next hour" count
+      const interval = setInterval(() => {
+        fetchMeetings();
+      }, 60000); // 60 seconds
+
+      return () => clearInterval(interval);
+    }, 0); // Defer to next tick
+
+    return () => clearTimeout(timeoutId);
   }, []); // Empty dependency array - only run on mount
 
   // Helper function to format time until meeting
@@ -2105,9 +2123,10 @@ const Dashboard: React.FC = () => {
     [category: string]: { date: string; contracts: number; amount: number }[];
   }>({});
 
-  // Fetch real revenue this month
+  // Fetch real revenue this month - DEFERRED
   useEffect(() => {
-    const fetchRevenueThisMonth = async () => {
+    const timeoutId = setTimeout(() => {
+      const fetchRevenueThisMonth = async () => {
       setRevenueLoading(true);
       try {
         const now = new Date();
@@ -2138,12 +2157,15 @@ const Dashboard: React.FC = () => {
       }
     };
 
-    fetchRevenueThisMonth();
+      fetchRevenueThisMonth();
+    }, 0);
+    return () => clearTimeout(timeoutId);
   }, []);
 
-  // Fetch lead growth data
+  // Fetch lead growth data - DEFERRED
   useEffect(() => {
-    const fetchLeadGrowth = async () => {
+    const timeoutId = setTimeout(() => {
+      const fetchLeadGrowth = async () => {
       setLeadsLoading(true);
       try {
         const now = new Date();
@@ -2193,12 +2215,15 @@ const Dashboard: React.FC = () => {
       }
     };
 
-    fetchLeadGrowth();
+      fetchLeadGrowth();
+    }, 0);
+    return () => clearTimeout(timeoutId);
   }, []);
 
-  // Fetch conversion rate data
+  // Fetch conversion rate data - DEFERRED
   useEffect(() => {
-    const fetchConversionRate = async () => {
+    const timeoutId = setTimeout(() => {
+      const fetchConversionRate = async () => {
       setConversionLoading(true);
       try {
         const now = new Date();
@@ -2250,12 +2275,15 @@ const Dashboard: React.FC = () => {
       }
     };
 
-    fetchConversionRate();
+      fetchConversionRate();
+    }, 0);
+    return () => clearTimeout(timeoutId);
   }, []);
 
-  // Fetch contracts signed data
+  // Fetch contracts signed data - DEFERRED
   useEffect(() => {
-    const fetchContractsSigned = async () => {
+    const timeoutId = setTimeout(() => {
+      const fetchContractsSigned = async () => {
       setContractsLoading(true);
       try {
         const now = new Date();
@@ -2305,7 +2333,9 @@ const Dashboard: React.FC = () => {
       }
     };
 
-    fetchContractsSigned();
+      fetchContractsSigned();
+    }, 0);
+    return () => clearTimeout(timeoutId);
   }, []);
 
   // Fetch real performance data from leads_leadstage
@@ -5002,18 +5032,8 @@ const Dashboard: React.FC = () => {
     };
   }, [aiContainerCollapsed]);
 
-  // Show loading screen only if auth is not initialized (must be after all hooks)
-  // This should be very brief since AuthContext initializes quickly
-  if (!isInitialized) {
-    return (
-      <div className="min-h-screen bg-white flex items-center justify-center">
-        <div className="text-center">
-          <div className="loading loading-spinner loading-lg text-primary"></div>
-          <p className="mt-4 text-gray-600">Loading...</p>
-        </div>
-      </div>
-    );
-  }
+  // NO LOADING SCREEN - render immediately, data will load in background
+  // AuthContext is now instant, so we can always render
 
   // Extended list for the modal view
   const allSuggestions = [
@@ -5987,22 +6007,8 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  // External user view - check after all hooks are called
-  // Wait for external user check to complete to prevent flash
-  if (isLoadingExternal) {
-    // Show minimal loading state instead of white screen
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="loading loading-spinner loading-lg"></div>
-      </div>
-    );
-  }
-
-  // Debug logging for external user detection (removed to reduce console noise)
-
-  if (isExternalUser) {
-    return <ExternalUserDashboard userName={externalUserName} />;
-  }
+  // External user check is now done at the top of the component (before all hooks)
+  // This ensures external users never see the regular dashboard flash
 
   return (
     <div className="p-0 md:p-6 space-y-8 animate-fade-in">
@@ -7896,14 +7902,18 @@ const Dashboard: React.FC = () => {
       {/* COMMENTED OUT: Employee performance 4 boxes (Top Closers, Top Schedulers, Top Experts, Top Handlers) */}
       {/* <EmployeeScoreboard /> */}
 
-      {/* Closed deals without Payments plan Box */}
+      {/* Closed deals without Payments plan Box - Lazy Loaded */}
       <div className="w-full mt-12">
-        <ClosedDealsWithoutPaymentPlanWidget maxItems={10} />
+        <Suspense fallback={<div className="text-center py-8 text-gray-500">Loading...</div>}>
+          <ClosedDealsWithoutPaymentPlanWidget maxItems={10} />
+        </Suspense>
       </div>
 
-      {/* My Waiting Leads Box */}
+      {/* My Waiting Leads Box - Lazy Loaded */}
       <div className="w-full mt-12">
-        <WaitingForPriceOfferMyLeadsWidget maxItems={10} />
+        <Suspense fallback={<div className="text-center py-8 text-gray-500">Loading...</div>}>
+          <WaitingForPriceOfferMyLeadsWidget maxItems={10} />
+        </Suspense>
       </div>
 
       {/* 4. My Performance Graph (Full Width) */}

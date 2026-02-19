@@ -26,59 +26,27 @@ const ProtectedRoute: React.FC<{ user: any; children: React.ReactNode }> = ({ ch
     }
   })();
   
-  // Wait for INITIAL_SESSION to fire in new tabs
-  // INITIAL_SESSION fires when the auth listener is set up, which happens quickly
-  // But in some cases (multiple tabs, slow initialization), it may take longer
-  useEffect(() => {
-    if (isInitialized) {
-      // If user exists, we're good to go immediately
-      if (user) {
-        setHasCheckedInitialSession(true);
-        return;
-      }
-      // If there are stored tokens in localStorage, wait longer
-      // This means a session exists but INITIAL_SESSION hasn't processed it yet
-      const waitTime = hasStoredSession ? 2000 : 1000; // Wait 2 seconds if tokens exist, 1 second otherwise
-      
-      // If isLoading is true, wait a bit longer - auth is still being checked
-      const finalWaitTime = isLoading ? Math.max(waitTime, 1500) : waitTime;
-      
-      const timer = setTimeout(() => {
-        setHasCheckedInitialSession(true);
-      }, finalWaitTime);
-      return () => clearTimeout(timer);
-    }
-  }, [isInitialized, user, isLoading, hasStoredSession]);
-  
-  // Only show loading if we're truly not initialized (first time check)
-  if (!isInitialized) {
-    return (
-      <div className="flex justify-center items-center h-screen bg-white">
-        <div className="text-center">
-          <div className="loading loading-spinner loading-lg text-primary"></div>
-          <p className="mt-4 text-gray-600">Loading...</p>
-        </div>
-      </div>
-    );
-  }
-  
-  // If user exists, render immediately (no waiting, no loading screen)
+  // NO LOADING SCREENS - render immediately
+  // AuthContext now uses cached session for instant initialization
+  // If user exists, render immediately
   if (user) {
     return <>{children}</>;
   }
   
-  // If we haven't checked initial session yet, wait
-  // Show a minimal loading state to avoid blank screen
-  // This gives INITIAL_SESSION time to fire in new tabs
-  if (!hasCheckedInitialSession) {
-    return (
-      <div className="flex justify-center items-center h-screen bg-white">
-        <div className="text-center">
-          <div className="loading loading-spinner loading-sm text-primary"></div>
-        </div>
-      </div>
-    );
+  // If we have stored tokens, render children immediately (session will be processed in background)
+  // This prevents showing loading screens when a session exists
+  if (hasStoredSession) {
+    return <>{children}</>;
   }
+  
+  // If initialized but no user and no stored session, redirect to login
+  if (isInitialized && !user && !hasStoredSession) {
+    return <Navigate to="/login" replace />;
+  }
+  
+  // If not initialized yet, still render (AuthContext is instant now)
+  // This prevents any loading screens
+  return <>{children}</>;
   
   // If initialized and checked, but no user and not loading
   // Only redirect if we're sure there's no session (not loading, no user, and no stored tokens)

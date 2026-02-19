@@ -134,17 +134,95 @@ const mobileSidebarItems: SidebarItem[] = [
 
 const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, userRole = 'User', isOpen = false, onClose, onOpenAIChat, mobileOnly = false }) => {
   const location = useLocation();
-  const initials = userInitials || userName.split(' ').map(n => n[0]).join('');
   const { isAdmin } = useAdminRole();
   const { isExternalUser, isLoading: isLoadingExternal } = useExternalUser();
-  const { user: authUser, isInitialized } = useAuthContext();
+  const { user: authUser, isInitialized, userFullName, userInitials: authUserInitials } = useAuthContext();
 
   // State for user role and department from database
-  const [userRoleFromDB, setUserRoleFromDB] = React.useState<string>('User');
-  const [userDepartment, setUserDepartment] = React.useState<string>('');
-  const [userOfficialName, setUserOfficialName] = React.useState<string>('');
-  const [isSuperUser, setIsSuperUser] = React.useState<boolean>(false);
-  const [isLoadingUserInfo, setIsLoadingUserInfo] = React.useState<boolean>(false); // Start as false to not block UI
+  // Initialize from cache immediately (synchronous) for instant display
+  const getInitialUserInfo = () => {
+    try {
+      const cacheKey = 'sidebar_userData';
+      const cacheTimestampKey = 'sidebar_userData_timestamp';
+      const cacheUserIdKey = 'sidebar_userData_userId';
+      const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+
+      const cachedData = sessionStorage.getItem(cacheKey);
+      const cachedTimestamp = sessionStorage.getItem(cacheTimestampKey);
+      const cachedUserId = sessionStorage.getItem(cacheUserIdKey);
+
+      // Check if we have a current user to validate cache
+      const currentUserId = authUser?.id;
+      
+      if (cachedData && cachedTimestamp && cachedUserId) {
+        const age = Date.now() - parseInt(cachedTimestamp, 10);
+        // Only use cache if it's for the current user (or if we don't have current user yet, use it anyway)
+        const isValidCache = age < CACHE_DURATION && (!currentUserId || cachedUserId === currentUserId);
+        
+        if (isValidCache) {
+          const data = JSON.parse(cachedData);
+          return {
+            userOfficialName: data.userOfficialName || '',
+            userRoleFromDB: data.userRoleFromDB || 'User',
+            userDepartment: data.userDepartment || '',
+            isSuperUser: data.isSuperUser || false,
+            cachedUserId: cachedUserId
+          };
+        }
+      }
+    } catch (e) {
+      // Ignore cache errors
+    }
+    return {
+      userOfficialName: userFullName || userName || authUser?.email || '',
+      userRoleFromDB: 'User',
+      userDepartment: '',
+      isSuperUser: false,
+      cachedUserId: null
+    };
+  };
+
+  const initialUserInfo = getInitialUserInfo();
+  // Initialize state with cached values - these will display immediately
+  const [userRoleFromDB, setUserRoleFromDB] = React.useState<string>(initialUserInfo.userRoleFromDB);
+  const [userDepartment, setUserDepartment] = React.useState<string>(initialUserInfo.userDepartment);
+  // Use cached name, then AuthContext, then prop, then email
+  const initialName = initialUserInfo.userOfficialName || userFullName || userName || authUser?.email || 'User';
+  const [userOfficialName, setUserOfficialName] = React.useState<string>(initialName);
+  const [isSuperUser, setIsSuperUser] = React.useState<boolean>(initialUserInfo.isSuperUser);
+  const [isLoadingUserInfo, setIsLoadingUserInfo] = React.useState<boolean>(false); // Always false - never show loading
+
+  // Compute initials immediately from available data
+  const initials = React.useMemo(() => {
+    // Priority: userInitials prop > authUserInitials > computed from userOfficialName > computed from userName > computed from userFullName > computed from email
+    if (userInitials) return userInitials;
+    if (authUserInitials) return authUserInitials;
+    if (userOfficialName && userOfficialName !== 'User') {
+      const parts = userOfficialName.trim().split(' ');
+      if (parts.length >= 2) {
+        return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+      }
+      return userOfficialName[0]?.toUpperCase() || 'U';
+    }
+    if (userName && userName !== 'John Doe') {
+      const parts = userName.trim().split(' ');
+      if (parts.length >= 2) {
+        return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+      }
+      return userName[0]?.toUpperCase() || 'U';
+    }
+    if (userFullName) {
+      const parts = userFullName.trim().split(' ');
+      if (parts.length >= 2) {
+        return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+      }
+      return userFullName[0]?.toUpperCase() || 'U';
+    }
+    if (authUser?.email) {
+      return authUser.email[0]?.toUpperCase() || 'U';
+    }
+    return 'U';
+  }, [userInitials, authUserInitials, userOfficialName, userName, userFullName, authUser?.email]);
 
   // Helper function to get role display name
   const getRoleDisplayName = (role: string): string => {
@@ -178,81 +256,76 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
   };
 
   // Fetch user role and department from database using new employee relationship
+  // DEFERRED: Run in background after initial render
   React.useEffect(() => {
-    // Wait for auth to be initialized before fetching
-    if (!isInitialized) {
-      return;
-    }
-
-    const fetchUserInfo = async (retryCount = 0) => {
-      // Don't set loading to true - run in background to not block UI
-      try {
-        // Get the current auth user FIRST to check cache key
-        const { data: { user }, error: authError } = await supabase.auth.getUser();
-
-        if (authError) {
-          console.error('Error getting auth user:', authError);
-          setIsLoadingUserInfo(false);
-          return;
-        }
-
-        if (!user) {
-          // No user logged in - clear cache and state
-          sessionStorage.removeItem('sidebar_userData');
-          sessionStorage.removeItem('sidebar_userData_timestamp');
-          sessionStorage.removeItem('sidebar_userData_userId');
-          setUserOfficialName('');
-          setUserRoleFromDB('User');
-          setUserDepartment('General');
-          setIsSuperUser(false);
-          setIsLoadingUserInfo(false);
-          return;
-        }
-
-        // Check cache first - but only if it's for the current user
-        const cacheKey = 'sidebar_userData';
-        const cacheTimestampKey = 'sidebar_userData_timestamp';
-        const cacheUserIdKey = 'sidebar_userData_userId';
-        const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
-
+    // Defer to next tick to allow instant render
+    const timeoutId = setTimeout(() => {
+      const fetchUserInfo = async (retryCount = 0) => {
+        // Never set loading to true - always run in background
         try {
-          const cachedData = sessionStorage.getItem(cacheKey);
-          const cachedTimestamp = sessionStorage.getItem(cacheTimestampKey);
-          const cachedUserId = sessionStorage.getItem(cacheUserIdKey);
+          // Get the current auth user FIRST to check cache key
+          const { data: { user }, error: authError } = await supabase.auth.getUser();
 
-          // Only use cache if it's for the current user
-          if (cachedData && cachedTimestamp && cachedUserId === user.id) {
-            const age = Date.now() - parseInt(cachedTimestamp, 10);
-            if (age < CACHE_DURATION) {
-              // Use cached data
-              const data = JSON.parse(cachedData);
-              setUserOfficialName(data.userOfficialName || '');
-              setUserRoleFromDB(data.userRoleFromDB || 'User');
-              setUserDepartment(data.userDepartment || 'General');
-              setIsSuperUser(data.isSuperUser || false);
-              setIsLoadingUserInfo(false);
-              console.log('✅ Sidebar: User data loaded from cache');
-              return; // Skip fetch - use cache
-            } else {
-              // Cache expired - clear it
+          if (authError) {
+            console.error('Error getting auth user:', authError);
+            return;
+          }
+
+          if (!user) {
+            // No user logged in - clear cache and state
+            sessionStorage.removeItem('sidebar_userData');
+            sessionStorage.removeItem('sidebar_userData_timestamp');
+            sessionStorage.removeItem('sidebar_userData_userId');
+            setUserOfficialName('');
+            setUserRoleFromDB('User');
+            setUserDepartment('General');
+            setIsSuperUser(false);
+            return;
+          }
+
+          // Check cache first - but only if it's for the current user
+          const cacheKey = 'sidebar_userData';
+          const cacheTimestampKey = 'sidebar_userData_timestamp';
+          const cacheUserIdKey = 'sidebar_userData_userId';
+          const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+
+          try {
+            const cachedData = sessionStorage.getItem(cacheKey);
+            const cachedTimestamp = sessionStorage.getItem(cacheTimestampKey);
+            const cachedUserId = sessionStorage.getItem(cacheUserIdKey);
+
+            // Only use cache if it's for the current user
+            if (cachedData && cachedTimestamp && cachedUserId === user.id) {
+              const age = Date.now() - parseInt(cachedTimestamp, 10);
+              if (age < CACHE_DURATION) {
+                // Use cached data (already set in initial state, but update if needed)
+                const data = JSON.parse(cachedData);
+                setUserOfficialName(data.userOfficialName || '');
+                setUserRoleFromDB(data.userRoleFromDB || 'User');
+                setUserDepartment(data.userDepartment || 'General');
+                setIsSuperUser(data.isSuperUser || false);
+                console.log('✅ Sidebar: User data loaded from cache');
+                return; // Skip fetch - use cache
+              } else {
+                // Cache expired - clear it
+                sessionStorage.removeItem(cacheKey);
+                sessionStorage.removeItem(cacheTimestampKey);
+                sessionStorage.removeItem(cacheUserIdKey);
+              }
+            } else if (cachedUserId && cachedUserId !== user.id) {
+              // Different user - clear old cache
+              console.log('🔄 Sidebar: Different user detected, clearing old cache');
               sessionStorage.removeItem(cacheKey);
               sessionStorage.removeItem(cacheTimestampKey);
               sessionStorage.removeItem(cacheUserIdKey);
             }
-          } else if (cachedUserId && cachedUserId !== user.id) {
-            // Different user - clear old cache
-            console.log('🔄 Sidebar: Different user detected, clearing old cache');
+          } catch (error) {
+            console.error('Error reading sidebar user data cache:', error);
+            // Clear corrupted cache
             sessionStorage.removeItem(cacheKey);
             sessionStorage.removeItem(cacheTimestampKey);
             sessionStorage.removeItem(cacheUserIdKey);
           }
-        } catch (error) {
-          console.error('Error reading sidebar user data cache:', error);
-          // Clear corrupted cache
-          sessionStorage.removeItem(cacheKey);
-          sessionStorage.removeItem(cacheTimestampKey);
-          sessionStorage.removeItem(cacheUserIdKey);
-        }
 
         // Get current user's data with employee relationship
         let userData = null;
@@ -344,22 +417,24 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
 
               // Set department
               const deptData = Array.isArray(empData.tenant_departement) ? empData.tenant_departement[0] : empData.tenant_departement;
-              deptName = deptData?.name || 'General';
-              setUserDepartment(deptName);
+              deptName = deptData?.name || '';
+              setUserDepartment(deptName); // Update immediately
             } else {
               // No employee data, use basic user info
               officialName = userData.full_name || user.email || '';
               setUserOfficialName(officialName);
               setUserRoleFromDB('User');
+              setUserDepartment(''); // Clear department if no employee data
             }
           } else {
             // No employee relationship, use basic user info
             officialName = userData.full_name || user.email || '';
             setUserOfficialName(officialName);
             setUserRoleFromDB('User');
+            setUserDepartment(''); // Clear department if no employee relationship
           }
 
-          // Cache the data with user ID
+          // Cache the data with user ID - update immediately so it's available for next render
           try {
             const dataToCache = {
               userOfficialName: officialName,
@@ -370,7 +445,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
             sessionStorage.setItem('sidebar_userData', JSON.stringify(dataToCache));
             sessionStorage.setItem('sidebar_userData_timestamp', Date.now().toString());
             sessionStorage.setItem('sidebar_userData_userId', user.id); // Store user ID with cache
-            console.log('✅ Sidebar: User data cached');
+            console.log('✅ Sidebar: User data cached and state updated');
           } catch (cacheError) {
             console.error('Error caching sidebar user data:', cacheError);
           }
@@ -380,6 +455,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
           const officialName = user.email || '';
           setUserOfficialName(officialName);
           setUserRoleFromDB('User');
+          setUserDepartment(''); // Clear department if user not found
 
           // Cache basic data with user ID
           try {
@@ -430,11 +506,14 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
       }
     });
 
-    return () => {
-      if (subscription) {
-        subscription.unsubscribe();
-      }
-    };
+      return () => {
+        if (subscription) {
+          subscription.unsubscribe();
+        }
+      };
+    }, 0); // Defer to next tick
+
+    return () => clearTimeout(timeoutId);
   }, [isInitialized, authUser?.id]); // Re-fetch when auth is initialized or user changes
 
   // Responsive: shrink gap on small desktop heights
@@ -660,23 +739,20 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                 {/* User info - only visible when sidebar is expanded */}
                 {isSidebarHovered && (
                   <div className="flex flex-col min-w-0">
-                    {isLoadingUserInfo ? (
-                      <span className="text-white/70 text-xs truncate">Loading...</span>
-                    ) : (
-                      <>
-                        <span className="text-white font-medium text-sm truncate">
-                          {userOfficialName || authUser?.email || userName}
-                        </span>
-                        <span className="text-white/70 text-xs truncate">
-                          {userRoleFromDB}
-                        </span>
-                        {userDepartment && (
-                          <span className="text-white/50 text-xs truncate">
-                            {userDepartment}
-                          </span>
-                        )}
-                      </>
-                    )}
+                    {/* Always show user info immediately - never show loading */}
+                    <span className="text-white font-medium text-sm truncate">
+                      {userOfficialName || userName || authUser?.email || 'User'}
+                    </span>
+                    {/* Always show role - will be "User" initially, then update when data loads */}
+                    <span className="text-white/70 text-xs truncate">
+                      {userRoleFromDB || 'User'}
+                    </span>
+                    {/* Always show department if it exists - will update when data loads */}
+                    {userDepartment ? (
+                      <span className="text-white/50 text-xs truncate">
+                        {userDepartment}
+                      </span>
+                    ) : null}
                   </div>
                 )}
               </div>
@@ -818,23 +894,20 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
 
                 {/* User info - always visible on mobile */}
                 <div className="flex flex-col min-w-0">
-                  {isLoadingUserInfo ? (
-                    <span className="text-base-content/70 text-xs truncate">Loading...</span>
-                  ) : (
-                    <>
-                      <span className="text-base-content font-medium text-sm truncate">
-                        {userOfficialName || authUser?.email || userName}
-                      </span>
-                      <span className="text-base-content/70 text-xs truncate">
-                        {userRoleFromDB}
-                      </span>
-                      {userDepartment && (
-                        <span className="text-base-content/50 text-xs truncate">
-                          {userDepartment}
-                        </span>
-                      )}
-                    </>
-                  )}
+                  {/* Always show user info immediately - never show loading */}
+                  <span className="text-base-content font-medium text-sm truncate">
+                    {userOfficialName || userName || authUser?.email || 'User'}
+                  </span>
+                  {/* Always show role - will be "User" initially, then update when data loads */}
+                  <span className="text-base-content/70 text-xs truncate">
+                    {userRoleFromDB || 'User'}
+                  </span>
+                  {/* Always show department if it exists - will update when data loads */}
+                  {userDepartment ? (
+                    <span className="text-base-content/50 text-xs truncate">
+                      {userDepartment}
+                    </span>
+                  ) : null}
                 </div>
               </div>
             </div>

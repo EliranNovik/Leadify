@@ -320,7 +320,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => clearInterval(interval);
   }, [authState.user]);
 
-  // Initialize auth state
+  // Initialize auth state - INSTANT initialization using cached session
   useEffect(() => {
     let subscription: any = null;
     let isMounted = true;
@@ -328,79 +328,74 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let initHandled = false;
     const storageCheckTimeouts = new Map<string, NodeJS.Timeout>();
 
-    // Fallback timeout: always mark as initialized after 3 seconds to prevent infinite loading
-    const fallbackTimeout = setTimeout(() => {
-      if (isMounted && !initHandled) {
-        console.warn('Auth initialization taking too long, marking as initialized to prevent stuck loading');
-        initHandled = true;
-        setAuthState(prev => ({
-          ...prev,
-          isLoading: false,
-          isInitialized: true,
-          // Keep user if we had one from stored session
-          user: prev.user || null
-        }));
-      }
-    }, 3000);
-
     const initializeAuth = async () => {
       try {
-        // Don't check localStorage here - let INITIAL_SESSION handle it
-        // This prevents race conditions and ensures consistent behavior across tabs
-        // INITIAL_SESSION will fire immediately when listener is set up and will have the correct session
+        // INSTANT: Check cached session from localStorage immediately (synchronous)
+        // This allows immediate render without waiting for async checks
+        const getCachedSession = () => {
+          try {
+            const storageKey = `sb-${supabaseUrl.split('//')[1]?.split('.')[0]}-auth-token`;
+            const cached = localStorage.getItem(storageKey);
+            if (cached) {
+              const parsed = JSON.parse(cached);
+              if (parsed?.currentSession?.user) {
+                return parsed.currentSession;
+              }
+            }
+          } catch (e) {
+            // Ignore errors
+          }
+          return null;
+        };
+
+        const cachedSession = getCachedSession();
+        if (cachedSession?.user) {
+          // INSTANT: Set user immediately from cache
+          console.log('[AuthContext] Using cached session for instant initialization');
+          updateAuthState(cachedSession, true);
+          // Fetch user details in background (non-blocking)
+          fetchUserDetails(cachedSession.user).catch(() => {});
+        }
 
         // Set up auth state change listener - INITIAL_SESSION should fire immediately
         const { data: { subscription: authSubscription } } = supabase.auth.onAuthStateChange((event, session) => {
           console.log('[AuthContext] onAuthStateChange fired:', event, 'Session:', session?.user?.id || 'no user');
 
           // Handle INITIAL_SESSION - this fires immediately when listener is set up
-          // This is the authoritative source for session state
           if (event === 'INITIAL_SESSION') {
-            console.log('[AuthContext] INITIAL_SESSION event, initHandled:', initHandled, 'hasUser:', !!session?.user);
             if (isMounted && !initHandled) {
               initHandled = true;
-              clearTimeout(fallbackTimeout);
               if (session?.user) {
                 console.log('[AuthContext] INITIAL_SESSION has user, updating state');
                 updateAuthState(session, true);
               } else {
-                console.log('[AuthContext] INITIAL_SESSION no user, keeping initialized=true but no user');
-                // Keep isInitialized=true to prevent redirect, but no user means not authenticated
-                // ProtectedRoute will handle redirect if needed
+                // No session - clear state but keep initialized
                 setAuthState(prev => ({
                   ...prev,
                   user: null,
                   userFullName: null,
                   userInitials: null,
                   isLoading: false,
-                  isInitialized: true // Keep true - let ProtectedRoute handle redirect
+                  isInitialized: true
                 }));
               }
             }
             return;
           }
-          // Handle all other events normally (SIGNED_IN, SIGNED_OUT, etc.)
-          // IMPORTANT: Always handle SIGNED_IN to update state after login
+          // Handle all other events normally
           handleAuthStateChange(event, session);
         });
         subscription = authSubscription;
 
-        // Fallback: If INITIAL_SESSION doesn't fire within 200ms, mark as initialized
-        // This is a safety net, but INITIAL_SESSION should fire immediately
-        setTimeout(() => {
-          if (isMounted && !initHandled) {
-            initHandled = true;
-            clearTimeout(fallbackTimeout);
-            setAuthState(prev => ({
-              ...prev,
-              user: null,
-              userFullName: null,
-              userInitials: null,
-              isLoading: false,
-              isInitialized: true
-            }));
-          }
-        }, 200);
+        // Mark as initialized immediately (already done above if cached session exists)
+        if (!initHandled) {
+          initHandled = true;
+          setAuthState(prev => ({
+            ...prev,
+            isLoading: false,
+            isInitialized: true
+          }));
+        }
 
         // Listen for localStorage changes from other tabs
         // Add debouncing to prevent excessive checks
@@ -446,11 +441,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         window.addEventListener('storage', storageListener);
       } catch (error) {
         console.error('Auth initialization error:', error);
+        // On error, mark as initialized immediately to prevent blocking
         if (isMounted && !initHandled) {
           initHandled = true;
-          clearTimeout(fallbackTimeout);
-          // On error, mark as initialized to prevent infinite loading
-          // Always mark as initialized even on error to prevent stuck loading screen
           setAuthState(prev => ({
             ...prev,
             isLoading: false,
@@ -466,7 +459,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     return () => {
       isMounted = false;
-      clearTimeout(fallbackTimeout);
       if (subscription) {
         subscription.unsubscribe();
       }
@@ -477,7 +469,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       storageCheckTimeouts.forEach(timeout => clearTimeout(timeout));
       storageCheckTimeouts.clear();
     };
-  }, [handleAuthStateChange, updateAuthState]);
+  }, [handleAuthStateChange, updateAuthState, fetchUserDetails]);
 
   return (
     <AuthContext.Provider value={authState}>

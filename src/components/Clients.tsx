@@ -2129,16 +2129,36 @@ const Clients: React.FC<ClientsProps> = ({
     if (!stageDropdownAnchor) return;
 
     const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as Node;
+      const target = event.target as HTMLElement;
+      
+      // Check if click is inside any dropdown container OR list container
       const dropdownRefs = [badgeStageDropdownRef, desktopStageDropdownRef, mobileStageDropdownRef];
-      const clickedInside = dropdownRefs.some(ref => ref.current?.contains(target));
-      if (!clickedInside) {
+      const listRefs = [badgeStageListRef, desktopStageListRef, mobileStageListRef];
+      const clickedInsideDropdown = dropdownRefs.some(ref => ref.current?.contains(target));
+      const clickedInsideList = listRefs.some(ref => ref.current?.contains(target));
+      
+      // Also check if click is inside the overlay div (the rounded-2xl container)
+      const isInsideOverlay = target?.closest('.rounded-2xl') !== null;
+      
+      // Check if clicking on the badge button itself (should not close when clicking to open)
+      const isBadgeButton = target.closest('button')?.classList.contains('badge') || 
+                           target.classList.contains('badge');
+      
+      // Only close if click is outside all containers and not on the badge button
+      if (!clickedInsideDropdown && !clickedInsideList && !isInsideOverlay && !isBadgeButton) {
         setStageDropdownAnchor(null);
       }
     };
 
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    // Use a small delay to ensure React's onClick handlers fire first
+    const timeoutId = setTimeout(() => {
+      document.addEventListener('click', handleClickOutside);
+    }, 0);
+
+    return () => {
+      clearTimeout(timeoutId);
+      document.removeEventListener('click', handleClickOutside);
+    };
   }, [stageDropdownAnchor]);
 
   useEffect(() => {
@@ -4444,9 +4464,14 @@ const Clients: React.FC<ClientsProps> = ({
   };
 
   // Function to handle stage change from dropdown
-  const handleStageChange = async (newStageId: string | number) => {
+  const handleStageChange = useCallback(async (newStageId: string | number) => {
+    if (!selectedClient) {
+      console.error('❌ No client selected for stage change');
+      return;
+    }
+    console.log('🔄 handleStageChange called with:', { newStageId, clientId: selectedClient.id });
     await updateLeadStage(newStageId);
-  };
+  }, [selectedClient, updateLeadStage]);
   const handleStartCase = useCallback(() => {
     setStageDropdownAnchor(null);
     void updateLeadStage('Handler Started');
@@ -4723,15 +4748,29 @@ const Clients: React.FC<ClientsProps> = ({
           getStageColour(String(stageOption.id))) || '#6b7280';
       const badgeTextColour = getContrastingTextColor(stageColour);
 
+      const handleStageClick = async (e: React.MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // Don't close dropdown here - let the stage change complete first
+        // The dropdown will close after the stage is updated
+        try {
+          console.log('🔄 Stage change clicked:', { stageId: stageOption.id, stageName: stageOption.name });
+          await handleStageChange(stageOption.id);
+          // Close dropdown after successful stage change
+          setStageDropdownAnchor(null);
+        } catch (error) {
+          console.error('❌ Error changing stage:', error);
+          toast.error('Failed to change stage. Please try again.');
+          // Keep dropdown open on error so user can try again
+        }
+      };
+
       return (
         <button
           key={`${variant}-${stageOption.id}`}
           type="button"
           className="w-full px-3 py-2.5 rounded-xl border border-transparent flex items-center justify-center transition-all group hover:opacity-80"
-          onClick={() => {
-            setStageDropdownAnchor(null);
-            handleStageChange(stageOption.id);
-          }}
+          onClick={handleStageClick}
         >
           <span
             className="inline-flex items-center justify-center px-3 py-1 rounded-lg text-sm font-semibold shadow-sm transition-opacity w-48"
@@ -4828,7 +4867,9 @@ const Clients: React.FC<ClientsProps> = ({
             border: `2px solid ${fallbackStageColour}`,
             boxShadow: '0 8px 22px rgba(17, 24, 39, 0.12)',
           }}
-          onClick={() => {
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
             if (isSuperuser) {
               // Always open the dropdown when clicking the stage badge
               setStageDropdownAnchor(prev => (prev === anchor ? null : anchor));

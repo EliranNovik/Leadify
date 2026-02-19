@@ -219,10 +219,89 @@ export const preCheckExternalUser = async (userId?: string): Promise<void> => {
 };
 
 export const useExternalUser = () => {
-    const [isExternalUser, setIsExternalUser] = useState<boolean>(false);
-    const [isLoading, setIsLoading] = useState<boolean>(true); // Start as true to prevent flash
-    const [userName, setUserName] = useState<string | null>(null);
-    const [userImage, setUserImage] = useState<string | null>(null);
+    // Start with cached data if available (instant initialization)
+    const getInitialState = () => {
+        // Try to get cached data synchronously from localStorage
+        try {
+            // First, try to get current user ID from localStorage (Supabase session)
+            const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+            const storageKey = `sb-${supabaseUrl.split('//')[1]?.split('.')[0]}-auth-token`;
+            const cached = localStorage.getItem(storageKey);
+            let currentUserId: string | null = null;
+            
+            if (cached) {
+                try {
+                    const parsed = JSON.parse(cached);
+                    currentUserId = parsed?.currentSession?.user?.id || null;
+                } catch (e) {
+                    // Ignore parse errors
+                }
+            }
+            
+            // If we have cached external user data and it matches current user, use it immediately
+            if (cachedExternalUser && currentUserId) {
+                const now = Date.now();
+                if (cachedExternalUser.userId === currentUserId && (now - cachedExternalUser.timestamp) < CACHE_DURATION) {
+                    return {
+                        isExternalUser: cachedExternalUser.isExternalUser,
+                        userName: cachedExternalUser.userName,
+                        userImage: cachedExternalUser.userImage,
+                        isLoading: false
+                    };
+                }
+            }
+            
+            // If we have cached data but no current user ID yet, still use it if it's recent (within 5 minutes)
+            // This handles the case where auth hasn't loaded yet but we have recent cache
+            // This is critical to prevent flash of regular dashboard for external users
+            if (cachedExternalUser && !currentUserId) {
+                const now = Date.now();
+                const age = now - cachedExternalUser.timestamp;
+                // Use cache if it's recent (5 minutes) - this prevents flash on initial load
+                if (age < 300000) { // 5 minutes for initial load
+                    console.log('✅ useExternalUser: Using cached data (no user ID yet), age:', age, 'ms');
+                    return {
+                        isExternalUser: cachedExternalUser.isExternalUser,
+                        userName: cachedExternalUser.userName,
+                        userImage: cachedExternalUser.userImage,
+                        isLoading: false
+                    };
+                }
+            }
+            
+            // Also check if we have ANY recent cache (even without user ID match)
+            // This is a fallback for when user ID doesn't match but cache is very recent
+            if (cachedExternalUser) {
+                const now = Date.now();
+                const age = now - cachedExternalUser.timestamp;
+                // If cache is very recent (within 30 seconds), use it even without user ID match
+                // This handles edge cases where user ID might have changed slightly
+                if (age < 30000) { // 30 seconds
+                    console.log('✅ useExternalUser: Using very recent cache (fallback), age:', age, 'ms');
+                    return {
+                        isExternalUser: cachedExternalUser.isExternalUser,
+                        userName: cachedExternalUser.userName,
+                        userImage: cachedExternalUser.userImage,
+                        isLoading: false
+                    };
+                }
+            }
+        } catch (e) {
+            // Ignore errors
+        }
+        return {
+            isExternalUser: false,
+            userName: null,
+            userImage: null,
+            isLoading: false // Start as false - check in background
+        };
+    };
+
+    const initialState = getInitialState();
+    const [isExternalUser, setIsExternalUser] = useState<boolean>(initialState.isExternalUser);
+    const [isLoading, setIsLoading] = useState<boolean>(initialState.isLoading);
+    const [userName, setUserName] = useState<string | null>(initialState.userName);
+    const [userImage, setUserImage] = useState<string | null>(initialState.userImage);
 
     useEffect(() => {
         const checkExternalUser = async () => {
@@ -242,12 +321,19 @@ export const useExternalUser = () => {
                 if (cachedExternalUser && 
                     cachedExternalUser.userId === user.id && 
                     (now - cachedExternalUser.timestamp) < CACHE_DURATION) {
-                    // Use cached data immediately - no loading needed
+                    // Use cached data immediately - update state if it changed
+                    // This ensures the UI updates immediately if cache says external user
                     setIsExternalUser(cachedExternalUser.isExternalUser);
                     setUserName(cachedExternalUser.userName);
                     setUserImage(cachedExternalUser.userImage);
                     setIsLoading(false);
-                    return;
+                    // If cached data says external, we're done - don't fetch again
+                    // This prevents the regular dashboard from flashing
+                    if (cachedExternalUser.isExternalUser) {
+                        console.log('✅ useExternalUser: Using cached external user data, skipping fetch');
+                        return;
+                    }
+                    // If cached data says not external, continue to verify (in case status changed)
                 }
 
                 // If check is in progress, wait for it
