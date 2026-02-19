@@ -515,8 +515,13 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             href={href}
             target={href.startsWith('mailto:') ? undefined : '_blank'}
             rel={href.startsWith('mailto:') ? undefined : 'noopener noreferrer'}
-            className="hover:underline"
-            style={{ color: '#3b82f6' }}
+            className="hover:underline break-all"
+            style={{
+              color: '#3b82f6',
+              wordBreak: 'break-all',
+              overflowWrap: 'break-word',
+              hyphens: 'auto'
+            }}
           >
             {displayText}
           </a>
@@ -6329,7 +6334,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 )}
 
                 {/* Messages - Scrollable */}
-                <div ref={chatMessagesRef} onScroll={handleChatMessagesScroll} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 overscroll-contain relative" style={isMobile ? { flex: '1 1 auto', paddingBottom: showTemplateSelector ? '300px' : (isLocked ? '280px' : '200px'), WebkitOverflowScrolling: 'touch', overflowX: 'visible' } : { paddingBottom: isLocked ? '200px' : '120px', overflowX: 'visible' }}>
+                <div ref={chatMessagesRef} onScroll={handleChatMessagesScroll} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 overscroll-contain relative" style={isMobile ? { flex: '1 1 auto', paddingBottom: showTemplateSelector ? '300px' : (isLocked ? '280px' : '200px'), WebkitOverflowScrolling: 'touch', overflowX: 'hidden', maxWidth: '100%' } : { paddingBottom: isLocked ? '200px' : '120px', overflowX: 'hidden', maxWidth: '100%' }}>
                   {messages.length === 0 ? (
                     <div className="text-center py-8 text-gray-500">
                       <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
@@ -6362,8 +6367,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
                           <div
                             className={`flex gap-2 ${message.direction === 'out' ? 'flex-row-reverse' : 'flex-row'}`}
+                            style={{ maxWidth: '100%', minWidth: 0 }}
                           >
-                            <div className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'} flex-1`}>
+                            <div className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'} flex-1`} style={{ maxWidth: '100%', minWidth: 0 }}>
                               {message.direction === 'out' && (
                                 <div className="flex items-center gap-2 mb-1 mr-2">
                                   <span className="text-sm text-gray-600 font-medium">
@@ -6429,7 +6435,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                     <p
                                       className="text-base break-words mt-1"
                                       dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
-                                      style={{ textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
+                                      style={{
+                                        textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
+                                        wordBreak: 'break-word',
+                                        overflowWrap: 'break-word',
+                                        overflow: 'visible',
+                                        maxWidth: '100%',
+                                        minWidth: 0,
+                                        height: 'auto'
+                                      }}
                                     >
                                       {renderTextWithLinks(message.caption)}
                                     </p>
@@ -6452,13 +6466,17 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                 </div>
                               ) : (
                                 <div
-                                  className={`group max-w-[75%] md:max-w-[70%] rounded-2xl px-4 py-1.5 shadow-sm relative ${message.direction === 'out'
+                                  className={`group ${message.direction === 'out' ? 'max-w-[75%] md:max-w-[55%]' : 'max-w-[75%] md:max-w-[70%]'} rounded-2xl px-4 py-1.5 shadow-sm relative ${message.direction === 'out'
                                     ? 'bg-green-100 border border-green-200 text-gray-900'
                                     : 'bg-white text-gray-900 border border-gray-200'
                                     }`}
                                   style={{
                                     wordBreak: 'break-word',
-                                    overflowWrap: 'break-word'
+                                    overflowWrap: 'break-word',
+                                    overflow: 'visible',
+                                    minWidth: 0,
+                                    maxWidth: '100%',
+                                    height: 'auto'
                                   }}
                                 >
                                   {/* Edit input or message content */}
@@ -6504,7 +6522,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
                                             wordBreak: 'break-word',
                                             overflowWrap: 'break-word',
-                                            hyphens: 'auto'
+                                            hyphens: 'auto',
+                                            overflow: 'visible',
+                                            maxWidth: '100%',
+                                            minWidth: 0,
+                                            height: 'auto'
                                           }}
                                         >
                                           {renderTextWithLinks(message.message)}
@@ -6636,7 +6658,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                         <p
                                           className="text-base break-words mt-2"
                                           dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
-                                          style={{ textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
+                                          style={{
+                                            textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
+                                            wordBreak: 'break-word',
+                                            overflowWrap: 'break-word',
+                                            overflow: 'visible',
+                                            maxWidth: '100%',
+                                            minWidth: 0,
+                                            height: 'auto'
+                                          }}
                                         >
                                           {renderTextWithLinks(message.caption)}
                                         </p>
@@ -6655,10 +6685,34 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                         profilePictureUrl={message.profile_picture_url}
                                       />
                                       {message.caption && (
-                                        <p className="text-base break-words mt-2">{renderTextWithLinks(message.caption)}</p>
+                                        <p
+                                          className="text-base break-words mt-2"
+                                          style={{
+                                            wordBreak: 'break-word',
+                                            overflowWrap: 'break-word',
+                                            overflow: 'visible',
+                                            maxWidth: '100%',
+                                            minWidth: 0,
+                                            height: 'auto'
+                                          }}
+                                        >
+                                          {renderTextWithLinks(message.caption)}
+                                        </p>
                                       )}
                                       {!message.caption && message.message && message.message !== 'Voice message' && (
-                                        <p className="text-base break-words mt-2">{renderTextWithLinks(message.message)}</p>
+                                        <p
+                                          className="text-base break-words mt-2"
+                                          style={{
+                                            wordBreak: 'break-word',
+                                            overflowWrap: 'break-word',
+                                            overflow: 'visible',
+                                            maxWidth: '100%',
+                                            minWidth: 0,
+                                            height: 'auto'
+                                          }}
+                                        >
+                                          {renderTextWithLinks(message.message)}
+                                        </p>
                                       )}
                                     </div>
                                   )}
@@ -6696,7 +6750,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                         <p
                                           className="text-base break-words"
                                           dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
-                                          style={{ textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
+                                          style={{
+                                            textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
+                                            wordBreak: 'break-word',
+                                            overflowWrap: 'break-word',
+                                            overflow: 'visible',
+                                            maxWidth: '100%',
+                                            minWidth: 0,
+                                            height: 'auto'
+                                          }}
                                         >
                                           {renderTextWithLinks(message.caption)}
                                         </p>
