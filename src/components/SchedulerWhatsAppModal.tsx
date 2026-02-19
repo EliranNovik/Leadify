@@ -512,6 +512,140 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     return message;
   };
 
+  // Helper function to convert URLs, email addresses, and bold formatting in text
+  const renderTextWithLinks = (text: string): React.ReactNode => {
+    if (!text) return text;
+    
+    // Process links (URLs and emails)
+    const processLinks = (input: string, startKey: number = 0): (string | React.ReactElement)[] => {
+      const linkRegex = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|mailto:[^\s<>"']+|([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})|[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:\/[^\s<>"']*)?)/g;
+      const parts: (string | React.ReactElement)[] = [];
+      let lastIndex = 0;
+      let match;
+      let keyCounter = startKey;
+      
+      linkRegex.lastIndex = 0;
+      
+      while ((match = linkRegex.exec(input)) !== null) {
+        // Add text before the link
+        if (match.index > lastIndex) {
+          parts.push(input.substring(lastIndex, match.index));
+        }
+        
+        // Determine if it's an email or URL
+        const matchedText = match[0];
+        let href = matchedText;
+        let displayText = matchedText;
+        
+        if (matchedText.includes('@') && !matchedText.startsWith('http') && !matchedText.startsWith('mailto:')) {
+          // It's an email address
+          href = `mailto:${matchedText}`;
+          displayText = matchedText;
+        } else if (matchedText.startsWith('mailto:')) {
+          // Already has mailto: prefix
+          href = matchedText;
+          displayText = matchedText.replace(/^mailto:/, '');
+        } else if (!matchedText.startsWith('http://') && !matchedText.startsWith('https://') && !matchedText.startsWith('mailto:')) {
+          // It's a URL without protocol
+          href = `https://${matchedText}`;
+          displayText = matchedText;
+        }
+        
+        parts.push(
+          <a
+            key={`link-${keyCounter++}`}
+            href={href}
+            target={href.startsWith('mailto:') ? undefined : '_blank'}
+            rel={href.startsWith('mailto:') ? undefined : 'noopener noreferrer'}
+            className="hover:underline"
+            style={{ color: '#3b82f6' }}
+          >
+            {displayText}
+          </a>
+        );
+        
+        lastIndex = match.index + match[0].length;
+      }
+      
+      // Add remaining text
+      if (lastIndex < input.length) {
+        parts.push(input.substring(lastIndex));
+      }
+      
+      return parts;
+    };
+    
+    // Process bold formatting (*text*) and links together
+    const processBoldAndLinks = (input: string, startKey: number = 0): (string | React.ReactElement)[] => {
+      const boldRegex = /\*([^*]+)\*/g;
+      const parts: (string | React.ReactElement)[] = [];
+      let lastIndex = 0;
+      let match;
+      let keyCounter = startKey;
+      
+      boldRegex.lastIndex = 0;
+      
+      while ((match = boldRegex.exec(input)) !== null) {
+        // Add text before the bold (process links in it)
+        if (match.index > lastIndex) {
+          const beforeText = input.substring(lastIndex, match.index);
+          const processedBefore = processLinks(beforeText, keyCounter);
+          parts.push(...processedBefore);
+          // Update key counter based on links added
+          keyCounter += processedBefore.filter(p => React.isValidElement(p)).length;
+        }
+        
+        // Add the bold text (also process links inside bold text)
+        const boldContent = match[1];
+        const processedBold = processLinks(boldContent, keyCounter);
+        if (processedBold.length === 1 && typeof processedBold[0] === 'string') {
+          // No links in bold, just make it bold
+          parts.push(
+            <strong key={`bold-${keyCounter++}`}>
+              {boldContent}
+            </strong>
+          );
+        } else {
+          // Has links in bold, wrap in strong
+          parts.push(
+            <strong key={`bold-${keyCounter++}`}>
+              {processedBold}
+            </strong>
+          );
+          keyCounter += processedBold.filter(p => React.isValidElement(p)).length;
+        }
+        
+        lastIndex = match.index + match[0].length;
+      }
+      
+      // Add remaining text (process links in it)
+      if (lastIndex < input.length) {
+        const remainingText = input.substring(lastIndex);
+        parts.push(...processLinks(remainingText, keyCounter));
+      } else if (parts.length === 0) {
+        // No bold found, process links in the whole text
+        return processLinks(input, 0);
+      }
+      
+      return parts;
+    };
+    
+    // Start processing with bold formatting
+    const result = processBoldAndLinks(text);
+    
+    // If no formatting found, return original text
+    if (result.length === 0) {
+      return text;
+    }
+    
+    // If only one part and it's a string, return it directly
+    if (result.length === 1 && typeof result[0] === 'string') {
+      return result[0];
+    }
+    
+    return <>{result}</>;
+  };
+
   // Helper functions
   const isEmojiOnly = (text: string): boolean => {
     const cleanText = text.trim();
@@ -1800,7 +1934,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
                         {/* Caption for images */}
                         {message.message_type === 'image' && message.caption && (
-                          <p className="text-base break-words mt-1">{message.caption}</p>
+                          <p className="text-base break-words mt-1">{renderTextWithLinks(message.caption)}</p>
                         )}
 
                         {/* Timestamp and read receipts at bottom of image/emoji */}
@@ -1832,7 +1966,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                           dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
                           style={{ textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
                         >
-                          {message.message}
+                          {renderTextWithLinks(message.message)}
                         </p>
                       )}
                       
@@ -1881,10 +2015,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                             profilePictureUrl={message.profile_picture_url}
                           />
                           {message.caption && (
-                            <p className="text-base break-words mt-2">{message.caption}</p>
+                            <p className="text-base break-words mt-2">{renderTextWithLinks(message.caption)}</p>
                           )}
                           {!message.caption && message.message && (
-                            <p className="text-base break-words mt-2">{message.message}</p>
+                            <p className="text-base break-words mt-2">{renderTextWithLinks(message.message)}</p>
                           )}
                         </div>
                       )}

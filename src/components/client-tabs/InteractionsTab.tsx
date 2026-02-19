@@ -583,6 +583,119 @@ const convertBodyToHtml = (text: string) => {
   return result;
 };
 
+// Helper function to convert URLs, email addresses, and bold formatting in text to HTML
+const renderTextWithLinksAsHtml = (text: string): string => {
+  if (!text) return text;
+  
+  // Escape HTML first to prevent XSS
+  const escapeHtml = (str: string) => {
+    const map: { [key: string]: string } = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#039;'
+    };
+    return str.replace(/[&<>"']/g, (m) => map[m]);
+  };
+  
+  // Process links (URLs and emails)
+  const processLinks = (input: string): string => {
+    const linkRegex = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|mailto:[^\s<>"']+|([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})|[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:\/[^\s<>"']*)?)/g;
+    let result = '';
+    let lastIndex = 0;
+    let match;
+    
+    linkRegex.lastIndex = 0;
+    
+    while ((match = linkRegex.exec(input)) !== null) {
+      // Add text before the link
+      if (match.index > lastIndex) {
+        result += escapeHtml(input.substring(lastIndex, match.index));
+      }
+      
+      // Determine if it's an email or URL
+      const matchedText = match[0];
+      let href = matchedText;
+      let displayText = escapeHtml(matchedText);
+      
+      if (matchedText.includes('@') && !matchedText.startsWith('http') && !matchedText.startsWith('mailto:')) {
+        // It's an email address
+        href = `mailto:${matchedText}`;
+        displayText = escapeHtml(matchedText);
+      } else if (matchedText.startsWith('mailto:')) {
+        // Already has mailto: prefix
+        href = matchedText;
+        displayText = escapeHtml(matchedText.replace(/^mailto:/, ''));
+      } else if (!matchedText.startsWith('http://') && !matchedText.startsWith('https://') && !matchedText.startsWith('mailto:')) {
+        // It's a URL without protocol
+        href = `https://${matchedText}`;
+        displayText = escapeHtml(matchedText);
+      } else {
+        displayText = escapeHtml(matchedText);
+      }
+      
+      const target = href.startsWith('mailto:') ? '' : ' target="_blank" rel="noopener noreferrer"';
+      result += `<a href="${escapeHtml(href)}"${target} class="hover:underline" style="color: #3b82f6;">${displayText}</a>`;
+      
+      lastIndex = match.index + match[0].length;
+    }
+    
+    // Add remaining text
+    if (lastIndex < input.length) {
+      result += escapeHtml(input.substring(lastIndex));
+    }
+    
+    return result || escapeHtml(input);
+  };
+  
+  // Process bold formatting (*text*) and links together
+  const processBoldAndLinks = (input: string): string => {
+    const boldRegex = /\*([^*]+)\*/g;
+    let result = '';
+    let lastIndex = 0;
+    let match;
+    
+    boldRegex.lastIndex = 0;
+    
+    while ((match = boldRegex.exec(input)) !== null) {
+      // Add text before the bold (process links in it)
+      if (match.index > lastIndex) {
+        const beforeText = input.substring(lastIndex, match.index);
+        result += processLinks(beforeText);
+      }
+      
+      // Add the bold text (also process links inside bold text)
+      const boldContent = match[1];
+      const processedBold = processLinks(boldContent);
+      result += `<strong>${processedBold}</strong>`;
+      
+      lastIndex = match.index + match[0].length;
+    }
+    
+    // Add remaining text (process links in it)
+    if (lastIndex < input.length) {
+      const remainingText = input.substring(lastIndex);
+      result += processLinks(remainingText);
+    } else if (result === '') {
+      // No bold found, process links in the whole text
+      return processLinks(input);
+    }
+    
+    return result;
+  };
+  
+  // Start processing with bold formatting
+  const result = processBoldAndLinks(text);
+  
+  // If no formatting found, return escaped original text
+  if (result === '') {
+    return escapeHtml(text);
+  }
+  
+  return result;
+};
+
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const replaceTemplateTokens = async (content: string, client: any) => {
@@ -7839,13 +7952,37 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                           {row.content && (
                             <TruncatedContent
                               content={(() => {
+                                let contentToProcess = '';
                                 // For email_manual and whatsapp_manual interactions, content is already normalized with proper line breaks
                                 if ((row.kind === 'email_manual' || row.kind === 'whatsapp_manual') && row.content) {
                                   // Content should already be normalized, but ensure it's properly formatted
-                                  return row.renderedContent || row.renderedContentFallback || row.content;
+                                  contentToProcess = row.renderedContent || row.renderedContentFallback || row.content;
+                                } else {
+                                  // For other interactions, use existing logic
+                                  contentToProcess = row.renderedContent || row.renderedContentFallback || (row.content ? row.content.replace(/\n/g, '<br>') : '');
                                 }
-                                // For other interactions, use existing logic
-                                return row.renderedContent || row.renderedContentFallback || (row.content ? row.content.replace(/\n/g, '<br>') : '');
+                                
+                                if (!contentToProcess) return '';
+                                
+                                // Check if content already contains HTML tags (excluding <br> tags)
+                                const contentWithoutBr = contentToProcess.replace(/<br\s*\/?>/gi, '');
+                                const hasHtmlTags = /<[^>]+>/.test(contentWithoutBr);
+                                
+                                // For plain text content (WhatsApp, SMS, etc.), apply formatting
+                                if (!hasHtmlTags) {
+                                  // Remove any existing <br> tags, process as plain text, then add <br> back
+                                  const plainText = contentToProcess.replace(/<br\s*\/?>/gi, '\n');
+                                  // Process plain text: apply bold and link formatting
+                                  const processed = renderTextWithLinksAsHtml(plainText);
+                                  // Convert newlines to <br>
+                                  return processed.replace(/\n/g, '<br>');
+                                }
+                                
+                                // For HTML content (emails), process text nodes while preserving HTML structure
+                                // This is a simplified approach: extract text, process it, and re-insert
+                                // For now, we'll process the content as-is but ensure newlines are handled
+                                // More sophisticated HTML parsing could be added later if needed
+                                return contentToProcess;
                               })()}
                               maxCharacters={500}
                               direction={getTextDirection(row.content)}
