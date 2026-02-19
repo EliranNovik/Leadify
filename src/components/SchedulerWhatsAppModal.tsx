@@ -15,6 +15,8 @@ import type { ContactInfo } from '../lib/contactHelpers';
 import { format } from 'date-fns';
 import VoiceMessagePlayer from './whatsapp/VoiceMessagePlayer';
 import VoiceMessageRecorder from './whatsapp/VoiceMessageRecorder';
+import WhatsAppAvatar from './whatsapp/WhatsAppAvatar';
+import { useNavigate } from 'react-router-dom';
 
 interface WhatsAppMessage {
   id: number;
@@ -61,6 +63,8 @@ interface SchedulerWhatsAppModalProps {
 }
 
 const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen, onClose, client, selectedContact: propSelectedContact, onClientUpdate, hideContactSelector = false }) => {
+  const navigate = useNavigate();
+  
   // Debug: Log when propSelectedContact changes
   useEffect(() => {
     if (isOpen) {
@@ -82,6 +86,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [currentUser, setCurrentUser] = useState<any>(null);
+  
+  // Employee state for avatars
+  const [allEmployees, setAllEmployees] = useState<any[]>([]);
+  const fixedMessageIdsRef = useRef<Set<number>>(new Set());
   
   // Template state
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
@@ -225,6 +233,121 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     };
     fetchCurrentUser();
   }, []);
+
+  // Fetch all employees for display name mapping (including photos for avatars)
+  useEffect(() => {
+    const fetchEmployees = async () => {
+      const { data, error } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name, photo_url, photo')
+        .order('display_name', { ascending: true });
+
+      if (error) {
+        console.error('Error fetching employees:', error);
+      } else {
+        setAllEmployees(data || []);
+      }
+    };
+    fetchEmployees();
+  }, []);
+
+  // Helper function to get employee initials
+  const getEmployeeInitials = (name: string | null | undefined): string => {
+    if (!name) return '??';
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+    return name.substring(0, 2).toUpperCase();
+  };
+
+  // Helper function to get employee by ID or name
+  const getEmployeeById = (employeeIdOrName: string | number | null | undefined) => {
+    if (!employeeIdOrName || employeeIdOrName === '---' || employeeIdOrName === '--' || employeeIdOrName === '') {
+      return null;
+    }
+
+    // First, try to match by ID
+    const employeeById = allEmployees.find((emp: any) => {
+      const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
+      const searchId = typeof employeeIdOrName === 'string' ? parseInt(employeeIdOrName, 10) : employeeIdOrName;
+
+      if (isNaN(Number(searchId))) return false;
+
+      if (empId.toString() === searchId.toString()) return true;
+      if (Number(empId) === Number(searchId)) return true;
+
+      return false;
+    });
+
+    if (employeeById) {
+      return employeeById;
+    }
+
+    // If not found by ID, try to match by display name
+    if (typeof employeeIdOrName === 'string') {
+      const employeeByName = allEmployees.find((emp: any) => {
+        if (!emp.display_name) return false;
+        return emp.display_name.trim().toLowerCase() === employeeIdOrName.trim().toLowerCase();
+      });
+
+      if (employeeByName) {
+        return employeeByName;
+      }
+    }
+
+    return null;
+  };
+
+  // Component to render employee avatar
+  const EmployeeAvatar: React.FC<{
+    employeeId: string | number | null | undefined;
+    size?: 'sm' | 'md' | 'lg';
+  }> = ({ employeeId, size = 'sm' }) => {
+    const [imageError, setImageError] = useState(false);
+    const employee = getEmployeeById(employeeId);
+    const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : size === 'md' ? 'w-12 h-12 text-sm' : 'w-16 h-16 text-base';
+
+    if (!employee) {
+      return null;
+    }
+
+    const photoUrl = employee.photo_url || employee.photo;
+    const initials = getEmployeeInitials(employee.display_name);
+
+    // If we know there's no photo URL or we have an error, show initials immediately
+    if (imageError || !photoUrl) {
+      return (
+        <div
+          className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
+          onClick={() => {
+            if (employee.id) {
+              navigate(`/my-profile/${employee.id}`);
+            }
+          }}
+          title={`View ${employee.display_name}'s profile`}
+        >
+          {initials}
+        </div>
+      );
+    }
+
+    // Try to render image
+    return (
+      <img
+        src={photoUrl}
+        alt={employee.display_name}
+        className={`${sizeClasses} rounded-full object-cover flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
+        onClick={() => {
+          if (employee.id) {
+            navigate(`/my-profile/${employee.id}`);
+          }
+        }}
+        onError={() => setImageError(true)}
+        title={`View ${employee.display_name}'s profile`}
+      />
+    );
+  };
 
   // If propSelectedContact is provided, use it directly
   useEffect(() => {
@@ -453,12 +576,85 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     return DocumentTextIcon;
   };
 
-  const renderMessageStatus = (status?: string) => {
+  // Automatically fix message status when whatsapp_message_id exists but status is "failed"
+  // This means the message was sent successfully but DB status update failed
+  const autoFixMessageStatus = React.useCallback(async (messagesToFix: WhatsAppMessage[]) => {
+    const messagesNeedingFix = messagesToFix.filter(
+      msg => 
+        msg.whatsapp_status === 'failed' && 
+        msg.whatsapp_message_id && 
+        msg.id &&
+        !fixedMessageIdsRef.current.has(msg.id) // Don't re-fix messages we've already fixed
+    );
+
+    if (messagesNeedingFix.length === 0) return;
+
+    // Mark these messages as being fixed to prevent duplicate fixes
+    messagesNeedingFix.forEach(msg => {
+      if (msg.id) fixedMessageIdsRef.current.add(msg.id);
+    });
+
+    // Update all messages in batch
+    const updatePromises = messagesNeedingFix.map(async (message) => {
+      try {
+        const { error } = await supabase
+          .from('whatsapp_messages')
+          .update({
+            whatsapp_status: 'delivered', // Update to delivered since message was accepted by WhatsApp
+            error_message: null // Clear error message since it was a DB update failure, not a send failure
+          })
+          .eq('id', message.id);
+
+        if (error) {
+          console.error(`Error auto-fixing message status for message ${message.id}:`, error);
+          // Remove from fixed set if update failed so we can retry
+          if (message.id) fixedMessageIdsRef.current.delete(message.id);
+          return null;
+        }
+
+        return message.id;
+      } catch (error) {
+        console.error(`Error auto-fixing message status for message ${message.id}:`, error);
+        // Remove from fixed set if update failed so we can retry
+        if (message.id) fixedMessageIdsRef.current.delete(message.id);
+        return null;
+      }
+    });
+
+    const fixedIds = (await Promise.all(updatePromises)).filter(Boolean);
+
+    if (fixedIds.length > 0) {
+      console.log(`✅ Auto-fixed ${fixedIds.length} message status(es) from "failed" to "delivered"`);
+      
+      // Update local state to reflect the fix
+      setMessages(prevMessages =>
+        prevMessages.map(msg =>
+          fixedIds.includes(msg.id)
+            ? { ...msg, whatsapp_status: 'delivered' as const, error_message: undefined }
+            : msg
+        )
+      );
+    }
+  }, []);
+
+  const renderMessageStatus = (message?: WhatsAppMessage | { whatsapp_status?: string; whatsapp_message_id?: string; error_message?: string }) => {
+    if (!message) return null;
+
+    const status = typeof message === 'string' ? message : message.whatsapp_status;
+    const whatsappMessageId = typeof message === 'object' ? message.whatsapp_message_id : undefined;
+    const errorMessage = typeof message === 'object' ? message.error_message : undefined;
+
     if (!status) return null;
-    
+
+    // Special case: If status is "failed" but whatsapp_message_id exists,
+    // it means WhatsApp accepted the message, so it was actually delivered
+    // but DB status update failed. Show as "delivered" (will be auto-fixed in background).
+    // Don't show "failed" in UI if message was actually sent.
+    const effectiveStatus = (status === 'failed' && whatsappMessageId) ? 'delivered' : status;
+
     const baseClasses = "w-7 h-7";
-    
-    switch (status) {
+
+    switch (effectiveStatus) {
       case 'sent':
         return (
           <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -474,20 +670,36 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         );
       case 'read':
         return (
-          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#4ade80' }}>
+          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#3b82f6' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
         );
       case 'failed':
+        // Only show "failed" if message was NOT actually sent (no whatsapp_message_id)
+        // If whatsapp_message_id exists, it means message was sent, so we show "delivered" above
+        let errorExplanation = 'Message failed to send.';
+        if (errorMessage) {
+          errorExplanation = `Failed: ${errorMessage}`;
+        } else {
+          errorExplanation = 'Message failed to send. Possible reasons: Invalid phone number, WhatsApp Business API error, or network issue.';
+        }
+
         return (
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 group relative" title={errorExplanation}>
             <div className="w-5 h-5 rounded-full bg-red-500 flex items-center justify-center flex-shrink-0">
               <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </div>
             <span className="text-xs text-red-600 font-medium">Failed</span>
+            {/* Tooltip on hover */}
+            <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 max-w-xs whitespace-normal">
+              {errorExplanation}
+              <div className="absolute top-full left-1/2 transform -translate-x-1/2 -mt-1">
+                <div className="border-4 border-transparent border-t-gray-900"></div>
+              </div>
+            </div>
           </div>
         );
       default:
@@ -924,6 +1136,13 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       };
     }
   }, [isOpen, client?.id, currentUser, shouldAutoScroll, isFirstLoad, templates, selectedContactId, propSelectedContact, hideContactSelector]);
+
+  // Auto-fix message statuses when messages are loaded (if status is "failed" but whatsapp_message_id exists)
+  useEffect(() => {
+    if (messages.length > 0) {
+      autoFixMessageStatus(messages);
+    }
+  }, [messages, autoFixMessageStatus]);
 
   // Refetch messages when propSelectedContact changes (especially when it goes from null to a value)
   useEffect(() => {
@@ -1535,14 +1754,24 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                   
                   <div className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'}`}>
                     {message.direction === 'out' && (
-                      <span className="text-sm text-gray-600 mb-1 mr-2 font-medium">
-                        {message.sender_name}
-                      </span>
+                      <div className="flex items-center gap-2 mb-1 mr-2">
+                        <span className="text-sm text-gray-600 font-medium">
+                          {message.sender_name}
+                        </span>
+                        <EmployeeAvatar 
+                          employeeId={getEmployeeById(message.sender_name)?.id || null}
+                          size="md"
+                        />
+                      </div>
                     )}
                     {message.direction === 'in' && (
-                      <span className="text-sm text-gray-600 mb-1 ml-2 font-medium">
-                        {message.sender_name}
-                      </span>
+                      <div className="mb-1 ml-2">
+                        <WhatsAppAvatar
+                          name={message.sender_name}
+                          profilePictureUrl={message.profile_picture_url}
+                          size="md"
+                        />
+                      </div>
                     )}
                     
                     {/* Image or Emoji-only messages - render outside bubble */}
@@ -1584,7 +1813,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                           </span>
                           {message.direction === 'out' && (
                             <span className="inline-block align-middle text-current">
-                              {renderMessageStatus(message.whatsapp_status)}
+                              {renderMessageStatus(message)}
                             </span>
                           )}
                         </div>
@@ -1593,16 +1822,9 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       <div
                         className={`group max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm ${
                           message.direction === 'out'
-                            ? 'text-white'
+                            ? 'bg-green-100 border border-green-200 text-gray-900'
                             : 'bg-white text-gray-900 border border-gray-200'
                         }`}
-                        style={message.direction === 'out' 
-                          ? { 
-                              background: 'linear-gradient(to bottom right, #059669, #0d9488)',
-                              borderColor: 'transparent'
-                            }
-                          : undefined
-                        }
                       >
                       {message.message_type === 'text' && (
                         <p 
@@ -1678,7 +1900,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                           </span>
                           {message.direction === 'out' && (
                             <span className="inline-block align-middle text-current">
-                              {renderMessageStatus(message.whatsapp_status)}
+                              {renderMessageStatus(message)}
                             </span>
                           )}
                         </div>

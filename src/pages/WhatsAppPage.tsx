@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
+import { usePersistedState } from '../hooks/usePersistedState';
 import { buildApiUrl } from '../lib/api';
 import { fetchWhatsAppTemplates, filterTemplates, testDatabaseAccess, refreshTemplatesFromAPI, type WhatsAppTemplate } from '../lib/whatsappTemplates';
 import TemplateOptionCard from '../components/whatsapp/TemplateOptionCard';
@@ -114,20 +115,79 @@ interface WhatsAppPageProps {
 
 const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelectedContact, onClose }) => {
   const navigate = useNavigate();
-  const [clients, setClients] = useState<Client[]>([]);
-  const [selectedClient, setSelectedClient] = useState<any>(null);
-  const [messages, setMessages] = useState<WhatsAppMessage[]>([]);
+
+  // Tab preference (which tab is active)
+  const [showMyContactsOnly, setShowMyContactsOnly] = usePersistedState<boolean>('whatsapp_showMyContactsOnly', true, {
+    storage: 'sessionStorage',
+  });
+
+  // Separate persisted state for "My Contacts" tab
+  const [myContactsClients, setMyContactsClients] = usePersistedState<Client[]>('whatsapp_myContacts_clients', [], {
+    storage: 'sessionStorage',
+  });
+  const [myContactsSelectedClient, setMyContactsSelectedClient] = usePersistedState<any>('whatsapp_myContacts_selectedClient', null, {
+    storage: 'sessionStorage',
+  });
+  const [myContactsMessages, setMyContactsMessages] = usePersistedState<WhatsAppMessage[]>('whatsapp_myContacts_messages', [], {
+    storage: 'sessionStorage',
+  });
+
+  // Separate persisted state for "All Contacts" tab
+  const [allContactsClients, setAllContactsClients] = usePersistedState<Client[]>('whatsapp_allContacts_clients', [], {
+    storage: 'sessionStorage',
+  });
+  const [allContactsSelectedClient, setAllContactsSelectedClient] = usePersistedState<any>('whatsapp_allContacts_selectedClient', null, {
+    storage: 'sessionStorage',
+  });
+  const [allContactsMessages, setAllContactsMessages] = usePersistedState<WhatsAppMessage[]>('whatsapp_allContacts_messages', [], {
+    storage: 'sessionStorage',
+  });
+
+  // Shared state for all messages (same for both tabs)
+  const [allMessages, setAllMessages] = usePersistedState<WhatsAppMessage[]>('whatsapp_allMessages', [], {
+    storage: 'sessionStorage',
+  });
+
+  // Current active state (derived from showMyContactsOnly)
+  const clients = showMyContactsOnly ? myContactsClients : allContactsClients;
+  const setClients = showMyContactsOnly ? setMyContactsClients : setAllContactsClients;
+  const selectedClient = showMyContactsOnly ? myContactsSelectedClient : allContactsSelectedClient;
+  const setSelectedClient = showMyContactsOnly ? setMyContactsSelectedClient : setAllContactsSelectedClient;
+  const messages = showMyContactsOnly ? myContactsMessages : allContactsMessages;
+  const setMessages = showMyContactsOnly ? setMyContactsMessages : setAllContactsMessages;
+
+  // Non-persisted UI state
   const [searchTerm, setSearchTerm] = useState('');
   const [newMessage, setNewMessage] = useState('');
-  const [loading, setLoading] = useState(true);
+  // Initialize loading based on whether we have cached data
+  // Check sessionStorage directly to avoid React state initialization timing issues
+  const getHasCachedData = () => {
+    try {
+      const myContactsKey = 'persisted_state_whatsapp_myContacts_clients';
+      const allContactsKey = 'persisted_state_whatsapp_allContacts_clients';
+      const allMessagesKey = 'persisted_state_whatsapp_allMessages';
+      const tabKey = showMyContactsOnly ? myContactsKey : allContactsKey;
+      const clientsData = sessionStorage.getItem(tabKey);
+      const messagesData = sessionStorage.getItem(allMessagesKey);
+      if (clientsData && messagesData) {
+        const clients = JSON.parse(clientsData);
+        const messages = JSON.parse(messagesData);
+        return Array.isArray(clients) && clients.length > 0 && Array.isArray(messages) && messages.length > 0;
+      }
+    } catch {
+      // Ignore errors
+    }
+    return false;
+  };
+  const [loading, setLoading] = useState(!getHasCachedData()); // Start as false if we have cached data
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [sending, setSending] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
   const [uploadingMedia, setUploadingMedia] = useState(false);
-  
+
   // Search state (for filtering fetched clients only - no API calls)
-  
+
   // New Message Modal state
   const [isNewMessageModalOpen, setIsNewMessageModalOpen] = useState(false);
   const [newMessageSearchTerm, setNewMessageSearchTerm] = useState('');
@@ -144,11 +204,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   }, [selectedFile]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [currentUser, setCurrentUser] = useState<any>(null);
-  const [allMessages, setAllMessages] = useState<WhatsAppMessage[]>([]);
   const [isMobile, setIsMobile] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [shouldCloseOnNavigate, setShouldCloseOnNavigate] = useState(false);
-  const [selectedMedia, setSelectedMedia] = useState<{url: string, type: 'image' | 'video', caption?: string} | null>(null);
+  const [selectedMedia, setSelectedMedia] = useState<{ url: string, type: 'image' | 'video', caption?: string } | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   // Contacts panel (mobile) UI state
   const contactListRef = useRef<HTMLDivElement>(null);
@@ -158,10 +217,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const [isChatHeaderGlass, setIsChatHeaderGlass] = useState(false);
   const [isChatFooterGlass, setIsChatFooterGlass] = useState(false);
-  
+
   // Emoji picker state
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
-  
+
   // Lock state for 24-hour window
   const [timeLeft, setTimeLeft] = useState<string>('');
   const [isLocked, setIsLocked] = useState(false);
@@ -172,7 +231,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const [deletingMessage, setDeletingMessage] = useState<number | null>(null);
   const [showDeleteOptions, setShowDeleteOptions] = useState<number | null>(null);
   const [userCache, setUserCache] = useState<Record<string, string>>({});
-  
+
   // State for lead contacts (all contacts associated with the selected client)
   const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
   const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
@@ -181,28 +240,211 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
   const [currentUserFullName, setCurrentUserFullName] = useState<string | null>(null);
   const [isSuperuser, setIsSuperuser] = useState<boolean | null>(null);
-  const [showMyContactsOnly, setShowMyContactsOnly] = useState(true);
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
-  
+
+  // Track if we've loaded initial data (to prevent refetching if state was restored)
+  // Use sessionStorage to persist this across modal open/close
+  const getHasInitialData = () => {
+    try {
+      const stored = sessionStorage.getItem('whatsapp_hasInitialData');
+      return stored === 'true';
+    } catch {
+      return false;
+    }
+  };
+
+  const setHasInitialData = (value: boolean) => {
+    try {
+      sessionStorage.setItem('whatsapp_hasInitialData', String(value));
+    } catch {
+      // Ignore storage errors
+    }
+  };
+
+  const hasInitialDataRef = useRef(getHasInitialData());
+
+  // Helper function to get employee by ID (exact copy from RolesTab)
+  const getEmployeeById = (employeeIdOrName: string | number | null | undefined) => {
+    if (!employeeIdOrName || employeeIdOrName === '---' || employeeIdOrName === '--' || employeeIdOrName === '') {
+      return null;
+    }
+
+    // First, try to match by ID
+    const employeeById = allEmployees.find((emp: any) => {
+      const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
+      const searchId = typeof employeeIdOrName === 'string' ? parseInt(employeeIdOrName, 10) : employeeIdOrName;
+
+      if (isNaN(Number(searchId))) return false;
+
+      if (empId.toString() === searchId.toString()) return true;
+      if (Number(empId) === Number(searchId)) return true;
+
+      return false;
+    });
+
+    if (employeeById) {
+      return employeeById;
+    }
+
+    // If not found by ID, try to match by display name
+    if (typeof employeeIdOrName === 'string') {
+      const employeeByName = allEmployees.find((emp: any) => {
+        if (!emp.display_name) return false;
+        return emp.display_name.trim().toLowerCase() === employeeIdOrName.trim().toLowerCase();
+      });
+
+      if (employeeByName) {
+        return employeeByName;
+      }
+    }
+
+    return null;
+  };
+
+  // Helper to get employee ID from role (similar to RolesTab's getEmployeeIdFromRole)
+  const getEmployeeIdFromRole = (roleValue: string | number | null | undefined, isLegacy: boolean, legacyFieldName?: string, client?: Client): string | number | null => {
+    if (!roleValue || roleValue === '---' || roleValue === '--' || roleValue === '') return null;
+
+    // For legacy leads with a specific field name, get the ID directly from client
+    if (isLegacy && legacyFieldName && client) {
+      return (client as any)[legacyFieldName] || null;
+    }
+
+    // For new leads, check if there's a direct ID field first (e.g., case_handler_id for handler)
+    // This handles cases where both the display name and ID might be stored
+    if (legacyFieldName === 'case_handler_id' && client && (client as any).case_handler_id) {
+      return (client as any).case_handler_id;
+    }
+
+    // If it's already a number, it's likely an ID
+    if (typeof roleValue === 'number' || (typeof roleValue === 'string' && /^\d+$/.test(roleValue.trim()))) {
+      return typeof roleValue === 'string' ? Number(roleValue) : roleValue;
+    }
+
+    // Otherwise, it's likely a display name - find the employee by name
+    if (typeof roleValue === 'string') {
+      const employee = allEmployees.find((emp: any) => {
+        if (!emp.display_name) return false;
+        return emp.display_name.trim().toLowerCase() === roleValue.trim().toLowerCase();
+      });
+      return employee?.id || null;
+    }
+
+    return null;
+  };
+
   // Helper function to get employee display name from ID
   const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
-    if (employeeId === null || employeeId === undefined || employeeId === '---') return '--';
-    const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
-    return employee ? employee.display_name : employeeId.toString();
+    if (employeeId === null || employeeId === undefined || employeeId === '---') return '---';
+
+    // Convert employeeId to number for comparison
+    const idAsNumber = typeof employeeId === 'string' ? parseInt(employeeId, 10) : Number(employeeId);
+
+    if (isNaN(idAsNumber)) {
+      return '---';
+    }
+
+    // Find employee by ID - try multiple comparison methods
+    const employee = allEmployees.find((emp: any) => {
+      if (!emp || !emp.id) return false;
+
+      // Handle bigint type
+      const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
+      const empIdNum = typeof empId === 'string' ? parseInt(empId, 10) : Number(empId);
+
+      if (isNaN(empIdNum)) return false;
+
+      // Try string comparison
+      if (String(empId) === String(employeeId)) return true;
+      // Try number comparison
+      if (empIdNum === idAsNumber) return true;
+
+      return false;
+    });
+
+    if (employee && employee.display_name) {
+      const displayName = employee.display_name;
+      if (displayName.toLowerCase() === 'not_assigned' || displayName.toLowerCase() === 'not assigned') {
+        return '---';
+      }
+      return displayName;
+    }
+
+    return '---';
+  };
+
+  // Helper function to get employee initials
+  const getEmployeeInitials = (name: string | null | undefined): string => {
+    if (!name || name === '---' || name === '--' || name === 'Not assigned') return '';
+    const parts = name.trim().split(' ');
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+    return name.substring(0, 2).toUpperCase();
+  };
+
+  // Component to render employee avatar (exact copy from RolesTab)
+  const EmployeeAvatar: React.FC<{
+    employeeId: string | number | null | undefined;
+    size?: 'sm' | 'md' | 'lg';
+  }> = ({ employeeId, size = 'sm' }) => {
+    const [imageError, setImageError] = useState(false);
+    const employee = getEmployeeById(employeeId);
+    const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : size === 'md' ? 'w-12 h-12 text-sm' : 'w-16 h-16 text-base';
+
+    if (!employee) {
+      return null;
+    }
+
+    const photoUrl = employee.photo_url || employee.photo;
+    const initials = getEmployeeInitials(employee.display_name);
+
+    // If we know there's no photo URL or we have an error, show initials immediately
+    if (imageError || !photoUrl) {
+      return (
+        <div
+          className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
+          onClick={() => {
+            if (employee.id) {
+              navigate(`/my-profile/${employee.id}`);
+            }
+          }}
+          title={`View ${employee.display_name}'s profile`}
+        >
+          {initials}
+        </div>
+      );
+    }
+
+    // Try to render image
+    return (
+      <img
+        src={photoUrl}
+        alt={employee.display_name}
+        className={`${sizeClasses} rounded-full object-cover flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
+        onClick={() => {
+          if (employee.id) {
+            navigate(`/my-profile/${employee.id}`);
+          }
+        }}
+        onError={() => setImageError(true)}
+        title={`View ${employee.display_name}'s profile`}
+      />
+    );
   };
 
   // Helper function to fetch user name by ID
   const getUserName = async (userId: string) => {
     if (!userId) return null;
     if (userCache[userId]) return userCache[userId];
-    
+
     try {
       const { data } = await supabase
         .from('users')
         .select('first_name, full_name')
         .eq('id', userId)
         .single();
-      
+
       if (data) {
         const name = data.first_name || data.full_name || 'Unknown User';
         setUserCache(prev => ({ ...prev, [userId]: name }));
@@ -217,13 +459,13 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   // Helper function to get document icon based on MIME type
   const getDocumentIcon = (mimeType?: string) => {
     if (!mimeType) return DocumentTextIcon;
-    
+
     if (mimeType.includes('pdf')) return DocumentTextIcon;
     if (mimeType.includes('word') || mimeType.includes('document')) return DocumentIcon;
     if (mimeType.includes('image/')) return PhotoIcon;
     if (mimeType.includes('video/')) return FilmIcon;
     if (mimeType.includes('audio/')) return MusicalNoteIcon;
-    
+
     return DocumentTextIcon;
   };
 
@@ -232,19 +474,19 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     // Simple approach: check if the text length is very short and contains emoji-like characters
     const cleanText = text.trim();
     if (cleanText.length === 0) return false;
-    
+
     // Exclude Hebrew text (Unicode range \u0590-\u05FF) - it should not be treated as emoji
     const hasHebrew = /[\u0590-\u05FF]/.test(cleanText);
     if (hasHebrew) return false;
-    
+
     // Check if the message is very short (likely emoji-only) and contains non-ASCII characters
     const hasNonAscii = /[^\x00-\x7F]/.test(cleanText);
     const isShort = cleanText.length <= 5; // Most emojis are 1-3 characters
-    
+
     // Emoji detection: check for emoji Unicode ranges
     const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]/u;
     const hasEmoji = emojiRegex.test(cleanText);
-    
+
     return hasEmoji && isShort && !hasHebrew;
   };
 
@@ -349,19 +591,19 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         if (template.content && message.message === template.content) {
           return message; // Already correct, no need to process
         }
-        
+
         console.log(`✅ Matched template by ID ${templateId}: ${template.title} (${template.language || 'N/A'})`);
         if (template.params === '0' && template.content) {
           return { ...message, message: template.content };
         } else {
           // Template has parameters - check if message already has filled content
           const paramCount = Number(template.params) || 0;
-          
+
           // If message doesn't contain template markers and has actual content, use it
           if (message.message && !message.message.includes('TEMPLATE_MARKER:') && !message.message.includes('[Template:')) {
             return message; // Already filled content
           }
-          
+
           // Otherwise, show the template content with placeholders
           return { ...message, message: template.content || `Template: ${template.title}` };
         }
@@ -380,11 +622,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       if (message.message.includes(template.content) && template.content.length > 20) return true;
       return false;
     });
-    
+
     if (isAlreadyProperlyFormatted) {
       // If it has template_id, make sure it matches the template we found
       if (message.template_id) {
-        const matchingTemplate = templates.find(t => 
+        const matchingTemplate = templates.find(t =>
           t.content && (message.message === t.content || message.message.includes(t.content))
         );
         if (matchingTemplate && Number(matchingTemplate.id) === Number(message.template_id)) {
@@ -394,9 +636,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         return message; // Already formatted correctly, no template_id needed
       }
     }
-    
+
     // Quick check for template patterns (most messages won't match, so check early)
-    const hasTemplatePattern = 
+    const hasTemplatePattern =
       message.message.includes('Template:') ||
       message.message.includes('[Template:') ||
       message.message.includes('[template:]') ||
@@ -412,18 +654,18 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     // PRIORITY 2: Fallback to name matching for backward compatibility (legacy messages without template_id)
     // Process template message (only if we get here)
     // Try to find the template by looking for template info in the message
-    const templateMatch = message.message.match(/\[Template:\s*([^\]]+)\]/) || 
-                          message.message.match(/Template:\s*(.+)/);
-    
+    const templateMatch = message.message.match(/\[Template:\s*([^\]]+)\]/) ||
+      message.message.match(/Template:\s*(.+)/);
+
     if (templateMatch) {
       // Clean the template title: remove trailing spaces and brackets
       const templateTitle = templateMatch[1].trim().replace(/\]$/, '');
-      
+
       // Try case-insensitive matching on title first
-      const template = templates.find(t => 
+      const template = templates.find(t =>
         t.title.toLowerCase() === templateTitle.toLowerCase()
       );
-      
+
       if (template) {
         if (template.params === '0' && template.content) {
           return { ...message, message: template.content };
@@ -432,7 +674,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         }
       } else {
         // Try to find by name360 field as well (case-insensitive)
-        const templateByName = templates.find(t => 
+        const templateByName = templates.find(t =>
           t.name360 && t.name360.toLowerCase() === templateTitle.toLowerCase()
         );
         if (templateByName) {
@@ -444,7 +686,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         }
       }
     }
-    
+
     // Check for TEMPLATE_MARKER
     const templateMarkerMatch = message.message.match(/TEMPLATE_MARKER:(.+)/);
     if (templateMarkerMatch) {
@@ -458,22 +700,152 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         }
       }
     }
-    
+
     // If message is empty or "Template sent", show generic message
     if (message.message === '' || message.message === 'Template sent') {
       return { ...message, message: 'Template message sent' };
     }
-    
+
     return message;
   };
 
+  // Helper function to navigate to client page
+  const handleNavigateToClient = (client: Client) => {
+    // Get the correct lead identifier based on lead type
+    const isLegacy = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
+
+    let leadIdentifier: string | null = null;
+
+    // For contacts, use the same logic as regular leads - use lead_number for new leads, not lead_id (UUID)
+    if (isLegacy) {
+      // For legacy leads, extract the numeric ID
+      const clientId = client.id?.toString();
+      if (clientId) {
+        if (clientId.startsWith('legacy_')) {
+          // Extract numeric ID from "legacy_<id>"
+          leadIdentifier = clientId.replace('legacy_', '');
+        } else if (/^\d+$/.test(clientId)) {
+          // Already numeric
+          leadIdentifier = clientId;
+        }
+      }
+      // Fallback: use lead_number if it's a numeric string (for legacy contacts)
+      if (!leadIdentifier && client.lead_number && /^\d+$/.test(client.lead_number)) {
+        leadIdentifier = client.lead_number;
+      }
+    } else {
+      // For new leads, use lead_number
+      leadIdentifier = client.lead_number || client.manual_id || null;
+    }
+
+    if (!leadIdentifier) {
+      console.error('Cannot navigate: No valid lead identifier found', client);
+      return;
+    }
+
+    // Encode the identifier to handle sub-leads with '/' characters
+    const encodedIdentifier = encodeURIComponent(leadIdentifier);
+    console.log('Navigating to client:', leadIdentifier, 'encoded:', encodedIdentifier);
+
+    // Close WhatsApp modal first, then navigate
+    if (onClose) {
+      onClose();
+    }
+
+    // Small delay to ensure modal closes before navigation
+    setTimeout(() => {
+      navigate(`/clients/${encodedIdentifier}`, { replace: true });
+    }, 100);
+  };
+
+  // Track which messages we've already attempted to fix to prevent infinite loops
+  const fixedMessageIdsRef = useRef<Set<number>>(new Set());
+
+  // Automatically fix message status when whatsapp_message_id exists but status is "failed"
+  // This means the message was sent successfully but DB status update failed
+  const autoFixMessageStatus = useCallback(async (messagesToFix: WhatsAppMessage[]) => {
+    const messagesNeedingFix = messagesToFix.filter(
+      msg =>
+        msg.whatsapp_status === 'failed' &&
+        msg.whatsapp_message_id &&
+        msg.id &&
+        !fixedMessageIdsRef.current.has(msg.id) // Don't re-fix messages we've already fixed
+    );
+
+    if (messagesNeedingFix.length === 0) return;
+
+    // Mark these messages as being fixed to prevent duplicate fixes
+    messagesNeedingFix.forEach(msg => {
+      if (msg.id) fixedMessageIdsRef.current.add(msg.id);
+    });
+
+    // Update all messages in batch
+    const updatePromises = messagesNeedingFix.map(async (message) => {
+      try {
+        const { error } = await supabase
+          .from('whatsapp_messages')
+          .update({
+            whatsapp_status: 'delivered', // Update to delivered since message was accepted by WhatsApp
+            error_message: null // Clear error message since it was a DB update failure, not a send failure
+          })
+          .eq('id', message.id);
+
+        if (error) {
+          console.error(`Error auto-fixing message status for message ${message.id}:`, error);
+          // Remove from fixed set if update failed so we can retry
+          if (message.id) fixedMessageIdsRef.current.delete(message.id);
+          return null;
+        }
+
+        return message.id;
+      } catch (error) {
+        console.error(`Error auto-fixing message status for message ${message.id}:`, error);
+        // Remove from fixed set if update failed so we can retry
+        if (message.id) fixedMessageIdsRef.current.delete(message.id);
+        return null;
+      }
+    });
+
+    const fixedIds = (await Promise.all(updatePromises)).filter(Boolean);
+
+    if (fixedIds.length > 0) {
+      console.log(`✅ Auto-fixed ${fixedIds.length} message status(es) from "failed" to "delivered"`);
+
+      // Update local state to reflect the fix
+      const updateMessageState = (prevMessages: WhatsAppMessage[]) =>
+        prevMessages.map(msg =>
+          fixedIds.includes(msg.id)
+            ? { ...msg, whatsapp_status: 'delivered' as const, error_message: undefined }
+            : msg
+        );
+
+      setMessages(updateMessageState);
+      setAllMessages(updateMessageState as any);
+
+      // Also update tab-specific message states
+      setMyContactsMessages(updateMessageState);
+      setAllContactsMessages(updateMessageState);
+    }
+  }, []);
+
   // Helper function to render WhatsApp-style message status
-  const renderMessageStatus = (status?: string) => {
+  const renderMessageStatus = (message?: WhatsAppMessage | { whatsapp_status?: string; whatsapp_message_id?: string; error_message?: string }) => {
+    if (!message) return null;
+
+    const status = message.whatsapp_status;
+    const whatsappMessageId = message.whatsapp_message_id;
+
     if (!status) return null;
-    
+
+    // Special case: If status is "failed" but whatsapp_message_id exists,
+    // it means WhatsApp accepted the message, so it was actually delivered
+    // but DB status update failed. Show as "delivered" (will be auto-fixed in background).
+    // Don't show "failed" in UI if message was actually sent.
+    const effectiveStatus = (status === 'failed' && whatsappMessageId) ? 'delivered' : status;
+
     const baseClasses = "w-7 h-7";
-    
-    switch (status) {
+
+    switch (effectiveStatus) {
       case 'sent':
         return (
           <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -489,20 +861,37 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         );
       case 'read':
         return (
-          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#4ade80' }}>
+          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#3b82f6' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
         );
       case 'failed':
+        // Only show "failed" if message was NOT actually sent (no whatsapp_message_id)
+        // If whatsapp_message_id exists, it means message was sent, so we show "delivered" above
+        const errorMessage = message.error_message;
+        let errorExplanation = 'Message failed to send.';
+        if (errorMessage) {
+          errorExplanation = `Failed: ${errorMessage}`;
+        } else {
+          errorExplanation = 'Message failed to send. Possible reasons: Invalid phone number, WhatsApp Business API error, or network issue.';
+        }
+
         return (
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 group relative" title={errorExplanation}>
             <div className="w-5 h-5 rounded-full bg-red-500 flex items-center justify-center flex-shrink-0">
               <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </div>
             <span className="text-xs text-red-600 font-medium">Failed</span>
+            {/* Tooltip on hover */}
+            <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 max-w-xs whitespace-normal">
+              {errorExplanation}
+              <div className="absolute top-full left-1/2 transform -translate-x-1/2 -mt-1">
+                <div className="border-4 border-transparent border-t-gray-900"></div>
+              </div>
+            </div>
           </div>
         );
       default:
@@ -524,7 +913,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const handleContactListScroll = (e: React.UIEvent<HTMLDivElement>) => {
     if (!isMobile) return;
     const currentTop = e.currentTarget.scrollTop;
-    
+
     // Only handle glass effect for header, search bar stays fixed
     setIsContactsHeaderGlass(currentTop > 0);
     lastScrollTopRef.current = currentTop;
@@ -564,7 +953,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       const { data: { user } } = await supabase.auth.getUser();
       if (user?.email) {
         console.log('🔍 Looking for user with email:', user.email);
-        
+
         // Only try database lookup if it looks like an email
         if (user.email.includes('@')) {
           const { data: userRow, error } = await supabase
@@ -582,25 +971,25 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             `)
             .eq('email', user.email)
             .single();
-          
+
           if (userRow) {
             console.log('✅ Found user in database:', userRow);
             setCurrentUser(userRow);
-            
+
             // Set superuser status
             const superuserStatus = userRow.is_superuser === true;
             setIsSuperuser(superuserStatus);
-            
+
             // For non-superusers, always show only their contacts (no tabs)
             if (!superuserStatus) {
               setShowMyContactsOnly(true);
             }
-            
+
             // Set employee ID and display name for role filtering
             if (userRow.employee_id && typeof userRow.employee_id === 'number') {
               setCurrentUserEmployeeId(userRow.employee_id);
             }
-            
+
             if (userRow.full_name) {
               setCurrentUserFullName(userRow.full_name);
             } else if (userRow.tenants_employee && Array.isArray(userRow.tenants_employee) && userRow.tenants_employee.length > 0) {
@@ -612,7 +1001,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             return;
           }
         }
-        
+
         console.log('❌ User not found in database, using auth metadata');
         // Fallback: create a user object with available data
         const fallbackUser = {
@@ -622,7 +1011,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         };
         console.log('📝 Using fallback user:', fallbackUser);
         setCurrentUser(fallbackUser);
-        
+
         // Try to set full name from metadata
         if (fallbackUser.full_name) {
           setCurrentUserFullName(fallbackUser.full_name);
@@ -632,15 +1021,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     fetchCurrentUser();
   }, []);
 
-  // Fetch all employees for display name mapping
+  // Fetch all employees for display name mapping (including photos for avatars)
   useEffect(() => {
     const fetchEmployees = async () => {
       try {
         const { data, error } = await supabase
           .from('tenants_employee')
-          .select('id, display_name')
+          .select('id, display_name, photo_url, photo')
           .order('display_name', { ascending: true });
-        
+
         if (!error && data) {
           setAllEmployees(data);
         }
@@ -648,7 +1037,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         console.error('Error fetching employees:', error);
       }
     };
-    
+
     fetchEmployees();
   }, []);
 
@@ -661,7 +1050,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           if (client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_')) {
             const currentCloser = client.closer_id ? getEmployeeDisplayName(client.closer_id) : client.closer;
             const currentScheduler = client.meeting_scheduler_id ? getEmployeeDisplayName(client.meeting_scheduler_id) : client.scheduler;
-            
+
             // Only update if the values changed (avoid unnecessary re-renders)
             if (currentCloser !== client.closer || currentScheduler !== client.scheduler) {
               return {
@@ -701,30 +1090,147 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         setIsLoadingTemplates(false);
       }
     };
-    
+
     loadTemplates();
   }, []);
 
   // Fetch only clients/leads with existing WhatsApp conversations
   useEffect(() => {
     const fetchClientsWithConversations = async () => {
+      // IMMEDIATELY check sessionStorage for cached data and set loading to false if found
+      // This prevents the spinner from showing even briefly
+      const hasCachedDataDirect = getHasCachedData();
+      if (hasCachedDataDirect) {
+        setLoading(false);
+      }
+
+      // Get current tab's state
+      const currentClients = showMyContactsOnly ? myContactsClients : allContactsClients;
+      const currentSelectedClient = showMyContactsOnly ? myContactsSelectedClient : allContactsSelectedClient;
+      const hasInitialData = hasInitialDataRef.current || getHasInitialData();
+
+      console.log(`🔍 Checking cached state for ${showMyContactsOnly ? 'My Contacts' : 'All Contacts'} tab:`, {
+        currentClientsLength: currentClients.length,
+        allMessagesLength: allMessages.length,
+        hasInitialData: hasInitialData,
+        hasInitialDataRef: hasInitialDataRef.current,
+        sessionStorageValue: getHasInitialData(),
+        hasCachedDataDirect: hasCachedDataDirect
+      });
+
+      // If we have cached data (either from React state or directly from sessionStorage), use it immediately
+      if (hasCachedDataDirect || (currentClients.length > 0 && allMessages.length > 0)) {
+        console.log(`✅ Using cached WhatsApp data for ${showMyContactsOnly ? 'My Contacts' : 'All Contacts'} tab:`, {
+          clientsCount: currentClients.length,
+          messagesCount: allMessages.length,
+          selectedClient: currentSelectedClient?.name || currentSelectedClient?.lead_number || 'none',
+          hasInitialData: hasInitialData,
+          fromDirectCheck: hasCachedDataDirect
+        });
+
+        // IMMEDIATELY set loading to false to hide spinner
+        setLoading(false);
+
+        // Mark that we have initial data (if not already marked)
+        if (!hasInitialData) {
+          hasInitialDataRef.current = true;
+          setHasInitialData(true);
+        }
+
+        // If React state hasn't been restored yet but we have cached data, wait for state to restore
+        if (hasCachedDataDirect && (currentClients.length === 0 || allMessages.length === 0)) {
+          console.log('⏳ Cached data detected but React state not yet restored, waiting for state restoration...');
+          // State will be restored by usePersistedState, just return early to prevent fetching
+          return;
+        }
+
+        // Restore messages for selected client if one is selected
+        if (currentSelectedClient) {
+          const clientMessages = allMessages.filter(msg => {
+            if (currentSelectedClient.lead_type === 'legacy' || currentSelectedClient.id?.toString().startsWith('legacy_')) {
+              return msg.legacy_id === Number(currentSelectedClient.id);
+            } else if (currentSelectedClient.contact_id) {
+              return msg.contact_id === currentSelectedClient.contact_id;
+            } else {
+              return msg.lead_id === currentSelectedClient.id;
+            }
+          }).sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+          if (showMyContactsOnly) {
+            setMyContactsMessages(clientMessages);
+          } else {
+            setAllContactsMessages(clientMessages);
+          }
+        }
+
+        // Only fetch new messages (polling for updates)
+        fetchNewMessagesOnly();
+        return;
+      }
+
       // If "My Contacts" is enabled but user info isn't loaded yet, wait for it
       if (showMyContactsOnly && !currentUserEmployeeId && !currentUserFullName) {
         console.log('⏳ Waiting for user info before fetching "My Contacts"');
         return;
       }
-      
+
+      // If we already have data for this tab, skip full fetch
+      if (hasInitialData && currentClients.length > 0) {
+        console.log(`⏭️ Skipping full fetch - using cached data for ${showMyContactsOnly ? 'My Contacts' : 'All Contacts'} tab`);
+        setLoading(false);
+        return;
+      }
+
+      // No cached data - need to fetch
+      console.log(`🔄 No cached data found, fetching fresh data for ${showMyContactsOnly ? 'My Contacts' : 'All Contacts'} tab`);
+
       try {
         setLoading(true);
-        
-        // Fetch all WhatsApp messages to get both lead_ids, contact_ids, and legacy_ids
-        const { data: whatsappMessages, error: whatsappError } = await supabase
-          .from('whatsapp_messages')
-          .select('lead_id, contact_id, legacy_id');
+        hasInitialDataRef.current = true;
+        setHasInitialData(true);
 
-        if (whatsappError) {
-          console.error('Error fetching WhatsApp messages:', whatsappError);
+        // Fetch all WhatsApp messages to get both lead_ids, contact_ids, and legacy_ids
+        // IMPORTANT: Fetch ALL messages without limit to ensure we don't miss any contacts/leads
+        // Supabase defaults to 1000 rows, so we need to explicitly fetch all or use pagination
+        let whatsappMessages: any[] = [];
+        let hasMore = true;
+        let page = 0;
+        const PAGE_SIZE = 1000;
+
+        while (hasMore) {
+          const { data: pageData, error: pageError } = await supabase
+            .from('whatsapp_messages')
+            .select('lead_id, contact_id, legacy_id, phone_number, sent_at, direction, is_read')
+            .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1)
+            .order('sent_at', { ascending: false });
+
+          if (pageError) {
+            console.error('❌ Error fetching WhatsApp messages page', page, ':', pageError);
+            break;
+          }
+
+          if (pageData && pageData.length > 0) {
+            whatsappMessages.push(...pageData);
+            console.log(`🔍 DEBUG: Fetched page ${page + 1}, ${pageData.length} messages, total so far: ${whatsappMessages.length}`);
+
+            // If we got less than PAGE_SIZE, we've reached the end
+            if (pageData.length < PAGE_SIZE) {
+              hasMore = false;
+            } else {
+              page++;
+            }
+          } else {
+            hasMore = false;
+          }
         }
+
+        console.log('🔍 DEBUG: Total WhatsApp messages fetched:', whatsappMessages.length);
+
+        // Check for L204687 specifically in messages
+        const l204687Messages = whatsappMessages.filter((msg: any) => {
+          // Check if message has lead_id that might be L204687
+          return msg.lead_id;
+        });
+        console.log('🔍 DEBUG L204687: Messages with lead_id:', l204687Messages.length);
 
         // Get unique lead IDs from WhatsApp messages (where lead_id is not null)
         const uniqueLeadIds = new Set<string>();
@@ -732,8 +1238,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         const uniqueContactIds = new Set<number>();
         // Map contact_id to legacy_id from whatsapp_messages
         const contactToLegacyIdMap = new Map<number, number>();
-        
-        (whatsappMessages || []).forEach((msg: any) => {
+
+        whatsappMessages.forEach((msg: any) => {
           if (msg.lead_id) {
             uniqueLeadIds.add(String(msg.lead_id));
           }
@@ -745,6 +1251,50 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             }
           }
         });
+
+        console.log('🔍 DEBUG: After processing messages:');
+        console.log('  - Total messages:', whatsappMessages.length);
+        console.log('  - Unique lead_ids:', uniqueLeadIds.size);
+        console.log('  - Unique contact_ids:', uniqueContactIds.size);
+
+        // Check for L204687 in messages BEFORE we query for it
+        console.log('🔍 DEBUG L204687: Checking messages for L204687...');
+        // First, try to find L204687 by lead_number to get its id
+        const { data: l204687Lead, error: l204687Error } = await supabase
+          .from('leads')
+          .select('id, lead_number')
+          .or('lead_number.eq.L204687,lead_number.eq.C204687,lead_number.eq.204687,lead_number.ilike.%204687%')
+          .limit(10);
+
+        if (!l204687Error && l204687Lead && l204687Lead.length > 0) {
+          console.log('🔍 DEBUG L204687: Found in leads table:', l204687Lead);
+          for (const lead of l204687Lead) {
+            const l204687Id = lead.id;
+            const l204687Number = lead.lead_number;
+            const l204687MessageCount = whatsappMessages.filter((m: any) => m.lead_id === l204687Id).length;
+            const hasL204687InUniqueIds = uniqueLeadIds.has(String(l204687Id));
+
+            console.log('🔍 DEBUG L204687: Lead:', { id: l204687Id, lead_number: l204687Number });
+            console.log('🔍 DEBUG L204687: Message count in fetched messages:', l204687MessageCount);
+            console.log('🔍 DEBUG L204687: In uniqueLeadIds?', hasL204687InUniqueIds);
+
+            if (l204687MessageCount > 0 && !hasL204687InUniqueIds) {
+              console.log('⚠️ DEBUG L204687: WARNING - Has messages but not in uniqueLeadIds! Adding manually...');
+              uniqueLeadIds.add(String(l204687Id));
+              console.log('✅ DEBUG L204687: Added to uniqueLeadIds');
+            } else if (l204687MessageCount === 0) {
+              console.log('⚠️ DEBUG L204687: No messages found for this lead_id in fetched messages');
+              // Check if messages might exist but weren't fetched (beyond 1000 limit)
+              console.log('⚠️ DEBUG L204687: This might mean messages exist but were not fetched due to pagination limit');
+            }
+          }
+        } else {
+          console.log('🔍 DEBUG L204687: Not found in leads table, error:', l204687Error);
+        }
+
+        console.log('🔍 DEBUG: Unique lead_ids from messages:', uniqueLeadIds.size);
+        console.log('🔍 DEBUG: Unique contact_ids from messages:', uniqueContactIds.size);
+        console.log('🔍 DEBUG: Sample lead_ids:', Array.from(uniqueLeadIds).slice(0, 20));
 
         // Fetch unique lead_ids from leads_leadinteractions (legacy leads) where kind = 'w' (WhatsApp)
         const { data: legacyInteractions, error: legacyError } = await supabase
@@ -766,44 +1316,187 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         });
 
         // Fetch new leads with conversations
+        // IMPORTANT: Use the same approach as InteractionsTab - query leads that have messages directly
+        // Instead of extracting lead_ids and querying, we'll query all leads and filter by those with messages
         const newLeadIds = Array.from(uniqueLeadIds);
         let newLeadsData: any[] = [];
-        
-        if (newLeadIds.length > 0) {
-          let query = supabase
-            .from('leads')
-            .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, case_handler_id, next_followup, probability, balance, potential_applicants');
-          
-          // Apply role filter if "My Contacts" is enabled AND we have user info
-          // If showMyContactsOnly is true but user info isn't loaded yet, skip filtering (will re-fetch when user info loads)
-          if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
-            const newLeadConditions: string[] = [];
-            
-            // Text fields (saved as display names): closer, scheduler, handler
-            if (currentUserFullName) {
-              const fullNameLower = currentUserFullName.trim().toLowerCase();
-              newLeadConditions.push(`closer.ilike.%${fullNameLower}%`);
-              newLeadConditions.push(`scheduler.ilike.%${fullNameLower}%`);
-              newLeadConditions.push(`handler.ilike.%${fullNameLower}%`);
-            }
-            
-            // Numeric fields (saved as employee IDs): manager, helper, expert, case_handler_id
-            if (currentUserEmployeeId) {
-              newLeadConditions.push(`manager.eq.${currentUserEmployeeId}`);
-              newLeadConditions.push(`helper.eq.${currentUserEmployeeId}`);
-              newLeadConditions.push(`expert.eq.${currentUserEmployeeId}`);
-              newLeadConditions.push(`case_handler_id.eq.${currentUserEmployeeId}`);
-            }
-            
-            if (newLeadConditions.length > 0) {
-              query = query.or(newLeadConditions.join(','));
-            }
-          }
-          
-          // Always filter by lead IDs that have WhatsApp conversations
-          query = query.in('id', newLeadIds);
 
-          const { data: leadsData, error: leadsError } = await query;
+        console.log('🔍 DEBUG: Starting to fetch new leads');
+        console.log('🔍 DEBUG: uniqueLeadIds from messages=', newLeadIds.length, 'sample:', newLeadIds.slice(0, 10));
+
+
+        if (newLeadIds.length > 0) {
+          // For "All Contacts" tab: fetch ALL leads that have messages (no role filter)
+          // For "My Contacts" tab: apply role filter
+          if (!showMyContactsOnly) {
+            // All Contacts: Fetch all leads with messages, no role filter
+            // Use batched queries if there are too many lead_ids (Supabase has a limit)
+            const BATCH_SIZE = 1000;
+            const batches: string[][] = [];
+            for (let i = 0; i < newLeadIds.length; i += BATCH_SIZE) {
+              batches.push(newLeadIds.slice(i, i + BATCH_SIZE));
+            }
+
+            const allLeadsPromises = batches.map(batch =>
+              supabase
+                .from('leads')
+                .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, case_handler_id, next_followup, probability, balance, potential_applicants')
+                .in('id', batch)
+            );
+
+            const allLeadsResults = await Promise.all(allLeadsPromises);
+            const allLeads: any[] = [];
+
+            allLeadsResults.forEach(({ data, error }) => {
+              if (error) {
+                console.error('Error fetching leads batch:', error);
+              } else if (data) {
+                allLeads.push(...data);
+              }
+            });
+
+            newLeadsData = allLeads.map(lead => ({
+              ...lead,
+              lead_type: 'new' as const,
+              isContact: false
+            }));
+
+            console.log('🔍 DEBUG: Fetched all leads with messages:', newLeadsData.length, 'from', newLeadIds.length, 'unique lead_ids');
+            console.log('🔍 DEBUG: Sample fetched lead_numbers:', newLeadsData.slice(0, 10).map((l: any) => l.lead_number));
+
+            // Check if L204687 is in the results
+            const hasL204687 = newLeadsData.some((l: any) =>
+              l.lead_number === '204687' ||
+              l.lead_number === 'L204687' ||
+              String(l.lead_number) === '204687' ||
+              String(l.lead_number) === 'L204687'
+            );
+            console.log('🔍 DEBUG L204687: In fetched results?', hasL204687);
+
+            // IMPORTANT: Check for any lead_ids from messages that weren't found
+            // This handles cases where the batch query might have missed some leads
+            const foundLeadIds = new Set(newLeadsData.map((l: any) => l.id));
+            const missingLeadIds = newLeadIds.filter(id => !foundLeadIds.has(id));
+
+            console.log('🔍 DEBUG: Found lead_ids:', foundLeadIds.size);
+            console.log('🔍 DEBUG: Missing lead_ids:', missingLeadIds.length);
+            console.log('🔍 DEBUG: Sample missing lead_ids:', missingLeadIds.slice(0, 10));
+
+            // Check if L204687's id is in missingLeadIds
+            if (l204687Lead && l204687Lead.length > 0) {
+              const l204687Id = l204687Lead[0].id;
+              const isL204687Missing = missingLeadIds.includes(String(l204687Id));
+              console.log('🔍 DEBUG L204687: Is in missingLeadIds?', isL204687Missing, 'id:', l204687Id);
+            }
+
+            if (missingLeadIds.length > 0) {
+              console.log('🔍 DEBUG: Found', missingLeadIds.length, 'missing lead_ids, fetching them directly...');
+              // Fetch missing leads directly by id in batches
+              const MISSING_BATCH_SIZE = 100;
+              for (let i = 0; i < missingLeadIds.length; i += MISSING_BATCH_SIZE) {
+                const batch = missingLeadIds.slice(i, i + MISSING_BATCH_SIZE);
+                console.log(`🔍 DEBUG: Fetching missing batch ${i / MISSING_BATCH_SIZE + 1}, size:`, batch.length);
+                const { data: missingLeads, error: missingError } = await supabase
+                  .from('leads')
+                  .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, case_handler_id, next_followup, probability, balance, potential_applicants')
+                  .in('id', batch);
+
+                if (missingError) {
+                  console.error('❌ DEBUG: Error fetching missing leads batch:', missingError);
+                } else {
+                  console.log(`🔍 DEBUG: Fetched ${missingLeads?.length || 0} leads from missing batch`);
+                  if (missingLeads && missingLeads.length > 0) {
+                    const missingLeadsData = missingLeads.map(lead => ({
+                      ...lead,
+                      lead_type: 'new' as const,
+                      isContact: false
+                    }));
+                    newLeadsData.push(...missingLeadsData);
+
+                    // Check if L204687 is in this batch
+                    const hasL204687InBatch = missingLeadsData.some((l: any) =>
+                      l.lead_number === '204687' ||
+                      l.lead_number === 'L204687' ||
+                      String(l.lead_number) === '204687' ||
+                      String(l.lead_number) === 'L204687'
+                    );
+                    if (hasL204687InBatch) {
+                      console.log('✅ DEBUG L204687: Found in missing leads batch!');
+                    }
+                  }
+                }
+              }
+              console.log('🔍 DEBUG: After fetching missing leads, total newLeadsData count=', newLeadsData.length);
+
+              // Final check for L204687
+              const hasL204687Final = newLeadsData.some((l: any) =>
+                l.lead_number === '204687' ||
+                l.lead_number === 'L204687' ||
+                String(l.lead_number) === '204687' ||
+                String(l.lead_number) === 'L204687'
+              );
+              console.log('🔍 DEBUG L204687: Final check - In newLeadsData?', hasL204687Final);
+            }
+          } else {
+            // My Contacts: Apply role filter
+            let query = supabase
+              .from('leads')
+              .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, case_handler_id, next_followup, probability, balance, potential_applicants');
+
+            if (currentUserEmployeeId || currentUserFullName) {
+              const newLeadConditions: string[] = [];
+
+              if (currentUserFullName) {
+                const fullNameLower = currentUserFullName.trim().toLowerCase();
+                newLeadConditions.push(`closer.ilike.%${fullNameLower}%`);
+                newLeadConditions.push(`scheduler.ilike.%${fullNameLower}%`);
+                newLeadConditions.push(`handler.ilike.%${fullNameLower}%`);
+              }
+
+              if (currentUserEmployeeId) {
+                newLeadConditions.push(`manager.eq.${currentUserEmployeeId}`);
+                newLeadConditions.push(`helper.eq.${currentUserEmployeeId}`);
+                newLeadConditions.push(`expert.eq.${currentUserEmployeeId}`);
+                newLeadConditions.push(`case_handler_id.eq.${currentUserEmployeeId}`);
+              }
+
+              if (newLeadConditions.length > 0) {
+                query = query.or(newLeadConditions.join(','));
+              }
+            }
+
+            // Filter by lead IDs that have WhatsApp conversations
+            const BATCH_SIZE = 1000;
+            const batches: string[][] = [];
+            for (let i = 0; i < newLeadIds.length; i += BATCH_SIZE) {
+              batches.push(newLeadIds.slice(i, i + BATCH_SIZE));
+            }
+
+            const allLeadsPromises = batches.map(batch =>
+              query.in('id', batch)
+            );
+
+            const allLeadsResults = await Promise.all(allLeadsPromises);
+            const allLeads: any[] = [];
+
+            allLeadsResults.forEach(({ data, error }) => {
+              if (error) {
+                console.error('Error fetching leads batch:', error);
+              } else if (data) {
+                allLeads.push(...data);
+              }
+            });
+
+            newLeadsData = allLeads.map(lead => ({
+              ...lead,
+              lead_type: 'new' as const,
+              isContact: false
+            }));
+          }
+
+          const { data: leadsData, error: leadsError } = { data: newLeadsData, error: null };
+
+          console.log('🔍 Debug L212670: Fetched leadsData count=', leadsData?.length, 'leadIds queried=', newLeadIds.length, 'found L212670?', leadsData?.some((l: any) => l.lead_number === '212670' || String(l.lead_number) === '212670'));
 
           if (leadsError) {
             console.error('Error fetching new leads:', leadsError);
@@ -814,17 +1507,340 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               isContact: false
             }));
           }
+
+          // Find leads that have messages but weren't found in the initial query
+          // Use the same logic as InteractionsTab.tsx: query by lead_id for new leads (line 2496)
+          const missingLeadIds = new Set<string>();
+
+          // Check all lead_ids from messages that weren't found in the initial query
+          (whatsappMessages || []).forEach((msg: any) => {
+            if (msg.lead_id && !newLeadIds.includes(msg.lead_id)) {
+              // This lead_id has messages but wasn't in our initial query results
+              missingLeadIds.add(msg.lead_id);
+            }
+          });
+
+          // Search for missing leads by lead_id (same approach as InteractionsTab.tsx)
+          if (missingLeadIds.size > 0) {
+            console.log('🔍 Debug: Searching for missing leads by lead_id:', Array.from(missingLeadIds).slice(0, 10), `(total: ${missingLeadIds.size})`);
+            for (const leadId of missingLeadIds) {
+              // Skip if we already have this lead
+              if (newLeadsData.some((l: any) => l.id === leadId)) {
+                continue;
+              }
+
+              const { data: directLeadData, error: directError } = await supabase
+                .from('leads')
+                .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, case_handler_id, next_followup, probability, balance, potential_applicants')
+                .eq('id', leadId)
+                .limit(1);
+
+              if (!directError && directLeadData && directLeadData.length > 0) {
+                const lead = directLeadData[0];
+                console.log(`🔍 Debug: Found lead by lead_id!`, { id: lead.id, lead_number: lead.lead_number, name: lead.name });
+
+                // Check if this lead has messages - use the same logic as InteractionsTab.tsx
+                // For new leads: check by lead_id (same as InteractionsTab.tsx line 2496)
+                const hasMessages = (whatsappMessages || []).some((msg: any) => {
+                  return msg.lead_id === lead.id;
+                });
+
+                const messagesCount = (whatsappMessages || []).filter((m: any) => m.lead_id === lead.id).length;
+
+                console.log(`🔍 Debug L${lead.lead_number}: Has messages?`, hasMessages, {
+                  leadId: lead.id,
+                  messagesWithLeadId: messagesCount
+                });
+
+                // Check if lead matches role filter (if "My Contacts" is enabled)
+                let matchesRoleFilter = true;
+                if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
+                  matchesRoleFilter = false;
+
+                  if (currentUserFullName) {
+                    const fullNameLower = currentUserFullName.trim().toLowerCase();
+                    if (lead.closer?.toLowerCase().includes(fullNameLower) ||
+                      lead.scheduler?.toLowerCase().includes(fullNameLower) ||
+                      lead.handler?.toLowerCase().includes(fullNameLower)) {
+                      matchesRoleFilter = true;
+                    }
+                  }
+
+                  if (currentUserEmployeeId) {
+                    if (lead.manager === currentUserEmployeeId ||
+                      lead.helper === currentUserEmployeeId ||
+                      lead.expert === currentUserEmployeeId ||
+                      lead.case_handler_id === currentUserEmployeeId) {
+                      matchesRoleFilter = true;
+                    }
+                  }
+                }
+
+                // Add to results if it has messages and (we're showing all contacts OR it matches role filter)
+                if (hasMessages && (!showMyContactsOnly || matchesRoleFilter)) {
+                  console.log(`✅ Adding L${lead.lead_number} to results (hasMessages: ${hasMessages}, matchesRoleFilter: ${matchesRoleFilter}, showMyContactsOnly: ${showMyContactsOnly})`);
+                  newLeadsData.push({
+                    ...lead,
+                    lead_type: 'new' as const,
+                    isContact: false
+                  });
+                } else {
+                  console.log(`❌ Not adding L${lead.lead_number} (hasMessages: ${hasMessages}, matchesRoleFilter: ${matchesRoleFilter}, showMyContactsOnly: ${showMyContactsOnly})`);
+                }
+              }
+            }
+          }
+
+          // Also check for L212670 specifically if it's not in the results (by lead_number as fallback)
+          // Use the same search patterns as searchLeads in legacyLeadsApi.ts
+          if (!newLeadsData.some((l: any) => l.lead_number === '212670' || String(l.lead_number) === '212670')) {
+            console.log('🔍 Debug L212670: Not found in initial results, trying search with multiple patterns (like searchLeads)');
+
+            // Use the same patterns as searchLeads for 6-digit queries
+            // Try exact matches: L212670, C212670, 212670
+            const exactPatterns = [
+              'lead_number.eq.L212670',
+              'lead_number.eq.C212670',
+              'lead_number.eq.212670',
+            ];
+
+            let directLeadData: any = null;
+            let directError: any = null;
+
+            // Try exact match first
+            const { data: exactData, error: exactError } = await supabase
+              .from('leads')
+              .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, case_handler_id, next_followup, probability, balance, potential_applicants')
+              .or(exactPatterns.join(','))
+              .limit(1);
+
+            if (!exactError && exactData && exactData.length > 0) {
+              directLeadData = exactData;
+              console.log('🔍 Debug L212670: Found via exact match!', {
+                id: exactData[0].id,
+                lead_number: exactData[0].lead_number,
+                name: exactData[0].name
+              });
+            } else {
+              // Fallback to ilike search
+              console.log('🔍 Debug L212670: Exact match failed, trying ilike...');
+              const { data: ilikeData, error: ilikeError } = await supabase
+                .from('leads')
+                .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, case_handler_id, next_followup, probability, balance, potential_applicants')
+                .ilike('lead_number', '%212670%')
+                .limit(10);
+
+              if (!ilikeError && ilikeData && ilikeData.length > 0) {
+                // Find exact match (212670, L212670, or number 212670)
+                const exactMatch = ilikeData.find((l: any) => {
+                  const ln = String(l.lead_number || '').trim();
+                  return ln === '212670' ||
+                    ln === 'L212670' ||
+                    ln === 'l212670' ||
+                    Number(ln) === 212670;
+                });
+
+                if (exactMatch) {
+                  directLeadData = [exactMatch];
+                  console.log('🔍 Debug L212670: Found via ilike search!', {
+                    id: exactMatch.id,
+                    lead_number: exactMatch.lead_number,
+                    name: exactMatch.name
+                  });
+                } else {
+                  console.log('🔍 Debug L212670: ilike found results but no exact match:', ilikeData.map((l: any) => ({
+                    lead_number: l.lead_number,
+                    id: l.id,
+                    name: l.name
+                  })));
+                }
+              } else {
+                directError = ilikeError || exactError;
+                console.log('🔍 Debug L212670: Both exact and ilike searches failed:', directError);
+              }
+            }
+
+            if (directLeadData && directLeadData.length > 0) {
+              const lead = directLeadData[0];
+              console.log(`🔍 Debug L212670: Found directly by lead_number!`, { id: lead.id, name: lead.name });
+
+              // Check if this lead has messages - use the same logic as InteractionsTab.tsx
+              // For new leads: check by lead_id (same as InteractionsTab.tsx line 2496)
+              const hasDirectMessages = (whatsappMessages || []).some((msg: any) => {
+                return msg.lead_id === lead.id;
+              });
+
+              const directMessagesCount = (whatsappMessages || []).filter((m: any) => m.lead_id === lead.id).length;
+
+              // Also check if this lead has contacts with messages
+              // First, find all contacts associated with this lead
+              const { data: leadContacts, error: contactsError } = await supabase
+                .from('lead_leadcontact')
+                .select('contact_id')
+                .eq('newlead_id', lead.id);
+
+              let hasContactsWithMessages = false;
+              let contactsWithMessagesCount = 0;
+
+              if (!contactsError && leadContacts && leadContacts.length > 0) {
+                const contactIds = leadContacts.map((c: any) => c.contact_id).filter(Boolean);
+                if (contactIds.length > 0) {
+                  // Check if any of these contacts have messages
+                  contactsWithMessagesCount = (whatsappMessages || []).filter((m: any) =>
+                    m.contact_id && contactIds.includes(Number(m.contact_id))
+                  ).length;
+                  hasContactsWithMessages = contactsWithMessagesCount > 0;
+                }
+              }
+
+              // Lead has messages if it has direct messages OR contacts with messages
+              const hasMessages = hasDirectMessages || hasContactsWithMessages;
+
+              // IMPORTANT: Also check if contacts have messages by checking all whatsappMessages
+              // Sometimes messages might be linked differently, so let's check all messages for these contact IDs
+              let contactsWithAnyMessages = false;
+              if (leadContacts && leadContacts.length > 0) {
+                const contactIds = leadContacts.map((c: any) => c.contact_id).filter(Boolean);
+                // Check if any messages have these contact_ids
+                const messagesForContacts = (whatsappMessages || []).filter((m: any) =>
+                  m.contact_id && contactIds.includes(Number(m.contact_id))
+                );
+                contactsWithAnyMessages = messagesForContacts.length > 0;
+                if (contactsWithAnyMessages && !hasContactsWithMessages) {
+                  console.log(`🔍 Debug L212670: Found ${messagesForContacts.length} messages for contacts using alternative check!`);
+                  hasContactsWithMessages = true;
+                  contactsWithMessagesCount = messagesForContacts.length;
+                }
+              }
+
+              // Check if lead has ANY contacts (even without messages) - we should show it in "All Contacts" tab
+              const hasContacts = leadContacts && leadContacts.length > 0;
+
+              console.log(`🔍 Debug L212670: Has messages?`, hasMessages, {
+                leadId: lead.id,
+                directMessagesWithLeadId: directMessagesCount,
+                hasContactsWithMessages: hasContactsWithMessages,
+                contactsWithMessagesCount: contactsWithMessagesCount,
+                totalContacts: leadContacts?.length || 0,
+                hasContacts: hasContacts,
+                contactIds: leadContacts?.map((c: any) => c.contact_id).filter(Boolean) || []
+              });
+
+              // IMPORTANT: Even if no direct messages, if it has contacts with messages, we should still add it
+              // This ensures L212670 appears in the contact panel so users can access its contacts
+              if (hasContactsWithMessages && !hasDirectMessages) {
+                console.log(`🔍 Debug L212670: No direct messages but has ${contactsWithMessagesCount} messages via contacts - will add to show contacts`);
+              }
+
+              // Check if lead matches role filter (if "My Contacts" is enabled)
+              let matchesRoleFilter = true;
+              if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
+                matchesRoleFilter = false;
+
+                if (currentUserFullName) {
+                  const fullNameLower = currentUserFullName.trim().toLowerCase();
+                  if (lead.closer?.toLowerCase().includes(fullNameLower) ||
+                    lead.scheduler?.toLowerCase().includes(fullNameLower) ||
+                    lead.handler?.toLowerCase().includes(fullNameLower)) {
+                    matchesRoleFilter = true;
+                  }
+                }
+
+                if (currentUserEmployeeId) {
+                  if (lead.manager === currentUserEmployeeId ||
+                    lead.helper === currentUserEmployeeId ||
+                    lead.expert === currentUserEmployeeId ||
+                    lead.case_handler_id === currentUserEmployeeId) {
+                    matchesRoleFilter = true;
+                  }
+                }
+              }
+
+              // Add to results if:
+              // 1. It has messages (direct or via contacts) OR
+              // 2. It has contacts (even without messages) AND we're showing all contacts
+              // AND (we're showing all contacts OR it matches role filter)
+              const shouldAdd = (hasMessages || (hasContacts && !showMyContactsOnly)) && (!showMyContactsOnly || matchesRoleFilter);
+
+              if (shouldAdd) {
+                console.log(`✅ Adding L212670 to results (hasMessages: ${hasMessages}, hasContacts: ${hasContacts}, matchesRoleFilter: ${matchesRoleFilter}, showMyContactsOnly: ${showMyContactsOnly})`);
+                newLeadsData.push({
+                  ...lead,
+                  lead_type: 'new' as const,
+                  isContact: false
+                });
+              } else {
+                console.log(`❌ Not adding L212670 (hasMessages: ${hasMessages}, hasContacts: ${hasContacts}, matchesRoleFilter: ${matchesRoleFilter}, showMyContactsOnly: ${showMyContactsOnly})`);
+              }
+            } else {
+              console.log('🔍 Debug L212670: Lead not found in new leads table, checking legacy leads...');
+              // Also check if L212670 is a legacy lead
+              const { data: legacyL212670, error: legacyError } = await supabase
+                .from('leads_lead')
+                .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, next_followup, probability, total, potential_applicants')
+                .or('lead_number.eq.212670,lead_number.eq.L212670,lead_number.ilike.%212670%')
+                .limit(1);
+
+              if (!legacyError && legacyL212670 && legacyL212670.length > 0) {
+                const legacyLead = legacyL212670[0];
+                console.log(`🔍 Debug L212670: Found in legacy leads!`, { id: legacyLead.id, lead_number: legacyLead.lead_number, name: legacyLead.name });
+
+                // Check if this legacy lead has messages
+                const hasLegacyMessages = (whatsappMessages || []).some((msg: any) => {
+                  return msg.legacy_id === legacyLead.id;
+                });
+
+                const legacyMessagesCount = (whatsappMessages || []).filter((m: any) => m.legacy_id === legacyLead.id).length;
+
+                console.log(`🔍 Debug L212670 (legacy): Has messages?`, hasLegacyMessages, {
+                  legacyId: legacyLead.id,
+                  messagesWithLegacyId: legacyMessagesCount
+                });
+
+                if (hasLegacyMessages) {
+                  console.log(`✅ Adding L212670 (legacy) to results`);
+                  legacyLeadsData.push({
+                    id: `legacy_${legacyLead.id}`,
+                    lead_number: String(legacyLead.lead_number || legacyLead.id),
+                    name: legacyLead.name || '',
+                    email: legacyLead.email || '',
+                    phone: legacyLead.phone || '',
+                    mobile: legacyLead.mobile || '',
+                    topic: legacyLead.topic || '',
+                    status: legacyLead.status ? String(legacyLead.status) : '',
+                    stage: legacyLead.stage ? String(legacyLead.stage) : '',
+                    closer: legacyLead.closer_id ? getEmployeeDisplayName(legacyLead.closer_id) : '',
+                    scheduler: legacyLead.meeting_scheduler_id ? getEmployeeDisplayName(legacyLead.meeting_scheduler_id) : '',
+                    closer_id: legacyLead.closer_id || null,
+                    meeting_scheduler_id: legacyLead.meeting_scheduler_id || null,
+                    meeting_manager_id: legacyLead.meeting_manager_id || null,
+                    meeting_lawyer_id: legacyLead.meeting_lawyer_id || null,
+                    expert_id: legacyLead.expert_id || null,
+                    case_handler_id: legacyLead.case_handler_id || null,
+                    next_followup: legacyLead.next_followup || '',
+                    probability: legacyLead.probability ? Number(legacyLead.probability) : undefined,
+                    balance: legacyLead.total ? Number(legacyLead.total) : undefined,
+                    potential_applicants: legacyLead.potential_applicants || '',
+                    lead_type: 'legacy' as const,
+                    isContact: false
+                  });
+                }
+              }
+            }
+          } else {
+            console.log('🔍 Debug L212670: Already found in initial results');
+          }
         }
 
         // Fetch legacy leads with conversations
         const legacyLeadIds = Array.from(uniqueLegacyIds).map(id => Number(id)).filter(id => !isNaN(id));
         let legacyLeadsData: any[] = [];
-        
+
         if (legacyLeadIds.length > 0) {
           let query = supabase
             .from('leads_lead')
             .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, next_followup, probability, total, potential_applicants');
-          
+
           // Apply role filter if "My Contacts" is enabled AND we have user info
           // If showMyContactsOnly is true but user info isn't loaded yet, skip filtering (will re-fetch when user info loads)
           if (showMyContactsOnly && currentUserEmployeeId) {
@@ -838,7 +1854,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             ];
             query = query.or(legacyConditions.join(','));
           }
-          
+
           // Always filter by lead IDs that have WhatsApp conversations
           query = query.in('id', legacyLeadIds);
 
@@ -875,12 +1891,108 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           }
         }
 
-        // Fetch contacts with WhatsApp conversations that are connected to leads
+        // Fetch contacts with WhatsApp conversations
+        // For "All Contacts" tab: include ALL contacts with messages
+        // For "My Contacts" tab: only include contacts whose associated leads match role filter
         const contactIdsArray = Array.from(uniqueContactIds);
         let contactClientsData: any[] = [];
-        
+
+        // IMPORTANT: Also check if L212670 has contacts with messages that weren't found via lead_id
+        // This handles cases where messages only have contact_id, not lead_id
+        const l212670Found = newLeadsData.some((l: any) => l.lead_number === '212670' || String(l.lead_number) === '212670') ||
+          legacyLeadsData.some((l: any) => l.lead_number === '212670' || String(l.lead_number) === '212670');
+
+        if (!l212670Found) {
+          console.log('🔍 Debug L212670: Checking if it has contacts with messages...');
+          // Try to find L212670 in new leads table (try multiple formats)
+          let l212670Id: string | null = null;
+          let l212670Data: any = null;
+
+          // Try as string
+          const { data: stringData } = await supabase
+            .from('leads')
+            .select('id, lead_number')
+            .eq('lead_number', '212670')
+            .limit(1);
+
+          if (stringData && stringData.length > 0) {
+            l212670Data = stringData[0];
+            l212670Id = stringData[0].id;
+          } else {
+            // Try as number
+            const { data: numberData } = await supabase
+              .from('leads')
+              .select('id, lead_number')
+              .eq('lead_number', 212670)
+              .limit(1);
+
+            if (numberData && numberData.length > 0) {
+              l212670Data = numberData[0];
+              l212670Id = numberData[0].id;
+            } else {
+              // Try legacy leads
+              const { data: legacyData } = await supabase
+                .from('leads_lead')
+                .select('id, lead_number')
+                .or('lead_number.eq.212670,lead_number.eq.L212670,lead_number.ilike.%212670%')
+                .limit(1);
+
+              if (legacyData && legacyData.length > 0) {
+                l212670Data = legacyData[0];
+                l212670Id = `legacy_${legacyData[0].id}`;
+              }
+            }
+          }
+
+          if (l212670Id && l212670Data) {
+            console.log(`🔍 Debug L212670: Found lead!`, { id: l212670Id, lead_number: l212670Data.lead_number, isLegacy: l212670Id.toString().startsWith('legacy_') });
+
+            // Find contacts for L212670
+            let l212670Contacts: any[] = [];
+            if (l212670Id.toString().startsWith('legacy_')) {
+              const legacyId = Number(l212670Id.replace('legacy_', ''));
+              const { data: legacyContacts } = await supabase
+                .from('lead_leadcontact')
+                .select('contact_id')
+                .eq('lead_id', legacyId);
+              if (legacyContacts) l212670Contacts = legacyContacts;
+            } else {
+              const { data: newContacts } = await supabase
+                .from('lead_leadcontact')
+                .select('contact_id')
+                .eq('newlead_id', l212670Id);
+              if (newContacts) l212670Contacts = newContacts;
+            }
+
+            if (l212670Contacts.length > 0) {
+              const l212670ContactIds = l212670Contacts.map((c: any) => c.contact_id).filter(Boolean);
+              // Check if any of these contacts have messages
+              const l212670ContactsWithMessages = (whatsappMessages || []).filter((m: any) =>
+                m.contact_id && l212670ContactIds.includes(Number(m.contact_id))
+              );
+
+              if (l212670ContactsWithMessages.length > 0) {
+                console.log(`🔍 Debug L212670: Found ${l212670ContactsWithMessages.length} messages via contacts! Adding contact IDs to fetch list.`);
+                // Add these contact IDs to the fetch list if not already there
+                l212670ContactIds.forEach((contactId: number) => {
+                  if (!contactIdsArray.includes(contactId)) {
+                    contactIdsArray.push(contactId);
+                    uniqueContactIds.add(contactId);
+                  }
+                });
+              } else {
+                console.log(`🔍 Debug L212670: Found ${l212670Contacts.length} contacts but none have messages`);
+              }
+            } else {
+              console.log(`🔍 Debug L212670: No contacts found for this lead`);
+            }
+          } else {
+            console.log('🔍 Debug L212670: Lead not found in database (neither new nor legacy)');
+          }
+        }
+
         if (contactIdsArray.length > 0) {
-          // First, fetch relationships to ensure contacts are connected to leads (both new and legacy)
+          // First, fetch relationships to get lead associations (both new and legacy)
           const { data: relationships, error: relationshipsError } = await supabase
             .from('lead_leadcontact')
             .select('contact_id, newlead_id, lead_id')
@@ -888,14 +2000,16 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
           if (relationshipsError) {
             console.error('Error fetching contact relationships:', relationshipsError);
-          } else if (relationships && relationships.length > 0) {
-            // Separate new leads and legacy leads
-            const newLeadIdsForContacts = new Set<string>();
-            const legacyLeadIdsForContacts = new Set<number>();
-            const contactToNewLeadMap = new Map<number, string>();
-            const contactToLegacyLeadMap = new Map<number, number>();
-            const connectedContactIds = new Set<number>();
-            
+          }
+
+          // Separate new leads and legacy leads from relationships
+          const newLeadIdsForContacts = new Set<string>();
+          const legacyLeadIdsForContacts = new Set<number>();
+          const contactToNewLeadMap = new Map<number, string>();
+          const contactToLegacyLeadMap = new Map<number, number>();
+          const connectedContactIds = new Set<number>();
+
+          if (relationships && relationships.length > 0) {
             relationships.forEach((rel: any) => {
               if (rel.contact_id) {
                 connectedContactIds.add(Number(rel.contact_id));
@@ -909,176 +2023,207 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 }
               }
             });
+          }
 
-            if (connectedContactIds.size > 0) {
-              // Fetch contact details only for contacts connected to leads
-              const { data: contactsData, error: contactsError } = await supabase
-                .from('leads_contact')
-                .select('id, name, email, phone, mobile, whatsapp_profile_picture_url')
-                .in('id', Array.from(connectedContactIds));
+          // For "All Contacts" tab: fetch ALL contacts with messages, even if no relationship exists
+          // For "My Contacts" tab: only fetch contacts that have relationships (to filter by role)
+          const contactsToFetch = !showMyContactsOnly
+            ? contactIdsArray  // All contacts with messages
+            : Array.from(connectedContactIds);  // Only contacts with relationships
 
-              if (contactsError) {
-                console.error('Error fetching contacts:', contactsError);
-              } else if (contactsData && contactsData.length > 0) {
-                // Fetch new leads for contacts (with role filter if enabled)
-                let newLeadsForContacts: any[] = [];
-                if (newLeadIdsForContacts.size > 0) {
-                  let contactsNewLeadsQuery = supabase
-                    .from('leads')
-                    .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, case_handler_id, next_followup, probability, balance, potential_applicants')
-                    .in('id', Array.from(newLeadIdsForContacts));
-                  
-                  // Apply role filter if "My Contacts" is enabled
-                  if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
-                    const contactLeadConditions: string[] = [];
-                    
-                    if (currentUserFullName) {
-                      const fullNameLower = currentUserFullName.trim().toLowerCase();
-                      contactLeadConditions.push(`closer.ilike.%${fullNameLower}%`);
-                      contactLeadConditions.push(`scheduler.ilike.%${fullNameLower}%`);
-                      contactLeadConditions.push(`handler.ilike.%${fullNameLower}%`);
-                    }
-                    
-                    if (currentUserEmployeeId) {
-                      contactLeadConditions.push(`manager.eq.${currentUserEmployeeId}`);
-                      contactLeadConditions.push(`helper.eq.${currentUserEmployeeId}`);
-                      contactLeadConditions.push(`expert.eq.${currentUserEmployeeId}`);
-                      contactLeadConditions.push(`case_handler_id.eq.${currentUserEmployeeId}`);
-                    }
-                    
-                    if (contactLeadConditions.length > 0) {
-                      contactsNewLeadsQuery = contactsNewLeadsQuery.or(contactLeadConditions.join(','));
-                    }
+          if (contactsToFetch.length > 0) {
+            // Fetch contact details
+            const { data: contactsData, error: contactsError } = await supabase
+              .from('leads_contact')
+              .select('id, name, email, phone, mobile, whatsapp_profile_picture_url')
+              .in('id', contactsToFetch);
+
+            if (contactsError) {
+              console.error('Error fetching contacts:', contactsError);
+            } else if (contactsData && contactsData.length > 0) {
+              // Fetch new leads for contacts (with role filter if enabled)
+              let newLeadsForContacts: any[] = [];
+              if (newLeadIdsForContacts.size > 0) {
+                let contactsNewLeadsQuery = supabase
+                  .from('leads')
+                  .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, case_handler_id, next_followup, probability, balance, potential_applicants')
+                  .in('id', Array.from(newLeadIdsForContacts));
+
+                // Apply role filter if "My Contacts" is enabled
+                if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
+                  const contactLeadConditions: string[] = [];
+
+                  if (currentUserFullName) {
+                    const fullNameLower = currentUserFullName.trim().toLowerCase();
+                    contactLeadConditions.push(`closer.ilike.%${fullNameLower}%`);
+                    contactLeadConditions.push(`scheduler.ilike.%${fullNameLower}%`);
+                    contactLeadConditions.push(`handler.ilike.%${fullNameLower}%`);
                   }
 
-                  const { data: newLeadsData, error: newLeadsError } = await contactsNewLeadsQuery;
-                  if (!newLeadsError && newLeadsData) {
-                    newLeadsForContacts = newLeadsData;
-                  }
-                }
-
-                // Fetch legacy leads for contacts (with role filter if enabled)
-                // Include both legacy_ids from relationships AND from whatsapp_messages
-                const allLegacyIdsForContacts = new Set<number>();
-                legacyLeadIdsForContacts.forEach(id => allLegacyIdsForContacts.add(id));
-                // Add legacy_ids from whatsapp_messages
-                contactToLegacyIdMap.forEach(legacyId => allLegacyIdsForContacts.add(legacyId));
-                
-                let legacyLeadsForContacts: any[] = [];
-                if (allLegacyIdsForContacts.size > 0) {
-                  let contactsLegacyLeadsQuery = supabase
-                    .from('leads_lead')
-                    .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, next_followup, probability, total, potential_applicants')
-                    .in('id', Array.from(allLegacyIdsForContacts));
-                  
-                  // Apply role filter if "My Contacts" is enabled AND we have user info
-                  if (showMyContactsOnly && currentUserEmployeeId) {
-                    const legacyConditions = [
-                      `closer_id.eq.${currentUserEmployeeId}`,
-                      `meeting_scheduler_id.eq.${currentUserEmployeeId}`,
-                      `meeting_manager_id.eq.${currentUserEmployeeId}`,
-                      `meeting_lawyer_id.eq.${currentUserEmployeeId}`,
-                      `expert_id.eq.${currentUserEmployeeId}`,
-                      `case_handler_id.eq.${currentUserEmployeeId}`
-                    ];
-                    contactsLegacyLeadsQuery = contactsLegacyLeadsQuery.or(legacyConditions.join(','));
+                  if (currentUserEmployeeId) {
+                    contactLeadConditions.push(`manager.eq.${currentUserEmployeeId}`);
+                    contactLeadConditions.push(`helper.eq.${currentUserEmployeeId}`);
+                    contactLeadConditions.push(`expert.eq.${currentUserEmployeeId}`);
+                    contactLeadConditions.push(`case_handler_id.eq.${currentUserEmployeeId}`);
                   }
 
-                  const { data: legacyLeadsData, error: legacyLeadsError } = await contactsLegacyLeadsQuery;
-                  if (!legacyLeadsError && legacyLeadsData) {
-                    legacyLeadsForContacts = legacyLeadsData;
+                  if (contactLeadConditions.length > 0) {
+                    contactsNewLeadsQuery = contactsNewLeadsQuery.or(contactLeadConditions.join(','));
                   }
                 }
 
-                // Create Client objects ONLY for contacts whose associated leads match the role filter
-                // If "My Contacts" is enabled, only include contacts whose leads passed the role filter
-                // If "All Contacts" is enabled, include all contacts
-                contactClientsData = contactsData
-                  .filter((contact: any) => {
-                    const newLeadId = contactToNewLeadMap.get(contact.id);
-                    const legacyLeadId = contactToLegacyLeadMap.get(contact.id);
-                    // Also check if we have a legacy_id directly from whatsapp_messages
-                    const legacyIdFromMessages = contactToLegacyIdMap.get(contact.id);
-                    const finalLegacyLeadId = legacyIdFromMessages || legacyLeadId;
-                    
-                    // If "My Contacts" is enabled, only include contacts whose associated lead is in the filtered results
-                    if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
-                      if (newLeadId) {
-                        // Check if the new lead is in the filtered results
-                        return newLeadsForContacts.some(lead => lead.id === newLeadId);
-                      } else if (finalLegacyLeadId) {
-                        // Check if the legacy lead is in the filtered results
-                        return legacyLeadsForContacts.some(lead => lead.id === finalLegacyLeadId);
-                      }
-                      return false;
-                    }
-                    
-                    // If "All Contacts" is enabled, include all contacts that have an associated lead
-                    return !!(newLeadId || finalLegacyLeadId);
-                  })
-                  .map((contact: any) => {
-                    const newLeadId = contactToNewLeadMap.get(contact.id);
-                    const legacyLeadId = contactToLegacyLeadMap.get(contact.id);
-                    // Get legacy_id directly from whatsapp_messages if available (more accurate)
-                    const legacyIdFromMessages = contactToLegacyIdMap.get(contact.id);
-                    const finalLegacyLeadId = legacyIdFromMessages || legacyLeadId;
-                    
-                    const associatedNewLead = newLeadId ? newLeadsForContacts.find(lead => lead.id === newLeadId) : null;
-                    // Use finalLegacyLeadId (from messages first, then relationship) to find the associated lead
-                    const associatedLegacyLead = finalLegacyLeadId ? legacyLeadsForContacts.find(lead => lead.id === finalLegacyLeadId) : null;
-                    const associatedLead = associatedNewLead || associatedLegacyLead;
-                    const isLegacy = !!associatedLegacyLead || !!finalLegacyLeadId;
-                    
-                    // Get lead_number: use associatedLead's lead_number, or for legacy use the legacy_id itself
-                    let leadNumber: string;
-                    if (associatedLead?.lead_number) {
-                      leadNumber = associatedLead.lead_number;
-                    } else if (finalLegacyLeadId) {
-                      // For legacy leads, the lead_number is the legacy_id itself
-                      leadNumber = String(finalLegacyLeadId);
-                    } else {
-                      // Fallback: use contact id (shouldn't happen in normal cases)
-                      leadNumber = `Contact ${contact.id}`;
-                    }
-                    
-                    // CRITICAL: Always use contact's name from leads_contact table, NEVER use lead's name
-                    // The contact.name comes directly from the database query at line 934
-                    const contactName = contact.name || '';
-                    
-                    // Debug: Log to verify we're using contact name, not lead name
-                    if (contactName) {
-                      console.log(`✅ Contact client created: ID=${contact.id}, Name="${contactName}" (from leads_contact), NOT from lead "${associatedLead?.name || 'N/A'}"`);
-                    }
-                    
-                    return {
-                      id: `contact_${contact.id}`,
-                      lead_id: newLeadId || (finalLegacyLeadId ? String(finalLegacyLeadId) : null),
-                      contact_id: contact.id,
-                      lead_number: leadNumber,
-                      name: contactName, // Always use contact's name from leads_contact table
-                      email: contact.email || '',
-                      phone: contact.phone || '',
-                      mobile: contact.mobile || '',
-                      topic: associatedLead?.topic || '',
-                      status: associatedLead?.status || '',
-                      stage: associatedLead?.stage || '',
-                      closer: isLegacy ? (associatedLead?.closer_id ? getEmployeeDisplayName(associatedLead.closer_id) : '') : (associatedLead?.closer || ''),
-                      scheduler: isLegacy ? (associatedLead?.meeting_scheduler_id ? getEmployeeDisplayName(associatedLead.meeting_scheduler_id) : '') : (associatedLead?.scheduler || ''),
-                      handler: associatedLead?.handler || '',
-                      manager: associatedLead?.manager || null,
-                      helper: associatedLead?.helper || null,
-                      expert: associatedLead?.expert || null,
-                      case_handler_id: associatedLead?.case_handler_id || null,
-                      next_followup: associatedLead?.next_followup || '',
-                      probability: associatedLead?.probability ? Number(associatedLead.probability) : undefined,
-                      balance: isLegacy ? (associatedLead?.total ? Number(associatedLead.total) : undefined) : (associatedLead?.balance || undefined),
-                      potential_applicants: associatedLead?.potential_applicants || '',
-                      lead_type: isLegacy ? 'legacy' as const : 'new' as const,
-                      isContact: true,
-                      whatsapp_profile_picture_url: contact.whatsapp_profile_picture_url || null
-                    };
-                  });
+                const { data: newLeadsData, error: newLeadsError } = await contactsNewLeadsQuery;
+                if (!newLeadsError && newLeadsData) {
+                  newLeadsForContacts = newLeadsData;
+                }
               }
+
+              // Fetch legacy leads for contacts (with role filter if enabled)
+              // Include both legacy_ids from relationships AND from whatsapp_messages
+              const allLegacyIdsForContacts = new Set<number>();
+              legacyLeadIdsForContacts.forEach(id => allLegacyIdsForContacts.add(id));
+              // Add legacy_ids from whatsapp_messages
+              contactToLegacyIdMap.forEach(legacyId => allLegacyIdsForContacts.add(legacyId));
+
+              let legacyLeadsForContacts: any[] = [];
+              if (allLegacyIdsForContacts.size > 0) {
+                let contactsLegacyLeadsQuery = supabase
+                  .from('leads_lead')
+                  .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, next_followup, probability, total, potential_applicants')
+                  .in('id', Array.from(allLegacyIdsForContacts));
+
+                // Apply role filter if "My Contacts" is enabled AND we have user info
+                if (showMyContactsOnly && currentUserEmployeeId) {
+                  const legacyConditions = [
+                    `closer_id.eq.${currentUserEmployeeId}`,
+                    `meeting_scheduler_id.eq.${currentUserEmployeeId}`,
+                    `meeting_manager_id.eq.${currentUserEmployeeId}`,
+                    `meeting_lawyer_id.eq.${currentUserEmployeeId}`,
+                    `expert_id.eq.${currentUserEmployeeId}`,
+                    `case_handler_id.eq.${currentUserEmployeeId}`
+                  ];
+                  contactsLegacyLeadsQuery = contactsLegacyLeadsQuery.or(legacyConditions.join(','));
+                }
+
+                const { data: legacyLeadsData, error: legacyLeadsError } = await contactsLegacyLeadsQuery;
+                if (!legacyLeadsError && legacyLeadsData) {
+                  legacyLeadsForContacts = legacyLeadsData;
+                }
+              }
+
+              // Create Client objects ONLY for contacts whose associated leads match the role filter
+              // If "My Contacts" is enabled, only include contacts whose leads passed the role filter
+              // If "All Contacts" is enabled, include all contacts
+              // IMPORTANT: Also check newLeadsData (main leads list) to include contacts from leads found via fallback (e.g., L212670)
+              contactClientsData = contactsData
+                .filter((contact: any) => {
+                  const newLeadId = contactToNewLeadMap.get(contact.id);
+                  const legacyLeadId = contactToLegacyLeadMap.get(contact.id);
+                  // Also check if we have a legacy_id directly from whatsapp_messages
+                  const legacyIdFromMessages = contactToLegacyIdMap.get(contact.id);
+                  const finalLegacyLeadId = legacyIdFromMessages || legacyLeadId;
+
+                  // If "My Contacts" is enabled, only include contacts whose associated lead is in the filtered results
+                  if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
+                    if (newLeadId) {
+                      // Check if the new lead is in the filtered results
+                      // Check both newLeadsForContacts (from relationships) AND newLeadsData (main leads, including fallback finds)
+                      const inContactsLeads = newLeadsForContacts.some(lead => lead.id === newLeadId);
+                      const inMainLeads = newLeadsData.some(lead => lead.id === newLeadId);
+                      if (inContactsLeads || inMainLeads) {
+                        console.log(`✅ Contact ${contact.id} (${contact.name}) included: lead ${newLeadId} found in ${inContactsLeads ? 'contacts leads' : 'main leads'}`);
+                        return true;
+                      }
+                      console.log(`❌ Contact ${contact.id} (${contact.name}) excluded: lead ${newLeadId} not in filtered results`);
+                      return false;
+                    } else if (finalLegacyLeadId) {
+                      // Check if the legacy lead is in the filtered results
+                      return legacyLeadsForContacts.some(lead => lead.id === finalLegacyLeadId);
+                    }
+                    return false;
+                  }
+
+                  // If "All Contacts" is enabled, include ALL contacts with messages
+                  // They don't need to have a relationship - if they have messages, show them
+                  return true;
+                })
+                .map((contact: any) => {
+                  const newLeadId = contactToNewLeadMap.get(contact.id);
+                  const legacyLeadId = contactToLegacyLeadMap.get(contact.id);
+                  // Get legacy_id directly from whatsapp_messages if available (more accurate)
+                  const legacyIdFromMessages = contactToLegacyIdMap.get(contact.id);
+                  const finalLegacyLeadId = legacyIdFromMessages || legacyLeadId;
+
+                  // IMPORTANT: Check both newLeadsForContacts (from relationships) AND newLeadsData (main leads, including fallback finds like L212670)
+                  const associatedNewLeadFromContacts = newLeadId ? newLeadsForContacts.find(lead => lead.id === newLeadId) : null;
+                  const associatedNewLeadFromMain = newLeadId ? newLeadsData.find(lead => lead.id === newLeadId) : null;
+                  const associatedNewLead = associatedNewLeadFromContacts || associatedNewLeadFromMain;
+
+                  // Use finalLegacyLeadId (from messages first, then relationship) to find the associated lead
+                  const associatedLegacyLead = finalLegacyLeadId ? legacyLeadsForContacts.find(lead => lead.id === finalLegacyLeadId) : null;
+                  const associatedLead = associatedNewLead || associatedLegacyLead;
+
+                  // Debug log for L212670 contacts
+                  if (associatedNewLead && (associatedNewLead.lead_number === '212670' || String(associatedNewLead.lead_number) === '212670')) {
+                    console.log(`✅ Found contact ${contact.id} (${contact.name}) for L212670:`, {
+                      contactId: contact.id,
+                      contactName: contact.name,
+                      leadId: newLeadId,
+                      leadNumber: associatedNewLead.lead_number,
+                      foundIn: associatedNewLeadFromContacts ? 'contacts leads' : 'main leads (fallback)'
+                    });
+                  }
+                  const isLegacy = !!associatedLegacyLead || !!finalLegacyLeadId;
+
+                  // Get lead_number: use associatedLead's lead_number, or for legacy use the legacy_id itself
+                  let leadNumber: string;
+                  if (associatedLead?.lead_number) {
+                    leadNumber = associatedLead.lead_number;
+                  } else if (finalLegacyLeadId) {
+                    // For legacy leads, the lead_number is the legacy_id itself
+                    leadNumber = String(finalLegacyLeadId);
+                  } else {
+                    // Fallback: use contact id (shouldn't happen in normal cases)
+                    leadNumber = `Contact ${contact.id}`;
+                  }
+
+                  // CRITICAL: Always use contact's name from leads_contact table, NEVER use lead's name
+                  // The contact.name comes directly from the database query at line 934
+                  const contactName = contact.name || '';
+
+                  // Debug: Log to verify we're using contact name, not lead name
+                  if (contactName) {
+                    console.log(`✅ Contact client created: ID=${contact.id}, Name="${contactName}" (from leads_contact), NOT from lead "${associatedLead?.name || 'N/A'}"`);
+                  }
+
+                  return {
+                    id: `contact_${contact.id}`,
+                    lead_id: newLeadId || (finalLegacyLeadId ? String(finalLegacyLeadId) : null),
+                    contact_id: contact.id,
+                    lead_number: leadNumber,
+                    name: contactName, // Always use contact's name from leads_contact table
+                    email: contact.email || '',
+                    phone: contact.phone || '',
+                    mobile: contact.mobile || '',
+                    topic: associatedLead?.topic || '',
+                    status: associatedLead?.status || '',
+                    stage: associatedLead?.stage || '',
+                    closer: isLegacy ? (associatedLead?.closer_id ? getEmployeeDisplayName(associatedLead.closer_id) : '') : (associatedLead?.closer || ''),
+                    scheduler: isLegacy ? (associatedLead?.meeting_scheduler_id ? getEmployeeDisplayName(associatedLead.meeting_scheduler_id) : '') : (associatedLead?.scheduler || ''),
+                    handler: associatedLead?.handler || '',
+                    manager: associatedLead?.manager || null,
+                    helper: associatedLead?.helper || null,
+                    expert: associatedLead?.expert || null,
+                    case_handler_id: associatedLead?.case_handler_id || null,
+                    next_followup: associatedLead?.next_followup || '',
+                    probability: associatedLead?.probability ? Number(associatedLead.probability) : undefined,
+                    balance: isLegacy ? (associatedLead?.total ? Number(associatedLead.total) : undefined) : (associatedLead?.balance || undefined),
+                    potential_applicants: associatedLead?.potential_applicants || '',
+                    lead_type: isLegacy ? 'legacy' as const : 'new' as const,
+                    isContact: true,
+                    whatsapp_profile_picture_url: contact.whatsapp_profile_picture_url || null
+                  };
+                });
             }
           }
         }
@@ -1086,43 +2231,49 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         // Combine all clients: leads and contacts
         // Note: Role filtering is already done at the database level for all leads and contacts
         let allClients = [...newLeadsData, ...legacyLeadsData, ...contactClientsData];
-        
+
         // Filter out contacts that share the same lead_number and phone as a lead client
         // BUT: Keep contacts that have messages with contact_id - they should be shown separately
         // This prevents showing duplicate entries with the same messages, but allows contacts with their own messages
+        // For "All Contacts" tab, be more lenient and keep contacts even if they match leads
         const filteredContactClients = contactClientsData.filter(contact => {
           // Check if this contact has messages with contact_id in whatsapp_messages
-          const contactHasMessages = (whatsappMessages || []).some((msg: any) => 
+          const contactHasMessages = (whatsappMessages || []).some((msg: any) =>
             msg.contact_id === contact.contact_id
           );
-          
+
           // If contact has messages with contact_id, always show it (don't filter out)
           if (contactHasMessages) {
             return true;
           }
-          
+
+          // For "All Contacts" tab, keep all contacts (they have messages, so show them)
+          if (!showMyContactsOnly) {
+            return true;
+          }
+
           // Normalize contact phone numbers
           const contactPhone = (contact.phone || contact.mobile || '').trim();
           const contactPhoneNormalized = contactPhone.replace(/\D/g, '');
-          
+
           // Check if this contact matches any lead client by lead_number and phone
           const hasMatchingLead = [...newLeadsData, ...legacyLeadsData].some(lead => {
             // Match by lead_number (normalize both to strings for comparison)
             const leadNumberMatch = String(lead.lead_number || '').trim() === String(contact.lead_number || '').trim();
-            
+
             // Match by phone (check both phone and mobile fields)
             const leadPhone = (lead.phone || lead.mobile || '').trim();
             const leadPhoneNormalized = leadPhone.replace(/\D/g, '');
-            
+
             // Phone match: exact match or normalized match (if both have phone numbers)
             const phoneMatch = contactPhoneNormalized && leadPhoneNormalized
               ? contactPhoneNormalized === leadPhoneNormalized
               : (contactPhone && leadPhone && contactPhone === leadPhone);
-            
+
             // Also check by name as additional safeguard (if lead_number matches but phone doesn't, still might be duplicate)
-            const nameMatch = contact.name && lead.name && 
+            const nameMatch = contact.name && lead.name &&
               contact.name.trim().toLowerCase() === lead.name.trim().toLowerCase();
-            
+
             // Filter out if:
             // 1. lead_number matches AND (phone matches OR name matches), OR
             // 2. lead_number matches AND both phones are empty (likely same entity)
@@ -1134,18 +2285,23 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               // (this handles cases where contact might have different phone but same lead)
               return true;
             }
-            
+
             return false;
           });
-          
+
           // Keep contact only if no matching lead found
           return !hasMatchingLead;
         });
-        
+
         // Rebuild allClients with filtered contacts
         allClients = [...newLeadsData, ...legacyLeadsData, ...filteredContactClients];
-        
-        setClients(allClients);
+
+        // Save to the appropriate tab's state
+        if (showMyContactsOnly) {
+          setMyContactsClients(allClients);
+        } else {
+          setAllContactsClients(allClients);
+        }
       } catch (error) {
         console.error('Error fetching clients with conversations:', error);
         toast.error('Failed to load clients');
@@ -1155,7 +2311,173 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     };
 
     fetchClientsWithConversations();
-  }, [showMyContactsOnly, currentUserEmployeeId, currentUserFullName]);
+  }, [showMyContactsOnly, currentUserEmployeeId, currentUserFullName, myContactsClients.length, allContactsClients.length, allMessages.length]);
+
+  // Function to fetch only new messages (polling for updates)
+  const fetchNewMessagesOnly = useCallback(async () => {
+    if (!allMessages.length) return; // No existing messages to compare against
+
+    try {
+      // Get the most recent message timestamp from cached messages
+      const mostRecentTimestamp = allMessages.reduce((latest, msg) => {
+        const msgTime = new Date(msg.sent_at).getTime();
+        return msgTime > latest ? msgTime : latest;
+      }, 0);
+
+      // Fetch only messages newer than the most recent cached message
+      const { data: newMessages, error } = await supabase
+        .from('whatsapp_messages')
+        .select('*')
+        .gt('sent_at', new Date(mostRecentTimestamp).toISOString())
+        .order('sent_at', { ascending: true });
+
+      if (error) {
+        console.error('Error fetching new messages:', error);
+        return;
+      }
+
+      if (newMessages && newMessages.length > 0) {
+        console.log(`🆕 Found ${newMessages.length} new messages`);
+
+        // Update allMessages with new messages
+        setAllMessages(prev => [...prev, ...newMessages]);
+
+        // If a client is selected and the new messages are for that client, update messages
+        const currentSelectedClient = showMyContactsOnly ? myContactsSelectedClient : allContactsSelectedClient;
+        if (currentSelectedClient) {
+          const clientNewMessages = newMessages.filter(msg => {
+            if (currentSelectedClient.lead_type === 'legacy' || currentSelectedClient.id?.toString().startsWith('legacy_')) {
+              return msg.legacy_id === Number(currentSelectedClient.id);
+            } else if (currentSelectedClient.contact_id) {
+              return msg.contact_id === currentSelectedClient.contact_id;
+            } else {
+              return msg.lead_id === currentSelectedClient.id;
+            }
+          });
+
+          if (clientNewMessages.length > 0) {
+            if (showMyContactsOnly) {
+              setMyContactsMessages(prev => [...prev, ...clientNewMessages]);
+            } else {
+              setAllContactsMessages(prev => [...prev, ...clientNewMessages]);
+            }
+            // Show notification for new messages
+            toast.success(`${clientNewMessages.length} new message${clientNewMessages.length > 1 ? 's' : ''} received`);
+          }
+        }
+
+        // Refresh clients list to update unread counts for both tabs
+        // This is a lightweight operation that just updates the UI
+        if (showMyContactsOnly) {
+          setMyContactsClients(prev => {
+            return prev.map(client => {
+              const clientNewMessages = newMessages.filter(msg => {
+                if (client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_')) {
+                  return msg.legacy_id === Number(client.id);
+                } else if (client.contact_id) {
+                  return msg.contact_id === client.contact_id;
+                } else {
+                  return msg.lead_id === client.id;
+                }
+              });
+
+              if (clientNewMessages.length > 0) {
+                // Update unread count (messages that are incoming and not read)
+                const unreadNew = clientNewMessages.filter(msg =>
+                  msg.direction === 'in' && !msg.is_read
+                ).length;
+
+                return {
+                  ...client,
+                  unreadCount: (client.unreadCount || 0) + unreadNew
+                };
+              }
+
+              return client;
+            });
+          });
+        } else {
+          setAllContactsClients(prev => {
+            return prev.map(client => {
+              const clientNewMessages = newMessages.filter(msg => {
+                if (client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_')) {
+                  return msg.legacy_id === Number(client.id);
+                } else if (client.contact_id) {
+                  return msg.contact_id === client.contact_id;
+                } else {
+                  return msg.lead_id === client.id;
+                }
+              });
+
+              if (clientNewMessages.length > 0) {
+                // Update unread count (messages that are incoming and not read)
+                const unreadNew = clientNewMessages.filter(msg =>
+                  msg.direction === 'in' && !msg.is_read
+                ).length;
+
+                return {
+                  ...client,
+                  unreadCount: (client.unreadCount || 0) + unreadNew
+                };
+              }
+
+              return client;
+            });
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error in fetchNewMessagesOnly:', error);
+    }
+  }, [allMessages, showMyContactsOnly, myContactsSelectedClient, allContactsSelectedClient, setAllMessages, setMyContactsMessages, setAllContactsMessages, setMyContactsClients, setAllContactsClients]);
+
+  // Poll for new messages every 10 seconds if we have cached data
+  useEffect(() => {
+    const currentClients = showMyContactsOnly ? myContactsClients : allContactsClients;
+    const hasInitialData = hasInitialDataRef.current || getHasInitialData();
+    if (!hasInitialData || currentClients.length === 0 || allMessages.length === 0) return;
+
+    const intervalId = setInterval(() => {
+      fetchNewMessagesOnly();
+    }, 10000); // Poll every 10 seconds
+
+    return () => clearInterval(intervalId);
+  }, [fetchNewMessagesOnly, showMyContactsOnly, myContactsClients.length, allContactsClients.length, allMessages.length]);
+
+  // Save state when modal closes (via onClose callback)
+  useEffect(() => {
+    // State is automatically saved by usePersistedState hooks
+    // This effect ensures state is saved when component unmounts or modal closes
+    return () => {
+      // State will be persisted automatically by usePersistedState
+      console.log('💾 WhatsApp state saved to sessionStorage for both tabs');
+    };
+  }, [myContactsClients, allContactsClients, myContactsSelectedClient, allContactsSelectedClient, myContactsMessages, allContactsMessages, allMessages, showMyContactsOnly]);
+
+  // Handle tab switch - restore state for the newly selected tab
+  useEffect(() => {
+    // When switching tabs, restore the selected client and messages for that tab
+    const currentSelectedClient = showMyContactsOnly ? myContactsSelectedClient : allContactsSelectedClient;
+    const currentMessages = showMyContactsOnly ? myContactsMessages : allContactsMessages;
+
+    if (currentSelectedClient && allMessages.length > 0) {
+      const clientMessages = allMessages.filter(msg => {
+        if (currentSelectedClient.lead_type === 'legacy' || currentSelectedClient.id?.toString().startsWith('legacy_')) {
+          return msg.legacy_id === Number(currentSelectedClient.id);
+        } else if (currentSelectedClient.contact_id) {
+          return msg.contact_id === currentSelectedClient.contact_id;
+        } else {
+          return msg.lead_id === currentSelectedClient.id;
+        }
+      }).sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+
+      if (showMyContactsOnly) {
+        setMyContactsMessages(clientMessages);
+      } else {
+        setAllContactsMessages(clientMessages);
+      }
+    }
+  }, [showMyContactsOnly]); // Only run when tab changes
 
   // If propSelectedContact is provided, use it directly
   useEffect(() => {
@@ -1167,7 +2489,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       // CRITICAL: Always use contact's name from propSelectedContact.contact.name (from leads_contact table)
       const contactName = propSelectedContact.contact.name || '';
       console.log(`✅ Creating client from propSelectedContact: Contact ID=${propSelectedContact.contact.id}, Name="${contactName}" (from leads_contact)`);
-      
+
       const clientObj: Client = {
         id: `contact_${propSelectedContact.contact.id}`, // Use contact_ prefix for contacts
         lead_id: String(propSelectedContact.leadId), // Store the lead_id
@@ -1187,7 +2509,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   // Fetch contacts for the selected client (only if no propSelectedContact)
   useEffect(() => {
     if (propSelectedContact) return; // Skip if we have a prop contact
-    
+
     const fetchContactsForClient = async () => {
       if (!selectedClient) {
         setLeadContacts([]);
@@ -1197,11 +2519,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
       // Check if this is a contact client (not a main lead)
       const isContactClient = selectedClient.isContact;
-      
+
       // For contacts, use the associated lead_id; for main leads, use the client id
       let actualLeadId: string | number;
       let isLegacyLead: boolean;
-      
+
       if (isContactClient && selectedClient.lead_id) {
         // This is a contact - use the associated lead_id
         actualLeadId = selectedClient.lead_id;
@@ -1210,20 +2532,20 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       } else {
         // This is a main lead
         isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-        actualLeadId = isLegacyLead 
+        actualLeadId = isLegacyLead
           ? (typeof selectedClient.id === 'string' ? selectedClient.id.replace('legacy_', '') : String(selectedClient.id))
           : selectedClient.id;
       }
 
       const contacts = await fetchLeadContacts(actualLeadId, isLegacyLead);
-      
+
       // Deduplicate contacts by ID to prevent duplicate key warnings
-      const uniqueContacts = contacts.filter((contact, index, self) => 
+      const uniqueContacts = contacts.filter((contact, index, self) =>
         index === self.findIndex(c => c.id === contact.id)
       );
-      
+
       setLeadContacts(uniqueContacts);
-      
+
       // If there are contacts, select the main contact by default, or the first one
       if (uniqueContacts.length > 0) {
         const mainContact = uniqueContacts.find(c => c.isMain) || uniqueContacts[0];
@@ -1246,7 +2568,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   useEffect(() => {
     // Reset initial load flag when client changes
     initialLoadCompleteRef.current = false;
-    
+
     const fetchMessages = async (isPolling = false) => {
       if (!selectedClient) {
         setMessages([]);
@@ -1263,10 +2585,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         // Get contact_id if we have a selected contact from the contact selector
         // Also try to find it from leadContacts if not set yet
         let contactId = selectedContactId || (propSelectedContact?.contact.id ?? null);
-        
+
         // If we don't have a contactId but we have leadContacts, try to find the matching contact
         if (!contactId && leadContacts.length > 0) {
-          const matchingContact = leadContacts.find(c => 
+          const matchingContact = leadContacts.find(c =>
             (c.email && selectedClient.email && c.email === selectedClient.email) ||
             (c.phone && selectedClient.phone && c.phone === selectedClient.phone) ||
             (c.mobile && (selectedClient.mobile || selectedClient.phone) && c.mobile === (selectedClient.mobile || selectedClient.phone)) ||
@@ -1277,25 +2599,25 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             console.log(`📧 Found matching contact in leadContacts: ${matchingContact.name} (ID: ${contactId})`);
           }
         }
-        
+
         // Only log initial loads, not polling (reduces console noise)
         if (!isPolling) {
           console.log('🔄 Fetching messages for client:', selectedClient.id, contactId ? `contact_id=${contactId}` : '');
         }
-        
+
         // Check if this is a legacy lead
         const isLegacyLead = selectedClient.id.toString().startsWith('legacy_');
-        
+
         if (isLegacyLead) {
           // Extract numeric ID from legacy_<id>
           const legacyId = Number(selectedClient.id.replace('legacy_', ''));
-          
+
           if (isNaN(legacyId)) {
             console.error('Invalid legacy lead ID:', selectedClient.id);
             setMessages([]);
             return;
           }
-          
+
           // Fetch from leads_leadinteractions for legacy leads
           const { data: interactions, error: interactionsError } = await supabase
             .from('leads_leadinteractions')
@@ -1303,13 +2625,13 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             .eq('lead_id', legacyId)
             .eq('kind', 'w') // 'w' for WhatsApp
             .order('cdate', { ascending: true });
-          
+
           if (interactionsError) {
             console.error('Error fetching legacy interactions:', interactionsError);
             toast.error('Failed to load messages');
             return;
           }
-          
+
           // Fetch employee display names for creator_ids
           const creatorIds = [...new Set((interactions || [])
             .map((interaction: any) => interaction.creator_id)
@@ -1317,14 +2639,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             .map((id: any) => Number(id))
             .filter((id: number) => !isNaN(id))
           )];
-          
+
           let employeeNameMap: Record<number, string> = {};
           if (creatorIds.length > 0) {
             const { data: employees, error: employeeError } = await supabase
               .from('tenants_employee')
               .select('id, display_name')
               .in('id', creatorIds);
-            
+
             if (!employeeError && employees) {
               employeeNameMap = employees.reduce((acc, emp) => {
                 acc[emp.id] = emp.display_name;
@@ -1332,14 +2654,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               }, {} as Record<number, string>);
             }
           }
-          
+
           // Transform legacy interactions to WhatsAppMessage format
           const transformedMessages: WhatsAppMessage[] = (interactions || []).map((interaction: any) => {
             // Combine date and time to create sent_at
             const dateStr = interaction.date || '';
             const timeStr = interaction.time || '';
             let sentAt = new Date().toISOString();
-            
+
             if (dateStr && timeStr) {
               try {
                 // Try to parse date and time
@@ -1362,7 +2684,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             } else if (interaction.cdate) {
               sentAt = interaction.cdate;
             }
-            
+
             // Get sender name from creator_id
             let senderName = 'Unknown';
             if (interaction.creator_id && interaction.creator_id !== '\\N' && interaction.creator_id !== 'EMPTY') {
@@ -1373,7 +2695,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 senderName = `Employee ${creatorId}`;
               }
             }
-            
+
             return {
               id: interaction.id,
               lead_id: selectedClient.id, // Keep the legacy_ prefix for consistency
@@ -1386,14 +2708,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               whatsapp_status: 'sent',
             };
           });
-          
+
           const processedMessages = transformedMessages.map(processTemplateMessage);
-          
+
           // Ensure messages are sorted by sent_at in ascending order (oldest first, newest last)
-          const sortedProcessedMessages = [...processedMessages].sort((a, b) => 
+          const sortedProcessedMessages = [...processedMessages].sort((a, b) =>
             new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime()
           );
-          
+
           if (!isPolling) {
             setMessages(sortedProcessedMessages);
           } else {
@@ -1401,26 +2723,26 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               const hasChanges = processedMessages.length !== prevMessages.length ||
                 processedMessages.some((newMsg, index) => {
                   const prevMsg = prevMessages[index];
-                  return !prevMsg || 
-                         newMsg.id !== prevMsg.id || 
-                         newMsg.message !== prevMsg.message ||
-                         newMsg.whatsapp_status !== prevMsg.whatsapp_status;
+                  return !prevMsg ||
+                    newMsg.id !== prevMsg.id ||
+                    newMsg.message !== prevMsg.message ||
+                    newMsg.whatsapp_status !== prevMsg.whatsapp_status;
                 });
-              
+
               if (hasChanges) {
                 return processedMessages;
               }
               return prevMessages;
             });
           }
-          
+
           return;
         }
-        
+
         // For new leads, use whatsapp_messages table
         // If this is a contact (not a main lead), fetch messages by contact_id ONLY
         let allMessagesForLead: any[] = [];
-        
+
         if (selectedClient.isContact && selectedClient.contact_id) {
           // This is a contact - fetch messages by contact_id AND by phone number
           // Messages might be saved with phone_number but contact_id might be null or incorrect
@@ -1429,7 +2751,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           // The contact client should already have the contact's phone/mobile from when it was created
           const contactPhone = selectedClient.phone || selectedClient.mobile || '';
           const contactMobile = selectedClient.mobile || selectedClient.phone || '';
-          
+
           console.log('📞 Fetching messages for contact:', {
             contactId: selectedClient.contact_id,
             contactName: selectedClient.name,
@@ -1438,7 +2760,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             isContact: selectedClient.isContact,
             leadId: selectedClient.lead_id
           });
-          
+
           if (!contactPhone && !contactMobile) {
             console.error('❌ Contact has no phone number!', selectedClient);
             toast.error(`Contact ${selectedClient.name} has no phone number. Cannot load WhatsApp conversation.`);
@@ -1446,25 +2768,25 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             setLoadingMessages(false);
             return;
           }
-          
+
           // Normalize phone numbers for matching (remove spaces, dashes, etc.)
           const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
           const normalizedContactPhone = normalizePhone(contactPhone);
           const normalizedContactMobile = normalizePhone(contactMobile);
-          
+
           // Create phone variations for matching (similar to backend logic)
           // CRITICAL: Generate ALL possible variations to match messages saved in different formats
           const phoneVariations: string[] = [];
-          
+
           // Helper to generate all variations for a phone number
           const generatePhoneVariations = (phone: string, normalized: string) => {
             const variations: string[] = [];
             if (!phone || !normalized) return variations;
-            
+
             // Original format
             variations.push(phone);
             variations.push(normalized);
-            
+
             // With/without country code (972 for Israel)
             if (normalized.startsWith('972')) {
               variations.push(normalized.replace(/^972/, ''));
@@ -1478,11 +2800,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 variations.push(`972${normalized.replace(/^0/, '')}`);
               }
             }
-            
+
             // With/without plus
             variations.push(`+${normalized}`);
             variations.push(normalized.replace(/^\+/, ''));
-            
+
             // Last 4, 8, 9, 10 digits (for partial matching in database queries)
             if (normalized.length >= 4) {
               variations.push(normalized.slice(-4));
@@ -1496,23 +2818,23 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             if (normalized.length >= 10) {
               variations.push(normalized.slice(-10));
             }
-            
+
             return variations;
           };
-          
+
           // Generate variations for phone
           if (contactPhone) {
             phoneVariations.push(...generatePhoneVariations(contactPhone, normalizedContactPhone));
           }
-          
+
           // Generate variations for mobile (if different from phone)
           if (contactMobile && contactMobile !== contactPhone) {
             phoneVariations.push(...generatePhoneVariations(contactMobile, normalizedContactMobile));
           }
-          
+
           // Remove duplicates and empty strings
           const uniquePhoneVariations = Array.from(new Set(phoneVariations.filter(Boolean)));
-          
+
           console.log(`📞 Generated ${uniquePhoneVariations.length} phone variations for contact ${selectedClient.contact_id}:`, {
             originalPhone: contactPhone,
             originalMobile: contactMobile,
@@ -1520,30 +2842,30 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             normalizedMobile: normalizedContactMobile,
             variations: uniquePhoneVariations.slice(0, 10) // Show first 10 for debugging
           });
-          
+
           // Fetch messages by contact_id OR by phone_number matching
           // Also filter by lead_id to ensure we only get messages for this specific lead's contact
           // Use OR condition to get messages that match either criteria
           let contactMessagesQuery = supabase
             .from('whatsapp_messages')
             .select('*');
-          
+
           // First, filter by lead_id to ensure we only get messages for this lead
           // For contacts, we MUST use lead_id (not client.id which is contact_${id})
           // For main leads, we can use client.id
-          const leadIdForQuery = selectedClient.isContact 
+          const leadIdForQuery = selectedClient.isContact
             ? selectedClient.lead_id  // For contacts, only use lead_id
             : (selectedClient.lead_id || selectedClient.id); // For main leads, use lead_id or id
-          
+
           if (leadIdForQuery) {
             // Handle legacy leads (they have legacy_id in messages, not lead_id)
-            const isLegacy = selectedClient.lead_type === 'legacy' || 
-                           (selectedClient.lead_id && selectedClient.lead_id.toString().startsWith('legacy_')) ||
-                           (typeof leadIdForQuery === 'string' && leadIdForQuery.startsWith('legacy_'));
-            
+            const isLegacy = selectedClient.lead_type === 'legacy' ||
+              (selectedClient.lead_id && selectedClient.lead_id.toString().startsWith('legacy_')) ||
+              (typeof leadIdForQuery === 'string' && leadIdForQuery.startsWith('legacy_'));
+
             if (isLegacy) {
-              const legacyId = typeof leadIdForQuery === 'string' 
-                ? Number(leadIdForQuery.replace('legacy_', '')) 
+              const legacyId = typeof leadIdForQuery === 'string'
+                ? Number(leadIdForQuery.replace('legacy_', ''))
                 : Number(leadIdForQuery);
               if (!isNaN(legacyId)) {
                 contactMessagesQuery = contactMessagesQuery.eq('legacy_id', legacyId);
@@ -1553,15 +2875,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               contactMessagesQuery = contactMessagesQuery.eq('lead_id', leadIdForQuery);
             }
           }
-          
+
           // Build OR conditions: contact_id match OR phone_number match
           const orConditions: string[] = [];
-          
+
           // Add contact_id condition
           if (selectedClient.contact_id) {
             orConditions.push(`contact_id.eq.${selectedClient.contact_id}`);
           }
-          
+
           // Add phone_number conditions for each variation
           // CRITICAL: For inbound messages, the phone_number in the message is the sender's phone (the contact's phone)
           // So we need to match by phone_number to get inbound messages from this contact
@@ -1575,7 +2897,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               orConditions.push(`phone_number.eq.${phone}`);
             });
           }
-          
+
           // If we have conditions, apply them with OR
           if (orConditions.length > 0) {
             contactMessagesQuery = contactMessagesQuery.or(orConditions.join(','));
@@ -1583,43 +2905,43 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             // If no conditions, we still need to fetch messages by lead_id only
             // This will fetch all messages for the lead, and we'll filter client-side
           }
-          
+
           console.log(`🔍 Contact messages query:`, {
             leadId: leadIdForQuery,
             contactId: selectedClient.contact_id,
             phoneVariations: uniquePhoneVariations.length,
             orConditions: orConditions.length
           });
-          
+
           // CRITICAL: For better phone number matching, fetch ALL messages for the lead first
           // Then filter client-side using all phone variations
           // This ensures we don't miss messages due to phone number format differences
           let contactMessages: any[] = [];
-          
+
           // First, try the OR query with contact_id and phone variations
           const { data: orQueryMessages, error: orQueryError } = await contactMessagesQuery
             .order('sent_at', { ascending: true });
-          
+
           if (orQueryError) {
             console.warn('⚠️ OR query error (may be due to too many conditions), fetching all messages for lead:', orQueryError);
           } else {
             contactMessages = orQueryMessages || [];
           }
-          
+
           // Also fetch ALL messages for this lead (without phone/contact filters) to catch any we might have missed
           // This is important for inbound messages that might have different phone formats
           let allLeadMessagesQuery = supabase
             .from('whatsapp_messages')
             .select('*');
-          
+
           if (leadIdForQuery) {
-            const isLegacy = selectedClient.lead_type === 'legacy' || 
-                           (selectedClient.lead_id && selectedClient.lead_id.toString().startsWith('legacy_')) ||
-                           (typeof leadIdForQuery === 'string' && leadIdForQuery.startsWith('legacy_'));
-            
+            const isLegacy = selectedClient.lead_type === 'legacy' ||
+              (selectedClient.lead_id && selectedClient.lead_id.toString().startsWith('legacy_')) ||
+              (typeof leadIdForQuery === 'string' && leadIdForQuery.startsWith('legacy_'));
+
             if (isLegacy) {
-              const legacyId = typeof leadIdForQuery === 'string' 
-                ? Number(leadIdForQuery.replace('legacy_', '')) 
+              const legacyId = typeof leadIdForQuery === 'string'
+                ? Number(leadIdForQuery.replace('legacy_', ''))
                 : Number(leadIdForQuery);
               if (!isNaN(legacyId)) {
                 allLeadMessagesQuery = allLeadMessagesQuery.eq('legacy_id', legacyId);
@@ -1628,10 +2950,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               allLeadMessagesQuery = allLeadMessagesQuery.eq('lead_id', leadIdForQuery);
             }
           }
-          
+
           const { data: allLeadMessages, error: allLeadError } = await allLeadMessagesQuery
             .order('sent_at', { ascending: true });
-          
+
           if (allLeadError) {
             console.error('Error fetching all lead messages:', allLeadError);
           } else {
@@ -1641,20 +2963,20 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             contactMessages = [...contactMessages, ...additionalMessages];
             console.log(`📥 Fetched ${contactMessages.length} total messages (${orQueryMessages?.length || 0} from OR query, ${additionalMessages.length} additional from lead query)`);
           }
-          
+
           // Additional filtering: ensure messages match the contact's phone number AND lead_id
           // This handles cases where phone_number format might differ slightly
           // CRITICAL: Also verify lead_id matches to prevent messages from wrong leads
           // For contacts, MUST use lead_id (not client.id which is contact_${id})
-          const isLegacy = selectedClient.lead_type === 'legacy' || 
-                          (selectedClient.lead_id && selectedClient.lead_id.toString().startsWith('legacy_'));
-          const expectedLeadId = selectedClient.isContact 
+          const isLegacy = selectedClient.lead_type === 'legacy' ||
+            (selectedClient.lead_id && selectedClient.lead_id.toString().startsWith('legacy_'));
+          const expectedLeadId = selectedClient.isContact
             ? selectedClient.lead_id  // For contacts, only use lead_id
             : (selectedClient.lead_id || selectedClient.id); // For main leads, use lead_id or id
-          const expectedLegacyId = isLegacy && expectedLeadId ? (typeof expectedLeadId === 'string' 
-            ? Number(expectedLeadId.replace('legacy_', '')) 
+          const expectedLegacyId = isLegacy && expectedLeadId ? (typeof expectedLeadId === 'string'
+            ? Number(expectedLeadId.replace('legacy_', ''))
             : Number(expectedLeadId)) : null;
-          
+
           allMessagesForLead = (contactMessages || []).filter((msg: any) => {
             // CRITICAL: First check lead_id/legacy_id match
             if (isLegacy) {
@@ -1668,59 +2990,59 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 return false;
               }
             }
-            
+
             // CRITICAL FIX: Prioritize phone number matching over contact_id
             // If phone number matches, include the message even if contact_id doesn't match
             // This handles cases where messages were incorrectly assigned to the wrong contact_id
             let phoneMatches = false;
             if (msg.phone_number) {
               const normalizedMsgPhone = normalizePhone(msg.phone_number);
-              
+
               // Try multiple matching strategies:
               // 1. Exact match
               // 2. Last 8 digits match (handles country code differences)
               // 3. Last 4 digits match (handles more format variations)
-              const matchesPhone = normalizedContactPhone && normalizedMsgPhone && 
-                (normalizedMsgPhone === normalizedContactPhone || 
-                 (normalizedContactPhone.length >= 8 && normalizedMsgPhone.length >= 8 && 
-                  normalizedMsgPhone.endsWith(normalizedContactPhone.slice(-8))) ||
-                 (normalizedContactPhone.length >= 4 && normalizedMsgPhone.length >= 4 && 
-                  normalizedMsgPhone.endsWith(normalizedContactPhone.slice(-4))) ||
-                 (normalizedContactPhone.length >= 8 && normalizedMsgPhone.length >= 8 && 
-                  normalizedContactPhone.endsWith(normalizedMsgPhone.slice(-8))) ||
-                 (normalizedContactPhone.length >= 4 && normalizedMsgPhone.length >= 4 && 
-                  normalizedContactPhone.endsWith(normalizedMsgPhone.slice(-4))));
-              
-              const matchesMobile = normalizedContactMobile && normalizedMsgPhone && 
-                (normalizedMsgPhone === normalizedContactMobile || 
-                 (normalizedContactMobile.length >= 8 && normalizedMsgPhone.length >= 8 && 
-                  normalizedMsgPhone.endsWith(normalizedContactMobile.slice(-8))) ||
-                 (normalizedContactMobile.length >= 4 && normalizedMsgPhone.length >= 4 && 
-                  normalizedMsgPhone.endsWith(normalizedContactMobile.slice(-4))) ||
-                 (normalizedContactMobile.length >= 8 && normalizedMsgPhone.length >= 8 && 
-                  normalizedContactMobile.endsWith(normalizedMsgPhone.slice(-8))) ||
-                 (normalizedContactMobile.length >= 4 && normalizedMsgPhone.length >= 4 && 
-                  normalizedContactMobile.endsWith(normalizedMsgPhone.slice(-4))));
-              
+              const matchesPhone = normalizedContactPhone && normalizedMsgPhone &&
+                (normalizedMsgPhone === normalizedContactPhone ||
+                  (normalizedContactPhone.length >= 8 && normalizedMsgPhone.length >= 8 &&
+                    normalizedMsgPhone.endsWith(normalizedContactPhone.slice(-8))) ||
+                  (normalizedContactPhone.length >= 4 && normalizedMsgPhone.length >= 4 &&
+                    normalizedMsgPhone.endsWith(normalizedContactPhone.slice(-4))) ||
+                  (normalizedContactPhone.length >= 8 && normalizedMsgPhone.length >= 8 &&
+                    normalizedContactPhone.endsWith(normalizedMsgPhone.slice(-8))) ||
+                  (normalizedContactPhone.length >= 4 && normalizedMsgPhone.length >= 4 &&
+                    normalizedContactPhone.endsWith(normalizedMsgPhone.slice(-4))));
+
+              const matchesMobile = normalizedContactMobile && normalizedMsgPhone &&
+                (normalizedMsgPhone === normalizedContactMobile ||
+                  (normalizedContactMobile.length >= 8 && normalizedMsgPhone.length >= 8 &&
+                    normalizedMsgPhone.endsWith(normalizedContactMobile.slice(-8))) ||
+                  (normalizedContactMobile.length >= 4 && normalizedMsgPhone.length >= 4 &&
+                    normalizedMsgPhone.endsWith(normalizedContactMobile.slice(-4))) ||
+                  (normalizedContactMobile.length >= 8 && normalizedMsgPhone.length >= 8 &&
+                    normalizedContactMobile.endsWith(normalizedMsgPhone.slice(-8))) ||
+                  (normalizedContactMobile.length >= 4 && normalizedMsgPhone.length >= 4 &&
+                    normalizedContactMobile.endsWith(normalizedMsgPhone.slice(-4))));
+
               phoneMatches = !!(matchesPhone || matchesMobile);
-              
+
               if (phoneMatches) {
                 console.log(`✅ Phone match found: msg="${normalizedMsgPhone}", contact="${normalizedContactPhone || normalizedContactMobile}"`);
               }
             }
-            
+
             // If phone number matches, include the message (even if contact_id doesn't match)
             if (phoneMatches) {
               return true;
             }
-            
+
             // If phone number doesn't match, check if contact_id matches
             // This handles messages that might not have a phone_number but have the correct contact_id
             if (msg.contact_id && msg.contact_id === selectedClient.contact_id) {
               console.log(`✅ Message ${msg.id} matched by contact_id (phone didn't match)`);
               return true;
             }
-            
+
             // If neither phone nor contact_id matches, exclude the message
             console.log(`❌ Message ${msg.id} filtered out for contact ${selectedClient.contact_id}:`, {
               msgContactId: msg.contact_id,
@@ -1731,9 +3053,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             });
             return false;
           });
-          
+
           console.log(`📱 Fetched ${allMessagesForLead.length} messages for contact ${selectedClient.contact_id} (phone: ${contactPhone || contactMobile}, lead_id: ${expectedLeadId}, isLegacy: ${isLegacy})`);
-          
+
           // Debug: Log message details to verify matching
           if (!isPolling && allMessagesForLead.length > 0) {
             console.log('📋 Sample messages for contact:', allMessagesForLead.slice(0, 3).map((m: any) => ({
@@ -1746,19 +3068,19 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               sender_name: m.sender_name,
               message: m.message?.substring(0, 50)
             })));
-            
+
             // Count inbound vs outbound messages
             const inboundCount = allMessagesForLead.filter((m: any) => m.direction === 'in').length;
             const outboundCount = allMessagesForLead.filter((m: any) => m.direction === 'out').length;
             console.log(`📊 Message direction breakdown: ${inboundCount} inbound, ${outboundCount} outbound`);
           }
-          
+
           // Also log ALL messages fetched from database (before filtering)
           if (!isPolling && contactMessages && contactMessages.length > 0) {
             const allInbound = contactMessages.filter((m: any) => m.direction === 'in').length;
             const allOutbound = contactMessages.filter((m: any) => m.direction === 'out').length;
             console.log(`📊 All messages from DB (before filtering): ${contactMessages.length} total (${allInbound} inbound, ${allOutbound} outbound)`);
-            
+
             // Log inbound messages that might have been filtered out
             const filteredOutInbound = contactMessages.filter((m: any) => {
               if (m.direction !== 'in') return false;
@@ -1784,43 +3106,43 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             .eq('lead_id', selectedClient.id)
             // Don't filter by contact_id here - we'll filter later based on contact selection
             .order('sent_at', { ascending: true });
-          
+
           if (leadError) {
             console.error('Error fetching messages:', leadError);
             toast.error('Failed to load messages');
             setLoadingMessages(false);
             return;
           }
-          
+
           allMessagesForLead = leadMessages || [];
         }
 
         // Filter messages based on phone number (only for main leads with selected contact)
         // For contact clients, we already have the correct messages (filtered by contact_id)
         let filteredMessages = allMessagesForLead || [];
-        
+
         // Only apply phone-based filtering for main leads (not contact clients)
         if (!selectedClient.isContact && contactId) {
           // Get the selected contact details
           const selectedContact = propSelectedContact?.contact || leadContacts.find(c => c.id === contactId);
-          
+
           if (selectedContact) {
             const contactPhone = selectedContact.phone || selectedContact.mobile;
             const leadPhone = selectedClient.phone || selectedClient.mobile;
             let last4Digits = '';
-            
+
             if (contactPhone) {
               // Extract last 4 digits for phone matching
               const phoneDigits = contactPhone.replace(/\D/g, '');
               last4Digits = phoneDigits.slice(-4);
             }
-            
+
             // Find ALL contact_ids that share the same phone number
             const relatedContactIds = new Set<number>();
             if (last4Digits.length >= 4) {
               // Add the selected contact_id
               relatedContactIds.add(contactId);
-              
+
               // Find all other contacts with the same phone number
               leadContacts.forEach(contact => {
                 const cPhone = contact.phone || contact.mobile;
@@ -1833,7 +3155,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 }
               });
             }
-            
+
             console.log(`🔍 Message filtering debug:`, {
               selectedContactId: contactId,
               relatedContactIds: Array.from(relatedContactIds),
@@ -1848,7 +3170,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 direction: m.direction
               }))
             });
-            
+
             // SIMPLE RULE: If there's only ONE contact, show ALL messages (no filtering)
             // This handles cases where not all contacts are loaded yet
             if (leadContacts.length === 1) {
@@ -1862,55 +3184,55 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   console.log(`✅ Message ${msg.id} matched (contact_id=${msg.contact_id} shares phone)`);
                   return true;
                 }
-                
+
                 // If message has contact_id but it's not in relatedContactIds, check if phone matches
                 // This handles cases where contact_id might be wrong but phone number is correct
                 // Use more flexible phone matching (last 4, last 8, or full match)
                 if (msg.contact_id && !relatedContactIds.has(msg.contact_id) && msg.phone_number && contactPhone) {
                   const msgPhoneDigits = msg.phone_number.replace(/\D/g, '');
                   const contactPhoneDigits = contactPhone.replace(/\D/g, '');
-                  
+
                   // Try multiple matching strategies
-                  const matches = 
+                  const matches =
                     msgPhoneDigits === contactPhoneDigits ||
-                    (contactPhoneDigits.length >= 8 && msgPhoneDigits.length >= 8 && 
-                     msgPhoneDigits.endsWith(contactPhoneDigits.slice(-8))) ||
-                    (contactPhoneDigits.length >= 4 && msgPhoneDigits.length >= 4 && 
-                     msgPhoneDigits.endsWith(contactPhoneDigits.slice(-4))) ||
-                    (contactPhoneDigits.length >= 8 && msgPhoneDigits.length >= 8 && 
-                     contactPhoneDigits.endsWith(msgPhoneDigits.slice(-8))) ||
-                    (contactPhoneDigits.length >= 4 && msgPhoneDigits.length >= 4 && 
-                     contactPhoneDigits.endsWith(msgPhoneDigits.slice(-4)));
-                  
+                    (contactPhoneDigits.length >= 8 && msgPhoneDigits.length >= 8 &&
+                      msgPhoneDigits.endsWith(contactPhoneDigits.slice(-8))) ||
+                    (contactPhoneDigits.length >= 4 && msgPhoneDigits.length >= 4 &&
+                      msgPhoneDigits.endsWith(contactPhoneDigits.slice(-4))) ||
+                    (contactPhoneDigits.length >= 8 && msgPhoneDigits.length >= 8 &&
+                      contactPhoneDigits.endsWith(msgPhoneDigits.slice(-8))) ||
+                    (contactPhoneDigits.length >= 4 && msgPhoneDigits.length >= 4 &&
+                      contactPhoneDigits.endsWith(msgPhoneDigits.slice(-4)));
+
                   if (matches) {
                     console.log(`✅ Message ${msg.id} matched by phone number (contact_id=${msg.contact_id} doesn't match but phone does)`);
                     return true;
                   }
                 }
-                
+
                 // If message has no contact_id, match by phone number (last 4, last 8, or full match)
                 if (!msg.contact_id && msg.phone_number && contactPhone) {
                   const msgPhoneDigits = msg.phone_number.replace(/\D/g, '');
                   const contactPhoneDigits = contactPhone.replace(/\D/g, '');
-                  
+
                   // Try multiple matching strategies
-                  const matches = 
+                  const matches =
                     msgPhoneDigits === contactPhoneDigits ||
-                    (contactPhoneDigits.length >= 8 && msgPhoneDigits.length >= 8 && 
-                     msgPhoneDigits.endsWith(contactPhoneDigits.slice(-8))) ||
-                    (contactPhoneDigits.length >= 4 && msgPhoneDigits.length >= 4 && 
-                     msgPhoneDigits.endsWith(contactPhoneDigits.slice(-4))) ||
-                    (contactPhoneDigits.length >= 8 && msgPhoneDigits.length >= 8 && 
-                     contactPhoneDigits.endsWith(msgPhoneDigits.slice(-8))) ||
-                    (contactPhoneDigits.length >= 4 && msgPhoneDigits.length >= 4 && 
-                     contactPhoneDigits.endsWith(msgPhoneDigits.slice(-4)));
-                  
+                    (contactPhoneDigits.length >= 8 && msgPhoneDigits.length >= 8 &&
+                      msgPhoneDigits.endsWith(contactPhoneDigits.slice(-8))) ||
+                    (contactPhoneDigits.length >= 4 && msgPhoneDigits.length >= 4 &&
+                      msgPhoneDigits.endsWith(contactPhoneDigits.slice(-4))) ||
+                    (contactPhoneDigits.length >= 8 && msgPhoneDigits.length >= 8 &&
+                      contactPhoneDigits.endsWith(msgPhoneDigits.slice(-8))) ||
+                    (contactPhoneDigits.length >= 4 && msgPhoneDigits.length >= 4 &&
+                      contactPhoneDigits.endsWith(msgPhoneDigits.slice(-4)));
+
                   if (matches) {
                     console.log(`✅ Message ${msg.id} matched by phone number (contact_id=null)`);
                     return true;
                   }
                 }
-                
+
                 // If no contact_id and no phone_number, check if contact also has no phone
                 // If contact has phone but message doesn't, exclude it
                 if (!msg.contact_id && !msg.phone_number) {
@@ -1922,7 +3244,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     return false;
                   }
                 }
-                
+
                 console.log(`❌ Message ${msg.id} filtered out (contact_id=${msg.contact_id}, phone_number=${msg.phone_number || 'null'}, last4Digits=${last4Digits})`);
                 return false;
               });
@@ -1936,27 +3258,27 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           // (messages that belong directly to the main lead, not to any contact)
           filteredMessages = (allMessagesForLead || []).filter(msg => !msg.contact_id);
         }
-        
+
         // For contact clients, we already have the filtered messages in allMessagesForLead
         // Make sure filteredMessages is set correctly for contacts
         if (selectedClient.isContact) {
           filteredMessages = allMessagesForLead || [];
           console.log(`✅ Contact client: Using ${filteredMessages.length} messages from allMessagesForLead`);
         }
-        
+
         const data = filteredMessages;
 
         // Only log on initial load
         if (!isPolling) {
           console.log('📨 Messages fetched:', data?.length || 0, 'messages', contactId ? `(filtered by contact_id=${contactId})` : '');
         }
-        
+
         // Process template messages for display (batch process for better performance)
         // Log template_id presence for debugging
         if (!isPolling && data && data.length > 0) {
           const messagesWithTemplateId = data.filter((m: any) => m.template_id);
           if (messagesWithTemplateId.length > 0) {
-            console.log(`📋 Found ${messagesWithTemplateId.length} messages with template_id:`, 
+            console.log(`📋 Found ${messagesWithTemplateId.length} messages with template_id:`,
               messagesWithTemplateId.map((m: any) => ({ id: m.id, template_id: m.template_id, message: m.message?.substring(0, 50) }))
             );
           }
@@ -1964,7 +3286,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         // Process messages: if viewing a contact, update sender_name to use contact's name
         const processedMessages = (data || []).map((msg: any) => {
           const processed = processTemplateMessage(msg);
-          
+
           // If we're viewing a contact and the message is from the client (direction 'in'),
           // update sender_name to use the contact's name instead of the lead's name
           if (selectedClient.isContact && selectedClient.contact_id && processed.direction === 'in') {
@@ -1974,17 +3296,17 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               processed.sender_name = selectedClient.name;
             }
           }
-          
+
           return processed;
         });
-        
+
         // Always update messages immediately on initial load
         // For polling, only update if there are actual changes
         // Ensure messages are sorted by sent_at in ascending order (oldest first, newest last)
-        const sortedMessages = [...processedMessages].sort((a, b) => 
+        const sortedMessages = [...processedMessages].sort((a, b) =>
           new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime()
         );
-        
+
         if (!isPolling) {
           // Immediate update for initial load
           setMessages(sortedMessages);
@@ -2010,16 +3332,16 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               // Sort by sent_at in ascending order (oldest first, newest last)
               return merged.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
             }
-            
+
             // Deep comparison only if lengths match
             const hasChanges = processedMessages.some((newMsg, index) => {
               const prevMsg = prevMessages[index];
-              return !prevMsg || 
-                     newMsg.id !== prevMsg.id || 
-                     newMsg.message !== prevMsg.message ||
-                     newMsg.whatsapp_status !== prevMsg.whatsapp_status;
+              return !prevMsg ||
+                newMsg.id !== prevMsg.id ||
+                newMsg.message !== prevMsg.message ||
+                newMsg.whatsapp_status !== prevMsg.whatsapp_status;
             });
-            
+
             if (hasChanges) {
               // Merge template_id from previous messages if missing in new messages
               const merged = processedMessages.map(newMsg => {
@@ -2033,28 +3355,28 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               // Sort by sent_at in ascending order (oldest first, newest last)
               return merged.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
             }
-            
+
             return prevMessages;
           });
         }
-        
+
         // Mark incoming messages as read when viewing the conversation
         if (currentUser && data && data.length > 0 && !isPolling) {
           const incomingMessageIds = data
             .filter(msg => msg.direction === 'in' && (!msg.is_read || msg.is_read === false))
             .map(msg => msg.id);
-          
+
           if (incomingMessageIds.length > 0) {
             try {
               const { error } = await supabase
                 .from('whatsapp_messages')
-                .update({ 
-                  is_read: true, 
+                .update({
+                  is_read: true,
                   read_at: new Date().toISOString(),
-                  read_by: currentUser.id 
+                  read_by: currentUser.id
                 })
                 .in('id', incomingMessageIds);
-              
+
               if (error) {
                 console.error('Error marking messages as read:', error);
               } else {
@@ -2065,7 +3387,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             }
           }
         }
-        
+
         // Only trigger auto-scroll on initial load, not during polling
         if (!isPolling && isFirstLoad && shouldAutoScroll) {
           setTimeout(() => {
@@ -2085,7 +3407,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     fetchMessages(false).then(() => {
       initialLoadCompleteRef.current = true;
     });
-    
+
     // Set up polling to refresh messages every 5 seconds
     // Delay first poll to ensure initial load completes
     const pollDelay = setTimeout(() => {
@@ -2094,11 +3416,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           fetchMessages(true);
         }
       }, 5000);
-      
+
       // Store interval for cleanup
       (window as any).__whatsappPollInterval = interval;
     }, 2000); // Wait 2 seconds before starting polling
-    
+
     return () => {
       clearTimeout(pollDelay);
       if ((window as any).__whatsappPollInterval) {
@@ -2113,7 +3435,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   useEffect(() => {
     const loadUserNames = async () => {
       const userIds = new Set<string>();
-      
+
       messages.forEach(msg => {
         if ((msg as any).edited_by) userIds.add((msg as any).edited_by);
         if ((msg as any).deleted_by) userIds.add((msg as any).deleted_by);
@@ -2140,17 +3462,17 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     const now = new Date();
     const diffMs = now.getTime() - lastMessage.getTime();
     const hoursLeft = 24 - (diffMs / (1000 * 60 * 60));
-    
+
     if (hoursLeft <= 0) {
       setIsLocked(true);
       setTimeLeft('Locked');
       return;
     }
-    
+
     setIsLocked(false);
     const hours = Math.floor(hoursLeft);
     const minutes = Math.floor((hoursLeft - hours) * 60);
-    
+
     if (hours > 0) {
       setTimeLeft(`${hours}h ${minutes}m`);
     } else {
@@ -2180,12 +3502,12 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
     if (lastIncomingMessage) {
       calculateTimeLeft(lastIncomingMessage.sent_at);
-      
+
       // Update timer every minute
       const interval = setInterval(() => {
         calculateTimeLeft(lastIncomingMessage.sent_at);
       }, 60000); // Update every minute
-      
+
       return () => clearInterval(interval);
     } else {
       // No incoming messages, but there are outgoing messages - still lock
@@ -2238,19 +3560,19 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     };
     return langMap[normalized] || lang.toUpperCase();
   };
-  
+
   // AI suggestions state
   const [isLoadingAI, setIsLoadingAI] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
   const [showAISuggestions, setShowAISuggestions] = useState(false);
-  
+
   // Mobile input focus state
   const [isInputFocused, setIsInputFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  
+
   // Mobile dropdown state
   const [showMobileDropdown, setShowMobileDropdown] = useState(false);
-  
+
   // Desktop tools dropdown state
   const [showDesktopTools, setShowDesktopTools] = useState(false);
   const desktopToolsRef = useRef<HTMLDivElement>(null);
@@ -2288,7 +3610,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       setNewMessage('');
     }
   };
-  
+
   useEffect(() => {
     if (shouldAutoScroll && messages.length > 0) {
       // Add a small delay to ensure messages are rendered
@@ -2327,30 +3649,30 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
-      
+
       // Don't close if clicking inside template selector
       if (templateSelectorRef.current && templateSelectorRef.current.contains(target)) {
         return;
       }
-      
+
       if (isEmojiPickerOpen) {
         if (!target.closest('.emoji-picker-container') && !target.closest('button[type="button"]')) {
           setIsEmojiPickerOpen(false);
         }
       }
-      
+
       if (showMobileDropdown) {
         if (mobileToolsRef.current && !mobileToolsRef.current.contains(target)) {
           setShowMobileDropdown(false);
         }
       }
-      
+
       if (showDesktopTools) {
         if (desktopToolsRef.current && !desktopToolsRef.current.contains(target)) {
           setShowDesktopTools(false);
         }
       }
-      
+
       // Close template selector if clicking outside
       if (showTemplateSelector && templateSelectorRef.current && !templateSelectorRef.current.contains(target)) {
         // Don't close if clicking on the template button itself
@@ -2358,7 +3680,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           setShowTemplateSelector(false);
         }
       }
-      
+
       // Reset input focus on mobile when clicking outside the input area
       if (isMobile && isInputFocused && textareaRef.current) {
         if (!target.closest('textarea') && !target.closest('form')) {
@@ -2435,9 +3757,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     const startsWithZero = digits.startsWith('0') && digits.length >= 4;
     const isLeadNumber = isNumeric && digits.length <= 6 && !startsWithZero;
     const isVeryShortQuery = trimmedQuery.length < 3;
-    
-    const isQueryExtension = previousQuery && 
-      trimmedQuery.length > previousQuery.length && 
+
+    const isQueryExtension = previousQuery &&
+      trimmedQuery.length > previousQuery.length &&
       trimmedQuery.toLowerCase().startsWith(previousQuery.toLowerCase()) &&
       masterSearchResultsRef.current.length > 0 &&
       !isNumeric && // Don't use incremental filtering for pure numeric queries
@@ -2445,13 +3767,13 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       !isLeadNumber && // Don't use incremental filtering for lead numbers
       !isVeryShortQuery && // Don't use incremental filtering for very short queries
       previousQuery.length >= 3; // Previous query must also be at least 3 chars
-    
+
     if (isQueryExtension) {
       // Filter existing results client-side for faster response
       // This prevents unnecessary API calls when user is just continuing to type
       // Only works for text queries (names, emails) with sufficient length
       const filtered = filterResultsClientSide(masterSearchResultsRef.current, trimmedQuery);
-      
+
       // If filtering results in empty results, perform a new search instead
       // This handles cases where the extended query doesn't match any existing results
       if (filtered.length === 0 && masterSearchResultsRef.current.length > 0) {
@@ -2509,25 +3831,25 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     // If this is a contact (not main contact), create a contact client
     if (result.isContact && !result.isMainContact) {
       const isLegacyLead = result.lead_type === 'legacy';
-      const leadId = isLegacyLead 
+      const leadId = isLegacyLead
         ? (typeof result.id === 'string' ? result.id.replace('legacy_', '') : String(result.id))
         : result.id;
-      
+
       // Fetch contacts to get the contact ID
       const contacts = await fetchLeadContacts(leadId, isLegacyLead);
-      const selectedContact = contacts.find(c => 
+      const selectedContact = contacts.find(c =>
         (c.phone && result.phone && c.phone === result.phone) ||
         (c.mobile && result.mobile && c.mobile === result.mobile) ||
         (c.email && result.email && c.email === result.email) ||
         (c.name && result.name && c.name === result.name) ||
         (result.contactName && c.name && c.name === result.contactName)
       );
-      
+
       if (!selectedContact) {
         toast.error('Contact not found');
         return;
       }
-      
+
       // Fetch lead information for the contact
       let leadData: any = null;
       if (isLegacyLead) {
@@ -2536,7 +3858,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer_id, meeting_scheduler_id, next_followup, probability, total, potential_applicants')
           .eq('id', Number(leadId))
           .single();
-        
+
         if (!error && legacyLead) {
           leadData = legacyLead;
         }
@@ -2546,12 +3868,12 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, next_followup, probability, balance, potential_applicants')
           .eq('id', leadId)
           .single();
-        
+
         if (!error && newLead) {
           leadData = newLead;
         }
       }
-      
+
       // Create a contact client
       // CRITICAL: Always use contact's name from selectedContact (from leads_contact table)
       // NEVER use result.name (which might be the lead's name) as a fallback
@@ -2560,7 +3882,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         console.warn(`⚠️ Contact ${selectedContact.id} has no name! Using fallback.`);
       }
       console.log(`✅ Creating contact client: Contact ID=${selectedContact.id}, Name="${contactName}" (from leads_contact), NOT from lead "${result.name || 'N/A'}"`);
-      
+
       const contactClient: Client = {
         id: `contact_${selectedContact.id}`,
         lead_id: leadId, // Store the associated lead_id
@@ -2582,21 +3904,21 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         lead_type: result.lead_type,
         isContact: true // Mark as contact
       };
-      
+
       // Check if contact client already exists
-      const existingContactClient = clients.find(c => 
+      const existingContactClient = clients.find(c =>
         c.isContact && c.contact_id === selectedContact.id
       );
-      
+
       if (!existingContactClient) {
         setClients(prev => [contactClient, ...prev]);
       }
-      
+
       // Set the selected client and contact
       setSelectedClient(existingContactClient || contactClient);
       setSelectedContactId(selectedContact.id);
       setLeadContacts([]); // Contacts don't have sub-contacts
-      
+
       console.log(`✅ Selected contact: ${selectedContact.name} (Contact ID: ${selectedContact.id}, Lead ID: ${leadId})`);
     } else {
       // This is a main lead - create a regular lead client
@@ -2631,7 +3953,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           lead_type: result.lead_type,
           isContact: false
         };
-        
+
         setClients(prev => [newClient, ...prev]);
         clientToSelect = newClient;
       } else {
@@ -2640,16 +3962,16 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
       // Set the selected client
       setSelectedClient(clientToSelect);
-      
+
       // For main leads, fetch contacts and select the main one
       const isLegacyLead = clientToSelect.lead_type === 'legacy' || clientToSelect.id.toString().startsWith('legacy_');
-      const leadId = isLegacyLead 
+      const leadId = isLegacyLead
         ? (typeof clientToSelect.id === 'string' ? clientToSelect.id.replace('legacy_', '') : String(clientToSelect.id))
         : clientToSelect.id;
-      
+
       const contacts = await fetchLeadContacts(leadId, isLegacyLead);
       setLeadContacts(contacts);
-      
+
       if (contacts.length > 0) {
         const mainContact = contacts.find(c => c.isMain) || contacts[0];
         setSelectedContactId(mainContact.id);
@@ -2663,7 +3985,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     masterSearchResultsRef.current = [];
     previousSearchQueryRef.current = '';
     previousRawSearchValueRef.current = '';
-    
+
     // Open chat on mobile
     if (isMobile) {
       setShowChat(true);
@@ -2676,31 +3998,31 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   // Send new message via WhatsApp API
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log('🚀 Send button clicked!', { 
-      newMessage: newMessage.trim(), 
-      selectedTemplate: selectedTemplate?.title, 
+    console.log('🚀 Send button clicked!', {
+      newMessage: newMessage.trim(),
+      selectedTemplate: selectedTemplate?.title,
       selectedClient: selectedClient?.name,
-      currentUser: currentUser?.email 
+      currentUser: currentUser?.email
     });
-    
+
     if ((!newMessage.trim() && !selectedTemplate) || !selectedClient || !currentUser) {
-      console.log('❌ Send blocked:', { 
-        hasMessage: !!newMessage.trim(), 
-        hasTemplate: !!selectedTemplate, 
-        hasClient: !!selectedClient, 
-        hasUser: !!currentUser 
+      console.log('❌ Send blocked:', {
+        hasMessage: !!newMessage.trim(),
+        hasTemplate: !!selectedTemplate,
+        hasClient: !!selectedClient,
+        hasUser: !!currentUser
       });
       return;
     }
 
     setSending(true);
-    
+
     // Get phone number and contact ID
     // CRITICAL: If selectedClient is a contact (isContact=true), use its contact_id and phone directly
     // Otherwise, check selectedContactId from leadContacts dropdown
     let phoneNumber: string | null = null;
     let contactId: number | null = null;
-    
+
     if (selectedClient.isContact && selectedClient.contact_id) {
       // This is a contact client - use its contact_id and phone directly
       contactId = selectedClient.contact_id;
@@ -2715,13 +4037,13 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         console.log(`📞 Using selected contact from dropdown: contact_id=${contactId}, phone=${phoneNumber}, name=${selectedContact.name}`);
       }
     }
-    
+
     // Fallback to client's phone number (for main leads without selected contact)
     if (!phoneNumber) {
       phoneNumber = selectedClient.phone || selectedClient.mobile || null;
       console.log(`📞 Using main lead phone: phone=${phoneNumber}, name=${selectedClient.name}`);
     }
-    
+
     if (!phoneNumber) {
       toast.error('No phone number found for this contact');
       setSending(false);
@@ -2729,22 +4051,22 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     }
 
     const senderName = currentUser.full_name || currentUser.email;
-    
+
     try {
 
       // Prepare message payload
       // For contacts, use the associated lead_id; for main leads, use the client id
-      const leadIdForMessage = selectedClient.isContact && selectedClient.lead_id 
-        ? selectedClient.lead_id 
+      const leadIdForMessage = selectedClient.isContact && selectedClient.lead_id
+        ? selectedClient.lead_id
         : selectedClient.id;
-      
+
       const messagePayload: any = {
         leadId: leadIdForMessage,
         phoneNumber: phoneNumber,
         sender_name: senderName,
         contactId: contactId // Use the contactId we determined above (from contact client or selected contact)
       };
-      
+
       console.log(`📤 Message payload: leadId=${leadIdForMessage}, contactId=${contactId}, phoneNumber=${phoneNumber}, isContact=${selectedClient.isContact}`);
 
       // Check if we should send as template message
@@ -2754,23 +4076,23 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         messagePayload.templateId = typeof selectedTemplate.id === 'string' ? parseInt(selectedTemplate.id, 10) : selectedTemplate.id;
         messagePayload.templateName = selectedTemplate.name360;
         messagePayload.templateLanguage = selectedTemplate.language || 'en_US'; // Use template's language
-        
+
         // Debug log to verify templateId is being sent
         console.log('📤 Template ID being sent:', messagePayload.templateId, '(type:', typeof messagePayload.templateId, ')');
-        
+
         // Generate parameters based on actual param count
         const paramCount = Number(selectedTemplate.params) || 0;
         console.log(`🔍 Template "${selectedTemplate.name360}" requires ${paramCount} parameter(s)`);
-        
+
         if (paramCount > 0) {
           // Try to get specific param definitions first, otherwise use generic
           let templateParams: Array<{ type: string; text: string }> = [];
-          
+
           try {
             console.log('🔍 Getting template param definitions...');
             const paramDefinitions = await getTemplateParamDefinitions(selectedTemplate.id, selectedTemplate.name360);
             console.log('🔍 Param definitions:', paramDefinitions);
-            
+
             if (paramDefinitions.length > 0) {
               console.log('✅ Using template-specific param definitions');
               templateParams = await generateParamsFromDefinitions(paramDefinitions, selectedClient, contactId || null);
@@ -2779,23 +4101,23 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               // Fallback to generic param generation
               templateParams = await generateTemplateParameters(paramCount, selectedClient, contactId || null);
             }
-            
+
             console.log('✅ Generated template params:', templateParams);
-            
+
             // Ensure we have valid parameters
             if (templateParams && templateParams.length > 0) {
               messagePayload.templateParameters = templateParams;
-              
-            // Generate the filled template content for display
-            let filledContent = selectedTemplate.content || '';
-            templateParams.forEach((param, index) => {
-              if (param && param.text) {
-                // Replace placeholder with actual value, or keep placeholder if value is empty
-                const value = param.text.trim() || `{{${index + 1}}}`;
-                filledContent = filledContent.replace(new RegExp(`\\{\\{${index + 1}\\}\\}`, 'g'), value);
-              }
-            });
-              
+
+              // Generate the filled template content for display
+              let filledContent = selectedTemplate.content || '';
+              templateParams.forEach((param, index) => {
+                if (param && param.text) {
+                  // Replace placeholder with actual value, or keep placeholder if value is empty
+                  const value = param.text.trim() || `{{${index + 1}}}`;
+                  filledContent = filledContent.replace(new RegExp(`\\{\\{${index + 1}\\}\\}`, 'g'), value);
+                }
+              });
+
               messagePayload.message = filledContent || `TEMPLATE_MARKER:${selectedTemplate.title}`;
               console.log(`✅ Template with ${paramCount} param(s) - auto-filled parameters:`, messagePayload.templateParameters);
               console.log(`✅ Filled template content:`, filledContent);
@@ -2826,12 +4148,12 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
       // Debug: Log the payload being sent
       console.log('📤 Sending message payload:', messagePayload);
-      
+
       // Send message via WhatsApp API
       const apiUrl = buildApiUrl('/api/whatsapp/send-message');
       console.log('🌐 API URL:', apiUrl);
       console.log('📤 Request payload:', JSON.stringify(messagePayload, null, 2));
-      
+
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
@@ -2842,7 +4164,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
       console.log('📥 Response status:', response.status, response.statusText);
       console.log('📥 Response headers:', Object.fromEntries(response.headers.entries()));
-      
+
       const result = await response.json();
       console.log('📥 Response body:', JSON.stringify(result, null, 2));
 
@@ -2860,9 +4182,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         }
         throw new Error(result.error || 'Failed to send message');
       }
-      
+
       console.log('✅ API request successful. Message ID:', result.messageId);
-      
+
       // Immediately after sending, fetch the message from database to verify template_id was saved
       if (result.messageId) {
         console.log('🔍 Verifying template_id was saved in database...');
@@ -2873,7 +4195,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               .select('id, template_id, whatsapp_message_id, message')
               .eq('whatsapp_message_id', result.messageId)
               .single();
-            
+
             if (fetchError) {
               console.error('❌ Error fetching saved message:', fetchError);
             } else if (savedMessage) {
@@ -2895,10 +4217,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           }
         }, 2000); // Wait 2 seconds for database to be updated
       }
-      
+
       // Add message to local state
       console.log('📤 Sending message with sender:', senderName, 'from user:', currentUser);
-      
+
       // Determine the message text to display
       let displayMessage = newMessage.trim();
       if (selectedTemplate) {
@@ -2913,7 +4235,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           displayMessage = `Template: ${selectedTemplate.title}`;
         }
       }
-      
+
       const newMsg: WhatsAppMessage = {
         id: Date.now(), // Temporary ID
         lead_id: selectedClient.id,
@@ -2928,7 +4250,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         whatsapp_message_id: result.messageId,
         template_id: selectedTemplate?.id || undefined // Include template_id for proper matching
       };
-      
+
       console.log('💾 Creating local message object:', {
         id: newMsg.id,
         whatsapp_message_id: newMsg.whatsapp_message_id,
@@ -2945,7 +4267,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       setShouldAutoScroll(true); // Trigger auto-scroll when new message is sent
       setNewMessage('');
       setSelectedTemplate(null); // Clear template selection after sending
-      
+
       // Reset textarea height to regular size after sending
       if (textareaRef.current) {
         setTimeout(() => {
@@ -2956,18 +4278,18 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           }
         }, 0);
       }
-      
+
       // Reset mobile input focus state
       if (isMobile) {
         setIsInputFocused(false);
         textareaRef.current?.blur();
       }
       // Stage evaluation is handled automatically by database triggers
-      
+
       toast.success('Message sent via WhatsApp!');
     } catch (error) {
       console.error('Error sending message:', error);
-      
+
       // If template sending failed, offer to send as regular message
       if (selectedTemplate && error instanceof Error && error.message.includes('Template')) {
         // Only offer fallback if there's a message to send
@@ -2975,7 +4297,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           const shouldSendAsRegular = window.confirm(
             `Template sending failed: ${error.message}\n\nWould you like to send this as a regular message instead?`
           );
-          
+
           if (shouldSendAsRegular) {
             // Send as regular message without template
             const regularPayload = {
@@ -2984,69 +4306,69 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               sender_name: senderName,
               message: newMessage.trim()
             };
-          
+
             try {
-            const regularResponse = await fetch(buildApiUrl('/api/whatsapp/send-message'), {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify(regularPayload),
-            });
-
-            const regularResult = await regularResponse.json();
-
-            if (regularResponse.ok) {
-              // Add message to local state
-              const newMsg: WhatsAppMessage = {
-                id: Date.now(),
-                lead_id: selectedClient.id,
-                sender_id: currentUser.id,
-                sender_name: senderName,
-                direction: 'out',
-                message: newMessage.trim(),
-                sent_at: new Date().toISOString(),
-                status: 'sent',
-                message_type: 'text',
-                whatsapp_status: 'sent',
-                whatsapp_message_id: regularResult.messageId
-              };
-
-              // Add message to the end and ensure messages are sorted by sent_at
-              setMessages(prev => {
-                const updated = [...prev, newMsg];
-                // Sort by sent_at in ascending order (oldest first, newest last)
-                return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+              const regularResponse = await fetch(buildApiUrl('/api/whatsapp/send-message'), {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(regularPayload),
               });
-              setShouldAutoScroll(true);
-              setNewMessage('');
-              setSelectedTemplate(null); // Clear template selection
-              
-              // Reset textarea height to regular size after sending
-              if (textareaRef.current) {
-                setTimeout(() => {
-                  if (textareaRef.current) {
-                    textareaRef.current.style.height = 'auto';
-                    const regularHeight = isMobile ? 200 : 200;
-                    textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, regularHeight)}px`;
-                  }
-                }, 0);
+
+              const regularResult = await regularResponse.json();
+
+              if (regularResponse.ok) {
+                // Add message to local state
+                const newMsg: WhatsAppMessage = {
+                  id: Date.now(),
+                  lead_id: selectedClient.id,
+                  sender_id: currentUser.id,
+                  sender_name: senderName,
+                  direction: 'out',
+                  message: newMessage.trim(),
+                  sent_at: new Date().toISOString(),
+                  status: 'sent',
+                  message_type: 'text',
+                  whatsapp_status: 'sent',
+                  whatsapp_message_id: regularResult.messageId
+                };
+
+                // Add message to the end and ensure messages are sorted by sent_at
+                setMessages(prev => {
+                  const updated = [...prev, newMsg];
+                  // Sort by sent_at in ascending order (oldest first, newest last)
+                  return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+                });
+                setShouldAutoScroll(true);
+                setNewMessage('');
+                setSelectedTemplate(null); // Clear template selection
+
+                // Reset textarea height to regular size after sending
+                if (textareaRef.current) {
+                  setTimeout(() => {
+                    if (textareaRef.current) {
+                      textareaRef.current.style.height = 'auto';
+                      const regularHeight = isMobile ? 200 : 200;
+                      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, regularHeight)}px`;
+                    }
+                  }, 0);
+                }
+
+                toast.success('Message sent as regular text (template failed)');
+                return;
+              } else {
+                throw new Error(regularResult.error || 'Failed to send regular message');
               }
-              
-              toast.success('Message sent as regular text (template failed)');
+            } catch (regularError) {
+              console.error('Error sending regular message:', regularError);
+              toast.error('Failed to send as regular message: ' + (regularError as Error).message);
               return;
-            } else {
-              throw new Error(regularResult.error || 'Failed to send regular message');
             }
-          } catch (regularError) {
-            console.error('Error sending regular message:', regularError);
-            toast.error('Failed to send as regular message: ' + (regularError as Error).message);
-            return;
-          }
           }
         }
       }
-      
+
       toast.error('Failed to send message: ' + (error as Error).message);
     } finally {
       setSending(false);
@@ -3062,9 +4384,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   // Get all messages for all clients to show last message preview
   const getAllMessages = async () => {
     try {
+      // Explicitly select is_read to ensure it's included
       const { data, error } = await supabase
         .from('whatsapp_messages')
-        .select('*')
+        .select('id, sent_at, sender_name, direction, message, whatsapp_status, whatsapp_message_id, error_message, contact_id, phone_number, template_id, lead_id, legacy_id, is_read')
         .order('sent_at', { ascending: false });
 
       if (error) {
@@ -3079,46 +4402,64 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     }
   };
 
-  // Fetch all messages on component mount and set up polling
+  // Fetch all messages on component mount only if we don't have cached data
   useEffect(() => {
+    // If we already have cached messages, skip fetching
+    if (allMessages.length > 0 && hasInitialDataRef.current) {
+      console.log('✅ Using cached messages, skipping initial fetch');
+      return;
+    }
+
     const fetchAllMessages = async () => {
       const messages = await getAllMessages();
       if (messages) {
         setAllMessages(messages);
       }
     };
-    
-    fetchAllMessages();
-    
-    // Set up polling to refresh all messages every 30 seconds
-    const interval = setInterval(() => {
+
+    // Only fetch if we don't have cached data
+    if (allMessages.length === 0) {
       fetchAllMessages();
-    }, 30000);
-    
-    return () => clearInterval(interval);
+    }
+
+    // Note: Polling for new messages is handled by fetchNewMessagesOnly
   }, []);
+
+  // Auto-fix message statuses when messages are loaded (if status is "failed" but whatsapp_message_id exists)
+  useEffect(() => {
+    if (messages.length > 0) {
+      autoFixMessageStatus(messages);
+    }
+  }, [messages, autoFixMessageStatus]);
+
+  // Auto-fix message statuses in allMessages as well
+  useEffect(() => {
+    if (allMessages.length > 0) {
+      autoFixMessageStatus(allMessages as WhatsAppMessage[]);
+    }
+  }, [allMessages, autoFixMessageStatus]);
 
   // Get last message for client preview from all messages
   const getLastMessageForClient = (client: Client) => {
     if (client.isContact && client.contact_id) {
       // For contacts, find by contact_id OR phone number (using same logic as fetchMessages)
       // For contacts, MUST use lead_id (not client.id which is contact_${id})
-      const isLegacy = client.lead_type === 'legacy' || 
-                      (client.lead_id && client.lead_id.toString().startsWith('legacy_'));
-      const expectedLeadId = client.isContact 
+      const isLegacy = client.lead_type === 'legacy' ||
+        (client.lead_id && client.lead_id.toString().startsWith('legacy_'));
+      const expectedLeadId = client.isContact
         ? client.lead_id  // For contacts, only use lead_id
         : (client.lead_id || client.id); // For main leads, use lead_id or id
-      const expectedLegacyId = isLegacy && expectedLeadId ? (typeof expectedLeadId === 'string' 
-        ? Number(expectedLeadId.replace('legacy_', '')) 
+      const expectedLegacyId = isLegacy && expectedLeadId ? (typeof expectedLeadId === 'string'
+        ? Number(expectedLeadId.replace('legacy_', ''))
         : Number(expectedLeadId)) : null;
-      
+
       // Get contact phone numbers for matching
       const contactPhone = client.phone || client.mobile || '';
       const contactMobile = client.mobile || client.phone || '';
       const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
       const normalizedContactPhone = normalizePhone(contactPhone);
       const normalizedContactMobile = normalizePhone(contactMobile);
-      
+
       // Generate phone variations (same as in fetchMessages)
       const generatePhoneVariations = (phone: string, normalized: string) => {
         const variations: string[] = [];
@@ -3144,7 +4485,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         if (normalized.length >= 10) variations.push(normalized.slice(-10));
         return variations;
       };
-      
+
       const phoneVariations: string[] = [];
       if (contactPhone) {
         phoneVariations.push(...generatePhoneVariations(contactPhone, normalizedContactPhone));
@@ -3153,8 +4494,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         phoneVariations.push(...generatePhoneVariations(contactMobile, normalizedContactMobile));
       }
       const uniquePhoneVariations = Array.from(new Set(phoneVariations.filter(Boolean)));
-      
-      return allMessages.find(msg => {
+
+      // Find ALL matching messages, then return the most recent one
+      const matchingMessages = allMessages.filter(msg => {
         // First verify lead_id/legacy_id matches
         if (isLegacy) {
           if (expectedLegacyId !== null && msg.legacy_id !== expectedLegacyId) {
@@ -3165,12 +4507,12 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             return false;
           }
         }
-        
+
         // Match by contact_id (highest priority)
         if (msg.contact_id === client.contact_id) {
           return true;
         }
-        
+
         // Match by phone number (using all variations)
         if (msg.phone_number) {
           const normalizedMsgPhone = normalizePhone(msg.phone_number);
@@ -3178,46 +4520,56 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             const normalizedVariation = normalizePhone(variation);
             if (normalizedVariation && normalizedMsgPhone) {
               if (normalizedMsgPhone === normalizedVariation ||
-                  (normalizedVariation.length >= 8 && normalizedMsgPhone.length >= 8 &&
-                   (normalizedMsgPhone.endsWith(normalizedVariation.slice(-8)) ||
+                (normalizedVariation.length >= 8 && normalizedMsgPhone.length >= 8 &&
+                  (normalizedMsgPhone.endsWith(normalizedVariation.slice(-8)) ||
                     normalizedVariation.endsWith(normalizedMsgPhone.slice(-8)))) ||
-                  (normalizedVariation.length >= 4 && normalizedMsgPhone.length >= 4 &&
-                   (normalizedMsgPhone.endsWith(normalizedVariation.slice(-4)) ||
+                (normalizedVariation.length >= 4 && normalizedMsgPhone.length >= 4 &&
+                  (normalizedMsgPhone.endsWith(normalizedVariation.slice(-4)) ||
                     normalizedVariation.endsWith(normalizedMsgPhone.slice(-4))))) {
                 return true;
               }
             }
           }
         }
-        
+
         return false;
       });
+
+      // Return the most recent message (sorted by sent_at descending, take first)
+      if (matchingMessages.length > 0) {
+        return matchingMessages.sort((a, b) =>
+          new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime()
+        )[0];
+      }
+
+      return undefined;
     } else {
       // For main leads, find by lead_id but EXCLUDE messages with contact_id
       // CRITICAL: Messages with contact_id belong to contacts, not the main lead
       // Also handle legacy leads (they use legacy_id, not lead_id)
       const isLegacy = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      
+
       if (isLegacy) {
-        const legacyId = typeof client.id === 'string' 
-          ? Number(client.id.replace('legacy_', '')) 
+        const legacyId = typeof client.id === 'string'
+          ? Number(client.id.replace('legacy_', ''))
           : Number(client.id);
         if (!isNaN(legacyId)) {
           // Get all contacts for this lead to check phone number matches
-          const contactsForThisLead = clients.filter(c => 
-            c.isContact && 
-            c.lead_id && 
+          const contactsForThisLead = clients.filter(c =>
+            c.isContact &&
+            c.lead_id &&
             String(c.lead_id) === String(legacyId)
           );
-          
+
           const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
-          
-          const found = allMessages.find(msg => {
+
+          // Find ALL matching messages, then return the most recent one
+          const matchingMessages = allMessages.filter(msg => {
             // STRICT: Must not have contact_id (null, undefined, or falsy)
             if (msg.contact_id !== null && msg.contact_id !== undefined) {
               return false;
             }
-            
+
             // CRITICAL: If message has a phone_number, check if it matches any contact's phone
             // If it matches, exclude it from main lead (it belongs to a contact)
             if (msg.phone_number && contactsForThisLead.length > 0) {
@@ -3227,29 +4579,29 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 const contactMobile = contact.mobile || contact.phone || '';
                 const contactPhoneNormalized = normalizePhone(contactPhone);
                 const contactMobileNormalized = normalizePhone(contactMobile);
-                
+
                 // Check if message phone matches contact phone (exact, last 8, or last 4 digits)
                 if (contactPhoneNormalized && msgPhoneNormalized) {
                   if (msgPhoneNormalized === contactPhoneNormalized ||
-                      (contactPhoneNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
-                       (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-8)) ||
+                    (contactPhoneNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
+                      (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-8)) ||
                         contactPhoneNormalized.endsWith(msgPhoneNormalized.slice(-8)))) ||
-                      (contactPhoneNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
-                       (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-4)) ||
+                    (contactPhoneNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
+                      (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-4)) ||
                         contactPhoneNormalized.endsWith(msgPhoneNormalized.slice(-4))))) {
                     console.log(`❌ Excluding message ${msg.id} from main lead (legacy): phone matches contact ${contact.contact_id} (${contact.name})`);
                     return false;
                   }
                 }
-                
+
                 // Check mobile too
                 if (contactMobileNormalized && msgPhoneNormalized && contactMobileNormalized !== contactPhoneNormalized) {
                   if (msgPhoneNormalized === contactMobileNormalized ||
-                      (contactMobileNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
-                       (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-8)) ||
+                    (contactMobileNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
+                      (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-8)) ||
                         contactMobileNormalized.endsWith(msgPhoneNormalized.slice(-8)))) ||
-                      (contactMobileNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
-                       (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-4)) ||
+                    (contactMobileNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
+                      (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-4)) ||
                         contactMobileNormalized.endsWith(msgPhoneNormalized.slice(-4))))) {
                     console.log(`❌ Excluding message ${msg.id} from main lead (legacy): phone matches contact ${contact.contact_id} (${contact.name}) mobile`);
                     return false;
@@ -3257,33 +4609,41 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 }
               }
             }
-            
+
             // Match by legacy_id
             return msg.legacy_id === legacyId;
           });
-          if (found) {
-            console.log(`✅ Main lead (legacy) last message found: client=${client.id}, legacyId=${legacyId}, msgId=${found.id}, contact_id=${found.contact_id}`);
+
+          // Return the most recent message (sorted by sent_at descending, take first)
+          if (matchingMessages.length > 0) {
+            const found = matchingMessages.sort((a, b) =>
+              new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime()
+            )[0];
+            console.log(`✅ Main lead (legacy) last message found: client=${client.id}, legacyId=${legacyId}, msgId=${found.id}, contact_id=${found.contact_id}, sent_at=${found.sent_at}`);
+            return found;
           }
-          return found;
+
+          return undefined;
         }
       } else {
         // For new leads, match by lead_id (can be UUID string)
         // CRITICAL: Must exclude messages with contact_id OR messages whose phone matches a contact's phone
         // Get all contacts for this lead to check phone number matches
-        const contactsForThisLead = clients.filter(c => 
-          c.isContact && 
-          c.lead_id && 
+        const contactsForThisLead = clients.filter(c =>
+          c.isContact &&
+          c.lead_id &&
           (String(c.lead_id) === String(client.id) || c.lead_id === client.id)
         );
-        
+
         const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
-        
-        const found = allMessages.find(msg => {
+
+        // Find ALL matching messages, then return the most recent one
+        const matchingMessages = allMessages.filter(msg => {
           // STRICT: Must not have contact_id (null, undefined, or falsy)
           if (msg.contact_id !== null && msg.contact_id !== undefined) {
             return false;
           }
-          
+
           // CRITICAL: If message has a phone_number, check if it matches any contact's phone
           // If it matches, exclude it from main lead (it belongs to a contact)
           if (msg.phone_number && contactsForThisLead.length > 0) {
@@ -3293,29 +4653,29 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               const contactMobile = contact.mobile || contact.phone || '';
               const contactPhoneNormalized = normalizePhone(contactPhone);
               const contactMobileNormalized = normalizePhone(contactMobile);
-              
+
               // Check if message phone matches contact phone (exact, last 8, or last 4 digits)
               if (contactPhoneNormalized && msgPhoneNormalized) {
                 if (msgPhoneNormalized === contactPhoneNormalized ||
-                    (contactPhoneNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
-                     (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-8)) ||
+                  (contactPhoneNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
+                    (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-8)) ||
                       contactPhoneNormalized.endsWith(msgPhoneNormalized.slice(-8)))) ||
-                    (contactPhoneNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
-                     (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-4)) ||
+                  (contactPhoneNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
+                    (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-4)) ||
                       contactPhoneNormalized.endsWith(msgPhoneNormalized.slice(-4))))) {
                   console.log(`❌ Excluding message ${msg.id} from main lead: phone matches contact ${contact.contact_id} (${contact.name})`);
                   return false;
                 }
               }
-              
+
               // Check mobile too
               if (contactMobileNormalized && msgPhoneNormalized && contactMobileNormalized !== contactPhoneNormalized) {
                 if (msgPhoneNormalized === contactMobileNormalized ||
-                    (contactMobileNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
-                     (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-8)) ||
+                  (contactMobileNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
+                    (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-8)) ||
                       contactMobileNormalized.endsWith(msgPhoneNormalized.slice(-8)))) ||
-                    (contactMobileNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
-                     (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-4)) ||
+                  (contactMobileNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
+                    (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-4)) ||
                       contactMobileNormalized.endsWith(msgPhoneNormalized.slice(-4))))) {
                   console.log(`❌ Excluding message ${msg.id} from main lead: phone matches contact ${contact.contact_id} (${contact.name}) mobile`);
                   return false;
@@ -3323,16 +4683,23 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               }
             }
           }
-          
+
           // Match by lead_id (handle both string and number comparison)
           return String(msg.lead_id) === String(client.id) || msg.lead_id === client.id;
         });
-        if (found) {
-          console.log(`✅ Main lead (new) last message found: client=${client.id}, msgLeadId=${found.lead_id}, msgId=${found.id}, contact_id=${found.contact_id}`);
+
+        // Return the most recent message (sorted by sent_at descending, take first)
+        if (matchingMessages.length > 0) {
+          const found = matchingMessages.sort((a, b) =>
+            new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime()
+          )[0];
+          console.log(`✅ Main lead (new) last message found: client=${client.id}, msgLeadId=${found.lead_id}, msgId=${found.id}, contact_id=${found.contact_id}, sent_at=${found.sent_at}`);
+          return found;
         }
-        return found;
+
+        return undefined;
       }
-      
+
       return undefined; // No match found
     }
   };
@@ -3340,25 +4707,25 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   // Get unread count for client from all messages
   const getUnreadCountForClient = (client: Client) => {
     let clientMessages: any[] = [];
-    
+
     if (client.isContact && client.contact_id) {
       // For contacts, filter by contact_id OR phone number (using same logic as fetchMessages)
-      const isLegacy = client.lead_type === 'legacy' || 
-                      (client.lead_id && client.lead_id.toString().startsWith('legacy_'));
-      const expectedLeadId = client.isContact 
+      const isLegacy = client.lead_type === 'legacy' ||
+        (client.lead_id && client.lead_id.toString().startsWith('legacy_'));
+      const expectedLeadId = client.isContact
         ? client.lead_id  // For contacts, only use lead_id
         : (client.lead_id || client.id); // For main leads, use lead_id or id
-      const expectedLegacyId = isLegacy && expectedLeadId ? (typeof expectedLeadId === 'string' 
-        ? Number(expectedLeadId.replace('legacy_', '')) 
+      const expectedLegacyId = isLegacy && expectedLeadId ? (typeof expectedLeadId === 'string'
+        ? Number(expectedLeadId.replace('legacy_', ''))
         : Number(expectedLeadId)) : null;
-      
+
       // Get contact phone numbers for matching
       const contactPhone = client.phone || client.mobile || '';
       const contactMobile = client.mobile || client.phone || '';
       const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
       const normalizedContactPhone = normalizePhone(contactPhone);
       const normalizedContactMobile = normalizePhone(contactMobile);
-      
+
       // Generate phone variations (same as in fetchMessages)
       const generatePhoneVariations = (phone: string, normalized: string) => {
         const variations: string[] = [];
@@ -3384,7 +4751,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         if (normalized.length >= 10) variations.push(normalized.slice(-10));
         return variations;
       };
-      
+
       const phoneVariations: string[] = [];
       if (contactPhone) {
         phoneVariations.push(...generatePhoneVariations(contactPhone, normalizedContactPhone));
@@ -3393,7 +4760,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         phoneVariations.push(...generatePhoneVariations(contactMobile, normalizedContactMobile));
       }
       const uniquePhoneVariations = Array.from(new Set(phoneVariations.filter(Boolean)));
-      
+
       clientMessages = allMessages.filter(msg => {
         // First verify lead_id/legacy_id matches
         if (isLegacy) {
@@ -3405,12 +4772,12 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             return false;
           }
         }
-        
+
         // Match by contact_id (highest priority)
         if (msg.contact_id === client.contact_id) {
           return true;
         }
-        
+
         // Match by phone number (using all variations)
         if (msg.phone_number) {
           const normalizedMsgPhone = normalizePhone(msg.phone_number);
@@ -3418,18 +4785,18 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             const normalizedVariation = normalizePhone(variation);
             if (normalizedVariation && normalizedMsgPhone) {
               if (normalizedMsgPhone === normalizedVariation ||
-                  (normalizedVariation.length >= 8 && normalizedMsgPhone.length >= 8 &&
-                   (normalizedMsgPhone.endsWith(normalizedVariation.slice(-8)) ||
+                (normalizedVariation.length >= 8 && normalizedMsgPhone.length >= 8 &&
+                  (normalizedMsgPhone.endsWith(normalizedVariation.slice(-8)) ||
                     normalizedVariation.endsWith(normalizedMsgPhone.slice(-8)))) ||
-                  (normalizedVariation.length >= 4 && normalizedMsgPhone.length >= 4 &&
-                   (normalizedMsgPhone.endsWith(normalizedVariation.slice(-4)) ||
+                (normalizedVariation.length >= 4 && normalizedMsgPhone.length >= 4 &&
+                  (normalizedMsgPhone.endsWith(normalizedVariation.slice(-4)) ||
                     normalizedVariation.endsWith(normalizedMsgPhone.slice(-4))))) {
                 return true;
               }
             }
           }
         }
-        
+
         return false;
       });
     } else {
@@ -3437,27 +4804,27 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       // CRITICAL: Messages with contact_id belong to contacts, not the main lead
       // Also handle legacy leads (they use legacy_id, not lead_id)
       const isLegacy = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      
+
       if (isLegacy) {
-        const legacyId = typeof client.id === 'string' 
-          ? Number(client.id.replace('legacy_', '')) 
+        const legacyId = typeof client.id === 'string'
+          ? Number(client.id.replace('legacy_', ''))
           : Number(client.id);
         if (!isNaN(legacyId)) {
           // Get all contacts for this lead to check phone number matches
-          const contactsForThisLead = clients.filter(c => 
-            c.isContact && 
-            c.lead_id && 
+          const contactsForThisLead = clients.filter(c =>
+            c.isContact &&
+            c.lead_id &&
             String(c.lead_id) === String(legacyId)
           );
-          
+
           const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
-          
+
           clientMessages = allMessages.filter(msg => {
             // STRICT: Must not have contact_id (null, undefined, or falsy)
             if (msg.contact_id !== null && msg.contact_id !== undefined) {
               return false;
             }
-            
+
             // CRITICAL: If message has a phone_number, check if it matches any contact's phone
             // If it matches, exclude it from main lead (it belongs to a contact)
             if (msg.phone_number && contactsForThisLead.length > 0) {
@@ -3467,35 +4834,35 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 const contactMobile = contact.mobile || contact.phone || '';
                 const contactPhoneNormalized = normalizePhone(contactPhone);
                 const contactMobileNormalized = normalizePhone(contactMobile);
-                
+
                 // Check if message phone matches contact phone (exact, last 8, or last 4 digits)
                 if (contactPhoneNormalized && msgPhoneNormalized) {
                   if (msgPhoneNormalized === contactPhoneNormalized ||
-                      (contactPhoneNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
-                       (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-8)) ||
+                    (contactPhoneNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
+                      (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-8)) ||
                         contactPhoneNormalized.endsWith(msgPhoneNormalized.slice(-8)))) ||
-                      (contactPhoneNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
-                       (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-4)) ||
+                    (contactPhoneNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
+                      (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-4)) ||
                         contactPhoneNormalized.endsWith(msgPhoneNormalized.slice(-4))))) {
                     return false;
                   }
                 }
-                
+
                 // Check mobile too
                 if (contactMobileNormalized && msgPhoneNormalized && contactMobileNormalized !== contactPhoneNormalized) {
                   if (msgPhoneNormalized === contactMobileNormalized ||
-                      (contactMobileNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
-                       (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-8)) ||
+                    (contactMobileNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
+                      (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-8)) ||
                         contactMobileNormalized.endsWith(msgPhoneNormalized.slice(-8)))) ||
-                      (contactMobileNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
-                       (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-4)) ||
+                    (contactMobileNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
+                      (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-4)) ||
                         contactMobileNormalized.endsWith(msgPhoneNormalized.slice(-4))))) {
                     return false;
                   }
                 }
               }
             }
-            
+
             // Match by legacy_id
             return msg.legacy_id === legacyId;
           });
@@ -3507,20 +4874,20 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         // For new leads, match by lead_id (can be UUID string)
         // CRITICAL: Must exclude messages with contact_id OR messages whose phone matches a contact's phone
         // Get all contacts for this lead to check phone number matches
-        const contactsForThisLead = clients.filter(c => 
-          c.isContact && 
-          c.lead_id && 
+        const contactsForThisLead = clients.filter(c =>
+          c.isContact &&
+          c.lead_id &&
           (String(c.lead_id) === String(client.id) || c.lead_id === client.id)
         );
-        
+
         const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
-        
+
         clientMessages = allMessages.filter(msg => {
           // STRICT: Must not have contact_id (null, undefined, or falsy)
           if (msg.contact_id !== null && msg.contact_id !== undefined) {
             return false;
           }
-          
+
           // CRITICAL: If message has a phone_number, check if it matches any contact's phone
           // If it matches, exclude it from main lead (it belongs to a contact)
           if (msg.phone_number && contactsForThisLead.length > 0) {
@@ -3530,42 +4897,42 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               const contactMobile = contact.mobile || contact.phone || '';
               const contactPhoneNormalized = normalizePhone(contactPhone);
               const contactMobileNormalized = normalizePhone(contactMobile);
-              
+
               // Check if message phone matches contact phone (exact, last 8, or last 4 digits)
               if (contactPhoneNormalized && msgPhoneNormalized) {
                 if (msgPhoneNormalized === contactPhoneNormalized ||
-                    (contactPhoneNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
-                     (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-8)) ||
+                  (contactPhoneNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
+                    (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-8)) ||
                       contactPhoneNormalized.endsWith(msgPhoneNormalized.slice(-8)))) ||
-                    (contactPhoneNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
-                     (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-4)) ||
+                  (contactPhoneNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
+                    (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-4)) ||
                       contactPhoneNormalized.endsWith(msgPhoneNormalized.slice(-4))))) {
                   return false;
                 }
               }
-              
+
               // Check mobile too
               if (contactMobileNormalized && msgPhoneNormalized && contactMobileNormalized !== contactPhoneNormalized) {
                 if (msgPhoneNormalized === contactMobileNormalized ||
-                    (contactMobileNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
-                     (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-8)) ||
+                  (contactMobileNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
+                    (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-8)) ||
                       contactMobileNormalized.endsWith(msgPhoneNormalized.slice(-8)))) ||
-                    (contactMobileNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
-                     (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-4)) ||
+                  (contactMobileNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
+                    (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-4)) ||
                       contactMobileNormalized.endsWith(msgPhoneNormalized.slice(-4))))) {
                   return false;
                 }
               }
             }
           }
-          
+
           // Match by lead_id (handle both string and number comparison)
           return String(msg.lead_id) === String(client.id) || msg.lead_id === client.id;
         });
         console.log(`📊 Main lead (new) unread count: client=${client.id}, filteredMessages=${clientMessages.length}, totalMessages=${allMessages.length}, messagesWithContactId=${allMessages.filter(m => m.contact_id).length}, contactsForLead=${contactsForThisLead.length}`);
       }
     }
-    
+
     // Use the same simple logic as WhatsApp Leads Page
     return clientMessages.filter(msg => {
       if (msg.direction !== 'in') return false;
@@ -3583,40 +4950,185 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     return !isRead || isRead === false;
   }).length;
 
+  // State for lazy loading contacts
+  const [visibleClientsCount, setVisibleClientsCount] = useState(20);
+
   // Filter clients: exclude those without any messages, then apply search filter
   // This is computed here (after getLastMessageForClient is defined) using useMemo
   const filteredClients = useMemo(() => {
     // Filter clients: exclude those without any messages
+    // IMPORTANT: Use a more lenient check - if client exists in the list, it means it has messages
+    // The getLastMessageForClient might be too strict, so we'll trust that clients in the list have messages
     const clientsWithMessages = clients.filter(client => {
+      // First, try to get last message
       const lastMessage = getLastMessageForClient(client);
-      return lastMessage !== undefined && lastMessage !== null;
+      if (lastMessage !== undefined && lastMessage !== null) {
+        return true;
+      }
+
+      // Fallback: Check if there are any messages in allMessages for this client
+      // This is more lenient and will catch cases where getLastMessageForClient fails
+      if (client.isContact && client.contact_id) {
+        const hasMessages = allMessages.some((msg: any) => {
+          // Match by contact_id
+          if (msg.contact_id === client.contact_id) return true;
+          // Match by phone number
+          const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
+          const contactPhone = normalizePhone(client.phone || client.mobile || '');
+          if (msg.phone_number && contactPhone) {
+            const msgPhone = normalizePhone(msg.phone_number);
+            if (msgPhone === contactPhone) return true;
+          }
+          return false;
+        });
+        if (hasMessages) return true;
+      } else {
+        // For main leads
+        const isLegacy = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+        const hasMessages = allMessages.some((msg: any) => {
+          if (isLegacy) {
+            const legacyId = typeof client.id === 'string'
+              ? Number(client.id.replace('legacy_', ''))
+              : Number(client.id);
+            return !msg.contact_id && msg.legacy_id === legacyId;
+          } else {
+            return !msg.contact_id && (String(msg.lead_id) === String(client.id) || msg.lead_id === client.id);
+          }
+        });
+        if (hasMessages) return true;
+      }
+
+      return false;
     });
-    
+
+    console.log('🔍 DEBUG filteredClients: clientsWithMessages count:', clientsWithMessages.length);
+
+    // Check if L204687 passed the message filter
+    const hasL204687WithMessages = clientsWithMessages.some((c: any) =>
+      c.lead_number === '204687' ||
+      c.lead_number === 'L204687' ||
+      String(c.lead_number) === '204687' ||
+      String(c.lead_number) === 'L204687'
+    );
+    console.log('🔍 DEBUG L204687: Passed message filter?', hasL204687WithMessages);
+
     // Apply search filter
-    return clientsWithMessages.filter(client =>
+    const searchFiltered = clientsWithMessages.filter(client =>
       client.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       client.lead_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (client.email && client.email.toLowerCase().includes(searchTerm.toLowerCase())) ||
       (client.phone && client.phone.includes(searchTerm)) ||
       (client.mobile && client.mobile.includes(searchTerm))
-    ).sort((a, b) => {
-      // Get last message for each client
+    );
+
+    console.log('🔍 DEBUG filteredClients: searchFiltered count:', searchFiltered.length);
+
+    // Check if L204687 passed the search filter
+    const hasL204687InSearch = searchFiltered.some((c: any) =>
+      c.lead_number === '204687' ||
+      c.lead_number === 'L204687' ||
+      String(c.lead_number) === '204687' ||
+      String(c.lead_number) === 'L204687'
+    );
+    console.log('🔍 DEBUG L204687: Passed search filter?', hasL204687InSearch, 'searchTerm:', searchTerm);
+
+    // Sort: 1st by unread on top (sorted by last received message date), then by last message received or sent (most recent first)
+    const sorted = searchFiltered.sort((a, b) => {
+      // Get unread counts
+      const unreadCountA = getUnreadCountForClient(a);
+      const unreadCountB = getUnreadCountForClient(b);
+
+      // First priority: unread messages (clients with unread messages go to top)
+      if (unreadCountA > 0 && unreadCountB === 0) return -1;
+      if (unreadCountB > 0 && unreadCountA === 0) return 1;
+
+      // If both have unread messages, sort by latest message timestamp (most recent first)
+      if (unreadCountA > 0 && unreadCountB > 0) {
+        const lastMessageA = getLastMessageForClient(a);
+        const lastMessageB = getLastMessageForClient(b);
+
+        if (lastMessageA && lastMessageB) {
+          const dateA = new Date(lastMessageA.sent_at);
+          const dateB = new Date(lastMessageB.sent_at);
+
+          if (!isNaN(dateA.getTime()) && !isNaN(dateB.getTime())) {
+            // Sort by most recent message first (descending - newest on top)
+            return dateB.getTime() - dateA.getTime();
+          }
+        }
+
+        // If only one has messages, prioritize it
+        if (lastMessageA && !lastMessageB) return -1;
+        if (lastMessageB && !lastMessageA) return 1;
+      }
+
+      // If both have unread or both don't have unread, and unread counts differ, sort by unread count (descending)
+      if (unreadCountA !== unreadCountB) {
+        return unreadCountB - unreadCountA;
+      }
+
+      // Second priority: latest message time (most recent first) - includes both received and sent messages
       const lastMessageA = getLastMessageForClient(a);
       const lastMessageB = getLastMessageForClient(b);
-      
-      // If both have messages, sort by latest message time (descending)
+
       if (lastMessageA && lastMessageB) {
-        return new Date(lastMessageB.sent_at).getTime() - new Date(lastMessageA.sent_at).getTime();
+        // Sort by sent_at (most recent first) - this includes both received and sent messages
+        // Ensure we're comparing valid dates
+        const dateA = new Date(lastMessageA.sent_at);
+        const dateB = new Date(lastMessageB.sent_at);
+
+        // Check if dates are valid
+        if (isNaN(dateA.getTime()) || isNaN(dateB.getTime())) {
+          // If dates are invalid, maintain order
+          return 0;
+        }
+
+        // Sort by most recent first (descending order)
+        const timeDiff = dateB.getTime() - dateA.getTime();
+        return timeDiff;
       }
-      
+
       // If only one has messages, prioritize it
       if (lastMessageA && !lastMessageB) return -1;
       if (lastMessageB && !lastMessageA) return 1;
-      
+
       // If neither has messages, maintain original order
       return 0;
     });
+
+    // Final check for L204687 after sorting
+    const hasL204687Final = sorted.some((c: any) =>
+      c.lead_number === '204687' ||
+      c.lead_number === 'L204687' ||
+      String(c.lead_number) === '204687' ||
+      String(c.lead_number) === 'L204687'
+    );
+    console.log('🔍 DEBUG L204687: Final - In sorted filteredClients?', hasL204687Final);
+    if (hasL204687Final) {
+      const l204687Index = sorted.findIndex((c: any) =>
+        c.lead_number === '204687' ||
+        c.lead_number === 'L204687' ||
+        String(c.lead_number) === '204687' ||
+        String(c.lead_number) === 'L204687'
+      );
+      console.log('🔍 DEBUG L204687: Position in sorted list:', l204687Index);
+    }
+
+    return sorted;
   }, [clients, searchTerm, allMessages]);
+
+  // Visible clients for lazy loading
+  const visibleClients = useMemo(() => {
+    return filteredClients.slice(0, visibleClientsCount);
+  }, [filteredClients, visibleClientsCount]);
+
+  // Check if there are more clients to load
+  const hasMoreClients = filteredClients.length > visibleClientsCount;
+
+  // Load more clients handler
+  const loadMoreClients = useCallback(() => {
+    setVisibleClientsCount(prev => Math.min(prev + 20, filteredClients.length));
+  }, [filteredClients.length]);
 
   // Handle file selection
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -3645,10 +5157,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
     setIsLoadingAI(true);
     setShowAISuggestions(true);
-    
+
     try {
       const requestType = newMessage.trim() ? 'improve' : 'suggest';
-      
+
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-ai-suggestions`, {
         method: 'POST',
         headers: {
@@ -3674,7 +5186,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       }
 
       const result = await response.json();
-      
+
       if (result.success) {
         // Get the single suggestion and clean it
         const suggestion = result.suggestion.trim();
@@ -3740,8 +5252,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       }
 
       // Update message in local state
-      setMessages(prev => prev.map(m => 
-        m.id === messageId 
+      setMessages(prev => prev.map(m =>
+        m.id === messageId
           ? { ...m, message: newText, is_edited: true as any }
           : m
       ));
@@ -3788,8 +5300,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         toast.success('Message deleted for everyone!');
       } else {
         // Mark as deleted for me
-        setMessages(prev => prev.map(m => 
-          m.id === messageId 
+        setMessages(prev => prev.map(m =>
+          m.id === messageId
             ? { ...m, is_deleted: true as any }
             : m
         ));
@@ -3807,14 +5319,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   // Send media message (optionally with a specific file)
   const handleSendMedia = async (fileOverride?: File) => {
     const fileToSend = fileOverride || selectedFile;
-    
+
     if (!fileToSend || !selectedClient || !currentUser) {
-      console.log('❌ Cannot send media - missing file, client, or user:', { 
-        fileToSend, 
+      console.log('❌ Cannot send media - missing file, client, or user:', {
+        fileToSend,
         selectedFile,
         fileOverride,
-        selectedClient, 
-        currentUser 
+        selectedClient,
+        currentUser
       });
       return;
     }
@@ -3862,7 +5374,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
       // Create FormData for file upload
       const formData = new FormData();
-      
+
       // Ensure we have a proper File object (not just a Blob)
       let fileForUpload: File;
       if (fileToSend instanceof File) {
@@ -3875,14 +5387,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       } else {
         throw new Error('Invalid file type');
       }
-      
+
       console.log('📤 Uploading file:', {
         name: fileForUpload.name,
         size: fileForUpload.size,
         type: fileForUpload.type,
         isFile: fileForUpload instanceof File
       });
-      
+
       formData.append('file', fileForUpload);
       formData.append('leadId', selectedClient.id);
 
@@ -3907,8 +5419,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       // Send media message
       // Determine media type: check if it's a voice message (audio/webm or audio/ogg) or regular audio
       const isVoiceMessage = fileToSend.type.includes('webm') || fileToSend.type.includes('opus') || fileToSend.type.includes('ogg');
-      const mediaType = fileToSend.type.startsWith('image/') 
-        ? 'image' 
+      const mediaType = fileToSend.type.startsWith('image/')
+        ? 'image'
         : fileToSend.type.startsWith('audio/') || isVoiceMessage
           ? 'audio'
           : 'document';
@@ -3943,7 +5455,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         mediaId: uploadResult.mediaId,
         messageId: result.messageId
       });
-      
+
       const newMsg: WhatsAppMessage = {
         id: Date.now(),
         lead_id: selectedClient.id,
@@ -3988,18 +5500,29 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const formatLastMessageTime = (timestamp: string) => {
     const messageDate = new Date(timestamp);
     const now = new Date();
-    const diffTime = now.getTime() - messageDate.getTime();
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-    if (diffDays === 0) {
-      // Today - show time
-      return messageDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    } else if (diffDays <= 7) {
-      // Within a week - show weekday
-      return messageDate.toLocaleDateString([], { weekday: 'short' });
+    // Check if message is from today (same day, month, year)
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const msgDate = new Date(messageDate.getFullYear(), messageDate.getMonth(), messageDate.getDate());
+    const isToday = today.getTime() === msgDate.getTime();
+
+    if (isToday) {
+      // Today - show time in 24-hour format
+      return messageDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
     } else {
-      // More than a week - show date
-      return messageDate.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      // Not today - calculate days difference
+      const diffTime = today.getTime() - msgDate.getTime();
+      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+
+      if (diffDays === 1) {
+        return 'Yesterday';
+      } else if (diffDays < 7) {
+        // Within a week - show weekday
+        return messageDate.toLocaleDateString('en-US', { weekday: 'short' });
+      } else {
+        // More than a week - show date
+        return messageDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      }
     }
   };
 
@@ -4018,7 +5541,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     }
     const diffTime = today.getTime() - date.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    
+
     if (diffDays <= 7) {
       return date.toLocaleDateString('en-US', { weekday: 'long' });
     }
@@ -4051,87 +5574,160 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             {selectedClient && (
               <div className="hidden md:flex items-center gap-4 min-w-0 flex-1 overflow-hidden">
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-lg font-semibold text-gray-900 truncate">
-                      {selectedClient.name}
-                    </span>
-                    <span className="text-sm text-gray-500 font-mono flex-shrink-0">
-                      ({selectedClient.lead_number})
-                    </span>
-                  </div>
-                  {timeLeft && (
-                    <div className={`flex items-center gap-1 px-2 py-1 rounded text-sm font-medium ${
-                      isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
-                    }`}>
-                      {isLocked ? (
-                          <LockClosedIcon className="w-4 h-4" />
-                      ) : (
-                        <>
-                          <ClockIcon className="w-4 h-4" />
-                          <span>{timeLeft}</span>
-                        </>
-                      )}
-                    </div>
-                  )}
                 </div>
-                
-                {(selectedClient.closer || selectedClient.scheduler || selectedClient.next_followup || selectedClient.probability || selectedClient.balance || selectedClient.potential_applicants) && (
+
+                <div className="hidden md:flex items-center gap-4 lg:gap-6">
+                  {/* Closer */}
+                  <div className="flex items-center gap-2">
+                    <EmployeeAvatar
+                      employeeId={getEmployeeIdFromRole(
+                        selectedClient.closer,
+                        selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_'),
+                        'closer_id',
+                        selectedClient
+                      )}
+                      size="sm"
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Closer</span>
+                      <span className="text-sm font-semibold text-gray-700">
+                        {(() => {
+                          const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                          if (isLegacy && selectedClient.closer_id) {
+                            return getEmployeeDisplayName(selectedClient.closer_id);
+                          }
+                          // For new leads, check if closer is numeric (ID) or display name
+                          if (selectedClient.closer && /^\d+$/.test(String(selectedClient.closer).trim())) {
+                            return getEmployeeDisplayName(Number(selectedClient.closer));
+                          }
+                          return selectedClient.closer || '---';
+                        })()}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Scheduler */}
+                  <div className="flex items-center gap-2">
+                    <EmployeeAvatar
+                      employeeId={getEmployeeIdFromRole(
+                        selectedClient.scheduler,
+                        selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_'),
+                        'meeting_scheduler_id',
+                        selectedClient
+                      )}
+                      size="sm"
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Scheduler</span>
+                      <span className="text-sm font-semibold text-gray-700">
+                        {(() => {
+                          const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                          if (isLegacy && selectedClient.meeting_scheduler_id) {
+                            return getEmployeeDisplayName(selectedClient.meeting_scheduler_id);
+                          }
+                          // For new leads, check if scheduler is numeric (ID) or display name
+                          if (selectedClient.scheduler && /^\d+$/.test(String(selectedClient.scheduler).trim())) {
+                            return getEmployeeDisplayName(Number(selectedClient.scheduler));
+                          }
+                          return selectedClient.scheduler || '---';
+                        })()}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Handler */}
+                  <div className="flex items-center gap-2">
+                    <EmployeeAvatar
+                      employeeId={(() => {
+                        const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                        // For legacy, use case_handler_id directly
+                        if (isLegacy) {
+                          return selectedClient.case_handler_id || null;
+                        }
+                        // For new leads, check case_handler_id first, then handler
+                        if (selectedClient.case_handler_id) {
+                          return selectedClient.case_handler_id;
+                        }
+                        return getEmployeeIdFromRole(selectedClient.handler, false, undefined, selectedClient);
+                      })()}
+                      size="sm"
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Handler</span>
+                      <span className="text-sm font-semibold text-gray-700">
+                        {(() => {
+                          const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                          if (isLegacy && selectedClient.case_handler_id) {
+                            return getEmployeeDisplayName(selectedClient.case_handler_id);
+                          }
+                          // For new leads
+                          if (selectedClient.case_handler_id) {
+                            return getEmployeeDisplayName(selectedClient.case_handler_id);
+                          }
+                          if (selectedClient.handler && /^\d+$/.test(String(selectedClient.handler).trim())) {
+                            return getEmployeeDisplayName(Number(selectedClient.handler));
+                          }
+                          return selectedClient.handler || '---';
+                        })()}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Expert */}
+                  <div className="flex items-center gap-2">
+                    <EmployeeAvatar
+                      employeeId={getEmployeeIdFromRole(
+                        selectedClient.expert,
+                        selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_'),
+                        'expert_id',
+                        selectedClient
+                      )}
+                      size="sm"
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Expert</span>
+                      <span className="text-sm font-semibold text-gray-700">
+                        {(() => {
+                          const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                          if (isLegacy && selectedClient.expert_id) {
+                            return getEmployeeDisplayName(selectedClient.expert_id);
+                          }
+                          // For new leads
+                          if (selectedClient.expert && /^\d+$/.test(String(selectedClient.expert).trim())) {
+                            return getEmployeeDisplayName(Number(selectedClient.expert));
+                          }
+                          return selectedClient.expert || '---';
+                        })()}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {(selectedClient.next_followup || selectedClient.probability || selectedClient.balance || selectedClient.potential_applicants) && (
                   <div className="hidden md:flex items-center gap-4 lg:gap-6">
                     <div className="w-px h-6 bg-gray-300"></div>
-                    
-                    {selectedClient.closer && (
-                      <div className="flex flex-col items-center">
-                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Closer</span>
-                        <span className="text-sm font-semibold text-gray-700">
-                          {(() => {
-                            const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                            if (isLegacy && selectedClient.closer_id) {
-                              return getEmployeeDisplayName(selectedClient.closer_id);
-                            }
-                            // For new leads or if already a display name, use directly
-                            return selectedClient.closer;
-                          })()}
-                        </span>
-                      </div>
-                    )}
-                    
-                    {selectedClient.scheduler && (
-                      <div className="flex flex-col items-center">
-                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Scheduler</span>
-                        <span className="text-sm font-semibold text-gray-700">
-                          {(() => {
-                            const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                            if (isLegacy && selectedClient.meeting_scheduler_id) {
-                              return getEmployeeDisplayName(selectedClient.meeting_scheduler_id);
-                            }
-                            // For new leads or if already a display name, use directly
-                            return selectedClient.scheduler;
-                          })()}
-                        </span>
-                      </div>
-                    )}
-                    
+
                     {selectedClient.next_followup && (
                       <div className="flex flex-col items-center">
                         <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Follow-up</span>
                         <span className="text-sm font-semibold text-gray-700">{new Date(selectedClient.next_followup).toLocaleDateString()}</span>
                       </div>
                     )}
-                    
+
                     {selectedClient.probability && (
                       <div className="flex flex-col items-center">
                         <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Probability</span>
                         <span className="text-sm font-semibold text-gray-900">{selectedClient.probability}%</span>
                       </div>
                     )}
-                    
+
                     {selectedClient.balance && (
                       <div className="flex flex-col items-center">
                         <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Balance</span>
                         <span className="text-sm font-semibold text-gray-900">${selectedClient.balance.toLocaleString()}</span>
                       </div>
                     )}
-                    
+
                     {selectedClient.potential_applicants && (
                       <div className="flex flex-col items-center">
                         <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Applicants</span>
@@ -4145,60 +5741,33 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
             {selectedClient && !isMobile && (
-              <button
-                onClick={() => {
-                  // Get the correct lead identifier based on lead type
-                  const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                  
-                  let leadIdentifier: string | null = null;
-                  
-                  // For contacts, use the same logic as regular leads - use lead_number for new leads, not lead_id (UUID)
-                  if (isLegacy) {
-                    // For legacy leads, extract the numeric ID
-                    const clientId = selectedClient.id?.toString();
-                    if (clientId) {
-                      if (clientId.startsWith('legacy_')) {
-                        // Extract numeric ID from "legacy_<id>"
-                        leadIdentifier = clientId.replace('legacy_', '');
-                      } else if (/^\d+$/.test(clientId)) {
-                        // Already numeric
-                        leadIdentifier = clientId;
-                      }
-                    }
-                    // Fallback: use lead_number if it's a numeric string (for legacy contacts)
-                    if (!leadIdentifier && selectedClient.lead_number && /^\d+$/.test(selectedClient.lead_number)) {
-                      leadIdentifier = selectedClient.lead_number;
-                    }
-                  } else {
-                    // For new leads, use lead_number
-                    leadIdentifier = selectedClient.lead_number || selectedClient.manual_id || null;
-                  }
-                  
-                  if (!leadIdentifier) {
-                    console.error('Cannot navigate: No valid lead identifier found', selectedClient);
-                    return;
-                  }
-                  
-                  // Encode the identifier to handle sub-leads with '/' characters
-                  const encodedIdentifier = encodeURIComponent(leadIdentifier);
-                  console.log('Navigating to client:', leadIdentifier, 'encoded:', encodedIdentifier);
-                  
-                  // Close WhatsApp modal first, then navigate
-                  if (onClose) {
-                    onClose();
-                  }
-                  
-                  // Small delay to ensure modal closes before navigation
-                  setTimeout(() => {
-                    navigate(`/clients/${encodedIdentifier}`, { replace: true });
-                  }, 100);
-                }}
-                className="btn btn-primary btn-sm gap-2"
-                title="View Client Page"
-              >
-                <UserIcon className="w-4 h-4" />
-                <span className="hidden md:inline">View Client</span>
-              </button>
+              <div className="flex items-center gap-3">
+                <div
+                  className="flex items-center gap-2 min-w-0 cursor-pointer hover:opacity-80 transition-opacity px-3 py-1.5 rounded-lg hover:bg-gray-50"
+                  onClick={() => handleNavigateToClient(selectedClient)}
+                  title="View Client Page"
+                >
+                  <span className="text-lg font-semibold text-gray-900 truncate">
+                    {selectedClient.name}
+                  </span>
+                  <span className="text-sm text-gray-500 font-mono flex-shrink-0">
+                    ({selectedClient.lead_number})
+                  </span>
+                </div>
+                {timeLeft && (
+                  <div className={`flex items-center gap-1 px-2 py-1 rounded text-sm font-medium ${isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                    }`}>
+                    {isLocked ? (
+                      <LockClosedIcon className="w-4 h-4" />
+                    ) : (
+                      <>
+                        <ClockIcon className="w-4 h-4" />
+                        <span>{timeLeft}</span>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
             {!isMobile && (
               <button
@@ -4216,8 +5785,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col min-h-0 ${isMobile && showChat ? 'hidden' : ''}`}>
             {/* Filter Toggle and Search Bar - Fixed on mobile */}
             <div className={`${isMobile
-                ? 'sticky top-0 z-10 bg-white border-b border-gray-200 p-3'
-                : 'p-3 border-b border-gray-200'
+              ? 'sticky top-0 z-10 bg-white border-b border-gray-200 p-3'
+              : 'p-3 border-b border-gray-200'
               }`}>
               {/* Toggle Tabs - Only show for superusers */}
               {isSuperuser === true && (
@@ -4226,7 +5795,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     type="button"
                     onClick={() => setShowMyContactsOnly(false)}
                     className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${!showMyContactsOnly ? 'text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
-                    style={!showMyContactsOnly 
+                    style={!showMyContactsOnly
                       ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' }
                       : undefined
                     }
@@ -4237,7 +5806,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     type="button"
                     onClick={() => setShowMyContactsOnly(true)}
                     className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${showMyContactsOnly ? 'text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
-                    style={showMyContactsOnly 
+                    style={showMyContactsOnly
                       ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' }
                       : undefined
                     }
@@ -4246,7 +5815,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   </button>
                 </div>
               )}
-              
+
               {/* Search Bar */}
               <div className="relative search-container">
                 <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
@@ -4263,7 +5832,20 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             {/* Client List Container - Flex column to separate scrollable area from fixed button */}
             <div className="flex flex-col flex-1 min-h-0">
               {/* Scrollable Client List */}
-              <div ref={contactListRef} onScroll={handleContactListScroll} className="flex-1 overflow-y-auto min-h-0">
+              <div
+                ref={contactListRef}
+                onScroll={(e) => {
+                  handleContactListScroll(e);
+                  const target = e.target as HTMLElement;
+                  // Load more when user scrolls near bottom (within 200px)
+                  if (target.scrollHeight - target.scrollTop - target.clientHeight < 200) {
+                    if (hasMoreClients) {
+                      loadMoreClients();
+                    }
+                  }
+                }}
+                className="flex-1 overflow-y-auto min-h-0"
+              >
                 {loading ? (
                   <div className="flex items-center justify-center h-32">
                     <div className="loading loading-spinner loading-lg text-green-600"></div>
@@ -4275,230 +5857,242 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       {searchTerm.trim() ? 'No clients found' : 'No conversations yet'}
                     </p>
                     <p className="text-sm">
-                      {searchTerm.trim() 
-                        ? 'No clients match your search criteria' 
+                      {searchTerm.trim()
+                        ? 'No clients match your search criteria'
                         : 'Start a conversation or search for a client to begin'}
                     </p>
                   </div>
                 ) : (
-                  filteredClients.map((client) => {
-                    const lastMessage = getLastMessageForClient(client);
-                    const unreadCount = getUnreadCountForClient(client);
-                    const isSelected = selectedClient?.id === client.id;
-                    
-                    // Check if client has any messages
-                    let clientMessages: any[] = [];
-                    if (client.isContact && client.contact_id) {
-                      // For contacts, filter by phone number match OR contact_id match
-                      // Prioritize phone number matching to handle incorrectly assigned contact_ids
-                      const isLegacy = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-                      const expectedLeadId = client.isContact 
-                        ? client.lead_id  // For contacts, only use lead_id
-                        : (client.lead_id || client.id); // For main leads, use lead_id or id
-                      const expectedLegacyId = isLegacy ? (typeof expectedLeadId === 'string' 
-                        ? Number(expectedLeadId.replace('legacy_', '')) 
-                        : Number(expectedLeadId)) : null;
-                      
-                      // Normalize contact's phone numbers for matching
-                      const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
-                      const contactPhone = client.phone || client.mobile || '';
-                      const contactMobile = client.mobile || client.phone || '';
-                      const normalizedContactPhone = normalizePhone(contactPhone);
-                      const normalizedContactMobile = normalizePhone(contactMobile);
-                      
-                      clientMessages = allMessages.filter(m => {
-                        // First verify lead_id/legacy_id matches
-                        if (isLegacy) {
-                          if (expectedLegacyId !== null && m.legacy_id !== expectedLegacyId) {
-                            return false;
-                          }
-                        } else {
-                          if (expectedLeadId && m.lead_id !== expectedLeadId) {
-                            return false;
-                          }
-                        }
-                        
-                        // Check if phone number matches (prioritize this)
-                        const msgPhoneNumber = (m as any).phone_number;
-                        if (msgPhoneNumber && (normalizedContactPhone || normalizedContactMobile)) {
-                          const normalizedMsgPhone = normalizePhone(msgPhoneNumber);
-                          const matchesPhone = normalizedContactPhone && normalizedMsgPhone && 
-                            (normalizedMsgPhone === normalizedContactPhone || 
-                             normalizedMsgPhone.endsWith(normalizedContactPhone.slice(-8)) ||
-                             normalizedContactPhone.endsWith(normalizedMsgPhone.slice(-8)));
-                          const matchesMobile = normalizedContactMobile && normalizedMsgPhone && 
-                            (normalizedMsgPhone === normalizedContactMobile || 
-                             normalizedMsgPhone.endsWith(normalizedContactMobile.slice(-8)) ||
-                             normalizedContactMobile.endsWith(normalizedMsgPhone.slice(-8)));
-                          
-                          if (matchesPhone || matchesMobile) {
-                            return true; // Phone matches, include even if contact_id doesn't match
-                          }
-                        }
-                        
-                        // Fallback: check if contact_id matches
-                        if (m.contact_id === client.contact_id) {
-                          return true;
-                        }
-                        
-                        return false;
-                      });
-                    } else {
-                      // For main leads, filter by lead_id but exclude messages with contact_id
-                      // (those messages belong to contacts, not the main lead)
-                      clientMessages = allMessages.filter(m => 
-                        m.lead_id === client.id && !m.contact_id
-                      );
-                    }
-                    const hasNoMessages = clientMessages.length === 0;
-                    
-                    // Check if client has any incoming messages
-                    const incomingMessages = clientMessages.filter(m => m.direction === 'in');
-                    const hasNoIncomingMessages = incomingMessages.length === 0;
-                    
-                    // Get the last incoming message timestamp
-                    const lastIncomingMessage = incomingMessages.sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0];
-                    const clientLastMessage = lastIncomingMessage?.sent_at || '';
-                    
-                    // Client is locked if:
-                    // 1. No messages at all, OR
-                    // 2. No incoming messages (only outgoing), OR
-                    // 3. 24 hours have passed since last incoming message
-                    const locked = hasNoMessages || hasNoIncomingMessages || (clientLastMessage && isClientLocked(clientLastMessage));
+                  <>
+                    {visibleClients.map((client) => {
+                      const lastMessage = getLastMessageForClient(client);
+                      const unreadCount = getUnreadCountForClient(client);
+                      const isSelected = selectedClient?.id === client.id;
 
-                    return (
-                      <div
-                        key={client.id}
-                        onClick={async () => {
-                          console.log(`👤 Selecting WhatsApp client: ${client.name} (ID: ${client.id})`);
-                          
-                          // Clear previous client's messages immediately
-                          setMessages([]);
-                          setLoadingMessages(true);
-                          setSelectedClient(client);
-                          setShouldAutoScroll(true); // Trigger auto-scroll when chat is selected
-                          setIsFirstLoad(true); // Mark as first load
-                          
-                          // If this is a contact, set the contact ID directly
-                          if (client.isContact && client.contact_id) {
-                            setSelectedContactId(client.contact_id);
-                            setLeadContacts([]); // Contacts don't have sub-contacts
-                            console.log(`✅ Selected contact: ${client.name} (Contact ID: ${client.contact_id})`);
+                      // Check if client has any messages
+                      let clientMessages: any[] = [];
+                      if (client.isContact && client.contact_id) {
+                        // For contacts, filter by phone number match OR contact_id match
+                        // Prioritize phone number matching to handle incorrectly assigned contact_ids
+                        const isLegacy = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+                        const expectedLeadId = client.isContact
+                          ? client.lead_id  // For contacts, only use lead_id
+                          : (client.lead_id || client.id); // For main leads, use lead_id or id
+                        const expectedLegacyId = isLegacy ? (typeof expectedLeadId === 'string'
+                          ? Number(expectedLeadId.replace('legacy_', ''))
+                          : Number(expectedLeadId)) : null;
+
+                        // Normalize contact's phone numbers for matching
+                        const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
+                        const contactPhone = client.phone || client.mobile || '';
+                        const contactMobile = client.mobile || client.phone || '';
+                        const normalizedContactPhone = normalizePhone(contactPhone);
+                        const normalizedContactMobile = normalizePhone(contactMobile);
+
+                        clientMessages = allMessages.filter(m => {
+                          // First verify lead_id/legacy_id matches
+                          if (isLegacy) {
+                            if (expectedLegacyId !== null && m.legacy_id !== expectedLegacyId) {
+                              return false;
+                            }
                           } else {
-                            // For main leads, fetch contacts
-                            try {
-                              const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-                              const leadId = isLegacyLead 
-                                ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
-                                : client.id;
-                              
-                              const fetchedContacts = await fetchLeadContacts(leadId, isLegacyLead);
-                              
-                              // Deduplicate contacts by ID to prevent duplicate key warnings
-                              const uniqueContacts = fetchedContacts.filter((contact, index, self) => 
-                                index === self.findIndex(c => c.id === contact.id)
-                              );
-                              
-                              setLeadContacts(uniqueContacts);
-                              
-                              // Find the matching contact from the fetched contacts
-                              // Try to match by email, phone, or name
-                              const matchingContact = uniqueContacts.find(c => 
-                                (c.email && client.email && c.email === client.email) ||
-                                (c.phone && client.phone && c.phone === client.phone) ||
-                                (c.mobile && (client.mobile || client.phone) && c.mobile === (client.mobile || client.phone)) ||
-                                (c.name && client.name && c.name === client.name)
-                              );
-                              
-                              if (matchingContact) {
-                                console.log(`✅ Found matching contact: ${matchingContact.name} (ID: ${matchingContact.id})`);
-                                setSelectedContactId(matchingContact.id);
-                              } else if (uniqueContacts.length > 0) {
-                                // Fallback to main contact if no match found
-                                const mainContact = uniqueContacts.find(c => c.isMain) || uniqueContacts[0];
-                                console.log(`⚠️ No exact match, using main contact: ${mainContact.name} (ID: ${mainContact.id})`);
-                                setSelectedContactId(mainContact.id);
-                              } else {
-                                setSelectedContactId(null);
-                              }
-                            } catch (error) {
-                              console.error('Error fetching contacts for selected client:', error);
-                              setSelectedContactId(null);
+                            if (expectedLeadId && m.lead_id !== expectedLeadId) {
+                              return false;
                             }
                           }
-                          
-                          if (isMobile) {
-                            setShowChat(true);
-                          }
-                        }}
-                        className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${
-                          isSelected ? 'bg-green-50 border-l-4 border-l-green-500' : ''
-                        }`}
-                      >
-                        <div className="flex items-center gap-2 md:gap-3">
-                          {/* Avatar */}
-                          <div className="flex-shrink-0 relative">
-                            <div className="w-10 h-10 md:w-12 md:h-12">
-                              <WhatsAppAvatar
-                                name={client.name}
-                                profilePictureUrl={client.whatsapp_profile_picture_url}
-                                size="md"
-                                className="w-full h-full"
-                              />
-                            </div>
-                            {/* Lock icon overlay */}
-                            {locked && (
-                              <div className="absolute -bottom-1 -right-1 bg-red-500 rounded-full p-1">
-                                <LockClosedIcon className="w-3 h-3 text-white" />
-                              </div>
-                            )}
-                          </div>
 
-                          {/* Client Info */}
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2 min-w-0 flex-1">
-                                <h3 className="font-semibold text-gray-900 truncate text-base md:text-base">
-                                  {client.name}
-                                </h3>
+                          // Check if phone number matches (prioritize this)
+                          const msgPhoneNumber = (m as any).phone_number;
+                          if (msgPhoneNumber && (normalizedContactPhone || normalizedContactMobile)) {
+                            const normalizedMsgPhone = normalizePhone(msgPhoneNumber);
+                            const matchesPhone = normalizedContactPhone && normalizedMsgPhone &&
+                              (normalizedMsgPhone === normalizedContactPhone ||
+                                normalizedMsgPhone.endsWith(normalizedContactPhone.slice(-8)) ||
+                                normalizedContactPhone.endsWith(normalizedMsgPhone.slice(-8)));
+                            const matchesMobile = normalizedContactMobile && normalizedMsgPhone &&
+                              (normalizedMsgPhone === normalizedContactMobile ||
+                                normalizedMsgPhone.endsWith(normalizedContactMobile.slice(-8)) ||
+                                normalizedContactMobile.endsWith(normalizedMsgPhone.slice(-8)));
+
+                            if (matchesPhone || matchesMobile) {
+                              return true; // Phone matches, include even if contact_id doesn't match
+                            }
+                          }
+
+                          // Fallback: check if contact_id matches
+                          if (m.contact_id === client.contact_id) {
+                            return true;
+                          }
+
+                          return false;
+                        });
+                      } else {
+                        // For main leads, filter by lead_id but exclude messages with contact_id
+                        // (those messages belong to contacts, not the main lead)
+                        clientMessages = allMessages.filter(m =>
+                          m.lead_id === client.id && !m.contact_id
+                        );
+                      }
+                      const hasNoMessages = clientMessages.length === 0;
+
+                      // Check if client has any incoming messages
+                      const incomingMessages = clientMessages.filter(m => m.direction === 'in');
+                      const hasNoIncomingMessages = incomingMessages.length === 0;
+
+                      // Get the last incoming message timestamp
+                      const lastIncomingMessage = incomingMessages.sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0];
+                      const clientLastMessage = lastIncomingMessage?.sent_at || '';
+
+                      // Client is locked if:
+                      // 1. No messages at all, OR
+                      // 2. No incoming messages (only outgoing), OR
+                      // 3. 24 hours have passed since last incoming message
+                      const locked = hasNoMessages || hasNoIncomingMessages || (clientLastMessage && isClientLocked(clientLastMessage));
+
+                      return (
+                        <div
+                          key={client.id}
+                          onClick={async () => {
+                            console.log(`👤 Selecting WhatsApp client: ${client.name} (ID: ${client.id})`);
+
+                            // Clear previous client's messages immediately
+                            setMessages([]);
+                            setLoadingMessages(true);
+                            setSelectedClient(client);
+                            setShouldAutoScroll(true); // Trigger auto-scroll when chat is selected
+                            setIsFirstLoad(true); // Mark as first load
+
+                            // If this is a contact, set the contact ID directly
+                            if (client.isContact && client.contact_id) {
+                              setSelectedContactId(client.contact_id);
+                              setLeadContacts([]); // Contacts don't have sub-contacts
+                              console.log(`✅ Selected contact: ${client.name} (Contact ID: ${client.contact_id})`);
+                            } else {
+                              // For main leads, fetch contacts
+                              try {
+                                const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+                                const leadId = isLegacyLead
+                                  ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+                                  : client.id;
+
+                                const fetchedContacts = await fetchLeadContacts(leadId, isLegacyLead);
+
+                                // Deduplicate contacts by ID to prevent duplicate key warnings
+                                const uniqueContacts = fetchedContacts.filter((contact, index, self) =>
+                                  index === self.findIndex(c => c.id === contact.id)
+                                );
+
+                                setLeadContacts(uniqueContacts);
+
+                                // Find the matching contact from the fetched contacts
+                                // Try to match by email, phone, or name
+                                const matchingContact = uniqueContacts.find(c =>
+                                  (c.email && client.email && c.email === client.email) ||
+                                  (c.phone && client.phone && c.phone === client.phone) ||
+                                  (c.mobile && (client.mobile || client.phone) && c.mobile === (client.mobile || client.phone)) ||
+                                  (c.name && client.name && c.name === client.name)
+                                );
+
+                                if (matchingContact) {
+                                  console.log(`✅ Found matching contact: ${matchingContact.name} (ID: ${matchingContact.id})`);
+                                  setSelectedContactId(matchingContact.id);
+                                } else if (uniqueContacts.length > 0) {
+                                  // Fallback to main contact if no match found
+                                  const mainContact = uniqueContacts.find(c => c.isMain) || uniqueContacts[0];
+                                  console.log(`⚠️ No exact match, using main contact: ${mainContact.name} (ID: ${mainContact.id})`);
+                                  setSelectedContactId(mainContact.id);
+                                } else {
+                                  setSelectedContactId(null);
+                                }
+                              } catch (error) {
+                                console.error('Error fetching contacts for selected client:', error);
+                                setSelectedContactId(null);
+                              }
+                            }
+
+                            if (isMobile) {
+                              setShowChat(true);
+                            }
+                          }}
+                          className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${isSelected ? 'bg-green-50 border-l-4 border-l-green-500' : ''
+                            }`}
+                        >
+                          <div className="flex items-center gap-2 md:gap-3">
+                            {/* Avatar */}
+                            <div className="flex-shrink-0 relative">
+                              <div className="w-10 h-10 md:w-12 md:h-12">
+                                <WhatsAppAvatar
+                                  name={client.name}
+                                  profilePictureUrl={client.whatsapp_profile_picture_url}
+                                  size="md"
+                                  className="w-full h-full"
+                                />
                               </div>
-                              <div className="flex items-center gap-1 md:gap-2 flex-shrink-0">
-                                {lastMessage && (
-                                  <span className="text-xs text-gray-500">
-                                    {formatLastMessageTime(lastMessage.sent_at)}
-                                  </span>
-                                )}
-                                {unreadCount > 0 && (
-                                  <span className="bg-cyan-500 text-white text-xs rounded-full px-1 md:px-2 py-1 min-w-[16px] md:min-w-[20px] text-center shadow-[0_4px_12px_rgba(6,182,212,0.35)]">
-                                    {unreadCount}
-                                  </span>
-                                )}
-                              </div>
+                              {/* Lock icon overlay */}
+                              {locked && (
+                                <div className="absolute -bottom-1 -right-1 bg-red-500 rounded-full p-1">
+                                  <LockClosedIcon className="w-3 h-3 text-white" />
+                                </div>
+                              )}
                             </div>
-                            <p className="text-sm md:text-sm text-gray-500 truncate">
-                              {client.lead_number}
-                            </p>
-                            {lastMessage && (
-                              <div className="flex items-center gap-1 mt-1">
-                                <p className="text-sm md:text-sm text-gray-600 truncate flex-1">
-                                  {lastMessage.direction === 'out' ? `${lastMessage.sender_name}: ` : ''}
-                                  {lastMessage.message}
-                                </p>
-                                {lastMessage.direction === 'out' && lastMessage.whatsapp_status && (
-                                  <span className="inline-block align-middle flex-shrink-0" style={{ transform: 'scale(0.75)' }}>
-                                    {renderMessageStatus(lastMessage.whatsapp_status)}
-                                  </span>
-                                )}
+
+                            {/* Client Info */}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2 min-w-0 flex-1">
+                                  <h3 className="font-semibold text-gray-900 truncate text-base md:text-base">
+                                    {client.name}
+                                  </h3>
+                                </div>
+                                <div className="flex items-center gap-1 md:gap-2 flex-shrink-0">
+                                  {lastMessage && (
+                                    <span className="text-xs text-gray-500">
+                                      {formatLastMessageTime(lastMessage.sent_at)}
+                                    </span>
+                                  )}
+                                  {unreadCount > 0 && (
+                                    <span className="bg-green-500 text-white text-xs rounded-full px-1 md:px-2 py-1 min-w-[16px] md:min-w-[20px] text-center shadow-[0_4px_12px_rgba(34,197,94,0.35)]">
+                                      {unreadCount}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
-                            )}
+                              <p className="text-sm md:text-sm text-gray-500 truncate">
+                                {client.lead_number}
+                              </p>
+                              {lastMessage && (
+                                <div className="flex items-center gap-1 mt-1">
+                                  <p className="text-sm md:text-sm text-gray-600 truncate flex-1">
+                                    {lastMessage.direction === 'out' ? `${lastMessage.sender_name}: ` : ''}
+                                    {lastMessage.message}
+                                  </p>
+                                  {lastMessage.direction === 'out' && lastMessage.whatsapp_status && (
+                                    <span className="inline-block align-middle flex-shrink-0" style={{ transform: 'scale(0.75)' }}>
+                                      {renderMessageStatus(lastMessage)}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </div>
+                      );
+                    })}
+                    {hasMoreClients && (
+                      <div className="p-4 text-center">
+                        <button
+                          onClick={loadMoreClients}
+                          className="btn btn-outline btn-sm"
+                          style={{ borderColor: '#059669', color: '#059669' }}
+                        >
+                          Load More ({filteredClients.length - visibleClientsCount} remaining)
+                        </button>
                       </div>
-                    );
-                  })
+                    )}
+                  </>
                 )}
               </div>
-              
+
               {/* New Message Button - Fixed at bottom */}
               <div className="flex-none p-3 border-t border-gray-200 bg-white">
                 <button
@@ -4506,11 +6100,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   className="flex items-center gap-3 w-full"
                 >
                   <div className="btn btn-circle w-12 h-12 text-white border-none shadow-lg hover:shadow-xl transition-shadow flex-shrink-0" style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)' }}>
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                  </svg>
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
                   </div>
-                  <span className="text-sm font-medium text-gray-700">New Message</span>
                 </button>
               </div>
             </div>
@@ -4536,7 +6129,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                           </svg>
                         </button>
-                        
+
                         {/* Client Avatar */}
                         <div className="w-8 h-8 rounded-full flex items-center justify-center relative flex-shrink-0 border bg-green-100 border-green-200 text-green-700 shadow-[0_4px_12px_rgba(16,185,129,0.2)]">
                           <span className="font-semibold text-xs">
@@ -4548,73 +6141,30 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                             </div>
                           )}
                         </div>
-                        
-                        {/* Client Name */}
-                        <div className="min-w-0">
+
+                        {/* Client Name and Lead Number - Clickable */}
+                        <div
+                          className="min-w-0 cursor-pointer hover:opacity-80 transition-opacity"
+                          onClick={() => handleNavigateToClient(selectedClient)}
+                          title="View Client Page"
+                        >
                           <h3 className="font-semibold text-gray-900 text-sm truncate">
                             {selectedClient.name}
                           </h3>
+                          <p className="text-xs text-gray-500 font-mono truncate">
+                            {selectedClient.lead_number}
+                          </p>
                         </div>
                       </div>
-                      
-                      {/* View Client Button - Center (Mobile Only) */}
-                      {selectedClient && (
-                        <button
-                          onClick={() => {
-                            // Get the correct lead identifier based on lead type
-                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-                            let leadIdentifier: string | null = null;
-                            
-                            // For contacts and regular leads, use lead_number for new leads, not lead_id (UUID)
-                            if (isLegacyLead) {
-                              const clientId = selectedClient.id.toString().replace('legacy_', '');
-                              if (clientId && clientId !== 'null' && clientId !== 'undefined') {
-                                if (clientId.includes('/')) {
-                                  leadIdentifier = clientId;
-                                } else if (/^\d+$/.test(clientId)) {
-                                  leadIdentifier = clientId;
-                                }
-                              }
-                              if (!leadIdentifier && selectedClient.lead_number && /^\d+$/.test(selectedClient.lead_number)) {
-                                leadIdentifier = selectedClient.lead_number;
-                              }
-                            } else {
-                              leadIdentifier = selectedClient.lead_number || selectedClient.manual_id || null;
-                            }
-                            
-                            if (!leadIdentifier) {
-                              console.error('Cannot navigate: No valid lead identifier found', selectedClient);
-                              return;
-                            }
-                            
-                            const encodedIdentifier = encodeURIComponent(leadIdentifier);
-                            
-                            if (onClose) {
-                              onClose();
-                            }
-                            
-                            setTimeout(() => {
-                              navigate(`/clients/${encodedIdentifier}`, { replace: true });
-                            }, 100);
-                          }}
-                          className="btn btn-primary btn-sm gap-1 flex-shrink-0 absolute left-1/2 transform -translate-x-1/2 z-10"
-                          title="View Client Page"
-                          style={{ whiteSpace: 'nowrap' }}
-                        >
-                          <UserIcon className="w-4 h-4" />
-                          <span className="hidden sm:inline text-xs">View</span>
-                        </button>
-                      )}
-                      
+
                       {/* Right Side - Time Left Badge and Close Button */}
                       <div className="flex items-center gap-1 ml-auto flex-shrink-0 z-10">
                         {/* Time Left Badge */}
                         {timeLeft && (
-                          <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${
-                            isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
-                          }`} style={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
+                          <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                            }`} style={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
                             {isLocked ? (
-                                <LockClosedIcon className="w-3 h-3" />
+                              <LockClosedIcon className="w-3 h-3" />
                             ) : (
                               <>
                                 <ClockIcon className="w-3 h-3" />
@@ -4623,7 +6173,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                             )}
                           </div>
                         )}
-                        
+
                         {/* Close Button - Right */}
                         <button
                           onClick={() => {
@@ -4644,637 +6194,839 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   </div>
                 )}
 
-            {/* Messages - Scrollable */}
-            <div ref={chatMessagesRef} onScroll={handleChatMessagesScroll} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 overscroll-contain relative" style={isMobile ? { flex: '1 1 auto', paddingBottom: showTemplateSelector ? '300px' : (isLocked ? '280px' : '200px'), WebkitOverflowScrolling: 'touch', overflowX: 'visible' } : { paddingBottom: isLocked ? '200px' : '120px', overflowX: 'visible' }}>
-              {messages.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                  {loadingMessages ? (
-                    <div className="flex flex-col items-center gap-2">
-                      <div className="loading loading-spinner loading-lg text-green-600"></div>
-                      <p className="text-lg font-medium">Loading messages...</p>
+                {/* Messages - Scrollable */}
+                <div ref={chatMessagesRef} onScroll={handleChatMessagesScroll} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 overscroll-contain relative" style={isMobile ? { flex: '1 1 auto', paddingBottom: showTemplateSelector ? '300px' : (isLocked ? '280px' : '200px'), WebkitOverflowScrolling: 'touch', overflowX: 'visible' } : { paddingBottom: isLocked ? '200px' : '120px', overflowX: 'visible' }}>
+                  {messages.length === 0 ? (
+                    <div className="text-center py-8 text-gray-500">
+                      <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                      {loadingMessages ? (
+                        <div className="flex flex-col items-center gap-2">
+                          <div className="loading loading-spinner loading-lg text-green-600"></div>
+                          <p className="text-lg font-medium">Loading messages...</p>
+                        </div>
+                      ) : (
+                        <p className="text-lg font-medium">No messages yet</p>
+                      )}
+                      <p className="text-sm">Start the conversation with {selectedClient.name}</p>
                     </div>
                   ) : (
-                    <p className="text-lg font-medium">No messages yet</p>
-                  )}
-                  <p className="text-sm">Start the conversation with {selectedClient.name}</p>
-                </div>
-              ) : (
-                messages.map((message, index) => {
-                  // Check if we need to show a date separator
-                  const showDateSeparator = index === 0 || 
-                    new Date(message.sent_at).toDateString() !== new Date(messages[index - 1].sent_at).toDateString();
-                  
-                  return (
-                    <React.Fragment key={message.id || index}>
-                      {/* Date Separator */}
-                      {showDateSeparator && (
-                        <div className="flex justify-center my-4">
-                          <div className="text-sm font-medium px-3 py-1.5 rounded-full border bg-green-100 border-green-200 text-green-700 shadow-[0_4px_12px_rgba(16,185,129,0.2)]">
-                            {formatDateSeparator(message.sent_at)}
-                          </div>
-                        </div>
-                      )}
-                      
-                  <div
-                    className={`flex gap-2 ${message.direction === 'out' ? 'flex-row-reverse' : 'flex-row'}`}
-                  >
-                    <div className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'} flex-1`}>
-                      {message.direction === 'out' && (
-                        <span className="text-sm text-gray-600 mb-1 mr-2 font-medium">
-                          {message.sender_name}
-                        </span>
-                      )}
-                      {message.direction === 'in' && (
-                        <span className="text-sm text-gray-600 mb-1 ml-2 font-medium">
-                          {message.sender_name}
-                        </span>
-                      )}
-                      
-                      {/* Image or Emoji-only messages - render outside bubble */}
-                      {(message.message_type === 'image' || (message.message_type === 'text' && isEmojiOnly(message.message))) ? (
-                        <div className={`flex flex-col ${message.direction === 'out' ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
-                          {/* Image content */}
-                          {message.message_type === 'image' && message.media_url && (
-                            <div 
-                              className="relative cursor-pointer group"
-                              onClick={() => message.media_url && setSelectedMedia({
-                                url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
-                                type: 'image',
-                                caption: message.caption
-                              })}
-                            >
-                              <img
-                                src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
-                                alt="Image"
-                                className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
-                                onError={(e) => {
-                                  console.log('Failed to load image:', message.media_url);
-                                  e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgdmlld0JveD0iMCAwIDIwMCAyMDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik01MCAxMDAgTDEwMCA1MCBMMTUwIDEwMCBMMTAwIDE1MCBMNTAgMTAwWiIgZmlsbD0iI0QxRDVEMCIvPgo8dGV4dCB4PSIxMDAiIHk9IjExMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjE0IiBmaWxsPSIjNjc3NDhCIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5JbWFnZSBVbmF2YWlsYWJsZTwvdGV4dD4KPC9zdmc+';
-                                  e.currentTarget.style.border = '1px solid #e5e7eb';
-                                  e.currentTarget.style.borderRadius = '0.5rem';
-                                }}
-                              />
-                              <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
-                                </svg>
+                    messages.map((message, index) => {
+                      // Check if we need to show a date separator
+                      const showDateSeparator = index === 0 ||
+                        new Date(message.sent_at).toDateString() !== new Date(messages[index - 1].sent_at).toDateString();
+
+                      return (
+                        <React.Fragment key={message.id || index}>
+                          {/* Date Separator */}
+                          {showDateSeparator && (
+                            <div className="flex justify-center my-4">
+                              <div className="text-sm font-medium px-3 py-1.5 rounded-full border bg-green-100 border-green-200 text-green-700 shadow-[0_4px_12px_rgba(16,185,129,0.2)]">
+                                {formatDateSeparator(message.sent_at)}
                               </div>
                             </div>
                           )}
 
-                          {/* Emoji-only content */}
-                          {message.message_type === 'text' && isEmojiOnly(message.message) && (
-                            <div className="text-6xl leading-tight">
-                              {message.message}
-                            </div>
-                          )}
-
-                          {/* Caption for images */}
-                          {message.message_type === 'image' && message.caption && (
-                            <p 
-                              className="text-base break-words mt-1"
-                              dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
-                              style={{ textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
-                            >
-                              {message.caption}
-                            </p>
-                          )}
-
-                          {/* Timestamp and read receipts at bottom of image/emoji */}
-                          <div className={`flex items-center gap-1 mt-1 ${message.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
-                            <span className="text-xs text-gray-500">
-                              {new Date(message.sent_at).toLocaleTimeString([], {
-                                hour: '2-digit',
-                                minute: '2-digit'
-                              })}
-                            </span>
-                            {message.direction === 'out' && (
-                              <span className="inline-block align-middle text-current">
-                                {renderMessageStatus(message.whatsapp_status)}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      ) : (
-                        <div
-                          className={`group max-w-[75%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm relative ${
-                            message.direction === 'out'
-                              ? 'text-white'
-                              : 'bg-white text-gray-900 border border-gray-200'
-                          }`}
-                          style={message.direction === 'out' 
-                            ? { 
-                                wordBreak: 'break-word', 
-                                overflowWrap: 'break-word',
-                                background: 'linear-gradient(to bottom right, #059669, #0d9488)',
-                                borderColor: 'transparent'
-                              }
-                            : { wordBreak: 'break-word', overflowWrap: 'break-word' }
-                          }
-                        >
-                      {/* Edit input or message content */}
-                      {editingMessage === message.id ? (
-                        <textarea
-                          value={editMessageText}
-                          onChange={(e) => {
-                            setEditMessageText(e.target.value);
-                            // Auto-resize the textarea
-                            e.target.style.height = 'auto';
-                            e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
-                          }}
-                          className="w-full bg-transparent border-none outline-none resize-none overflow-y-auto text-white placeholder-white/70"
-                          autoFocus
-                          style={{ 
-                            minHeight: '20px', 
-                            maxHeight: '200px', 
-                            wordWrap: 'break-word',
-                            overflowWrap: 'break-word',
-                            whiteSpace: 'pre-wrap'
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' && !e.shiftKey) {
-                              e.preventDefault();
-                              handleEditMessage(message.id, editMessageText);
-                            } else if (e.key === 'Escape') {
-                              setEditingMessage(null);
-                              setEditMessageText('');
-                            }
-                          }}
-                        />
-                      ) : (
-                        <>
-                          {/* Message content based on type */}
-                          {message.message_type === 'text' && (
-                            <p 
-                              className="break-words whitespace-pre-wrap text-base"
-                              dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
-                              style={{ 
-                                textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
-                                wordBreak: 'break-word',
-                                overflowWrap: 'break-word',
-                                hyphens: 'auto'
-                              }}
-                            >
-                              {message.message}
-                            </p>
-                          )}
-                          
-                          {message.message_type === 'button_response' && (
-                            <div className="flex items-center gap-2 p-2 bg-blue-50 rounded-lg border border-blue-200">
-                              <svg className="w-5 h-5 text-blue-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
-                              </svg>
-                              <p className="text-sm font-medium text-blue-900">{message.message}</p>
-                            </div>
-                          )}
-                          
-                          {message.message_type === 'list_response' && (
-                            <div className="flex items-center gap-2 p-2 bg-green-50 rounded-lg border border-green-200">
-                              <svg className="w-5 h-5 text-green-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                              </svg>
-                              <p className="text-sm font-medium text-green-900">{message.message}</p>
-                            </div>
-                          )}
-                        </>
-                      )}
-                      
-                      {message.message_type === 'document' && (
-                        <div>
-                          <div className="flex items-center gap-2 mb-2">
-                            {React.createElement(getDocumentIcon(message.media_mime_type), { className: "w-6 h-6" })}
-                            <div className="flex-1">
-                                                              <a 
-                                  href={message.media_url?.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="block hover:opacity-80 transition-opacity"
-                              >
-                                <p className="text-sm font-medium underline cursor-pointer">
-                                  {message.media_filename || 'Document'}
-                                </p>
-                                {message.media_size && (
-                                  <p className="text-xs opacity-70">
-                                    {(message.media_size / 1024).toFixed(1)} KB
-                                  </p>
-                                )}
-                              </a>
-                            </div>
-                            <button
-                              onClick={() => {
-                                if (!message.media_url) return;
-                                                                  const url = message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`);
-                                const link = document.createElement('a');
-                                link.href = url;
-                                link.download = message.media_filename || 'document';
-                                link.click();
-                              }}
-                              className="btn btn-ghost btn-xs"
-                              title="Download"
-                            >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                              </svg>
-                            </button>
-                          </div>
-                          
-                          {/* Document Preview */}
-                          {message.media_url && (
-                            <div className="mt-2 border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
-                              <div className="p-3 bg-white border-b border-gray-200">
-                                <div className="flex items-center gap-2">
-                                  <DocumentTextIcon className="w-4 h-4 text-gray-500" />
-                                  <span className="text-xs text-gray-600 font-medium">
-                                    {message.media_filename || 'Document Preview'}
+                          <div
+                            className={`flex gap-2 ${message.direction === 'out' ? 'flex-row-reverse' : 'flex-row'}`}
+                          >
+                            <div className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'} flex-1`}>
+                              {message.direction === 'out' && (
+                                <div className="flex items-center gap-2 mb-1 mr-2">
+                                  <span className="text-sm text-gray-600 font-medium">
+                                    {message.sender_name}
                                   </span>
+                                  <EmployeeAvatar
+                                    employeeId={getEmployeeById(message.sender_name)?.id || null}
+                                    size="md"
+                                  />
                                 </div>
-                              </div>
-                              <div className="p-4 min-h-[120px] flex items-center justify-center">
-                                {message.media_mime_type === 'application/pdf' ? (
-                                  <iframe
-                                    src={`${message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}#toolbar=0&navpanes=0&scrollbar=0`}
-                                    className="w-full h-32 border-0"
-                                    title="PDF Preview"
-                                    onError={(e) => {
-                                      console.log('Failed to load PDF preview:', message.media_url);
-                                      // Show error message instead of hiding
-                                      const iframe = e.currentTarget;
-                                      iframe.style.display = 'none';
-                                      const errorDiv = document.createElement('div');
-                                      errorDiv.className = 'text-center text-gray-500 p-4';
-                                      errorDiv.innerHTML = `
+                              )}
+                              {message.direction === 'in' && (
+                                <div className="mb-1 ml-2">
+                                  <WhatsAppAvatar
+                                    name={message.sender_name}
+                                    profilePictureUrl={message.profile_picture_url}
+                                    size="md"
+                                  />
+                                </div>
+                              )}
+
+                              {/* Image or Emoji-only messages - render outside bubble */}
+                              {(message.message_type === 'image' || (message.message_type === 'text' && isEmojiOnly(message.message))) ? (
+                                <div className={`flex flex-col ${message.direction === 'out' ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
+                                  {/* Image content */}
+                                  {message.message_type === 'image' && message.media_url && (
+                                    <div
+                                      className="relative cursor-pointer group"
+                                      onClick={() => message.media_url && setSelectedMedia({
+                                        url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
+                                        type: 'image',
+                                        caption: message.caption
+                                      })}
+                                    >
+                                      <img
+                                        src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
+                                        alt="Image"
+                                        className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
+                                        onError={(e) => {
+                                          console.log('Failed to load image:', message.media_url);
+                                          e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgdmlld0JveD0iMCAwIDIwMCAyMDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik01MCAxMDAgTDEwMCA1MCBMMTUwIDEwMCBMMTAwIDE1MCBMNTAgMTAwWiIgZmlsbD0iI0QxRDVEMCIvPgo8dGV4dCB4PSIxMDAiIHk9IjExMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjE0IiBmaWxsPSIjNjc3NDhCIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5JbWFnZSBVbmF2YWlsYWJsZTwvdGV4dD4KPC9zdmc+';
+                                          e.currentTarget.style.border = '1px solid #e5e7eb';
+                                          e.currentTarget.style.borderRadius = '0.5rem';
+                                        }}
+                                      />
+                                      <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                        <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                                        </svg>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Emoji-only content */}
+                                  {message.message_type === 'text' && isEmojiOnly(message.message) && (
+                                    <div className="text-6xl leading-tight">
+                                      {message.message}
+                                    </div>
+                                  )}
+
+                                  {/* Caption for images */}
+                                  {message.message_type === 'image' && message.caption && (
+                                    <p
+                                      className="text-base break-words mt-1"
+                                      dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                      style={{ textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
+                                    >
+                                      {message.caption}
+                                    </p>
+                                  )}
+
+                                  {/* Timestamp and read receipts at bottom of image/emoji */}
+                                  <div className={`flex items-center gap-1 mt-1 ${message.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
+                                    <span className="text-xs text-gray-500">
+                                      {new Date(message.sent_at).toLocaleTimeString([], {
+                                        hour: '2-digit',
+                                        minute: '2-digit'
+                                      })}
+                                    </span>
+                                    {message.direction === 'out' && (
+                                      <span className="inline-block align-middle text-current">
+                                        {renderMessageStatus(message)}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div
+                                  className={`group max-w-[75%] md:max-w-[70%] rounded-2xl px-4 py-1.5 shadow-sm relative ${message.direction === 'out'
+                                    ? 'bg-green-100 border border-green-200 text-gray-900'
+                                    : 'bg-white text-gray-900 border border-gray-200'
+                                    }`}
+                                  style={{
+                                    wordBreak: 'break-word',
+                                    overflowWrap: 'break-word'
+                                  }}
+                                >
+                                  {/* Edit input or message content */}
+                                  {editingMessage === message.id ? (
+                                    <textarea
+                                      value={editMessageText}
+                                      onChange={(e) => {
+                                        setEditMessageText(e.target.value);
+                                        // Auto-resize the textarea
+                                        e.target.style.height = 'auto';
+                                        e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
+                                      }}
+                                      className={`w-full bg-transparent border-none outline-none resize-none overflow-y-auto ${message.direction === 'out'
+                                        ? 'text-gray-900 placeholder-gray-500'
+                                        : 'text-gray-900 placeholder-gray-500'
+                                        }`}
+                                      autoFocus
+                                      style={{
+                                        minHeight: '20px',
+                                        maxHeight: '200px',
+                                        wordWrap: 'break-word',
+                                        overflowWrap: 'break-word',
+                                        whiteSpace: 'pre-wrap'
+                                      }}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && !e.shiftKey) {
+                                          e.preventDefault();
+                                          handleEditMessage(message.id, editMessageText);
+                                        } else if (e.key === 'Escape') {
+                                          setEditingMessage(null);
+                                          setEditMessageText('');
+                                        }
+                                      }}
+                                    />
+                                  ) : (
+                                    <>
+                                      {/* Message content based on type */}
+                                      {message.message_type === 'text' && (
+                                        <p
+                                          className="break-words whitespace-pre-wrap text-base"
+                                          dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                          style={{
+                                            textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
+                                            wordBreak: 'break-word',
+                                            overflowWrap: 'break-word',
+                                            hyphens: 'auto'
+                                          }}
+                                        >
+                                          {message.message}
+                                        </p>
+                                      )}
+
+                                      {message.message_type === 'button_response' && (
+                                        <div className="flex items-center gap-2 p-2 bg-blue-50 rounded-lg border border-blue-200">
+                                          <svg className="w-5 h-5 text-blue-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
+                                          </svg>
+                                          <p className="text-sm font-medium text-blue-900">{message.message}</p>
+                                        </div>
+                                      )}
+
+                                      {message.message_type === 'list_response' && (
+                                        <div className="flex items-center gap-2 p-2 bg-green-50 rounded-lg border border-green-200">
+                                          <svg className="w-5 h-5 text-green-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                                          </svg>
+                                          <p className="text-sm font-medium text-green-900">{message.message}</p>
+                                        </div>
+                                      )}
+                                    </>
+                                  )}
+
+                                  {message.message_type === 'document' && (
+                                    <div>
+                                      <div className="flex items-center gap-2 mb-2">
+                                        {React.createElement(getDocumentIcon(message.media_mime_type), { className: "w-6 h-6" })}
+                                        <div className="flex-1">
+                                          <a
+                                            href={message.media_url?.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="block hover:opacity-80 transition-opacity"
+                                          >
+                                            <p className="text-sm font-medium underline cursor-pointer">
+                                              {message.media_filename || 'Document'}
+                                            </p>
+                                            {message.media_size && (
+                                              <p className="text-xs opacity-70">
+                                                {(message.media_size / 1024).toFixed(1)} KB
+                                              </p>
+                                            )}
+                                          </a>
+                                        </div>
+                                        <button
+                                          onClick={() => {
+                                            if (!message.media_url) return;
+                                            const url = message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`);
+                                            const link = document.createElement('a');
+                                            link.href = url;
+                                            link.download = message.media_filename || 'document';
+                                            link.click();
+                                          }}
+                                          className="btn btn-ghost btn-xs"
+                                          title="Download"
+                                        >
+                                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                          </svg>
+                                        </button>
+                                      </div>
+
+                                      {/* Document Preview */}
+                                      {message.media_url && (
+                                        <div className="mt-2 border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+                                          <div className="p-3 bg-white border-b border-gray-200">
+                                            <div className="flex items-center gap-2">
+                                              <DocumentTextIcon className="w-4 h-4 text-gray-500" />
+                                              <span className="text-xs text-gray-600 font-medium">
+                                                {message.media_filename || 'Document Preview'}
+                                              </span>
+                                            </div>
+                                          </div>
+                                          <div className="p-4 min-h-[120px] flex items-center justify-center">
+                                            {message.media_mime_type === 'application/pdf' ? (
+                                              <iframe
+                                                src={`${message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}#toolbar=0&navpanes=0&scrollbar=0`}
+                                                className="w-full h-32 border-0"
+                                                title="PDF Preview"
+                                                onError={(e) => {
+                                                  console.log('Failed to load PDF preview:', message.media_url);
+                                                  // Show error message instead of hiding
+                                                  const iframe = e.currentTarget;
+                                                  iframe.style.display = 'none';
+                                                  const errorDiv = document.createElement('div');
+                                                  errorDiv.className = 'text-center text-gray-500 p-4';
+                                                  errorDiv.innerHTML = `
                                         <DocumentTextIcon class="w-12 h-12 mx-auto mb-2 text-gray-400" />
                                         <p class="text-xs">PDF Preview Unavailable</p>
                                         <p class="text-xs opacity-70">Media may have expired</p>
                                       `;
-                                      iframe.parentNode?.appendChild(errorDiv);
-                                    }}
-                                  />
-                                ) : message.media_mime_type?.includes('image/') ? (
-                                  <img
-                                    src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
-                                    alt="Document Preview"
-                                    className="max-w-full max-h-24 object-contain rounded"
-                                    onError={(e) => {
-                                      console.log('Failed to load image preview:', message.media_url);
-                                      // Show error message instead of hiding
-                                      e.currentTarget.style.display = 'none';
-                                      const errorDiv = document.createElement('div');
-                                      errorDiv.className = 'text-center text-gray-500 p-4';
-                                      errorDiv.innerHTML = `
+                                                  iframe.parentNode?.appendChild(errorDiv);
+                                                }}
+                                              />
+                                            ) : message.media_mime_type?.includes('image/') ? (
+                                              <img
+                                                src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
+                                                alt="Document Preview"
+                                                className="max-w-full max-h-24 object-contain rounded"
+                                                onError={(e) => {
+                                                  console.log('Failed to load image preview:', message.media_url);
+                                                  // Show error message instead of hiding
+                                                  e.currentTarget.style.display = 'none';
+                                                  const errorDiv = document.createElement('div');
+                                                  errorDiv.className = 'text-center text-gray-500 p-4';
+                                                  errorDiv.innerHTML = `
                                         <DocumentTextIcon class="w-12 h-12 mx-auto mb-2 text-gray-400" />
                                         <p class="text-xs">Preview Unavailable</p>
                                         <p class="text-xs opacity-70">Media may have expired</p>
                                       `;
-                                      e.currentTarget.parentNode?.appendChild(errorDiv);
-                                    }}
-                                  />
-                                ) : (
-                                  <div className="text-center text-gray-500">
-                                    <DocumentTextIcon className="w-12 h-12 mx-auto mb-2 text-gray-400" />
-                                    <p className="text-xs">Preview not available</p>
-                                    <p className="text-xs opacity-70">{message.media_mime_type}</p>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          )}
-                          
-                          {message.caption && (
-                            <p 
-                              className="text-base break-words mt-2"
-                              dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
-                              style={{ textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
-                            >
-                              {message.caption}
-                            </p>
-                          )}
-                        </div>
-                      )}
-                      
-                      {(message.message_type === 'audio' || message.voice_note) && (message.media_url || message.media_id) && (
-                        <div className="mt-2">
-                          <VoiceMessagePlayer
-                            audioUrl={(message.media_url || message.media_id || '').startsWith('http') 
-                              ? (message.media_url || message.media_id || '') 
-                              : buildApiUrl(`/api/whatsapp/media/${message.media_url || message.media_id}`)}
-                            className={message.direction === 'out' ? 'bg-green-50' : 'bg-gray-50'}
-                            senderName={message.sender_name || 'Unknown'}
-                            profilePictureUrl={message.profile_picture_url}
-                          />
-                          {message.caption && (
-                            <p className="text-base break-words mt-2">{message.caption}</p>
-                          )}
-                          {!message.caption && message.message && message.message !== 'Voice message' && (
-                            <p className="text-base break-words mt-2">{message.message}</p>
-                          )}
-                        </div>
-                      )}
-                      
-                      {message.message_type === 'video' && (
-                        <div>
-                          {message.media_url && (
-                            <video 
-                              controls
-                              className="max-w-full md:max-w-[700px] max-h-[300px] md:max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
-                              onClick={() => message.media_url && setSelectedMedia({
-                                url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
-                                type: 'video',
-                                caption: message.caption
-                              })}
-                              onError={(e) => {
-                                console.log('Failed to load video:', message.media_url);
-                                // Show error message instead of hiding
-                                e.currentTarget.style.display = 'none';
-                                const errorDiv = document.createElement('div');
-                                errorDiv.className = 'text-center text-gray-500 p-4 border border-gray-200 rounded-lg bg-gray-50';
-                                errorDiv.innerHTML = `
+                                                  e.currentTarget.parentNode?.appendChild(errorDiv);
+                                                }}
+                                              />
+                                            ) : (
+                                              <div className="text-center text-gray-500">
+                                                <DocumentTextIcon className="w-12 h-12 mx-auto mb-2 text-gray-400" />
+                                                <p className="text-xs">Preview not available</p>
+                                                <p className="text-xs opacity-70">{message.media_mime_type}</p>
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      )}
+
+                                      {message.caption && (
+                                        <p
+                                          className="text-base break-words mt-2"
+                                          dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                          style={{ textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
+                                        >
+                                          {message.caption}
+                                        </p>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {(message.message_type === 'audio' || message.voice_note) && (message.media_url || message.media_id) && (
+                                    <div className="mt-2">
+                                      <VoiceMessagePlayer
+                                        audioUrl={(message.media_url || message.media_id || '').startsWith('http')
+                                          ? (message.media_url || message.media_id || '')
+                                          : buildApiUrl(`/api/whatsapp/media/${message.media_url || message.media_id}`)}
+                                        className={message.direction === 'out' ? 'bg-green-50' : 'bg-gray-50'}
+                                        senderName={message.sender_name || 'Unknown'}
+                                        profilePictureUrl={message.profile_picture_url}
+                                      />
+                                      {message.caption && (
+                                        <p className="text-base break-words mt-2">{message.caption}</p>
+                                      )}
+                                      {!message.caption && message.message && message.message !== 'Voice message' && (
+                                        <p className="text-base break-words mt-2">{message.message}</p>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {message.message_type === 'video' && (
+                                    <div>
+                                      {message.media_url && (
+                                        <video
+                                          controls
+                                          className="max-w-full md:max-w-[700px] max-h-[300px] md:max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
+                                          onClick={() => message.media_url && setSelectedMedia({
+                                            url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
+                                            type: 'video',
+                                            caption: message.caption
+                                          })}
+                                          onError={(e) => {
+                                            console.log('Failed to load video:', message.media_url);
+                                            // Show error message instead of hiding
+                                            e.currentTarget.style.display = 'none';
+                                            const errorDiv = document.createElement('div');
+                                            errorDiv.className = 'text-center text-gray-500 p-4 border border-gray-200 rounded-lg bg-gray-50';
+                                            errorDiv.innerHTML = `
                                   <FilmIcon class="w-12 h-12 mx-auto mb-2 text-gray-400" />
                                   <p class="text-xs font-medium">Video Unavailable</p>
                                   <p class="text-xs opacity-70">Media may have expired</p>
                                 `;
-                                e.currentTarget.parentNode?.appendChild(errorDiv);
-                              }}
-                            >
-                              <source src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)} />
-                              Your browser does not support the video tag.
-                            </video>
-                          )}
-                          {message.caption && (
-                            <p 
-                              className="text-base break-words"
-                              dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
-                              style={{ textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
-                            >
-                              {message.caption}
-                            </p>
-                          )}
-                        </div>
-                      )}
-                      
-                      {message.message_type === 'location' && (
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                            </svg>
-                            <span className="text-sm">Location shared</span>
-                          </div>
-                          <p className="text-base break-words mt-1">{message.message}</p>
-                        </div>
-                      )}
-                      
-                      {message.message_type === 'contact' && (
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <UserIcon className="w-6 h-6" />
-                            <span className="text-sm">Contact shared</span>
-                          </div>
-                        </div>
-                      )}
+                                            e.currentTarget.parentNode?.appendChild(errorDiv);
+                                          }}
+                                        >
+                                          <source src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)} />
+                                          Your browser does not support the video tag.
+                                        </video>
+                                      )}
+                                      {message.caption && (
+                                        <p
+                                          className="text-base break-words"
+                                          dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                          style={{ textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
+                                        >
+                                          {message.caption}
+                                        </p>
+                                      )}
+                                    </div>
+                                  )}
 
-                      {/* Message status and time */}
-                      <div className="flex items-center justify-between mt-1">
-                        <div className="flex items-center gap-1 text-sm opacity-80">
-                          <span>
-                            {new Date(message.sent_at).toLocaleTimeString([], {
-                              hour: '2-digit',
-                              minute: '2-digit'
-                            })}
-                          </span>
-                          {message.direction === 'out' && (
-                            <span className="inline-block align-middle text-current">
-                              {renderMessageStatus(message.whatsapp_status)}
-                            </span>
-                          )}
-                                                        {(message as any).is_edited && (
-                                <span className="text-xs opacity-60 italic">
-                                  (edited{(message as any).edited_by ? ` by ${userCache[(message as any).edited_by] || '...'}` : ''})
-                                </span>
-                              )}
-                              {(message as any).is_deleted && (message as any).deleted_by && (
-                                <span className="text-xs opacity-60 italic text-red-600">
-                                  (deleted by {userCache[(message as any).deleted_by] || '...'})
-                                </span>
-                              )}
-                        </div>
-                        
-                        {/* Edit/Delete buttons removed - WhatsApp API does not support these features */}
-                      </div>
-                    </div>
-                      )}
-                    </div>
-                  </div>
-                    </React.Fragment>
-                  );
-                })
-              )}
-              <div ref={messagesEndRef} />
-            </div>
+                                  {message.message_type === 'location' && (
+                                    <div>
+                                      <div className="flex items-center gap-2">
+                                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                                        </svg>
+                                        <span className="text-sm">Location shared</span>
+                                      </div>
+                                      <p className="text-base break-words mt-1">{message.message}</p>
+                                    </div>
+                                  )}
 
-            {/* Message Input - Desktop Only */}
-            {!isMobile && (
-              <div className="absolute bottom-0 left-0 right-0 p-4 z-[100] pointer-events-none" style={{ overflow: 'visible' }}>
-                {/* Lock Message - Above input field (or above template modal when open) */}
-                {isLocked && !showTemplateSelector && (
-                  <div className="mb-2 pointer-events-auto">
-                    <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 border border-red-200 rounded-lg shadow-md whitespace-nowrap w-fit">
-                      <LockClosedIcon className="w-4 h-4 text-red-600 flex-shrink-0" />
-                      <span className="text-xs font-medium text-red-700">24-Hours rule - use templates</span>
-                    </div>
-                  </div>
-                )}
-                <div className="flex items-end gap-3 relative pointer-events-auto" style={{ overflow: 'visible' }}>
-                  {/* Consolidated Tools Button */}
-                  <div className="relative" ref={desktopToolsRef} style={{ overflow: 'visible' }}>
-                    <button
-                      onClick={() => setShowDesktopTools(prev => !prev)}
-                      disabled={sending || uploadingMedia}
-                      className="btn btn-circle w-12 h-12 text-white disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow"
-                      style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
-                      title="Message tools"
-                    >
-                      <Squares2X2Icon className="w-6 h-6" />
-                    </button>
-                    
-                    {/* Tools Dropdown Menu */}
-                    {showDesktopTools && (
-                      <div className="absolute left-0 z-[9999] bg-white border border-gray-200 rounded-lg shadow-lg min-w-[180px] pointer-events-auto" style={{ top: 'auto', bottom: 'calc(100% + 8px)' }}>
-                        <button
-                          onClick={() => {
-                            setShowTemplateSelector(!showTemplateSelector);
-                            setShowDesktopTools(false);
-                          }}
-                          className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors"
-                        >
-                          <DocumentTextIcon className="w-5 h-5 text-green-600" />
-                          <span className="text-sm text-gray-700">Template</span>
-                        </button>
-                        <label className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors cursor-pointer">
-                          <PaperClipIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                          <span className="text-sm text-gray-700">Attach File</span>
-                          <input
-                            type="file"
-                            className="hidden"
-                            accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
-                            onChange={handleFileSelect}
-                            disabled={uploadingMedia || isLocked}
-                          />
-                        </label>
-                        <button
-                          onClick={() => {
-                            setShowVoiceRecorder(!showVoiceRecorder);
-                            setShowDesktopTools(false);
-                          }}
-                          disabled={isLocked}
-                          className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors disabled:opacity-50"
-                        >
-                          <MicrophoneIcon className="w-5 h-5 text-red-600" />
-                          <span className="text-sm text-gray-700">Voice Message</span>
-                        </button>
-                        <button
-                          onClick={() => {
-                            setIsEmojiPickerOpen(!isEmojiPickerOpen);
-                            setShowDesktopTools(false);
-                          }}
-                          disabled={isLocked}
-                          className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors disabled:opacity-50"
-                        >
-                          <FaceSmileIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                          <span className="text-sm text-gray-700">Add Emoji</span>
-                        </button>
-                        <button
-                          onClick={() => {
-                            handleAISuggestions();
-                            setShowDesktopTools(false);
-                          }}
-                          disabled={isLoadingAI || isLocked || !selectedClient}
-                          className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors disabled:opacity-50"
-                        >
-                          {isLoadingAI ? (
-                            <div className="loading loading-spinner loading-xs"></div>
-                          ) : (
-                            <svg className="w-5 h-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                            </svg>
-                          )}
-                          <span className="text-sm text-gray-700">AI Suggestions</span>
-                        </button>
+                                  {message.message_type === 'contact' && (
+                                    <div>
+                                      <div className="flex items-center gap-2">
+                                        <UserIcon className="w-6 h-6" />
+                                        <span className="text-sm">Contact shared</span>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Message status and time */}
+                                  <div className="flex items-center justify-between -mt-1">
+                                    <div className="flex items-center gap-1 text-sm opacity-80">
+                                      <span>
+                                        {new Date(message.sent_at).toLocaleTimeString([], {
+                                          hour: '2-digit',
+                                          minute: '2-digit'
+                                        })}
+                                      </span>
+                                      {message.direction === 'out' && (
+                                        <span className="inline-block align-middle text-current">
+                                          {renderMessageStatus(message)}
+                                        </span>
+                                      )}
+                                      {(message as any).is_edited && (
+                                        <span className="text-xs opacity-60 italic">
+                                          (edited{(message as any).edited_by ? ` by ${userCache[(message as any).edited_by] || '...'}` : ''})
+                                        </span>
+                                      )}
+                                      {(message as any).is_deleted && (message as any).deleted_by && (
+                                        <span className="text-xs opacity-60 italic text-red-600">
+                                          (deleted by {userCache[(message as any).deleted_by] || '...'})
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    {/* Edit/Delete buttons removed - WhatsApp API does not support these features */}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </React.Fragment>
+                      );
+                    })
+                  )}
+                  <div ref={messagesEndRef} />
+                </div>
+
+                {/* Message Input - Desktop Only */}
+                {!isMobile && (
+                  <div className="absolute bottom-0 left-0 right-0 p-4 z-[100] pointer-events-none" style={{ overflow: 'visible' }}>
+                    {/* Lock Message - Above input field (or above template modal when open) */}
+                    {isLocked && !showTemplateSelector && (
+                      <div className="mb-2 pointer-events-auto">
+                        <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 border border-red-200 rounded-lg shadow-md whitespace-nowrap w-fit">
+                          <LockClosedIcon className="w-4 h-4 text-red-600 flex-shrink-0" />
+                          <span className="text-xs font-medium text-red-700">24-Hours rule - use templates</span>
+                        </div>
                       </div>
                     )}
-                  </div>
-                  
-                  <div className="relative" style={{ overflow: 'visible' }}>
-                    {/* Emoji Picker */}
-                    {isEmojiPickerOpen && (
-                      <div className="absolute left-0 z-[9999] pointer-events-auto" style={{ top: 'auto', bottom: 'calc(100% + 8px)' }}>
-                        <EmojiPicker
-                          onEmojiClick={handleEmojiClick}
-                          width={350}
-                          height={400}
-                          skinTonesDisabled={false}
-                          searchDisabled={false}
-                          previewConfig={{
-                            showPreview: true,
-                            defaultEmoji: '1f60a',
-                            defaultCaption: 'Choose your emoji!'
+                    <div className="flex items-end gap-3 relative pointer-events-auto" style={{ overflow: 'visible' }}>
+                      {/* Consolidated Tools Button */}
+                      <div className="relative" ref={desktopToolsRef} style={{ overflow: 'visible' }}>
+                        <button
+                          onClick={() => setShowDesktopTools(prev => !prev)}
+                          disabled={sending || uploadingMedia}
+                          className="btn btn-circle w-12 h-12 text-white disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow"
+                          style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
+                          title="Message tools"
+                        >
+                          <Squares2X2Icon className="w-6 h-6" />
+                        </button>
+
+                        {/* Tools Dropdown Menu */}
+                        {showDesktopTools && (
+                          <div className="absolute left-0 z-[9999] bg-white border border-gray-200 rounded-lg shadow-lg min-w-[180px] pointer-events-auto" style={{ top: 'auto', bottom: 'calc(100% + 8px)' }}>
+                            <button
+                              onClick={() => {
+                                setShowTemplateSelector(!showTemplateSelector);
+                                setShowDesktopTools(false);
+                              }}
+                              className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors"
+                            >
+                              <DocumentTextIcon className="w-5 h-5 text-green-600" />
+                              <span className="text-sm text-gray-700">Template</span>
+                            </button>
+                            <label className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors cursor-pointer">
+                              <PaperClipIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                              <span className="text-sm text-gray-700">Attach File</span>
+                              <input
+                                type="file"
+                                className="hidden"
+                                accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
+                                onChange={handleFileSelect}
+                                disabled={uploadingMedia || isLocked}
+                              />
+                            </label>
+                            <button
+                              onClick={() => {
+                                setShowVoiceRecorder(!showVoiceRecorder);
+                                setShowDesktopTools(false);
+                              }}
+                              disabled={isLocked}
+                              className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors disabled:opacity-50"
+                            >
+                              <MicrophoneIcon className="w-5 h-5 text-red-600" />
+                              <span className="text-sm text-gray-700">Voice Message</span>
+                            </button>
+                            <button
+                              onClick={() => {
+                                setIsEmojiPickerOpen(!isEmojiPickerOpen);
+                                setShowDesktopTools(false);
+                              }}
+                              disabled={isLocked}
+                              className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors disabled:opacity-50"
+                            >
+                              <FaceSmileIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                              <span className="text-sm text-gray-700">Add Emoji</span>
+                            </button>
+                            <button
+                              onClick={() => {
+                                handleAISuggestions();
+                                setShowDesktopTools(false);
+                              }}
+                              disabled={isLoadingAI || isLocked || !selectedClient}
+                              className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors disabled:opacity-50"
+                            >
+                              {isLoadingAI ? (
+                                <div className="loading loading-spinner loading-xs"></div>
+                              ) : (
+                                <svg className="w-5 h-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                                </svg>
+                              )}
+                              <span className="text-sm text-gray-700">AI Suggestions</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="relative" style={{ overflow: 'visible' }}>
+                        {/* Emoji Picker */}
+                        {isEmojiPickerOpen && (
+                          <div className="absolute left-0 z-[9999] pointer-events-auto" style={{ top: 'auto', bottom: 'calc(100% + 8px)' }}>
+                            <EmojiPicker
+                              onEmojiClick={handleEmojiClick}
+                              width={350}
+                              height={400}
+                              skinTonesDisabled={false}
+                              searchDisabled={false}
+                              previewConfig={{
+                                showPreview: true,
+                                defaultEmoji: '1f60a',
+                                defaultCaption: 'Choose your emoji!'
+                              }}
+                              lazyLoadEmojis={false}
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex-1">
+                        <textarea
+                          ref={textareaRef}
+                          value={newMessage}
+                          onChange={(e) => {
+                            if (selectedTemplate) return; // Prevent changes when template is selected
+                            setNewMessage(e.target.value);
+                            const textarea = e.target;
+                            textarea.style.height = 'auto';
+                            // Use larger max height when template is present
+                            const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 200;
+                            textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
                           }}
-                          lazyLoadEmojis={false}
+                          onKeyDown={(e) => {
+                            if (selectedTemplate) return; // Prevent changes when template is selected
+                            // Let Enter create new lines
+                          }}
+                          placeholder={
+                            isLocked
+                              ? (messages.length === 0
+                                ? "No messages yet - use templates to start conversation"
+                                : "Window expired - use templates")
+                              : selectedFile
+                                ? "Add a caption..."
+                                : selectedTemplate
+                                  ? selectedTemplate.params === '1'
+                                    ? `Parameter for: ${selectedTemplate.title}`
+                                    : `Template: ${selectedTemplate.title}`
+                                  : "Type a message..."
+                          }
+                          className="textarea w-full resize-none min-h-[44px] border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
+                          rows={1}
+                          readOnly={!!selectedTemplate}
+                          disabled={sending || uploadingMedia || isLocked}
+                          style={{
+                            backgroundColor: selectedTemplate ? 'rgba(240, 240, 240, 0.9)' : 'rgba(255, 255, 255, 0.8)',
+                            backdropFilter: 'blur(10px)',
+                            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+                            maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '128px',
+                            cursor: selectedTemplate ? 'not-allowed' : 'text'
+                          }}
                         />
                       </div>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          if (selectedFile) {
+                            handleSendMedia();
+                          } else {
+                            const syntheticEvent = {
+                              preventDefault: () => { },
+                              stopPropagation: () => { },
+                              currentTarget: e.currentTarget,
+                              target: e.target,
+                            } as React.FormEvent;
+                            handleSendMessage(syntheticEvent);
+                          }
+                        }}
+                        disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
+                        className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow disabled:opacity-50"
+                        style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
+                        title={selectedFile ? 'Send media' : 'Send message'}
+                      >
+                        {sending || uploadingMedia ? (
+                          <div className="loading loading-spinner loading-sm"></div>
+                        ) : (
+                          <PaperAirplaneIcon className="w-5 h-5" />
+                        )}
+                      </button>
+                    </div>
+
+                    {/* Template Dropdown - Desktop */}
+                    {showTemplateSelector && (
+                      <div
+                        ref={templateSelectorRef}
+                        className="absolute bottom-full left-0 right-0 mb-2 pointer-events-auto z-[9999]"
+                        style={{
+                          overflow: 'visible',
+                          maxHeight: 'calc(100vh - 120px)', // Account for header and input area
+                          // Ensure it doesn't get cut off at the top on smaller screens
+                          transform: 'translateY(0)',
+                          top: 'auto',
+                          bottom: '100%'
+                        }}
+                      >
+                        {/* Lock Message - Above template modal when open */}
+                        {isLocked && (
+                          <div className="mb-2 pointer-events-auto">
+                            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 border border-red-200 rounded-lg shadow-md whitespace-nowrap w-fit">
+                              <LockClosedIcon className="w-4 h-4 text-red-600 flex-shrink-0" />
+                              <span className="text-xs font-medium text-red-700">24-Hours rule - use templates</span>
+                            </div>
+                          </div>
+                        )}
+                        <div className="bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden min-w-[600px] max-w-[800px] flex flex-col" style={{ maxHeight: 'calc(100vh - 200px)' }}>
+                          {/* Header with gradient background */}
+                          <div className="px-6 py-5 bg-gradient-to-r from-green-500 to-emerald-600 flex-shrink-0">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                <FaWhatsapp className="w-6 h-6 text-white" />
+                                <h3 className="text-lg font-bold text-white">Select Template</h3>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setShowTemplateSelector(false)}
+                                className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-2"
+                              >
+                                <XMarkIcon className="w-5 h-5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Content */}
+                          <div className="p-6 flex flex-col flex-1 min-h-0 overflow-hidden">
+                            <div className="mb-5 flex gap-3 flex-shrink-0">
+                              <input
+                                type="text"
+                                placeholder="Search templates..."
+                                value={templateSearchTerm}
+                                onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                                className="flex-1 px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
+                              />
+                              <select
+                                value={selectedLanguage}
+                                onChange={(e) => setSelectedLanguage(e.target.value)}
+                                className="px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[140px]"
+                              >
+                                <option value="">All Languages</option>
+                                {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
+                                  .sort()
+                                  .map(lang => (
+                                    <option key={lang} value={lang}>
+                                      {getLanguageDisplayName(lang)}
+                                    </option>
+                                  ))}
+                              </select>
+                            </div>
+
+                            <div className="flex-1 overflow-y-auto space-y-3 min-h-0" style={{ paddingBottom: '8px' }}>
+                              {isLoadingTemplates ? (
+                                <div className="text-center text-gray-500 py-4">
+                                  <div className="loading loading-spinner loading-sm"></div>
+                                  <span className="ml-2">Loading templates...</span>
+                                </div>
+                              ) : (() => {
+                                let filtered = filterTemplates(templates, templateSearchTerm);
+                                if (selectedLanguage) {
+                                  filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
+                                }
+                                return filtered;
+                              })().length === 0 ? (
+                                <div className="text-center text-gray-500 py-4 text-sm">
+                                  {templateSearchTerm || selectedLanguage ? 'No templates found matching your filters.' : 'No templates available.'}
+                                </div>
+                              ) : (() => {
+                                let filtered = filterTemplates(templates, templateSearchTerm);
+                                if (selectedLanguage) {
+                                  filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
+                                }
+                                return filtered;
+                              })().map((template) => (
+                                <TemplateOptionCard
+                                  key={template.id}
+                                  template={template}
+                                  isSelected={selectedTemplate?.id === template.id}
+                                  onClick={() => {
+                                    if (template.active !== 't') {
+                                      toast.error('This template is pending approval and cannot be used yet. Please wait for Meta to approve it or select an active template.');
+                                      return;
+                                    }
+                                    setSelectedTemplate(template);
+                                    setShowTemplateSelector(false);
+                                    setTemplateSearchTerm('');
+                                    setSelectedLanguage('');
+                                    // Always set template content in input field
+                                    setNewMessage(template.content || '');
+
+                                    // Expand textarea for desktop when template is inserted
+                                    if (textareaRef.current) {
+                                      setTimeout(() => {
+                                        if (textareaRef.current) {
+                                          textareaRef.current.style.height = 'auto';
+                                          const maxHeight = 400; // Desktop max height
+                                          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
+                                        }
+                                      }, 0);
+                                    }
+                                  }}
+                                />
+                              ))
+                              }
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* AI Suggestions Dropdown - Desktop */}
+                    {showAISuggestions && (
+                      <div className="absolute bottom-full left-0 right-0 mb-2 px-4 pointer-events-auto z-[9999]" style={{ overflow: 'visible' }}>
+                        <div className="p-3 bg-gray-50 rounded-lg border shadow-lg max-h-[50vh] overflow-y-auto">
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="text-sm font-semibold text-gray-900">
+                              {newMessage.trim() ? 'AI Message Improvement' : 'AI Suggestions'}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowAISuggestions(false);
+                                setAiSuggestions([]);
+                              }}
+                              className="btn btn-ghost btn-xs"
+                            >
+                              <XMarkIcon className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          <div className="space-y-2">
+                            {isLoadingAI ? (
+                              <div className="text-center text-gray-500 py-4">
+                                <div className="loading loading-spinner loading-sm"></div>
+                                <span className="ml-2">Getting AI suggestions...</span>
+                              </div>
+                            ) : (
+                              <div
+                                className="w-full p-4 rounded-lg border border-gray-200 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
+                                onClick={() => applyAISuggestion(aiSuggestions[0])}
+                              >
+                                <div className="text-sm text-gray-900">{aiSuggestions[0]}</div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     )}
                   </div>
-                  
-                  <div className="flex-1">
-                    <textarea
-                      ref={textareaRef}
-                      value={newMessage}
-                      onChange={(e) => {
-                        if (selectedTemplate) return; // Prevent changes when template is selected
-                        setNewMessage(e.target.value);
-                        const textarea = e.target;
-                        textarea.style.height = 'auto';
-                        // Use larger max height when template is present
-                        const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 200;
-                        textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
-                      }}
-                      onKeyDown={(e) => {
-                        if (selectedTemplate) return; // Prevent changes when template is selected
-                        // Let Enter create new lines
-                      }}
-                      placeholder={
-                        isLocked 
-                          ? (messages.length === 0 
-                              ? "No messages yet - use templates to start conversation"
-                              : "Window expired - use templates")
-                          : selectedFile 
-                            ? "Add a caption..." 
-                            : selectedTemplate 
-                              ? selectedTemplate.params === '1' 
-                                ? `Parameter for: ${selectedTemplate.title}` 
-                                : `Template: ${selectedTemplate.title}`
-                              : "Type a message..."
-                      }
-                      className="textarea w-full resize-none min-h-[44px] border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
-                      rows={1}
-                      readOnly={!!selectedTemplate}
-                      disabled={sending || uploadingMedia || isLocked}
-                      style={{ 
-                        backgroundColor: selectedTemplate ? 'rgba(240, 240, 240, 0.9)' : 'rgba(255, 255, 255, 0.8)', 
-                        backdropFilter: 'blur(10px)',
-                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-                        maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '128px',
-                        cursor: selectedTemplate ? 'not-allowed' : 'text'
-                      }}
-                    />
-                  </div>
-                  
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      if (selectedFile) {
-                        handleSendMedia();
-                      } else {
-                        const syntheticEvent = {
-                          preventDefault: () => {},
-                          stopPropagation: () => {},
-                          currentTarget: e.currentTarget,
-                          target: e.target,
-                        } as React.FormEvent;
-                        handleSendMessage(syntheticEvent);
-                      }
-                    }}
-                    disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
-                    className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow disabled:opacity-50"
-                    style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
-                    title={selectedFile ? 'Send media' : 'Send message'}
-                  >
-                    {sending || uploadingMedia ? (
-                      <div className="loading loading-spinner loading-sm"></div>
-                    ) : (
-                      <PaperAirplaneIcon className="w-5 h-5" />
+                )}
+
+                {/* Message Input - Mobile Only */}
+                {isMobile && (
+                  <div className="lg:hidden absolute bottom-0 left-0 right-0 p-3 z-[100] pointer-events-none" style={{ overflow: 'visible' }}>
+                    {/* AI Suggestions Dropdown - Mobile */}
+                    {showAISuggestions && (
+                      <div className="mb-2 pointer-events-auto">
+                        <div className="p-3 bg-white/95 backdrop-blur-lg supports-[backdrop-filter]:bg-white/85 rounded-xl border border-gray-200 shadow-lg max-h-[50vh] overflow-y-auto">
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="text-sm font-semibold text-gray-900">
+                              {newMessage.trim() ? 'AI Message Improvement' : 'AI Suggestions'}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowAISuggestions(false);
+                                setAiSuggestions([]);
+                              }}
+                              className="btn btn-ghost btn-xs"
+                            >
+                              <XMarkIcon className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          <div className="space-y-2">
+                            {isLoadingAI ? (
+                              <div className="text-center text-gray-500 py-4">
+                                <div className="loading loading-spinner loading-sm"></div>
+                                <span className="ml-2">Getting AI suggestions...</span>
+                              </div>
+                            ) : (
+                              <div
+                                className="w-full p-4 rounded-lg border border-gray-200 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
+                                onClick={() => applyAISuggestion(aiSuggestions[0])}
+                              >
+                                <div className="text-sm text-gray-900">{aiSuggestions[0]}</div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     )}
-                  </button>
-                </div>
-                
-                {/* Template Dropdown - Desktop */}
-                {showTemplateSelector && (
-                  <div 
-                    ref={templateSelectorRef} 
-                    className="absolute bottom-full left-0 right-0 mb-2 pointer-events-auto z-[9999]" 
-                    style={{ 
-                      overflow: 'visible',
-                      maxHeight: 'calc(100vh - 120px)', // Account for header and input area
-                      // Ensure it doesn't get cut off at the top on smaller screens
-                      transform: 'translateY(0)',
-                      top: 'auto',
-                      bottom: '100%'
-                    }}
-                  >
-                    {/* Lock Message - Above template modal when open */}
+
+                    {/* Lock Message - Above input field */}
                     {isLocked && (
                       <div className="mb-2 pointer-events-auto">
                         <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 border border-red-200 rounded-lg shadow-md whitespace-nowrap w-fit">
@@ -5283,520 +7035,325 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         </div>
                       </div>
                     )}
-                    <div className="bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden min-w-[600px] max-w-[800px] flex flex-col" style={{ maxHeight: 'calc(100vh - 200px)' }}>
-                      {/* Header with gradient background */}
-                      <div className="px-6 py-5 bg-gradient-to-r from-green-500 to-emerald-600 flex-shrink-0">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            <FaWhatsapp className="w-6 h-6 text-white" />
-                            <h3 className="text-lg font-bold text-white">Select Template</h3>
-                          </div>
+                    <div className="relative space-y-2 pointer-events-auto" style={{ overflow: 'visible' }}>
+                      <div className="flex items-center gap-2">
+                        <div className="relative" ref={mobileToolsRef} style={{ overflow: 'visible' }}>
                           <button
-                            type="button"
-                            onClick={() => setShowTemplateSelector(false)}
-                            className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-2"
+                            onClick={() => setShowMobileDropdown(!showMobileDropdown)}
+                            className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow"
+                            style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
+                            title="Message tools"
                           >
-                            <XMarkIcon className="w-5 h-5" />
+                            <Squares2X2Icon className="w-6 h-6" />
                           </button>
+                          {showMobileDropdown && (
+                            <div className="absolute left-0 z-[9999] bg-white border border-gray-200 rounded-xl shadow-xl w-64 divide-y divide-gray-100 pointer-events-auto" style={{ top: 'auto', bottom: 'calc(100% + 8px)' }}>
+                              <button
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setShowTemplateSelector(true);
+                                  setShowMobileDropdown(false);
+                                }}
+                                className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2"
+                              >
+                                <DocumentTextIcon className="w-4 h-4 text-green-600" />
+                                Template
+                              </button>
+                              <label className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2 cursor-pointer">
+                                <PaperClipIcon className="w-4 h-4 text-gray-600" />
+                                Attachment
+                                <input
+                                  type="file"
+                                  className="hidden"
+                                  accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
+                                  onChange={handleFileSelect}
+                                  disabled={uploadingMedia || isLocked}
+                                />
+                              </label>
+                              <button
+                                onClick={() => {
+                                  setIsEmojiPickerOpen(!isEmojiPickerOpen);
+                                  setShowMobileDropdown(false);
+                                }}
+                                disabled={isLocked}
+                                className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
+                              >
+                                <FaceSmileIcon className="w-4 h-4 text-yellow-500" />
+                                Add emojis
+                              </button>
+                              <button
+                                onClick={() => {
+                                  handleAISuggestions();
+                                  setShowMobileDropdown(false);
+                                }}
+                                disabled={isLoadingAI || isLocked || !selectedClient}
+                                className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
+                              >
+                                {isLoadingAI ? (
+                                  <div className="loading loading-spinner loading-xs"></div>
+                                ) : (
+                                  <svg className="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                                  </svg>
+                                )}
+                                AI Suggestions
+                              </button>
+                            </div>
+                          )}
                         </div>
-                      </div>
-                      
-                      {/* Content */}
-                      <div className="p-6 flex flex-col flex-1 min-h-0 overflow-hidden">
-                        <div className="mb-5 flex gap-3 flex-shrink-0">
-                          <input
-                            type="text"
-                            placeholder="Search templates..."
-                            value={templateSearchTerm}
-                            onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                            className="flex-1 px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
+
+                        <div className="flex-1">
+                          <textarea
+                            ref={textareaRef}
+                            value={newMessage}
+                            onChange={(e) => {
+                              if (selectedTemplate) return; // Prevent changes when template is selected
+                              setNewMessage(e.target.value);
+                              const textarea = e.target;
+                              textarea.style.height = 'auto';
+                              // Use larger max height when template is present
+                              const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : (isInputFocused || aiSuggestions.length > 0 ? 300 : 200);
+                              textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
+                            }}
+                            onFocus={(e) => {
+                              if (selectedTemplate) return; // Prevent focus changes when template is selected
+                              setIsInputFocused(true);
+                              e.target.style.height = 'auto';
+                              const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 300;
+                              e.target.style.height = `${Math.min(e.target.scrollHeight, maxHeight)}px`;
+                            }}
+                            onBlur={(e) => {
+                              setIsInputFocused(false);
+                              e.target.style.height = 'auto';
+                              const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 200;
+                              e.target.style.height = `${Math.min(e.target.scrollHeight, maxHeight)}px`;
+                            }}
+                            onKeyDown={(e) => {
+                              if (selectedTemplate) return; // Prevent changes when template is selected
+                              // Let Enter create new lines
+                            }}
+                            placeholder={
+                              isLocked
+                                ? (messages.length === 0
+                                  ? "No messages yet - use templates to start conversation"
+                                  : "Window expired - use templates")
+                                : selectedFile
+                                  ? "Add a caption..."
+                                  : selectedTemplate
+                                    ? selectedTemplate.params === '1'
+                                      ? `Parameter for: ${selectedTemplate.title}`
+                                      : `Template: ${selectedTemplate.title}`
+                                    : "Type a message..."
+                            }
+                            className="textarea w-full resize-none text-sm min-h-[36px] border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
+                            rows={1}
+                            readOnly={!!selectedTemplate}
+                            disabled={sending || uploadingMedia || isLocked}
+                            style={{
+                              lineHeight: '1.4',
+                              backgroundColor: selectedTemplate ? 'rgba(240, 240, 240, 0.9)' : 'rgba(255, 255, 255, 0.8)',
+                              backdropFilter: 'blur(10px)',
+                              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+                              maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '160px',
+                              cursor: selectedTemplate ? 'not-allowed' : 'text'
+                            }}
                           />
-                          <select
-                            value={selectedLanguage}
-                            onChange={(e) => setSelectedLanguage(e.target.value)}
-                            className="px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[140px]"
-                          >
-                            <option value="">All Languages</option>
-                            {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
-                              .sort()
-                              .map(lang => (
-                                <option key={lang} value={lang}>
-                                  {getLanguageDisplayName(lang)}
-                                </option>
-                              ))}
-                          </select>
                         </div>
-                        
-                        <div className="flex-1 overflow-y-auto space-y-3 min-h-0" style={{ paddingBottom: '8px' }}>
-                        {isLoadingTemplates ? (
-                          <div className="text-center text-gray-500 py-4">
-                            <div className="loading loading-spinner loading-sm"></div>
-                            <span className="ml-2">Loading templates...</span>
-                          </div>
-                        ) : (() => {
-                          let filtered = filterTemplates(templates, templateSearchTerm);
-                          if (selectedLanguage) {
-                            filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
-                          }
-                          return filtered;
-                        })().length === 0 ? (
-                          <div className="text-center text-gray-500 py-4 text-sm">
-                            {templateSearchTerm || selectedLanguage ? 'No templates found matching your filters.' : 'No templates available.'}
-                          </div>
-                        ) : (() => {
-                          let filtered = filterTemplates(templates, templateSearchTerm);
-                          if (selectedLanguage) {
-                            filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
-                          }
-                          return filtered;
-                        })().map((template) => (
-                          <TemplateOptionCard
-                            key={template.id}
-                            template={template}
-                            isSelected={selectedTemplate?.id === template.id}
-                            onClick={() => {
-                              if (template.active !== 't') {
-                                toast.error('This template is pending approval and cannot be used yet. Please wait for Meta to approve it or select an active template.');
-                                return;
-                              }
-                              setSelectedTemplate(template);
-                              setShowTemplateSelector(false);
-                              setTemplateSearchTerm('');
-                              setSelectedLanguage('');
-                              // Always set template content in input field
-                              setNewMessage(template.content || '');
-                              
-                              // Expand textarea for desktop when template is inserted
-                              if (textareaRef.current) {
-                                setTimeout(() => {
-                                  if (textareaRef.current) {
-                                    textareaRef.current.style.height = 'auto';
-                                    const maxHeight = 400; // Desktop max height
-                                    textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
-                                  }
-                                }, 0);
-                              }
-                            }}
-                          />
-                        ))
-                        }
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-                
-                {/* AI Suggestions Dropdown - Desktop */}
-                {showAISuggestions && (
-                  <div className="absolute bottom-full left-0 right-0 mb-2 px-4 pointer-events-auto z-[9999]" style={{ overflow: 'visible' }}>
-                    <div className="p-3 bg-gray-50 rounded-lg border shadow-lg max-h-[50vh] overflow-y-auto">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="text-sm font-semibold text-gray-900">
-                          {newMessage.trim() ? 'AI Message Improvement' : 'AI Suggestions'}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowAISuggestions(false);
-                            setAiSuggestions([]);
-                          }}
-                          className="btn btn-ghost btn-xs"
-                        >
-                          <XMarkIcon className="w-4 h-4" />
-                        </button>
-                      </div>
-                      
-                      <div className="space-y-2">
-                        {isLoadingAI ? (
-                          <div className="text-center text-gray-500 py-4">
-                            <div className="loading loading-spinner loading-sm"></div>
-                            <span className="ml-2">Getting AI suggestions...</span>
-                          </div>
-                        ) : (
-                          <div 
-                            className="w-full p-4 rounded-lg border border-gray-200 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
-                            onClick={() => applyAISuggestion(aiSuggestions[0])}
-                          >
-                            <div className="text-sm text-gray-900">{aiSuggestions[0]}</div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
 
-            {/* Message Input - Mobile Only */}
-            {isMobile && (
-              <div className="lg:hidden absolute bottom-0 left-0 right-0 p-3 z-[100] pointer-events-none" style={{ overflow: 'visible' }}>
-                {/* AI Suggestions Dropdown - Mobile */}
-                {showAISuggestions && (
-                  <div className="mb-2 pointer-events-auto">
-                    <div className="p-3 bg-white/95 backdrop-blur-lg supports-[backdrop-filter]:bg-white/85 rounded-xl border border-gray-200 shadow-lg max-h-[50vh] overflow-y-auto">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="text-sm font-semibold text-gray-900">
-                          {newMessage.trim() ? 'AI Message Improvement' : 'AI Suggestions'}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowAISuggestions(false);
-                            setAiSuggestions([]);
-                          }}
-                          className="btn btn-ghost btn-xs"
-                        >
-                          <XMarkIcon className="w-4 h-4" />
-                        </button>
-                      </div>
-                      
-                      <div className="space-y-2">
-                        {isLoadingAI ? (
-                          <div className="text-center text-gray-500 py-4">
-                            <div className="loading loading-spinner loading-sm"></div>
-                            <span className="ml-2">Getting AI suggestions...</span>
-                          </div>
-                        ) : (
-                          <div 
-                            className="w-full p-4 rounded-lg border border-gray-200 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
-                            onClick={() => applyAISuggestion(aiSuggestions[0])}
-                          >
-                            <div className="text-sm text-gray-900">{aiSuggestions[0]}</div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-                
-                {/* Lock Message - Above input field */}
-                {isLocked && (
-                  <div className="mb-2 pointer-events-auto">
-                    <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 border border-red-200 rounded-lg shadow-md whitespace-nowrap w-fit">
-                      <LockClosedIcon className="w-4 h-4 text-red-600 flex-shrink-0" />
-                      <span className="text-xs font-medium text-red-700">24-Hours rule - use templates</span>
-                    </div>
-                  </div>
-                )}
-                <div className="relative space-y-2 pointer-events-auto" style={{ overflow: 'visible' }}>
-                  <div className="flex items-center gap-2">
-                    <div className="relative" ref={mobileToolsRef} style={{ overflow: 'visible' }}>
-                      <button
-                        onClick={() => setShowMobileDropdown(!showMobileDropdown)}
-                        className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow"
-                        style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
-                        title="Message tools"
-                      >
-                        <Squares2X2Icon className="w-6 h-6" />
-                      </button>
-                      {showMobileDropdown && (
-                        <div className="absolute left-0 z-[9999] bg-white border border-gray-200 rounded-xl shadow-xl w-64 divide-y divide-gray-100 pointer-events-auto" style={{ top: 'auto', bottom: 'calc(100% + 8px)' }}>
-                          <button
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setShowTemplateSelector(true);
-                              setShowMobileDropdown(false);
-                            }}
-                            className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2"
-                          >
-                            <DocumentTextIcon className="w-4 h-4 text-green-600" />
-                            Template
-                          </button>
-                          <label className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2 cursor-pointer">
-                            <PaperClipIcon className="w-4 h-4 text-gray-600" />
-                            Attachment
-                            <input
-                              type="file"
-                              className="hidden"
-                              accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
-                              onChange={handleFileSelect}
-                              disabled={uploadingMedia || isLocked}
-                            />
-                          </label>
-                          <button
-                            onClick={() => {
-                              setIsEmojiPickerOpen(!isEmojiPickerOpen);
-                              setShowMobileDropdown(false);
-                            }}
-                            disabled={isLocked}
-                            className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
-                          >
-                            <FaceSmileIcon className="w-4 h-4 text-yellow-500" />
-                            Add emojis
-                          </button>
-                          <button
-                            onClick={() => {
-                              handleAISuggestions();
-                              setShowMobileDropdown(false);
-                            }}
-                            disabled={isLoadingAI || isLocked || !selectedClient}
-                            className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
-                          >
-                            {isLoadingAI ? (
-                              <div className="loading loading-spinner loading-xs"></div>
-                            ) : (
-                              <svg className="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                              </svg>
-                            )}
-                            AI Suggestions
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    
-                    <div className="flex-1">
-                      <textarea
-                        ref={textareaRef}
-                        value={newMessage}
-                        onChange={(e) => {
-                          if (selectedTemplate) return; // Prevent changes when template is selected
-                          setNewMessage(e.target.value);
-                          const textarea = e.target;
-                          textarea.style.height = 'auto';
-                          // Use larger max height when template is present
-                          const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : (isInputFocused || aiSuggestions.length > 0 ? 300 : 200);
-                          textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
-                        }}
-                        onFocus={(e) => {
-                          if (selectedTemplate) return; // Prevent focus changes when template is selected
-                          setIsInputFocused(true);
-                          e.target.style.height = 'auto';
-                          const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 300;
-                          e.target.style.height = `${Math.min(e.target.scrollHeight, maxHeight)}px`;
-                        }}
-                        onBlur={(e) => {
-                          setIsInputFocused(false);
-                          e.target.style.height = 'auto';
-                          const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 200;
-                          e.target.style.height = `${Math.min(e.target.scrollHeight, maxHeight)}px`;
-                        }}
-                        onKeyDown={(e) => {
-                          if (selectedTemplate) return; // Prevent changes when template is selected
-                          // Let Enter create new lines
-                        }}
-                        placeholder={
-                          isLocked 
-                            ? (messages.length === 0 
-                                ? "No messages yet - use templates to start conversation"
-                                : "Window expired - use templates")
-                            : selectedFile 
-                              ? "Add a caption..." 
-                              : selectedTemplate 
-                                ? selectedTemplate.params === '1' 
-                                  ? `Parameter for: ${selectedTemplate.title}` 
-                                  : `Template: ${selectedTemplate.title}`
-                                : "Type a message..."
-                        }
-                        className="textarea w-full resize-none text-sm min-h-[36px] border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
-                        rows={1}
-                        readOnly={!!selectedTemplate}
-                        disabled={sending || uploadingMedia || isLocked}
-                        style={{ 
-                          lineHeight: '1.4', 
-                          backgroundColor: selectedTemplate ? 'rgba(240, 240, 240, 0.9)' : 'rgba(255, 255, 255, 0.8)', 
-                          backdropFilter: 'blur(10px)',
-                          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-                          maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '160px',
-                          cursor: selectedTemplate ? 'not-allowed' : 'text'
-                        }}
-                      />
-                    </div>
-                    
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        if (selectedFile) {
-                          handleSendMedia();
-                        } else {
-                          const syntheticEvent = {
-                            preventDefault: () => {},
-                            stopPropagation: () => {},
-                            currentTarget: e.currentTarget,
-                            target: e.target,
-                          } as React.FormEvent;
-                          handleSendMessage(syntheticEvent);
-                        }
-                      }}
-                      disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
-                      className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow disabled:opacity-50"
-                      style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
-                      title={selectedFile ? 'Send media' : 'Send message'}
-                    >
-                      {sending || uploadingMedia ? (
-                        <div className="loading loading-spinner loading-sm"></div>
-                      ) : (
-                        <PaperAirplaneIcon className="w-5 h-5" />
-                      )}
-                    </button>
-                  </div>
-
-                  {/* Mobile Emoji Picker */}
-                  {isEmojiPickerOpen && !isLocked && (
-                    <div className="absolute left-0 z-[9999] pointer-events-auto" style={{ top: 'auto', bottom: 'calc(100% + 8px)' }}>
-                      <EmojiPicker
-                        onEmojiClick={handleEmojiClick}
-                        width={300}
-                        height={350}
-                        skinTonesDisabled={false}
-                        searchDisabled={false}
-                        previewConfig={{
-                          showPreview: true,
-                          defaultEmoji: '1f60a',
-                          defaultCaption: 'Choose your emoji!'
-                        }}
-                        lazyLoadEmojis={false}
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Template Dropdown - Mobile (rendered outside hidden container) */}
-              {showTemplateSelector && isMobile && (
-              <div 
-                className="fixed inset-0 z-[9999] flex items-end justify-center p-4"
-                onClick={(e) => {
-                  // Only close if clicking directly on the backdrop, not on the modal content
-                  if (e.target === e.currentTarget) {
-                    setShowTemplateSelector(false);
-                  }
-                }}
-              >
-                {/* Backdrop */}
-                <div 
-                  className="fixed inset-0 bg-black/50 z-[9998]"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setShowTemplateSelector(false);
-                  }}
-                />
-                <div 
-                  ref={templateSelectorRef}
-                  className="relative z-[9999] w-full max-w-md h-[90vh] overflow-hidden pointer-events-auto flex flex-col rounded-t-2xl shadow-2xl"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    // Prevent clicks inside modal from closing anything
-                  }}
-                >
-                  <div className="bg-white h-full flex flex-col overflow-hidden rounded-t-2xl">
-                    {/* Header with gradient background */}
-                    <div className="px-5 py-4 bg-gradient-to-r from-green-500 to-emerald-600 flex-shrink-0">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <FaWhatsapp className="w-5 h-5 text-white" />
-                          <h3 className="text-base font-bold text-white">Select Template</h3>
-                        </div>
                         <button
                           type="button"
                           onClick={(e) => {
                             e.preventDefault();
-                            e.stopPropagation();
-                            e.nativeEvent.stopImmediatePropagation();
-                            setShowTemplateSelector(false);
+                            if (selectedFile) {
+                              handleSendMedia();
+                            } else {
+                              const syntheticEvent = {
+                                preventDefault: () => { },
+                                stopPropagation: () => { },
+                                currentTarget: e.currentTarget,
+                                target: e.target,
+                              } as React.FormEvent;
+                              handleSendMessage(syntheticEvent);
+                            }
                           }}
-                          className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-1.5 z-50 relative"
-                          aria-label="Close template selector"
+                          disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
+                          className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow disabled:opacity-50"
+                          style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
+                          title={selectedFile ? 'Send media' : 'Send message'}
                         >
-                          <XMarkIcon className="w-4 h-4" />
+                          {sending || uploadingMedia ? (
+                            <div className="loading loading-spinner loading-sm"></div>
+                          ) : (
+                            <PaperAirplaneIcon className="w-5 h-5" />
+                          )}
                         </button>
                       </div>
+
+                      {/* Mobile Emoji Picker */}
+                      {isEmojiPickerOpen && !isLocked && (
+                        <div className="absolute left-0 z-[9999] pointer-events-auto" style={{ top: 'auto', bottom: 'calc(100% + 8px)' }}>
+                          <EmojiPicker
+                            onEmojiClick={handleEmojiClick}
+                            width={300}
+                            height={350}
+                            skinTonesDisabled={false}
+                            searchDisabled={false}
+                            previewConfig={{
+                              showPreview: true,
+                              defaultEmoji: '1f60a',
+                              defaultCaption: 'Choose your emoji!'
+                            }}
+                            lazyLoadEmojis={false}
+                          />
+                        </div>
+                      )}
                     </div>
-                    
-                    {/* Content */}
-                    <div className="p-4 flex-1 flex flex-col min-h-0 overflow-hidden">
-                      {/* Search Input */}
-                      <div className="mb-4 flex gap-2 flex-shrink-0">
-                        <input
-                          type="text"
-                          placeholder="Search templates..."
-                          value={templateSearchTerm}
-                          onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                          className="flex-1 px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
-                        />
-                        <select
-                          value={selectedLanguage}
-                          onChange={(e) => setSelectedLanguage(e.target.value)}
-                          className="px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[120px]"
-                        >
-                          <option value="">All</option>
-                          {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
-                            .sort()
-                            .map(lang => (
-                              <option key={lang} value={lang}>
-                                {getLanguageDisplayName(lang)}
-                              </option>
-                            ))}
-                        </select>
-                      </div>
-                      
-                      {/* Templates List */}
-                      <div className="space-y-3 flex-1 overflow-y-auto">
-                    {isLoadingTemplates ? (
-                      <div className="text-center text-gray-500 py-4">
-                        <div className="loading loading-spinner loading-sm"></div>
-                        <span className="ml-2">Loading...</span>
-                      </div>
-                    ) : (() => {
-                      let filtered = filterTemplates(templates, templateSearchTerm);
-                      if (selectedLanguage) {
-                        filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
+                  </div>
+                )}
+
+                {/* Template Dropdown - Mobile (rendered outside hidden container) */}
+                {showTemplateSelector && isMobile && (
+                  <div
+                    className="fixed inset-0 z-[9999] flex items-end justify-center p-4"
+                    onClick={(e) => {
+                      // Only close if clicking directly on the backdrop, not on the modal content
+                      if (e.target === e.currentTarget) {
+                        setShowTemplateSelector(false);
                       }
-                      return filtered;
-                    })().length === 0 ? (
-                      <div className="text-center text-gray-500 py-4 text-sm">
-                        {templateSearchTerm || selectedLanguage ? 'No templates found matching your filters.' : 'No templates available.'}
-                      </div>
-                    ) : (() => {
-                      let filtered = filterTemplates(templates, templateSearchTerm);
-                      if (selectedLanguage) {
-                        filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
-                      }
-                      return filtered;
-                    })().map((template) => (
-                      <TemplateOptionCard
-                        key={template.id}
-                        template={template}
-                        isSelected={selectedTemplate?.id === template.id}
-                        onClick={() => {
-                          if (template.active !== 't') {
-                            toast.error('Template pending approval');
-                            return;
-                          }
-                          setSelectedTemplate(template);
-                          setShowTemplateSelector(false);
-                          setTemplateSearchTerm('');
-                          setSelectedLanguage('');
-                          // Always set template content in input field
-                          setNewMessage(template.content || '');
-                          
-                          // Expand textarea on mobile when template is applied
-                          if (isMobile && textareaRef.current) {
-                            setTimeout(() => {
-                              if (textareaRef.current) {
-                                textareaRef.current.style.height = 'auto';
-                                textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
+                    }}
+                  >
+                    {/* Backdrop */}
+                    <div
+                      className="fixed inset-0 bg-black/50 z-[9998]"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowTemplateSelector(false);
+                      }}
+                    />
+                    <div
+                      ref={templateSelectorRef}
+                      className="relative z-[9999] w-full max-w-md h-[90vh] overflow-hidden pointer-events-auto flex flex-col rounded-t-2xl shadow-2xl"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        // Prevent clicks inside modal from closing anything
+                      }}
+                    >
+                      <div className="bg-white h-full flex flex-col overflow-hidden rounded-t-2xl">
+                        {/* Header with gradient background */}
+                        <div className="px-5 py-4 bg-gradient-to-r from-green-500 to-emerald-600 flex-shrink-0">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <FaWhatsapp className="w-5 h-5 text-white" />
+                              <h3 className="text-base font-bold text-white">Select Template</h3>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.nativeEvent.stopImmediatePropagation();
+                                setShowTemplateSelector(false);
+                              }}
+                              className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-1.5 z-50 relative"
+                              aria-label="Close template selector"
+                            >
+                              <XMarkIcon className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Content */}
+                        <div className="p-4 flex-1 flex flex-col min-h-0 overflow-hidden">
+                          {/* Search Input */}
+                          <div className="mb-4 flex gap-2 flex-shrink-0">
+                            <input
+                              type="text"
+                              placeholder="Search templates..."
+                              value={templateSearchTerm}
+                              onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                              className="flex-1 px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
+                            />
+                            <select
+                              value={selectedLanguage}
+                              onChange={(e) => setSelectedLanguage(e.target.value)}
+                              className="px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[120px]"
+                            >
+                              <option value="">All</option>
+                              {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
+                                .sort()
+                                .map(lang => (
+                                  <option key={lang} value={lang}>
+                                    {getLanguageDisplayName(lang)}
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+
+                          {/* Templates List */}
+                          <div className="space-y-3 flex-1 overflow-y-auto">
+                            {isLoadingTemplates ? (
+                              <div className="text-center text-gray-500 py-4">
+                                <div className="loading loading-spinner loading-sm"></div>
+                                <span className="ml-2">Loading...</span>
+                              </div>
+                            ) : (() => {
+                              let filtered = filterTemplates(templates, templateSearchTerm);
+                              if (selectedLanguage) {
+                                filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
                               }
-                            }, 0);
-                          }
-                        }}
-                      />
-                    ))
-                    }
+                              return filtered;
+                            })().length === 0 ? (
+                              <div className="text-center text-gray-500 py-4 text-sm">
+                                {templateSearchTerm || selectedLanguage ? 'No templates found matching your filters.' : 'No templates available.'}
+                              </div>
+                            ) : (() => {
+                              let filtered = filterTemplates(templates, templateSearchTerm);
+                              if (selectedLanguage) {
+                                filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
+                              }
+                              return filtered;
+                            })().map((template) => (
+                              <TemplateOptionCard
+                                key={template.id}
+                                template={template}
+                                isSelected={selectedTemplate?.id === template.id}
+                                onClick={() => {
+                                  if (template.active !== 't') {
+                                    toast.error('Template pending approval');
+                                    return;
+                                  }
+                                  setSelectedTemplate(template);
+                                  setShowTemplateSelector(false);
+                                  setTemplateSearchTerm('');
+                                  setSelectedLanguage('');
+                                  // Always set template content in input field
+                                  setNewMessage(template.content || '');
+
+                                  // Expand textarea on mobile when template is applied
+                                  if (isMobile && textareaRef.current) {
+                                    setTimeout(() => {
+                                      if (textareaRef.current) {
+                                        textareaRef.current.style.height = 'auto';
+                                        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
+                                      }
+                                    }, 0);
+                                  }
+                                }}
+                              />
+                            ))
+                            }
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              </div>
-              )}
-              
+                )}
+
 
                 {/* Voice Recorder */}
                 {showVoiceRecorder && (
-                <div className={`w-full mb-2 ${isMobile ? 'p-3' : 'px-4 pb-2'}`}>
+                  <div className={`w-full mb-2 ${isMobile ? 'p-3' : 'px-4 pb-2'}`}>
                     <VoiceMessageRecorder
                       onRecorded={(audioBlob) => {
                         // Convert blob to File and set as selectedFile
@@ -5804,10 +7361,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         const mimeType = audioBlob.type || 'audio/webm;codecs=opus';
                         const extension = mimeType.includes('ogg') ? 'ogg' : 'webm';
                         const audioFile = new File([audioBlob], `voice_${Date.now()}.${extension}`, { type: mimeType });
-                        
+
                         // Set as selectedFile so the regular send button can handle it
                         setSelectedFile(audioFile);
-                        
+
                         // Close the recorder UI
                         setShowVoiceRecorder(false);
                       }}
@@ -5818,7 +7375,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
                 {/* Selected file preview */}
                 {selectedFile && (
-                <div className={`flex items-center gap-2 bg-gray-100/80 backdrop-blur-md rounded-lg px-3 py-1 border border-gray-300/50 ${isMobile ? 'mx-3 mb-2' : 'mx-4 mb-2'}`}>
+                  <div className={`flex items-center gap-2 bg-gray-100/80 backdrop-blur-md rounded-lg px-3 py-1 border border-gray-300/50 ${isMobile ? 'mx-3 mb-2' : 'mx-4 mb-2'}`}>
                     <span className="text-xs text-gray-700">{selectedFile.name}</span>
                     <button
                       type="button"
@@ -5829,17 +7386,17 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     </button>
                   </div>
                 )}
-          </>
-        ) : (
-          /* No client selected */
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-center text-gray-500">
-              <FaWhatsapp className="w-16 h-16 mx-auto mb-4 text-gray-300" />
-              <h2 className="text-xl font-medium mb-2">Welcome to WhatsApp</h2>
-              <p className="text-sm">Select a client to start chatting</p>
-            </div>
-          </div>
-        )}
+              </>
+            ) : (
+              /* No client selected */
+              <div className="flex-1 flex items-center justify-center">
+                <div className="text-center text-gray-500">
+                  <FaWhatsapp className="w-16 h-16 mx-auto mb-4 text-gray-300" />
+                  <h2 className="text-xl font-medium mb-2">Welcome to WhatsApp</h2>
+                  <p className="text-sm">Select a client to start chatting</p>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -6067,14 +7624,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 <div className="space-y-2">
                   {newMessageSearchResults.map((result, index) => {
                     // Use a more unique key to avoid React key conflicts
-                    const uniqueKey = result.lead_type === 'legacy' 
+                    const uniqueKey = result.lead_type === 'legacy'
                       ? `legacy_${result.id}_${result.contactName || result.name}_${index}`
                       : `${result.id}_${result.contactName || result.name}_${index}`;
-                    
+
                     const displayName = result.contactName || result.name || '';
                     const displayEmail = result.email || '';
                     const displayPhone = result.phone || result.mobile || '';
-                    
+
                     return (
                       <button
                         key={uniqueKey}
