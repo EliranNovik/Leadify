@@ -509,6 +509,13 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           displayText = matchedText;
         }
 
+        // Replace long URLs with "Meeting Link" text
+        if (href.startsWith('http://') || href.startsWith('https://')) {
+          if (matchedText.length > 50 || href.includes('teams.microsoft.com') || href.includes('meetup-join') || href.includes('meeting')) {
+            displayText = 'Meeting Link';
+          }
+        }
+
         parts.push(
           <a
             key={`link-${keyCounter++}`}
@@ -517,10 +524,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             rel={href.startsWith('mailto:') ? undefined : 'noopener noreferrer'}
             className="hover:underline break-all"
             style={{
-              color: '#3b82f6',
+              color: '#39ff14',
               wordBreak: 'break-all',
-              overflowWrap: 'break-word',
-              hyphens: 'auto'
+              overflowWrap: 'anywhere',
+              hyphens: 'auto',
+              maxWidth: '100%',
+              whiteSpace: 'normal',
+              display: 'inline',
+              fontWeight: 600,
+              lineBreak: 'anywhere'
             }}
           >
             {displayText}
@@ -564,14 +576,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         if (processedBold.length === 1 && typeof processedBold[0] === 'string') {
           // No links in bold, just make it bold
           parts.push(
-            <strong key={`bold-${keyCounter++}`}>
+            <strong key={`bold-${keyCounter++}`} style={{ fontWeight: 900 }}>
               {boldContent}
             </strong>
           );
         } else {
           // Has links in bold, wrap in strong
           parts.push(
-            <strong key={`bold-${keyCounter++}`}>
+            <strong key={`bold-${keyCounter++}`} style={{ fontWeight: 900 }}>
               {processedBold}
             </strong>
           );
@@ -993,14 +1005,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         );
       case 'delivered':
         return (
-          <svg className={`${baseClasses} text-gray-500`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#000000' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l4 4L17 8" />
           </svg>
         );
       case 'read':
         return (
-          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#3b82f6' }}>
+          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#00d9ff' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
@@ -5935,7 +5947,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     onClick={() => setShowMyContactsOnly(false)}
                     className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${!showMyContactsOnly ? 'text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
                     style={!showMyContactsOnly
-                      ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' }
+                      ? { background: 'linear-gradient(to bottom right, #047857, #0f766e)' }
                       : undefined
                     }
                   >
@@ -5946,7 +5958,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     onClick={() => setShowMyContactsOnly(true)}
                     className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${showMyContactsOnly ? 'text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
                     style={showMyContactsOnly
-                      ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' }
+                      ? { background: 'linear-gradient(to bottom right, #047857, #0f766e)' }
                       : undefined
                     }
                   >
@@ -6238,7 +6250,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   onClick={() => setIsNewMessageModalOpen(true)}
                   className="flex items-center gap-3 w-full"
                 >
-                  <div className="btn btn-circle w-12 h-12 text-white border-none shadow-lg hover:shadow-xl transition-shadow flex-shrink-0" style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)' }}>
+                  <div className="btn btn-circle w-12 h-12 text-white border-none shadow-lg hover:shadow-xl transition-shadow flex-shrink-0" style={{ background: 'linear-gradient(to bottom right, #047857, #0f766e)' }}>
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                     </svg>
@@ -6382,11 +6394,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                 </div>
                               )}
                               {message.direction === 'in' && (
-                                <div className="mb-1 ml-2">
+                                <div className="flex items-center gap-2 mb-1 ml-2">
                                   <WhatsAppAvatar
-                                    name={message.sender_name}
-                                    profilePictureUrl={message.profile_picture_url}
-                                    size="md"
+                                    name={selectedClient?.name || message.sender_name || 'Client'}
+                                    size="sm"
                                   />
                                 </div>
                               )}
@@ -6442,7 +6453,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                         overflow: 'visible',
                                         maxWidth: '100%',
                                         minWidth: 0,
-                                        height: 'auto'
+                                        height: 'auto',
+                                        fontWeight: message.caption?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
+                                        color: message.direction === 'out' ? 'white' : undefined
                                       }}
                                     >
                                       {renderTextWithLinks(message.caption)}
@@ -6466,8 +6479,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                 </div>
                               ) : (
                                 <div
-                                  className={`group ${message.direction === 'out' ? 'max-w-[75%] md:max-w-[55%]' : 'max-w-[75%] md:max-w-[70%]'} rounded-2xl px-4 py-1.5 shadow-sm relative ${message.direction === 'out'
-                                    ? 'bg-green-100 border border-green-200 text-gray-900'
+                                  className={`group ${message.direction === 'out' ? 'max-w-[75%] md:max-w-[35%] lg:max-w-[30%]' : 'max-w-[75%] md:max-w-[70%]'} rounded-2xl px-4 py-1.5 shadow-sm relative ${message.direction === 'out'
+                                    ? 'text-white border border-transparent'
                                     : 'bg-white text-gray-900 border border-gray-200'
                                     }`}
                                   style={{
@@ -6476,7 +6489,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                     overflow: 'visible',
                                     minWidth: 0,
                                     maxWidth: '100%',
-                                    height: 'auto'
+                                    height: 'auto',
+                                    ...(message.direction === 'out' ? {
+                                      background: 'linear-gradient(to bottom right, #047857, #0f766e)',
+                                      borderColor: 'transparent'
+                                    } : {})
                                   }}
                                 >
                                   {/* Edit input or message content */}
@@ -6521,12 +6538,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                           style={{
                                             textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
                                             wordBreak: 'break-word',
-                                            overflowWrap: 'break-word',
+                                            overflowWrap: 'anywhere',
                                             hyphens: 'auto',
                                             overflow: 'visible',
                                             maxWidth: '100%',
                                             minWidth: 0,
-                                            height: 'auto'
+                                            height: 'auto',
+                                            fontWeight: message.message?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
+                                            color: message.direction === 'out' ? 'white' : undefined
                                           }}
                                         >
                                           {renderTextWithLinks(message.message)}
@@ -6665,7 +6684,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             overflow: 'visible',
                                             maxWidth: '100%',
                                             minWidth: 0,
-                                            height: 'auto'
+                                            height: 'auto',
+                                            fontWeight: message.caption?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
+                                            color: message.direction === 'out' ? 'white' : undefined
                                           }}
                                         >
                                           {renderTextWithLinks(message.caption)}
@@ -6693,7 +6714,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             overflow: 'visible',
                                             maxWidth: '100%',
                                             minWidth: 0,
-                                            height: 'auto'
+                                            height: 'auto',
+                                            fontWeight: message.caption?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
+                                            color: message.direction === 'out' ? 'white' : undefined
                                           }}
                                         >
                                           {renderTextWithLinks(message.caption)}
@@ -6708,7 +6731,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             overflow: 'visible',
                                             maxWidth: '100%',
                                             minWidth: 0,
-                                            height: 'auto'
+                                            height: 'auto',
+                                            fontWeight: message.message?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
+                                            color: message.direction === 'out' ? 'white' : undefined
                                           }}
                                         >
                                           {renderTextWithLinks(message.message)}
@@ -6757,7 +6782,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             overflow: 'visible',
                                             maxWidth: '100%',
                                             minWidth: 0,
-                                            height: 'auto'
+                                            height: 'auto',
+                                            fontWeight: message.caption?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
+                                            color: message.direction === 'out' ? 'white' : undefined
                                           }}
                                         >
                                           {renderTextWithLinks(message.caption)}
@@ -6829,7 +6856,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
                 {/* Message Input - Desktop Only */}
                 {!isMobile && (
-                  <div className="absolute bottom-0 left-0 right-0 p-4 z-[100] pointer-events-none" style={{ overflow: 'visible' }}>
+                  <div className={`absolute ${isMobile ? 'bottom-2' : 'bottom-0'} left-0 right-0 ${isMobile ? 'px-4 pb-2' : 'p-4'} z-[100] pointer-events-none`} style={{ overflow: 'visible' }}>
                     {/* Lock Message - Above input field (or above template modal when open) */}
                     {isLocked && !showTemplateSelector && (
                       <div className="mb-2 pointer-events-auto">
@@ -6846,7 +6873,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           onClick={() => setShowDesktopTools(prev => !prev)}
                           disabled={sending || uploadingMedia}
                           className="btn btn-circle w-12 h-12 text-white disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow"
-                          style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
+                          style={{ background: 'linear-gradient(to bottom right, #047857, #0f766e)', borderColor: 'transparent' }}
                           title="Message tools"
                         >
                           <Squares2X2Icon className="w-6 h-6" />
@@ -6970,7 +6997,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                     : `Template: ${selectedTemplate.title}`
                                   : "Type a message..."
                           }
-                          className="textarea w-full resize-none min-h-[44px] border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
+                          className="textarea w-full resize-none border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
                           rows={1}
                           readOnly={!!selectedTemplate}
                           disabled={sending || uploadingMedia || isLocked}
@@ -6979,7 +7006,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                             backdropFilter: 'blur(10px)',
                             boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
                             maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '128px',
-                            cursor: selectedTemplate ? 'not-allowed' : 'text'
+                            cursor: selectedTemplate ? 'not-allowed' : 'text',
+                            minHeight: isMobile ? '48px' : '44px',
+                            ...(isMobile && !newMessage ? { height: '48px' } : {})
                           }}
                         />
                       </div>
@@ -7002,7 +7031,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         }}
                         disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
                         className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow disabled:opacity-50"
-                        style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
+                        style={{ background: 'linear-gradient(to bottom right, #047857, #0f766e)', borderColor: 'transparent' }}
                         title={selectedFile ? 'Send media' : 'Send message'}
                       >
                         {sending || uploadingMedia ? (
@@ -7237,7 +7266,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           <button
                             onClick={() => setShowMobileDropdown(!showMobileDropdown)}
                             className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow"
-                            style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
+                            style={{ background: 'linear-gradient(to bottom right, #047857, #0f766e)', borderColor: 'transparent' }}
                             title="Message tools"
                           >
                             <Squares2X2Icon className="w-6 h-6" />
@@ -7310,20 +7339,26 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                               textarea.style.height = 'auto';
                               // Use larger max height when template is present
                               const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : (isInputFocused || aiSuggestions.length > 0 ? 300 : 200);
-                              textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
+                              const calculatedHeight = Math.min(textarea.scrollHeight, maxHeight);
+                              const minHeight = isMobile ? 48 : 36;
+                              textarea.style.height = `${Math.max(calculatedHeight, minHeight)}px`;
                             }}
                             onFocus={(e) => {
                               if (selectedTemplate) return; // Prevent focus changes when template is selected
                               setIsInputFocused(true);
                               e.target.style.height = 'auto';
                               const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 300;
-                              e.target.style.height = `${Math.min(e.target.scrollHeight, maxHeight)}px`;
+                              const calculatedHeight = Math.min(e.target.scrollHeight, maxHeight);
+                              const minHeight = isMobile ? 48 : 36;
+                              e.target.style.height = `${Math.max(calculatedHeight, minHeight)}px`;
                             }}
                             onBlur={(e) => {
                               setIsInputFocused(false);
                               e.target.style.height = 'auto';
                               const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 200;
-                              e.target.style.height = `${Math.min(e.target.scrollHeight, maxHeight)}px`;
+                              const calculatedHeight = Math.min(e.target.scrollHeight, maxHeight);
+                              const minHeight = isMobile ? 48 : 36;
+                              e.target.style.height = `${Math.max(calculatedHeight, minHeight)}px`;
                             }}
                             onKeyDown={(e) => {
                               if (selectedTemplate) return; // Prevent changes when template is selected
@@ -7342,7 +7377,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                       : `Template: ${selectedTemplate.title}`
                                     : "Type a message..."
                             }
-                            className="textarea w-full resize-none text-sm min-h-[36px] border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
+                            className="textarea w-full resize-none text-sm border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
                             rows={1}
                             readOnly={!!selectedTemplate}
                             disabled={sending || uploadingMedia || isLocked}
@@ -7352,7 +7387,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                               backdropFilter: 'blur(10px)',
                               boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
                               maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '160px',
-                              cursor: selectedTemplate ? 'not-allowed' : 'text'
+                              cursor: selectedTemplate ? 'not-allowed' : 'text',
+                              minHeight: isMobile ? '48px' : '36px',
+                              height: isMobile && !newMessage && !selectedTemplate ? '48px' : 'auto'
                             }}
                           />
                         </div>
@@ -7375,7 +7412,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           }}
                           disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
                           className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow disabled:opacity-50"
-                          style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
+                          style={{ background: 'linear-gradient(to bottom right, #047857, #0f766e)', borderColor: 'transparent' }}
                           title={selectedFile ? 'Send media' : 'Send message'}
                         >
                           {sending || uploadingMedia ? (

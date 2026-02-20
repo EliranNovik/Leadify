@@ -551,6 +551,13 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           displayText = matchedText;
         }
         
+        // Replace long URLs with "Meeting Link" text
+        if (href.startsWith('http://') || href.startsWith('https://')) {
+          if (matchedText.length > 50 || href.includes('teams.microsoft.com') || href.includes('meetup-join') || href.includes('meeting')) {
+            displayText = 'Meeting Link';
+          }
+        }
+        
         parts.push(
           <a
             key={`link-${keyCounter++}`}
@@ -559,10 +566,15 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             rel={href.startsWith('mailto:') ? undefined : 'noopener noreferrer'}
             className="hover:underline break-all"
             style={{ 
-              color: '#3b82f6',
+              color: '#39ff14',
               wordBreak: 'break-all',
-              overflowWrap: 'break-word',
-              hyphens: 'auto'
+              overflowWrap: 'anywhere',
+              hyphens: 'auto',
+              maxWidth: '100%',
+              whiteSpace: 'normal',
+              display: 'inline',
+              fontWeight: 600,
+              lineBreak: 'anywhere'
             }}
           >
             {displayText}
@@ -606,14 +618,14 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         if (processedBold.length === 1 && typeof processedBold[0] === 'string') {
           // No links in bold, just make it bold
           parts.push(
-            <strong key={`bold-${keyCounter++}`}>
+            <strong key={`bold-${keyCounter++}`} style={{ fontWeight: 900 }}>
               {boldContent}
             </strong>
           );
         } else {
           // Has links in bold, wrap in strong
           parts.push(
-            <strong key={`bold-${keyCounter++}`}>
+            <strong key={`bold-${keyCounter++}`} style={{ fontWeight: 900 }}>
               {processedBold}
             </strong>
           );
@@ -802,14 +814,14 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         );
       case 'delivered':
         return (
-          <svg className={`${baseClasses} text-gray-500`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#000000' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l4 4L17 8" />
           </svg>
         );
       case 'read':
         return (
-          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#3b82f6' }}>
+          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#00d9ff' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
@@ -1904,11 +1916,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       </div>
                     )}
                     {message.direction === 'in' && (
-                      <div className="mb-1 ml-2">
+                      <div className="flex items-center gap-2 mb-1 ml-2">
                         <WhatsAppAvatar
-                          name={message.sender_name}
-                          profilePictureUrl={message.profile_picture_url}
-                          size="md"
+                          name={displayName}
+                          size="sm"
                         />
                       </div>
                     )}
@@ -1947,7 +1958,9 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                               overflow: 'visible',
                               maxWidth: '100%',
                               minWidth: 0,
-                              height: 'auto'
+                              height: 'auto',
+                              fontWeight: message.caption?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
+                              color: message.direction === 'out' ? 'white' : undefined
                             }}
                           >
                             {renderTextWithLinks(message.caption)}
@@ -1971,18 +1984,22 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       </div>
                     ) : (
                       <div
-                        className={`group ${message.direction === 'out' ? 'max-w-[85%] md:max-w-[55%]' : 'max-w-[85%] md:max-w-[70%]'} rounded-2xl px-4 py-2 shadow-sm ${
+                        className={`group ${message.direction === 'out' ? 'max-w-[85%] md:max-w-[35%] lg:max-w-[30%]' : 'max-w-[85%] md:max-w-[70%]'} rounded-2xl px-4 py-2 shadow-sm ${
                           message.direction === 'out'
-                            ? 'bg-green-100 border border-green-200 text-gray-900'
+                            ? 'text-white border border-transparent'
                             : 'bg-white text-gray-900 border border-gray-200'
                         }`}
                         style={{
                           wordBreak: 'break-word',
-                          overflowWrap: 'break-word',
+                          overflowWrap: 'anywhere',
                           overflow: 'visible',
                           minWidth: 0,
                           maxWidth: '100%',
-                          height: 'auto'
+                          height: 'auto',
+                          ...(message.direction === 'out' ? {
+                            background: 'linear-gradient(to bottom right, #047857, #0f766e)',
+                            borderColor: 'transparent'
+                          } : {})
                         }}
                       >
                       {message.message_type === 'text' && (
@@ -1992,11 +2009,13 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                           style={{ 
                             textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
                             wordBreak: 'break-word',
-                            overflowWrap: 'break-word',
+                            overflowWrap: 'anywhere',
                             overflow: 'visible',
                             maxWidth: '100%',
                             minWidth: 0,
-                            height: 'auto'
+                            height: 'auto',
+                            fontWeight: message.message?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
+                            color: message.direction === 'out' ? 'white' : undefined
                           }}
                         >
                           {renderTextWithLinks(message.message)}
@@ -2057,7 +2076,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                                 maxWidth: '100%',
                                 minWidth: 0,
                                 height: 'auto',
-                              height: 'auto'
+                                fontWeight: message.caption?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
+                                color: message.direction === 'out' ? 'white' : undefined
                               }}
                             >
                               {renderTextWithLinks(message.caption)}
@@ -2072,7 +2092,9 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                                 overflow: 'visible',
                                 maxWidth: '100%',
                                 minWidth: 0,
-                                height: 'auto'
+                                height: 'auto',
+                                fontWeight: message.message?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
+                                color: message.direction === 'out' ? 'white' : undefined
                               }}
                             >
                               {renderTextWithLinks(message.message)}
@@ -2108,7 +2130,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         </div>
 
         {/* Input Area */}
-        <div className="absolute bottom-0 left-0 right-0 p-4 z-30 pointer-events-none">
+        <div className={`absolute ${isMobile ? 'bottom-2' : 'bottom-0'} left-0 right-0 ${isMobile ? 'px-4 pb-2' : 'p-4'} z-30 pointer-events-none`}>
           {/* AI Suggestions Dropdown - Above everything */}
           {showAISuggestions && (
             <div className="mb-2 pointer-events-auto">
@@ -2472,7 +2494,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 }}
                 disabled={sending || uploadingMedia}
                 className="btn btn-circle w-12 h-12 text-white disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow"
-                style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
+                style={{ background: 'linear-gradient(to bottom right, #047857, #0f766e)', borderColor: 'transparent' }}
                 title="Message tools"
               >
                 <Squares2X2Icon className="w-6 h-6" />
@@ -2596,14 +2618,16 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                           : `Template: ${selectedTemplate.title}`
                         : "Type a message..."
                 }
-                className="textarea w-full resize-none min-h-[44px] border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
+                className="textarea w-full resize-none border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
                 rows={1}
                 disabled={sending || uploadingMedia || isLocked}
                 style={{ 
                   backgroundColor: 'rgba(255, 255, 255, 0.8)', 
                   backdropFilter: 'blur(10px)',
                   boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-                  maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '128px'
+                  maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '128px',
+                  minHeight: isMobile ? '48px' : '44px',
+                  ...(isMobile && !newMessage ? { height: '48px' } : {})
                 }}
               />
             </div>
@@ -2626,7 +2650,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               }}
               disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
               className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow disabled:opacity-50"
-              style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
+              style={{ background: 'linear-gradient(to bottom right, #047857, #0f766e)', borderColor: 'transparent' }}
               title={selectedFile ? 'Send media' : 'Send message'}
             >
               {sending || uploadingMedia ? (
