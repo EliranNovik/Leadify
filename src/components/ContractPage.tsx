@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import ReactDOM from 'react-dom/client';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { EditorContent, useEditor } from '@tiptap/react';
@@ -11,7 +12,7 @@ import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
 import { generateJSON } from '@tiptap/html';
-import { CheckIcon, ArrowLeftIcon, ChevronDownIcon, ChevronUpIcon, PrinterIcon, ArrowDownTrayIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { CheckIcon, ArrowLeftIcon, ChevronDownIcon, ChevronUpIcon, PrinterIcon, ArrowDownTrayIcon, XMarkIcon, Cog6ToothIcon, ShareIcon, PencilIcon, CalendarIcon, ClipboardDocumentIcon } from '@heroicons/react/24/outline';
 import { handleContractSigned } from '../lib/contractAutomation';
 import { getPricePerApplicant } from '../lib/contractPricing';
 import SignaturePad from 'react-signature-canvas';
@@ -21,6 +22,7 @@ import { PlusIcon, MinusIcon } from '@heroicons/react/24/solid';
 // @ts-ignore - html2pdf.js doesn't have TypeScript definitions
 import html2pdf from 'html2pdf.js';
 import { getFrontendBaseUrl } from '../lib/api';
+import ContractDetailsAndPricingModal from './ContractDetailsAndPricingModal';
 
 function fillAllPlaceholders(text: string, customPricing: any, client: any, contract?: any) {
   if (!text) return text;
@@ -127,55 +129,55 @@ function fillAllPlaceholders(text: string, customPricing: any, client: any, cont
     // Handle pricing tiers
     if (customPricing.pricing_tiers) {
       const currency = customPricing.currency || 'USD';
-      
+
       // Get all available tiers in order
       const tierOrder = ['1', '2', '3', '4-7', '8-9', '10-15', '16+'];
-      const availableTiers = tierOrder.filter(key => 
-        customPricing.pricing_tiers[key] !== undefined && 
+      const availableTiers = tierOrder.filter(key =>
+        customPricing.pricing_tiers[key] !== undefined &&
         customPricing.pricing_tiers[key] !== null &&
         customPricing.pricing_tiers[key] !== 0
       );
-      
+
       let currentTierIndex = 0;
-      
+
       // Handle {{price_per_applicant}} placeholders with sequential fallback
       while (result.includes('{{price_per_applicant}}')) {
         const placeholderIndex = result.indexOf('{{price_per_applicant}}');
         const contextBefore = result.substring(Math.max(0, placeholderIndex - 200), placeholderIndex);
-        
+
         let tierKey: string | null = null;
         const recentContext = contextBefore.substring(Math.max(0, contextBefore.length - 80));
-        
+
         // Check for tier patterns - support both English and Hebrew
         if (/16\s*\+\s*applicant|16\s+or\s+more\s+applicant/i.test(recentContext) ||
-            /16\+?\s*מבקש|מעל\s*16|מ-?16\s*ומעלה/i.test(recentContext)) {
+          /16\+?\s*מבקש|מעל\s*16|מ-?16\s*ומעלה/i.test(recentContext)) {
           tierKey = '16+';
         } else if (/10\s*[-–]\s*15\s+applicant/i.test(recentContext) ||
-                   /10\s*[-–]\s*15\s*מבקש/i.test(recentContext)) {
+          /10\s*[-–]\s*15\s*מבקש/i.test(recentContext)) {
           tierKey = '10-15';
         } else if (/8\s*[-–]\s*9\s+applicant/i.test(recentContext) ||
-                   /8\s*[-–]\s*9\s*מבקש/i.test(recentContext)) {
+          /8\s*[-–]\s*9\s*מבקש/i.test(recentContext)) {
           tierKey = '8-9';
         } else if (/4\s*[-–]\s*7\s+applicant/i.test(recentContext) ||
-                   /4\s*[-–]\s*7\s*מבקש/i.test(recentContext)) {
+          /4\s*[-–]\s*7\s*מבקש/i.test(recentContext)) {
           tierKey = '4-7';
         } else if (/\b3\s+applicant/i.test(recentContext) ||
-                   /\b3\s*מבקש/i.test(recentContext)) {
+          /\b3\s*מבקש/i.test(recentContext)) {
           tierKey = '3';
         } else if (/\b2\s+applicant/i.test(recentContext) ||
-                   /\b2\s*מבקש|שני\s*מבקש/i.test(recentContext)) {
+          /\b2\s*מבקש|שני\s*מבקש/i.test(recentContext)) {
           tierKey = '2';
         } else if (/\b1\s+applicant|one\s+applicant/i.test(recentContext) ||
-                   /\b1\s*מבקש|מבקש\s*אחד|לכל\s*מבקש/i.test(recentContext)) {
+          /\b1\s*מבקש|מבקש\s*אחד|לכל\s*מבקש/i.test(recentContext)) {
           tierKey = '1';
         }
-        
+
         // Sequential fallback if no match
         if (!tierKey && currentTierIndex < availableTiers.length) {
           tierKey = availableTiers[currentTierIndex];
           currentTierIndex++;
         }
-        
+
         if (tierKey && customPricing.pricing_tiers[tierKey] !== undefined) {
           result = result.replace('{{price_per_applicant}}', `${currency} ${(customPricing.pricing_tiers[tierKey] || 0).toLocaleString()}`);
         } else {
@@ -342,73 +344,73 @@ function fillPlaceholdersInTiptapContent(content: any, customPricing: any, clien
       // Handle pricing tiers
       if (customPricing.pricing_tiers) {
         const currency = customPricing.currency || 'USD';
-        
+
         // Get all available tiers in order
         const tierOrder = ['1', '2', '3', '4-7', '8-9', '10-15', '16+'];
-        const availableTiers = tierOrder.filter(key => 
-          customPricing.pricing_tiers[key] !== undefined && 
+        const availableTiers = tierOrder.filter(key =>
+          customPricing.pricing_tiers[key] !== undefined &&
           customPricing.pricing_tiers[key] !== null &&
           customPricing.pricing_tiers[key] !== 0
         );
-        
+
         let currentTierIndex = 0;
-        
+
         // Find each {{price_per_applicant}} placeholder and replace it based on context
         // Look backwards from the placeholder to find the tier number
         while (text.includes('{{price_per_applicant}}')) {
           const placeholderIndex = text.indexOf('{{price_per_applicant}}');
-          
+
           // Get context before the placeholder - look at more text to catch tier labels
           const contextBefore = text.substring(Math.max(0, placeholderIndex - 200), placeholderIndex);
-          
+
           let tierKey: string | null = null;
-          
+
           // Check for tier patterns in order of specificity (most specific first)
           // Support both English and Hebrew patterns
-          
+
           // 16+ patterns (English and Hebrew)
           if (/16\s*\+\s*applicant|16\s+or\s+more\s+applicant|16\s+applicant.*or\s+more/i.test(contextBefore) ||
-              /16\+?\s*מבקש|מעל\s*16|מ-?16\s*ומעלה/i.test(contextBefore)) {
+            /16\+?\s*מבקש|מעל\s*16|מ-?16\s*ומעלה/i.test(contextBefore)) {
             tierKey = '16+';
           }
           // 10-15 patterns
           else if (/10\s*[-–]\s*15\s+applicant/i.test(contextBefore) ||
-                   /10\s*[-–]\s*15\s*מבקש/i.test(contextBefore)) {
+            /10\s*[-–]\s*15\s*מבקש/i.test(contextBefore)) {
             tierKey = '10-15';
           }
           // 8-9 patterns
           else if (/8\s*[-–]\s*9\s+applicant/i.test(contextBefore) ||
-                   /8\s*[-–]\s*9\s*מבקש/i.test(contextBefore)) {
+            /8\s*[-–]\s*9\s*מבקש/i.test(contextBefore)) {
             tierKey = '8-9';
           }
           // 4-7 patterns
           else if (/4\s*[-–]\s*7\s+applicant/i.test(contextBefore) ||
-                   /4\s*[-–]\s*7\s*מבקש/i.test(contextBefore)) {
+            /4\s*[-–]\s*7\s*מבקש/i.test(contextBefore)) {
             tierKey = '4-7';
           }
           // 3 applicants
           else if (/\b3\s+applicant/i.test(contextBefore) ||
-                   /\b3\s*מבקש/i.test(contextBefore)) {
+            /\b3\s*מבקש/i.test(contextBefore)) {
             tierKey = '3';
           }
           // 2 applicants
           else if (/\b2\s+applicant/i.test(contextBefore) ||
-                   /\b2\s*מבקש|שני\s*מבקש/i.test(contextBefore)) {
+            /\b2\s*מבקש|שני\s*מבקש/i.test(contextBefore)) {
             tierKey = '2';
           }
           // 1 applicant - including "לכל מבקש" (for each applicant)
           else if (/\b1\s+applicant|one\s+applicant|For\s+one\s+applicant/i.test(contextBefore) ||
-                   /\b1\s*מבקש|מבקש\s*אחד|לכל\s*מבקש/i.test(contextBefore)) {
+            /\b1\s*מבקש|מבקש\s*אחד|לכל\s*מבקש/i.test(contextBefore)) {
             tierKey = '1';
           }
-          
+
           // If no specific tier matched, use sequential replacement from available tiers
           if (!tierKey && currentTierIndex < availableTiers.length) {
             tierKey = availableTiers[currentTierIndex];
             console.log(`📝 Using sequential tier: ${tierKey} (index ${currentTierIndex} of ${availableTiers.length})`);
             currentTierIndex++;
           }
-          
+
           if (tierKey && customPricing.pricing_tiers[tierKey] !== undefined) {
             const price = (customPricing.pricing_tiers[tierKey] || 0).toLocaleString();
             const replacement = `${currency} ${price}`;
@@ -485,8 +487,9 @@ function cleanTiptapContent(content: any): any {
       if (item.type === 'text') {
         return item.text && item.text.trim() !== '';
       }
+      // Always preserve paragraphs - even empty ones represent line breaks
       if (item.type === 'paragraph') {
-        return item.content && item.content.length > 0;
+        return true; // Keep all paragraphs, they represent line breaks
       }
       return true;
     });
@@ -503,7 +506,8 @@ function cleanTiptapContent(content: any): any {
     const cleanedContent = cleanTiptapContent(content.content);
     if (Array.isArray(cleanedContent)) {
       const filteredContent = cleanedContent.filter(item => item !== null);
-      if (filteredContent.length === 0) {
+      // Don't remove doc if it has paragraphs (even empty ones)
+      if (filteredContent.length === 0 && content.type !== 'doc') {
         return null;
       }
       return { ...content, content: filteredContent };
@@ -537,13 +541,13 @@ function normalizeTiptapContent(content: any): any {
     console.log('🔍 Has type:', 'type' in content);
     console.log('🔍 Type value:', content.type);
   }
-  
+
   // If content is null or undefined, return empty doc
   if (!content) {
     console.log('⚠️ Content is null/undefined, returning empty doc');
     return { type: 'doc', content: [] };
   }
-  
+
   // If content is a string, try to parse it as JSON
   if (typeof content === 'string') {
     try {
@@ -563,12 +567,12 @@ function normalizeTiptapContent(content: any): any {
       }
     }
   }
-  
+
   // Check if content has html/delta properties (Quill format - convert HTML to TipTap JSON)
   if (content && typeof content === 'object' && ('html' in content || 'delta' in content)) {
     console.log('🔧 Detected html/delta format, converting HTML to TipTap JSON...');
     const htmlContent = content.html;
-    
+
     if (htmlContent && typeof htmlContent === 'string') {
       try {
         const converted = generateJSON(htmlContent, editorExtensionsForConversion);
@@ -589,7 +593,7 @@ function normalizeTiptapContent(content: any): any {
       return { type: 'doc', content: [] };
     }
   }
-  
+
   // Check if content is a valid TipTap JSON structure (should have type: 'doc' at root)
   if (content && typeof content === 'object' && content.type === 'doc') {
     // Validate that it has a content array
@@ -601,7 +605,7 @@ function normalizeTiptapContent(content: any): any {
       return { type: 'doc', content: content.content || [] };
     }
   }
-  
+
   // If content is an object but not a valid TipTap doc, try to wrap it
   if (content && typeof content === 'object') {
     // Check if it's already an array (might be content array directly)
@@ -609,25 +613,25 @@ function normalizeTiptapContent(content: any): any {
       console.log('⚠️ Content is an array, wrapping in doc');
       return { type: 'doc', content: content };
     }
-    
+
     // Check if it looks like it might be a single node (has type property)
     if (content.type && content.content !== undefined) {
       // It might be a node, wrap it in a doc
       console.log('⚠️ Content looks like a single node, wrapping in doc');
       return { type: 'doc', content: [content] };
     }
-    
+
     // Check if it has a content property that's an array
     if (content.content && Array.isArray(content.content)) {
       console.log('⚠️ Content has content array but no type:doc, wrapping in doc');
       return { type: 'doc', content: content.content };
     }
-    
+
     console.error('❌ Unknown content structure - cannot normalize');
     console.error('❌ Content:', JSON.stringify(content, null, 2).substring(0, 500));
     return { type: 'doc', content: [] };
   }
-  
+
   // Fallback: return empty doc
   console.error('❌ Could not normalize content - unsupported type or structure');
   console.error('❌ Content:', content);
@@ -636,10 +640,10 @@ function normalizeTiptapContent(content: any): any {
 
 function preprocessTemplatePlaceholders(content: any): any {
   console.log('🔧 preprocessTemplatePlaceholders called with:', content);
-  
+
   // First normalize the content to ensure it's valid TipTap JSON
   const normalizedContent = normalizeTiptapContent(content);
-  
+
   let textId = 1;
   let signatureId = 1;
 
@@ -728,6 +732,108 @@ const ContractPage: React.FC = () => {
   const [template, setTemplate] = useState<any>(null);
   const [client, setClient] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [allCategories, setAllCategories] = useState<any[]>([]);
+
+  // Fetch categories (same logic as ClientHeader.tsx)
+  useEffect(() => {
+    const fetchCategories = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('misc_category')
+          .select(`
+            id,
+            name,
+            misc_maincategory ( id, name )
+          `)
+          .order('name');
+
+        if (error) throw error;
+        setAllCategories(data || []);
+      } catch (error) {
+        console.error('Error fetching categories:', error);
+      }
+    };
+    fetchCategories();
+  }, []);
+
+  // Helper function to get category display name with main category (same logic as ClientHeader.tsx)
+  const getCategoryDisplayName = (categoryId: number | string | null | undefined, fallbackCategory?: string): string => {
+    if (!categoryId) {
+      return fallbackCategory || '';
+    }
+
+    const category = allCategories.find((cat: any) => {
+      const catId = typeof cat.id === 'bigint' ? Number(cat.id) : cat.id;
+      const searchId = typeof categoryId === 'string' ? parseInt(categoryId, 10) : categoryId;
+      return catId === searchId || Number(catId) === Number(searchId);
+    });
+
+    if (category) {
+      if (category.misc_maincategory?.name) {
+        return `${category.name} (${category.misc_maincategory.name})`;
+      } else {
+        return category.name;
+      }
+    }
+
+    return fallbackCategory || '';
+  };
+
+  // Helper function to render lead number (same logic as ClientHeader.tsx)
+  const renderLeadNumber = (): string => {
+    if (!client) return leadNumber || 'N/A';
+
+    // For new leads, id is a UUID, so we should not use it as a fallback
+    // Only use id for legacy leads (where id is numeric)
+    const isLegacyLead = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_') ||
+      (typeof client.id === 'number' || (typeof client.id === 'string' && !isNaN(Number(client.id)) && !client.id.includes('-')));
+
+    // Priority: lead_number > manual_id > (id only for legacy) > leadNumber param > 'N/A'
+    let displayNumber: string | number;
+    if (client.lead_number) {
+      displayNumber = client.lead_number;
+    } else if (client.manual_id) {
+      displayNumber = client.manual_id;
+    } else if (isLegacyLead && client.id) {
+      // For legacy leads, id is numeric, so we can use it
+      displayNumber = client.id;
+    } else if (leadNumber) {
+      displayNumber = leadNumber;
+    } else {
+      return 'N/A';
+    }
+
+    const displayStr = displayNumber.toString();
+    const hasExistingSuffix = displayStr.includes('/');
+    let baseNumber = hasExistingSuffix ? displayStr.split('/')[0] : displayStr;
+    const existingSuffix = hasExistingSuffix ? displayStr.split('/').slice(1).join('/') : null;
+
+    // Convert L to C for success stage (stage 100)
+    const isSuccessStage = client.stage === '100' || client.stage === 100;
+    if (isSuccessStage && baseNumber && !baseNumber.toString().startsWith('C')) {
+      baseNumber = baseNumber.toString().replace(/^L/, 'C');
+    }
+
+    // Add /1 suffix to master leads (frontend only)
+    // A lead is a master if: it has no master_id AND it has subleads
+    const hasNoMasterId = !client.master_id || String(client.master_id).trim() === '';
+    // Note: We don't have subLeadsCount in ContractPage, so we'll skip the /1 suffix logic
+    // If needed, this could be added by fetching subleads count
+    const hasSubLeads = false; // ContractPage doesn't track this, but keeping structure for consistency
+
+    // Only add /1 to master leads that actually have subleads
+    // Since we don't have subLeadsCount, we'll skip this part
+    // if (isMasterWithSubLeads && !hasExistingSuffix) {
+    //   return `${baseNumber}/1`;
+    // } else if (hasExistingSuffix) {
+    //   return `${baseNumber}/${existingSuffix}`;
+    // }
+
+    if (hasExistingSuffix) {
+      return `${baseNumber}/${existingSuffix}`;
+    }
+    return baseNumber;
+  };
 
   const [signaturePads, setSignaturePads] = useState<{ [key: string]: any }>({});
   const [editing, setEditing] = useState(false);
@@ -736,17 +842,20 @@ const ContractPage: React.FC = () => {
   // Editable right panel state
   const [customPricing, setCustomPricing] = useState<any>(null);
   const [renderKey, setRenderKey] = useState(0);
-  
+
   // Currency selection state
   const [currencyType, setCurrencyType] = useState<'USD' | 'NIS'>('USD'); // Main currency type (USD or NIS)
   const [subCurrency, setSubCurrency] = useState<'USD' | 'GBP' | 'EUR'>('USD'); // Sub-currency for USD type
-  
+
   // VAT included/excluded state (default: included for NIS, excluded for USD/GBP/EUR)
   const [vatIncluded, setVatIncluded] = useState<boolean>(false);
-  
+
   // Template change modal state
   const [showChangeTemplateModal, setShowChangeTemplateModal] = useState(false);
   const [availableTemplates, setAvailableTemplates] = useState<any[]>([]);
+
+  // Contract Details & Pricing Modal state
+  const [showDetailsAndPricingModal, setShowDetailsAndPricingModal] = useState(false);
   const [templateSearchQuery, setTemplateSearchQuery] = useState('');
   const [showTemplateDropdown, setShowTemplateDropdown] = useState(false);
   const [templateLanguageFilter, setTemplateLanguageFilter] = useState<string | null>(null);
@@ -766,6 +875,19 @@ const ContractPage: React.FC = () => {
             dir: 'auto',
           },
         },
+        hardBreak: {
+          keepMarks: true,
+        },
+        bulletList: {
+          HTMLAttributes: {
+            dir: 'auto',
+          },
+        },
+        orderedList: {
+          HTMLAttributes: {
+            dir: 'auto',
+          },
+        },
       }),
       Placeholder.configure({ placeholder: 'Edit contract...' }),
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
@@ -779,6 +901,12 @@ const ContractPage: React.FC = () => {
     editable: false,
     parseOptions: {
       preserveWhitespace: 'full',
+    },
+    editorProps: {
+      handleKeyDown: (view, event) => {
+        // Let TipTap handle all keys normally
+        return false;
+      },
     },
   });
 
@@ -833,6 +961,18 @@ const ContractPage: React.FC = () => {
   // Add at the top, after useState declarations
   const [clientInputs, setClientInputs] = useState<{ [key: string]: string }>({});
 
+  // State for draggable fields
+  const [draggableFields, setDraggableFields] = useState<Array<{ id: string; type: 'text' | 'date' | 'signature'; x: number; y: number }>>([]);
+  const [draggingField, setDraggingField] = useState<string | null>(null);
+  const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  // State to track editor content changes for re-rendering placeholders as input boxes
+  const [editorContentKey, setEditorContentKey] = useState(0);
+
+  // State to track positions of draggable fields in edit mode
+  const [fieldPositions, setFieldPositions] = useState<{ [key: string]: { x: number; y: number } }>({});
+  const [draggingFieldId, setDraggingFieldId] = useState<string | null>(null);
+
   // Collapse/expand state for individual boxes
   const [isContractDetailsExpanded, setIsContractDetailsExpanded] = useState(true);
   const [isPricingExpanded, setIsPricingExpanded] = useState(true);
@@ -840,14 +980,14 @@ const ContractPage: React.FC = () => {
   // Track last content hash to prevent unnecessary updates
   const lastContentHashRef = useRef<string>('');
   const lastEditingStateRef = useRef<boolean>(false);
-  
+
   // Ref to measure header height for sidebar positioning
   const headerRef = useRef<HTMLDivElement>(null);
   const [headerHeight, setHeaderHeight] = useState(80);
 
   // Ref for contract content area (for PDF generation)
   const contractContentRef = useRef<HTMLDivElement>(null);
-  
+
   // PDF loading state
   const [pdfLoading, setPdfLoading] = useState(false);
 
@@ -865,7 +1005,7 @@ const ContractPage: React.FC = () => {
 
     // Update on window resize
     window.addEventListener('resize', updateHeaderHeight);
-    
+
     // Use ResizeObserver for more accurate measurements
     const resizeObserver = new ResizeObserver(() => {
       updateHeaderHeight();
@@ -924,8 +1064,8 @@ const ContractPage: React.FC = () => {
           if (legacyClient) {
             // Get currency from accounting_currencies
             let currency = '₪'; // Default
-            const currencyData = Array.isArray(legacyClient.accounting_currencies) 
-              ? legacyClient.accounting_currencies[0] 
+            const currencyData = Array.isArray(legacyClient.accounting_currencies)
+              ? legacyClient.accounting_currencies[0]
               : legacyClient.accounting_currencies;
             if (currencyData) {
               const isoCode = currencyData.iso_code?.toUpperCase();
@@ -943,7 +1083,7 @@ const ContractPage: React.FC = () => {
                 default: currency = '₪';
               }
             }
-            
+
             // Transform legacy client to match new client structure
             clientData = {
               ...legacyClient,
@@ -967,7 +1107,7 @@ const ContractPage: React.FC = () => {
               unactivation_reason: null,
               balance_currency: currency, // Store currency for consistency
             };
-            
+
           }
         } else {
           // For new leads, fetch from leads table
@@ -1084,23 +1224,23 @@ const ContractPage: React.FC = () => {
         if (!contractData && leadNumber) {
           const isLegacyLead = leadNumber.toString().startsWith('legacy_') ||
             (!isNaN(Number(leadNumber)));
-          
+
           if (isLegacyLead) {
             const legacyId = leadNumber.toString().replace('legacy_', '');
             console.log('ContractPage: No contract in contracts table, trying lead_leadcontact for legacy_id:', legacyId);
-            
+
             // Try fetching from lead_leadcontact table
             const { data: legacyContractData, error: legacyError } = await supabase
               .from('lead_leadcontact')
               .select('*')
               .eq('lead_id', legacyId)
               .maybeSingle();
-            
+
             if (!legacyError && legacyContractData) {
               // Check if there's contract HTML
               const hasContractHtml = legacyContractData.contract_html && legacyContractData.contract_html.trim() !== '' && legacyContractData.contract_html !== '\\N';
               const hasSignedContractHtml = legacyContractData.signed_contract_html && legacyContractData.signed_contract_html.trim() !== '' && legacyContractData.signed_contract_html !== '\\N';
-              
+
               if (hasContractHtml || hasSignedContractHtml) {
                 // Transform legacy contract to match contracts table format for ContractPage
                 contractData = {
@@ -1140,7 +1280,7 @@ const ContractPage: React.FC = () => {
           try {
             let clientData = null;
             let clientError = null;
-            
+
             // Check if this is a legacy lead (has legacy_id but no client_id)
             if (contractData.legacy_id && !contractData.client_id) {
               console.log('ContractPage: Fetching legacy client from contract legacy_id:', contractData.legacy_id);
@@ -1156,7 +1296,7 @@ const ContractPage: React.FC = () => {
                 `)
                 .eq('id', contractData.legacy_id)
                 .single();
-              
+
               if (legacyError) {
                 console.error('ContractPage: Error fetching legacy client:', legacyError);
                 clientError = legacyError;
@@ -1198,7 +1338,7 @@ const ContractPage: React.FC = () => {
                 .select('*')
                 .eq('id', contractData.client_id)
                 .single();
-              
+
               if (newError) {
                 console.error('ContractPage: Error fetching client:', newError);
                 clientError = newError;
@@ -1206,7 +1346,7 @@ const ContractPage: React.FC = () => {
                 clientData = newClient;
               }
             }
-            
+
             if (clientError) {
               console.error('ContractPage: Error fetching client from contract:', clientError);
               // Don't return - continue to set loading to false
@@ -1226,7 +1366,7 @@ const ContractPage: React.FC = () => {
 
         // Fetch template - check if it's a legacy template or new template
         let templateData = contractData.contract_templates;
-        
+
         // If no template from join, check if we need to fetch from misc_contracttemplate (legacy)
         // This can happen if:
         // 1. template_id is set but join didn't work
@@ -1236,7 +1376,7 @@ const ContractPage: React.FC = () => {
           if (contractData.template_id) {
             console.log('ContractPage: No template from join, checking if legacy template:', contractData.template_id);
             const isLegacyTemplate = !isNaN(Number(contractData.template_id)) || contractData.template_id.toString().startsWith('legacy_');
-            
+
             if (isLegacyTemplate) {
               const templateId = contractData.template_id.toString().replace('legacy_', '');
               console.log('ContractPage: Fetching legacy template from misc_contracttemplate:', templateId);
@@ -1245,7 +1385,7 @@ const ContractPage: React.FC = () => {
                 .select('*')
                 .eq('id', templateId)
                 .single();
-              
+
               if (!legacyTemplateError && legacyTemplate) {
                 console.log('ContractPage: Found legacy template:', legacyTemplate);
                 templateData = legacyTemplate;
@@ -1260,7 +1400,7 @@ const ContractPage: React.FC = () => {
                 .select('*')
                 .eq('id', contractData.template_id)
                 .single();
-              
+
               if (!newTemplateError && newTemplate) {
                 console.log('ContractPage: Found template from contract_templates:', newTemplate);
                 templateData = newTemplate;
@@ -1278,7 +1418,7 @@ const ContractPage: React.FC = () => {
               .select('*')
               .eq('id', legacyTemplateId)
               .single();
-            
+
             if (!legacyTemplateError && legacyTemplate) {
               console.log('ContractPage: Found legacy template from custom_pricing:', legacyTemplate);
               templateData = legacyTemplate;
@@ -1305,7 +1445,7 @@ const ContractPage: React.FC = () => {
           // Immediately set the editor content if editor is available
           if (editor && processedTemplate.content) {
             console.log('🎯 Setting editor content immediately:', processedTemplate.content);
-            
+
             // Normalize content to ensure it's valid TipTap JSON
             let processedContent = normalizeTiptapContent(processedTemplate.content);
             processedContent = JSON.parse(JSON.stringify(processedContent)); // Deep clone
@@ -1317,13 +1457,13 @@ const ContractPage: React.FC = () => {
 
             // Clean up any empty nodes
             processedContent = cleanTiptapContent(processedContent);
-            
+
             // Final validation before setting content
             if (!processedContent || processedContent.type !== 'doc') {
               console.error('❌ Invalid content after processing, resetting to empty doc. Content:', processedContent);
               processedContent = { type: 'doc', content: [] };
             }
-            
+
             try {
               editor.commands.setContent(processedContent);
               editor.setEditable(editing);
@@ -1344,7 +1484,7 @@ const ContractPage: React.FC = () => {
           if (sub === 'GBP') return '£';
           return '$';
         };
-        
+
         // Set the custom pricing if available
         if (contractData.custom_pricing) {
           console.log('ContractPage: Setting custom pricing:', contractData.custom_pricing);
@@ -1358,13 +1498,13 @@ const ContractPage: React.FC = () => {
             else if (existingCurrency === '£' || existingCurrency === 'GBP') existingSubCurrency = 'GBP';
             else existingSubCurrency = 'USD';
           }
-          
+
           setCurrencyType(existingCurrencyType);
           if (!existingIsNIS) setSubCurrency(existingSubCurrency);
-          
+
           // Refresh pricing tiers from template defaults while keeping user customizations
           let refreshedPricingTiers: { [key: string]: number } = { ...contractData.custom_pricing.pricing_tiers };
-          
+
           if (templateData) {
             // Get fresh pricing tiers from template based on currency type
             let templatePricingTiers: { [key: string]: number } = {};
@@ -1376,14 +1516,14 @@ const ContractPage: React.FC = () => {
               // Fallback to legacy default_pricing_tiers
               templatePricingTiers = templateData.default_pricing_tiers;
             }
-            
+
             // Update pricing tiers with fresh template defaults
             if (Object.keys(templatePricingTiers).length > 0) {
               console.log('ContractPage: Refreshing pricing tiers from template defaults:', templatePricingTiers);
               refreshedPricingTiers = { ...templatePricingTiers };
             }
           }
-          
+
           // Recalculate totals if pricing tiers were updated
           const applicantCount = contractData.custom_pricing.applicant_count || contractData.applicant_count || 1;
           const getCurrentTierKey = (count: number) => {
@@ -1395,13 +1535,13 @@ const ContractPage: React.FC = () => {
             if (count >= 10 && count <= 15) return '10-15';
             return '16+';
           };
-          
+
           const currentTierKey = getCurrentTierKey(applicantCount);
           const currentPricePerApplicant = refreshedPricingTiers[currentTierKey] || contractData.custom_pricing.pricing_tiers?.[currentTierKey] || 0;
-          
+
           // Recalculate total_amount based on refreshed pricing tiers
           const recalculatedTotal = currentPricePerApplicant * applicantCount;
-          
+
           // Preserve user customizations but update pricing tiers and recalculated totals
           // IMPORTANT: Preserve existing payment_plan if it exists, don't overwrite it
           const pricingWithVat = {
@@ -1409,7 +1549,7 @@ const ContractPage: React.FC = () => {
             pricing_tiers: refreshedPricingTiers, // Use fresh template defaults
             total_amount: recalculatedTotal, // Recalculate based on fresh tiers
             // Recalculate final_amount if no discount, otherwise preserve discount but update base
-            final_amount: contractData.custom_pricing.discount_percentage 
+            final_amount: contractData.custom_pricing.discount_percentage
               ? Math.round(recalculatedTotal * (1 - (contractData.custom_pricing.discount_percentage / 100)))
               : recalculatedTotal,
             discount_amount: contractData.custom_pricing.discount_percentage
@@ -1418,10 +1558,10 @@ const ContractPage: React.FC = () => {
             // Preserve payment_plan if it exists, otherwise let useEffect handle it
             payment_plan: contractData.custom_pricing.payment_plan || null
           };
-          
+
           console.log('ContractPage: Updated pricing with fresh template defaults:', pricingWithVat);
           setCustomPricing(pricingWithVat);
-          
+
           // Save refreshed pricing tiers to database to persist template defaults
           // Save asynchronously to avoid blocking
           (async () => {
@@ -1443,7 +1583,7 @@ const ContractPage: React.FC = () => {
           })();
         } else {
           console.log('ContractPage: No custom pricing found in contract data, initializing with defaults');
-          
+
           // Get currency from template (not from lead)
           // Check if we have templateData (which could be from contract_templates or misc_contracttemplate)
           const templateCurrency = templateData?.default_currency || '$';
@@ -1455,17 +1595,17 @@ const ContractPage: React.FC = () => {
             else if (templateCurrency === '£' || templateCurrency === 'GBP') initialSubCurrency = 'GBP';
             else initialSubCurrency = 'USD';
           }
-          
+
           // Set currency type and sub-currency state
           setCurrencyType(initialCurrencyType);
           if (!isNIS) {
             setSubCurrency(initialSubCurrency);
           }
-          
+
           // Get pricing tiers from template based on currency type
           // Works for both contract_templates and misc_contracttemplate
           let pricingTiers: { [key: string]: number } = {};
-          
+
           if (templateData) {
             if (initialCurrencyType === 'NIS' && templateData.default_pricing_tiers_nis) {
               pricingTiers = templateData.default_pricing_tiers_nis;
@@ -1476,7 +1616,7 @@ const ContractPage: React.FC = () => {
               pricingTiers = templateData.default_pricing_tiers;
             }
           }
-          
+
           // Calculate initial totals from pricing tiers
           const applicantCount = contractData.applicant_count || 1;
           const getCurrentTierKey = (count: number) => {
@@ -1488,11 +1628,11 @@ const ContractPage: React.FC = () => {
             if (count >= 10 && count <= 15) return '10-15';
             return '16+';
           };
-          
+
           const currentTierKey = getCurrentTierKey(applicantCount);
           const currentPricePerApplicant = pricingTiers[currentTierKey] || 0;
           const total = currentPricePerApplicant * applicantCount;
-          
+
           // Initialize with default pricing structure using template pricing tiers
           const defaultPricing = {
             applicant_count: applicantCount,
@@ -1557,7 +1697,7 @@ const ContractPage: React.FC = () => {
             .from('misc_language')
             .select('id, name')
             .order('name', { ascending: true });
-          
+
           if (error) throw error;
           setAvailableLanguages(data || []);
         } catch (error) {
@@ -1593,7 +1733,7 @@ const ContractPage: React.FC = () => {
           }
 
           if (legacyTemplatesResult.data) {
-            const activeLegacy = legacyTemplatesResult.data.filter((t: any) => 
+            const activeLegacy = legacyTemplatesResult.data.filter((t: any) =>
               t.active === true || t.active === 't' || t.active === 1
             );
             allTemplates.push(...activeLegacy.map((t: any) => ({ ...t, id: String(t.id) })));
@@ -1616,14 +1756,14 @@ const ContractPage: React.FC = () => {
     try {
       // Check if the new template is a legacy template
       const isLegacyTemplate = !isNaN(Number(newTemplateId)) || newTemplateId.startsWith('legacy_');
-      
+
       // Prepare update data
       const updateData: any = {};
-      
+
       if (isLegacyTemplate) {
         // For legacy templates, set template_id to NULL and store ID in custom_pricing.legacy_template_id
         updateData.template_id = null;
-        
+
         // Update custom_pricing to include legacy_template_id
         const currentCustomPricing = contract.custom_pricing || {};
         updateData.custom_pricing = {
@@ -1633,7 +1773,7 @@ const ContractPage: React.FC = () => {
       } else {
         // For new templates (UUID), set template_id to the UUID and remove legacy_template_id
         updateData.template_id = newTemplateId;
-        
+
         // Remove legacy_template_id from custom_pricing if it exists
         const currentCustomPricing = contract.custom_pricing || {};
         const { legacy_template_id, ...restCustomPricing } = currentCustomPricing;
@@ -1653,7 +1793,7 @@ const ContractPage: React.FC = () => {
       if (newTemplate) {
         // Fetch full template content
         let fullTemplate;
-        
+
         if (isLegacyTemplate) {
           const templateId = newTemplateId.toString().replace('legacy_', '');
           const { data } = await supabase
@@ -1738,20 +1878,20 @@ const ContractPage: React.FC = () => {
     // When pricing changes, we'll still update placeholders in the current content
     // IMPORTANT: Preprocess custom_content to ensure all {{text}} and {{signature}} have IDs
     let content = contract.custom_content || template.content;
-    
+
     // If using custom_content, ensure it's preprocessed to add IDs to placeholders
     if (contract.custom_content) {
       // Check if content has generic placeholders without IDs
       const contentStr = JSON.stringify(content);
       const hasGenericText = /\{\{text\}\}/.test(contentStr);
       const hasGenericSig = /\{\{signature\}\}/.test(contentStr);
-      
+
       if (hasGenericText || hasGenericSig) {
         console.log('🔧 Custom content has generic placeholders, preprocessing...');
         content = preprocessTemplatePlaceholders(content);
       }
     }
-    
+
     if (!content) return;
 
     // Create a hash of the content and dependencies to detect actual changes
@@ -1810,7 +1950,7 @@ const ContractPage: React.FC = () => {
         pricingChanged = true;
       }
     }
-    
+
     // In readonly mode, always update when pricing changes (including payment plan)
     // In edit mode, only update if pricing changed (to update placeholders) or content changed
     if (editing && !contentChanged && !pricingChanged) {
@@ -1841,13 +1981,13 @@ const ContractPage: React.FC = () => {
 
     // Clean up any empty nodes
     processedContent = cleanTiptapContent(processedContent);
-    
+
     // Final validation before setting content
     if (!processedContent || processedContent.type !== 'doc') {
       console.error('❌ Invalid content after processing, resetting to empty doc. Content:', processedContent);
       processedContent = { type: 'doc', content: [] };
     }
-    
+
     // Set content if it changed OR if pricing changed (including payment plan)
     // Always update when pricing changes to update placeholders, even in edit mode
     // This ensures payment plan rows update automatically when changed in the side panel
@@ -1869,16 +2009,35 @@ const ContractPage: React.FC = () => {
     lastEditingStateRef.current = editing;
   }, [editing, editor, contract, template, customPricing, client, renderKey]);
 
-
+  // No need to track editor updates - let TipTap handle it naturally
 
   // Save handler for edited contract
   const handleSaveEdit = async () => {
-    if (!editor) return;
+    if (!editor || !contract) return;
     const content = editor.getJSON();
-    await supabase.from('contracts').update({ custom_content: content }).eq('id', contract.id);
+
+    // Debug: Log the content structure to verify paragraphs are present
+    console.log('💾 Saving content:', JSON.stringify(content, null, 2));
+    const paragraphCount = content?.content?.filter((node: any) => node.type === 'paragraph').length || 0;
+    console.log(`📝 Paragraph count in saved content: ${paragraphCount}`);
+
+    // Update contract in database
+    const { error } = await supabase
+      .from('contracts')
+      .update({ custom_content: content })
+      .eq('id', contract.id);
+
+    if (error) {
+      console.error('Error saving contract:', error);
+      return;
+    }
+
+    // Update local contract state to reflect saved content
+    setContract((prev: any) => prev ? { ...prev, custom_content: content } : prev);
     setEditing(false);
-    // Reload contract data
-    window.location.reload();
+
+    // Force re-render to show saved content
+    setRenderKey(prev => prev + 1);
   };
 
   // Update contract.custom_pricing in DB and local state, and refresh contract content
@@ -1887,11 +2046,11 @@ const ContractPage: React.FC = () => {
       console.error('updateCustomPricing: No contract available');
       return;
     }
-    
+
     // Compute new pricing first
     setCustomPricing((currentPricing: any) => {
       const newPricing = { ...currentPricing, ...updates };
-      
+
       // If payment_plan is being updated, ensure it's properly formatted
       if (updates.payment_plan) {
         newPricing.payment_plan = updates.payment_plan.map((row: any, index: number) => ({
@@ -1900,16 +2059,16 @@ const ContractPage: React.FC = () => {
           notes: row.notes || '',
         }));
       }
-      
+
       // Save to database immediately with the computed value
-      const updatePayload: any = { 
+      const updatePayload: any = {
         custom_pricing: newPricing,
         total_amount: newPricing.total_amount,
         applicant_count: newPricing.applicant_count,
       };
-      
+
       console.log('💾 Saving payment plan to database:', updatePayload.custom_pricing?.payment_plan);
-      
+
       // Perform async database update outside of state setter
       (async () => {
         try {
@@ -1929,12 +2088,12 @@ const ContractPage: React.FC = () => {
           alert('Failed to save payment plan changes. Please try again.');
         }
       })();
-      
+
       return newPricing;
     });
-    
+
     setRenderKey(prev => prev + 1); // Force re-render of readonly view
-    
+
     // Force editor content refresh when payment plan changes
     // Reset content hash to ensure useEffect detects the change
     if (updates.payment_plan) {
@@ -1980,7 +2139,7 @@ const ContractPage: React.FC = () => {
   // When initializing or updating customPricing, use buildPaymentPlan with VAT calculations
   useEffect(() => {
     if (!customPricing) return;
-    
+
     const archivalFee = customPricing.archival_research_fee || 0;
     const totalAmount = customPricing.total_amount || 0;
     const discountAmount = customPricing?.discount_amount || 0;
@@ -1990,7 +2149,7 @@ const ContractPage: React.FC = () => {
     // Always recalculate payment plan when final amount changes
     // This ensures payment plan amounts update automatically when total_amount, discount, or currency changes
     const currentPaymentPlan = customPricing.payment_plan || [];
-    
+
     // Calculate the discounted base total (for payment plan calculations)
     const discountedBaseTotal = totalAmount - discountAmount;
 
@@ -2013,7 +2172,7 @@ const ContractPage: React.FC = () => {
 
     // Calculate total percentage to ensure proper distribution
     const totalPercent = basicPaymentPlan.reduce((sum: number, p: any) => sum + Number(p.percent || 0), 0) || 100;
-    
+
     // Update each payment to show value + VAT only if there's VAT
     const paymentPlan = basicPaymentPlan.map((payment: any, idx: number) => {
       if (payment.label === 'Archival Research' || payment.payment_order === 'Archival Research') {
@@ -2029,11 +2188,11 @@ const ContractPage: React.FC = () => {
         // Use the percentage ratio to distribute the discounted amount
         const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(payment.percent || 0)) / totalPercent);
         const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
-        
+
         // Ensure last payment is marked as "Final Payment"
         const isLastPayment = idx === basicPaymentPlan.length - 1;
         const paymentOrder = isLastPayment ? 'Final Payment' : (payment.payment_order || payment.label || payment.due_date || 'Payment');
-        
+
         return {
           ...payment,
           percent: payment.percent || 0,
@@ -2051,22 +2210,22 @@ const ContractPage: React.FC = () => {
   // Force VAT calculation on initial load
   useEffect(() => {
     if (!customPricing || !customPricing.payment_plan) return;
-    
+
     const currency = customPricing?.currency || '₪';
     const isIsraeli = currency === '₪' || currency === 'ILS' || currency === 'NIS';
     const currentPaymentPlan = customPricing.payment_plan;
-    
+
     // Check if payment plan needs VAT calculation (has numeric values instead of "value + VAT" strings)
-    const needsVatCalculation = currentPaymentPlan.some((row: any) => 
+    const needsVatCalculation = currentPaymentPlan.some((row: any) =>
       typeof row.value === 'number' || (typeof row.value === 'string' && !row.value.includes('+'))
     );
 
     if (needsVatCalculation && isIsraeli) {
       console.log('🔧 Forcing VAT calculation on initial load');
       // Trigger the main VAT calculation by updating a dependency
-      setCustomPricing((prev: typeof customPricing) => ({ 
-        ...prev, 
-        _forceVatCalculation: Date.now() 
+      setCustomPricing((prev: typeof customPricing) => ({
+        ...prev,
+        _forceVatCalculation: Date.now()
       }));
     }
   }, [customPricing?.payment_plan, customPricing?.currency]);
@@ -2238,9 +2397,9 @@ const ContractPage: React.FC = () => {
     const currentPlan = customPricing.payment_plan || [];
     const newPlan = [
       ...currentPlan,
-      { 
-        percent: 0, 
-        due_date: '', 
+      {
+        percent: 0,
+        due_date: '',
         value: 0,
         payment_order: `Payment ${currentPlan.length + 1}`,
         notes: '',
@@ -2334,7 +2493,7 @@ const ContractPage: React.FC = () => {
         notes: row.notes || '',
         label: row.label || row.payment_order || `Payment ${idx + 1}`,
       }));
-      
+
       await supabase.from('contracts').update({
         custom_pricing: {
           ...latestPricing,
@@ -2510,18 +2669,23 @@ const ContractPage: React.FC = () => {
           }
           const id = dateMatch[1];
           const dateValue = clientInputs[id] || '';
-          
+
           parts.push(
-            <span 
+            <span
               key={id}
-              className="inline-block relative field-wrapper"
-              style={{ verticalAlign: 'middle' }}
+              className="inline-flex items-center relative field-wrapper"
+              style={{
+                verticalAlign: 'middle',
+                margin: '0 8px',
+                display: 'inline-flex',
+                gap: '4px'
+              }}
               data-field-id={id}
               data-field-type="date"
             >
               <input
                 type="date"
-                className="input input-bordered input-lg mx-2 bg-white border-2 border-blue-300 focus:border-blue-500"
+                className="input input-bordered bg-white border-2 border-blue-300 focus:border-blue-500 rounded-lg"
                 value={dateValue ? (() => {
                   // Ensure the value is in YYYY-MM-DD format for date inputs
                   if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
@@ -2550,10 +2714,13 @@ const ContractPage: React.FC = () => {
                 readOnly={false}
                 autoComplete="off"
                 data-input-type="date"
-                style={{ 
-                  minWidth: 180, 
-                  display: 'inline-block', 
-                  verticalAlign: 'middle',
+                style={{
+                  minWidth: 200,
+                  width: '100%',
+                  padding: '10px 14px',
+                  fontSize: '16px',
+                  lineHeight: '1.5',
+                  margin: 0,
                   color: '#111827',
                   WebkitTextFillColor: '#111827',
                   cursor: isReadOnly ? 'not-allowed' : 'pointer',
@@ -2562,6 +2729,51 @@ const ContractPage: React.FC = () => {
                   MozAppearance: 'menulist'
                 }}
               />
+              {!isReadOnly && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (editor) {
+                      const content = editor.getJSON();
+                      const removePlaceholder = (node: any): any => {
+                        if (node.type === 'text' && node.text) {
+                          const newText = node.text.replace(new RegExp(`\\{\\{date:${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}\\}`, 'g'), '');
+                          if (newText !== node.text) {
+                            return newText ? { ...node, text: newText } : null;
+                          }
+                        }
+                        if (node.content) {
+                          const processedContent = Array.isArray(node.content)
+                            ? node.content.map(removePlaceholder).filter(Boolean)
+                            : removePlaceholder(node.content);
+                          return { ...node, content: processedContent };
+                        }
+                        return node;
+                      };
+                      const newContent = removePlaceholder(content);
+                      editor.commands.setContent(newContent);
+                    }
+                    setClientInputs(inputs => {
+                      const newInputs = { ...inputs };
+                      delete newInputs[id];
+                      return newInputs;
+                    });
+                  }}
+                  className="btn btn-circle btn-xs btn-error"
+                  style={{
+                    width: '20px',
+                    height: '20px',
+                    minHeight: '20px',
+                    padding: 0,
+                    flexShrink: 0
+                  }}
+                  title="Delete field"
+                >
+                  <MinusIcon className="w-3 h-3" />
+                </button>
+              )}
             </span>
           );
           lastIndex = dateRegex.lastIndex;
@@ -2569,7 +2781,7 @@ const ContractPage: React.FC = () => {
         if (lastIndex < text.length) {
           parts.push(text.slice(lastIndex));
         }
-        
+
         // After handling date placeholders, process the rest of the text normally
         // But first, let's recursively process any remaining placeholders
         return parts.map((part, idx) => {
@@ -2627,7 +2839,7 @@ const ContractPage: React.FC = () => {
                 displayValueStr = numValue.toString();
               }
             }
-            
+
             result.push(
               <span className="inline-block text-black font-medium border-b-2 border-black" key={keyPrefix + '-pprow-' + rowIndex}>
                 {row.percent}% = {customPricing.currency} {displayValueStr}
@@ -2671,28 +2883,90 @@ const ContractPage: React.FC = () => {
             parts.push(normalText);
           }
           const placeholder = match[1];
-          
+
           // Parse the placeholder - all these have IDs
           const textMatch = placeholder.match(/^{{text:([^}]+)}}$/);
           const dateMatch = placeholder.match(/^{{date:([^}]+)}}$/);
           const sigMatch = placeholder.match(/^{{signature:([^}]+)}}$/);
-          
+
           // Handle date fields first
           if (dateMatch) {
             const baseId = dateMatch[1];
             const dateValue = clientInputs[baseId] || '';
-            
+
+            const fieldPosition = fieldPositions[baseId] || { x: 0, y: 0 };
             parts.push(
-              <span 
+              <span
                 key={baseId}
-                className="inline-block relative field-wrapper"
-                style={{ verticalAlign: 'middle' }}
+                draggable={!isReadOnly && editing}
+                onDragStart={(e) => {
+                  if (!isReadOnly && editing) {
+                    setDraggingFieldId(baseId);
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', baseId);
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    e.dataTransfer.setData('application/x-offset', `${e.clientX - rect.left},${e.clientY - rect.top}`);
+                    e.currentTarget.style.opacity = '0.5';
+                  }
+                }}
+                onDrag={(e) => {
+                  if (!isReadOnly && editing && draggingFieldId === baseId && e.clientX > 0 && e.clientY > 0) {
+                    const offset = e.dataTransfer.getData('application/x-offset');
+                    if (offset) {
+                      const [offsetX, offsetY] = offset.split(',').map(Number);
+                      const newX = e.clientX - offsetX;
+                      const newY = e.clientY - offsetY;
+                      setFieldPositions(prev => ({
+                        ...prev,
+                        [baseId]: { x: newX, y: newY }
+                      }));
+                    }
+                  }
+                }}
+                onDragEnd={(e) => {
+                  setDraggingFieldId(null);
+                  e.currentTarget.style.opacity = '1';
+                }}
+                onDragOver={(e) => {
+                  if (!isReadOnly && editing) {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                  }
+                }}
+                onDrop={(e) => {
+                  if (!isReadOnly && editing) {
+                    e.preventDefault();
+                    const draggedId = e.dataTransfer.getData('text/plain');
+                    if (draggedId && draggedId !== baseId) {
+                      // Swap positions
+                      const draggedPos = fieldPositions[draggedId] || { x: 0, y: 0 };
+                      const currentPos = fieldPositions[baseId] || { x: 0, y: 0 };
+                      setFieldPositions(prev => ({
+                        ...prev,
+                        [draggedId]: currentPos,
+                        [baseId]: draggedPos
+                      }));
+                    }
+                  }
+                }}
+                className="inline-flex items-center relative field-wrapper"
+                style={{
+                  verticalAlign: 'middle',
+                  margin: '0 8px',
+                  display: 'inline-flex',
+                  gap: '4px',
+                  position: editing && !isReadOnly ? 'absolute' : 'relative',
+                  left: editing && !isReadOnly && fieldPosition.x ? `${fieldPosition.x}px` : 'auto',
+                  top: editing && !isReadOnly && fieldPosition.y ? `${fieldPosition.y}px` : 'auto',
+                  cursor: editing && !isReadOnly ? 'move' : 'default',
+                  zIndex: editing && !isReadOnly ? 1000 : 'auto'
+                }}
                 data-field-id={baseId}
                 data-field-type="date"
               >
                 <input
                   type="date"
-                  className="input input-bordered input-lg mx-2 bg-white border-2 border-blue-300 focus:border-blue-500"
+                  className="input input-bordered bg-white border-2 border-blue-300 focus:border-blue-500 rounded-lg"
                   value={dateValue ? (() => {
                     if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
                       return dateValue;
@@ -2720,10 +2994,13 @@ const ContractPage: React.FC = () => {
                   readOnly={false}
                   autoComplete="off"
                   data-input-type="date"
-                  style={{ 
-                    minWidth: 180, 
-                    display: 'inline-block', 
-                    verticalAlign: 'middle',
+                  style={{
+                    minWidth: 200,
+                    width: '100%',
+                    padding: '10px 14px',
+                    fontSize: '16px',
+                    lineHeight: '1.5',
+                    margin: 0,
                     color: '#111827',
                     WebkitTextFillColor: '#111827',
                     cursor: isReadOnly ? 'not-allowed' : 'pointer',
@@ -2732,23 +3009,68 @@ const ContractPage: React.FC = () => {
                     MozAppearance: 'menulist'
                   }}
                 />
+                {!isReadOnly && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (editor) {
+                        const content = editor.getJSON();
+                        const removePlaceholder = (node: any): any => {
+                          if (node.type === 'text' && node.text) {
+                            const newText = node.text.replace(new RegExp(`\\{\\{date:${baseId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}\\}`, 'g'), '');
+                            if (newText !== node.text) {
+                              return newText ? { ...node, text: newText } : null;
+                            }
+                          }
+                          if (node.content) {
+                            const processedContent = Array.isArray(node.content)
+                              ? node.content.map(removePlaceholder).filter(Boolean)
+                              : removePlaceholder(node.content);
+                            return { ...node, content: processedContent };
+                          }
+                          return node;
+                        };
+                        const newContent = removePlaceholder(content);
+                        editor.commands.setContent(newContent);
+                      }
+                      setClientInputs(inputs => {
+                        const newInputs = { ...inputs };
+                        delete newInputs[baseId];
+                        return newInputs;
+                      });
+                    }}
+                    className="btn btn-circle btn-xs btn-error"
+                    style={{
+                      width: '20px',
+                      height: '20px',
+                      minHeight: '20px',
+                      padding: 0,
+                      flexShrink: 0
+                    }}
+                    title="Delete field"
+                  >
+                    <MinusIcon className="w-3 h-3" />
+                  </button>
+                )}
               </span>
             );
             lastIndex = match.index + match[1].length;
             continue;
           }
-          
+
           // Handle text fields with IDs
           if (textMatch) {
             // Extract base ID from placeholder (e.g., "applicant" from "{{text:applicant}}")
             const baseId = textMatch[1];
             const baseIdLower = baseId.toLowerCase();
-            
+
             // Check if this is an applicant field
-            const isApplicantField = baseIdLower.startsWith('text:applicant') || 
-                                     baseIdLower.startsWith('applicant') ||
-                                     baseIdLower.includes('applicant');
-            
+            const isApplicantField = baseIdLower.startsWith('text:applicant') ||
+              baseIdLower.startsWith('applicant') ||
+              baseIdLower.includes('applicant');
+
             // For applicant fields, create unique instance ID to prevent state sharing
             // Use match.index + keyPrefix for stable, unique IDs across renders
             let id: string;
@@ -2758,26 +3080,127 @@ const ContractPage: React.FC = () => {
             } else {
               id = baseId;
             }
-            
+
+            const textFieldPosition = fieldPositions[id] || { x: 0, y: 0 };
+
             parts.push(
-              <input
+              <span
                 key={id}
-                className="input input-bordered input-lg mx-2 bg-white border-2 border-blue-300 focus:border-blue-500"
-                placeholder={isApplicantField ? 'Enter applicant name' : 'Enter text'}
-                style={{ minWidth: 150, display: 'inline-block' }}
-                value={clientInputs[id] || ''}
-                onChange={e => setClientInputs(inputs => ({ ...inputs, [id]: e.target.value }))}
-              />
+                draggable={!isReadOnly && editing}
+                onDragStart={(e) => {
+                  if (!isReadOnly && editing) {
+                    setDraggingFieldId(id);
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', id);
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    e.dataTransfer.setData('application/x-offset', `${e.clientX - rect.left},${e.clientY - rect.top}`);
+                    e.currentTarget.style.opacity = '0.5';
+                  }
+                }}
+                onDrag={(e) => {
+                  if (!isReadOnly && editing && draggingFieldId === id && e.clientX > 0 && e.clientY > 0) {
+                    const offset = e.dataTransfer.getData('application/x-offset');
+                    if (offset) {
+                      const [offsetX, offsetY] = offset.split(',').map(Number);
+                      const newX = e.clientX - offsetX;
+                      const newY = e.clientY - offsetY;
+                      setFieldPositions(prev => ({
+                        ...prev,
+                        [id]: { x: newX, y: newY }
+                      }));
+                    }
+                  }
+                }}
+                onDragEnd={(e) => {
+                  setDraggingFieldId(null);
+                  e.currentTarget.style.opacity = '1';
+                }}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  margin: '0 8px',
+                  verticalAlign: 'middle',
+                  position: editing && !isReadOnly ? 'absolute' : 'relative',
+                  left: editing && !isReadOnly && textFieldPosition.x ? `${textFieldPosition.x}px` : 'auto',
+                  top: editing && !isReadOnly && textFieldPosition.y ? `${textFieldPosition.y}px` : 'auto',
+                  gap: '4px',
+                  cursor: editing && !isReadOnly ? 'move' : 'default',
+                  zIndex: editing && !isReadOnly ? 1000 : 'auto'
+                }}
+              >
+                <input
+                  className="input input-bordered bg-white border-2 border-blue-300 focus:border-blue-500 rounded-lg"
+                  placeholder={isApplicantField ? 'Enter applicant name' : 'Enter text'}
+                  style={{
+                    minWidth: 200,
+                    width: '100%',
+                    padding: '10px 14px',
+                    fontSize: '16px',
+                    lineHeight: '1.5',
+                    margin: 0
+                  }}
+                  value={clientInputs[id] || ''}
+                  onChange={e => setClientInputs(inputs => ({ ...inputs, [id]: e.target.value }))}
+                  disabled={isReadOnly}
+                />
+                {!isReadOnly && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      // Remove the placeholder from the editor content
+                      if (editor) {
+                        const content = editor.getJSON();
+                        const removePlaceholder = (node: any): any => {
+                          if (node.type === 'text' && node.text) {
+                            const newText = node.text.replace(new RegExp(`\\{\\{text:${baseId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}\\}`, 'g'), '');
+                            if (newText !== node.text) {
+                              return newText ? { ...node, text: newText } : null;
+                            }
+                          }
+                          if (node.content) {
+                            const processedContent = Array.isArray(node.content)
+                              ? node.content.map(removePlaceholder).filter(Boolean)
+                              : removePlaceholder(node.content);
+                            return { ...node, content: processedContent };
+                          }
+                          return node;
+                        };
+                        const newContent = removePlaceholder(content);
+                        editor.commands.setContent(newContent);
+                      }
+                      // Remove from clientInputs
+                      setClientInputs(inputs => {
+                        const newInputs = { ...inputs };
+                        delete newInputs[id];
+                        return newInputs;
+                      });
+                    }}
+                    className="btn btn-circle btn-xs btn-error"
+                    style={{
+                      width: '20px',
+                      height: '20px',
+                      minHeight: '20px',
+                      padding: 0,
+                      flexShrink: 0
+                    }}
+                    title="Delete field"
+                  >
+                    <MinusIcon className="w-3 h-3" />
+                  </button>
+                )}
+              </span>
             );
             lastIndex = match.index + match[1].length;
             continue;
           }
-          
+
           // Handle signature fields with IDs
           if (sigMatch) {
             const baseId = sigMatch[1];
             const signatureData = clientInputs[baseId];
-            
+
             if (signatureData && signatureData.startsWith('data:image/')) {
               parts.push(
                 <span key={baseId} className="inline-flex items-center gap-4 mx-2">
@@ -2790,27 +3213,39 @@ const ContractPage: React.FC = () => {
                   </span>
                   {/* Stamp image */}
                   <div className="flex-shrink-0">
-                    <img 
-                      src="/חתימה מסמכים (5).png" 
-                      alt="Stamp" 
-                      style={{ 
-                        width: 'auto', 
-                        height: 150, 
+                    <img
+                      src="/חתימה מסמכים (5).png"
+                      alt="Stamp"
+                      style={{
+                        width: 'auto',
+                        height: 150,
                         maxWidth: 250,
                         display: 'block',
                         objectFit: 'contain'
-                      }} 
+                      }}
                     />
                   </div>
                 </span>
               );
             } else {
               parts.push(
-                <span key={baseId} className="inline-flex items-center gap-4 mx-2 align-middle" style={{ minWidth: 220, minHeight: 100 }}>
+                <span
+                  key={baseId}
+                  className="inline-flex items-center gap-4 mx-2 align-middle relative"
+                  style={{
+                    minWidth: 220,
+                    minHeight: 100
+                  }}
+                >
                   <div className="border-2 border-blue-300 rounded-lg bg-gray-50 p-3">
                     <SignaturePad
                       ref={ref => {
                         if (ref && signaturePads) signaturePads[baseId] = ref;
+                        // Disable signature pad in edit mode or when read-only
+                        if (ref && (isReadOnly || editing)) {
+                          ref.getCanvas().style.pointerEvents = 'none';
+                          ref.getCanvas().style.opacity = '0.6';
+                        }
                       }}
                       penColor="#4c6fff"
                       backgroundColor="transparent"
@@ -2821,10 +3256,14 @@ const ContractPage: React.FC = () => {
                           display: 'block',
                           borderRadius: 8,
                           background: 'transparent',
+                          // Inactive in edit mode or when read-only
+                          pointerEvents: (isReadOnly || editing) ? 'none' : 'auto',
+                          opacity: (isReadOnly || editing) ? 0.6 : 1,
                         },
                       }}
                       onEnd={() => {
-                        if (signaturePads && signaturePads[baseId]) {
+                        // Only allow signing when not in edit mode and not read-only
+                        if (!isReadOnly && !editing && signaturePads && signaturePads[baseId]) {
                           const dataUrl = signaturePads[baseId].getTrimmedCanvas().toDataURL('image/png');
                           setClientInputs(inputs => ({ ...inputs, [baseId]: dataUrl }));
                         }
@@ -2834,36 +3273,84 @@ const ContractPage: React.FC = () => {
                   </div>
                   {/* Stamp image */}
                   <div className="flex-shrink-0">
-                    <img 
-                      src="/חתימה מסמכים (5).png" 
-                      alt="Stamp" 
-                      style={{ 
-                        width: 'auto', 
-                        height: 150, 
+                    <img
+                      src="/חתימה מסמכים (5).png"
+                      alt="Stamp"
+                      style={{
+                        width: 'auto',
+                        height: 150,
                         maxWidth: 250,
                         display: 'block',
                         objectFit: 'contain'
-                      }} 
+                      }}
                     />
                   </div>
+                  {!isReadOnly && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (editor) {
+                          const content = editor.getJSON();
+                          const removePlaceholder = (node: any): any => {
+                            if (node.type === 'text' && node.text) {
+                              const newText = node.text.replace(new RegExp(`\\{\\{signature:${baseId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}\\}`, 'g'), '');
+                              if (newText !== node.text) {
+                                return newText ? { ...node, text: newText } : null;
+                              }
+                            }
+                            if (node.content) {
+                              const processedContent = Array.isArray(node.content)
+                                ? node.content.map(removePlaceholder).filter(Boolean)
+                                : removePlaceholder(node.content);
+                              return { ...node, content: processedContent };
+                            }
+                            return node;
+                          };
+                          const newContent = removePlaceholder(content);
+                          editor.commands.setContent(newContent);
+                        }
+                        setClientInputs(inputs => {
+                          const newInputs = { ...inputs };
+                          delete newInputs[baseId];
+                          return newInputs;
+                        });
+                      }}
+                      className="btn btn-circle btn-xs btn-error"
+                      style={{
+                        position: 'absolute',
+                        top: '-8px',
+                        right: '-8px',
+                        width: '20px',
+                        height: '20px',
+                        minHeight: '20px',
+                        padding: 0,
+                        zIndex: 10
+                      }}
+                      title="Delete field"
+                    >
+                      <MinusIcon className="w-3 h-3" />
+                    </button>
+                  )}
                 </span>
               );
             }
             lastIndex = match.index + match[1].length;
             continue;
           }
-          
+
           // Handle newline
           if (placeholder === '\n') {
             parts.push(<br key={keyPrefix + '-br-' + match.index} />);
           }
           lastIndex = match.index + match[1].length;
         }
-        
+
         if (lastIndex < text.length) {
           parts.push(text.slice(lastIndex));
         }
-        
+
         // If we processed placeholders with IDs, return the parts
         // Otherwise, continue to process {{text}} and {{signature}} without IDs below
         if (parts.length > 0) {
@@ -2871,15 +3358,16 @@ const ContractPage: React.FC = () => {
         }
       }
 
-      // Always render {{text}} and {{signature}} as input fields and signature pads (placeholders without IDs)
+      // Always render {{text}}, {{date}}, and {{signature}} as input fields and signature pads (placeholders without IDs)
       console.log('🎨 Checking for placeholders in text:', text);
-      console.log('🎨 Has placeholders:', /\{\{(text|signature)\}\}/.test(text));
-      if (text && /\{\{(text|signature)\}\}/.test(text)) {
+      console.log('🎨 Has placeholders:', /\{\{(text|date|signature)\}\}/.test(text));
+      if (text && /\{\{(text|date|signature)\}\}/.test(text)) {
         const parts = [];
         let lastIndex = 0;
-        const regex = /({{text}}|{{signature}}|\n)/g;
+        const regex = /({{text}}|{{date}}|{{signature}}|\n)/g;
         let match;
         let textCounter = 1;
+        let dateCounter = 1;
         let signatureCounter = 1;
 
         while ((match = regex.exec(text)) !== null) {
@@ -2892,19 +3380,191 @@ const ContractPage: React.FC = () => {
           if (placeholder === '{{text}}') {
             const id = `text-${textCounter++}`;
             parts.push(
-              <input
+              <span
                 key={id}
-                className="input input-bordered input-lg mx-2 bg-white border-2 border-blue-300 focus:border-blue-500"
-                placeholder="Enter text"
-                style={{ minWidth: 150, display: 'inline-block' }}
-                value={clientInputs[id] || ''}
-                onChange={e => setClientInputs(inputs => ({ ...inputs, [id]: e.target.value }))}
-              />
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  margin: '0 8px',
+                  verticalAlign: 'middle',
+                  position: 'relative',
+                  gap: '4px'
+                }}
+              >
+                <input
+                  className="input input-bordered bg-white border-2 border-blue-300 focus:border-blue-500 rounded-lg"
+                  placeholder="Enter text"
+                  style={{
+                    minWidth: 200,
+                    width: '100%',
+                    padding: '10px 14px',
+                    fontSize: '16px',
+                    lineHeight: '1.5',
+                    margin: 0
+                  }}
+                  value={clientInputs[id] || ''}
+                  onChange={e => setClientInputs(inputs => ({ ...inputs, [id]: e.target.value }))}
+                  disabled={isReadOnly}
+                />
+                {!isReadOnly && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (editor) {
+                        const content = editor.getJSON();
+                        const removePlaceholder = (node: any): any => {
+                          if (node.type === 'text' && node.text) {
+                            const newText = node.text.replace(/\{\{text\}\}/, '');
+                            if (newText !== node.text) {
+                              return newText ? { ...node, text: newText } : null;
+                            }
+                          }
+                          if (node.content) {
+                            const processedContent = Array.isArray(node.content)
+                              ? node.content.map(removePlaceholder).filter(Boolean)
+                              : removePlaceholder(node.content);
+                            return { ...node, content: processedContent };
+                          }
+                          return node;
+                        };
+                        const newContent = removePlaceholder(content);
+                        editor.commands.setContent(newContent);
+                      }
+                      setClientInputs(inputs => {
+                        const newInputs = { ...inputs };
+                        delete newInputs[id];
+                        return newInputs;
+                      });
+                    }}
+                    className="btn btn-circle btn-xs btn-error"
+                    style={{
+                      width: '20px',
+                      height: '20px',
+                      minHeight: '20px',
+                      padding: 0,
+                      flexShrink: 0
+                    }}
+                    title="Delete field"
+                  >
+                    <MinusIcon className="w-3 h-3" />
+                  </button>
+                )}
+              </span>
+            );
+          } else if (placeholder === '{{date}}') {
+            const id = `date-${dateCounter++}`;
+            const dateValue = clientInputs[id] || '';
+            parts.push(
+              <span
+                key={id}
+                className="inline-flex items-center relative field-wrapper"
+                style={{
+                  verticalAlign: 'middle',
+                  margin: '0 8px',
+                  display: 'inline-flex',
+                  gap: '4px'
+                }}
+                data-field-id={id}
+                data-field-type="date"
+              >
+                <input
+                  type="date"
+                  className="input input-bordered bg-white border-2 border-blue-300 focus:border-blue-500 rounded-lg"
+                  value={dateValue ? (() => {
+                    if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
+                      return dateValue;
+                    }
+                    try {
+                      const date = new Date(dateValue);
+                      if (!isNaN(date.getTime())) {
+                        const year = date.getFullYear();
+                        const month = String(date.getMonth() + 1).padStart(2, '0');
+                        const day = String(date.getDate()).padStart(2, '0');
+                        return `${year}-${month}-${day}`;
+                      }
+                    } catch (e) {
+                    }
+                    return '';
+                  })() : ''}
+                  onChange={e => {
+                    const selectedDate = e.target.value;
+                    setClientInputs(inputs => ({ ...inputs, [id]: selectedDate }));
+                  }}
+                  disabled={isReadOnly}
+                  required
+                  aria-label="Select date (required)"
+                  placeholder=""
+                  readOnly={false}
+                  autoComplete="off"
+                  data-input-type="date"
+                  style={{
+                    minWidth: 200,
+                    width: '100%',
+                    padding: '10px 14px',
+                    fontSize: '16px',
+                    lineHeight: '1.5',
+                    margin: 0,
+                    color: '#111827',
+                    WebkitTextFillColor: '#111827',
+                    cursor: isReadOnly ? 'not-allowed' : 'pointer',
+                    appearance: 'auto',
+                    WebkitAppearance: 'menulist',
+                    MozAppearance: 'menulist'
+                  }}
+                />
+                {!isReadOnly && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (editor) {
+                        const content = editor.getJSON();
+                        const removePlaceholder = (node: any): any => {
+                          if (node.type === 'text' && node.text) {
+                            const newText = node.text.replace(/\{\{date\}\}/, '');
+                            if (newText !== node.text) {
+                              return newText ? { ...node, text: newText } : null;
+                            }
+                          }
+                          if (node.content) {
+                            const processedContent = Array.isArray(node.content)
+                              ? node.content.map(removePlaceholder).filter(Boolean)
+                              : removePlaceholder(node.content);
+                            return { ...node, content: processedContent };
+                          }
+                          return node;
+                        };
+                        const newContent = removePlaceholder(content);
+                        editor.commands.setContent(newContent);
+                      }
+                      setClientInputs(inputs => {
+                        const newInputs = { ...inputs };
+                        delete newInputs[id];
+                        return newInputs;
+                      });
+                    }}
+                    className="btn btn-circle btn-xs btn-error"
+                    style={{
+                      width: '20px',
+                      height: '20px',
+                      minHeight: '20px',
+                      padding: 0,
+                      flexShrink: 0
+                    }}
+                    title="Delete field"
+                  >
+                    <MinusIcon className="w-3 h-3" />
+                  </button>
+                )}
+              </span>
             );
           } else if (placeholder === '{{signature}}') {
             const id = `signature-${signatureCounter++}`;
             const signatureData = clientInputs[id];
-            
+
             if (signatureData && signatureData.startsWith('data:image/')) {
               parts.push(
                 <span key={id} className="inline-flex items-center gap-4 mx-2">
@@ -2917,27 +3577,32 @@ const ContractPage: React.FC = () => {
                   </span>
                   {/* Stamp image */}
                   <div className="flex-shrink-0">
-                    <img 
-                      src="/חתימה מסמכים (5).png" 
-                      alt="Stamp" 
-                      style={{ 
-                        width: 'auto', 
-                        height: 150, 
+                    <img
+                      src="/חתימה מסמכים (5).png"
+                      alt="Stamp"
+                      style={{
+                        width: 'auto',
+                        height: 150,
                         maxWidth: 250,
                         display: 'block',
                         objectFit: 'contain'
-                      }} 
+                      }}
                     />
                   </div>
                 </span>
               );
             } else {
               parts.push(
-                <span key={id} className="inline-flex items-center gap-4 mx-2 align-middle" style={{ minWidth: 220, minHeight: 100 }}>
+                <span key={id} className="inline-flex items-center gap-4 mx-2 align-middle relative" style={{ minWidth: 220, minHeight: 100 }}>
                   <div className="border-2 border-blue-300 rounded-lg bg-gray-50 p-3">
                     <SignaturePad
                       ref={ref => {
                         if (ref && signaturePads) signaturePads[id] = ref;
+                        if (ref && isReadOnly) {
+                          // Disable the canvas when read-only
+                          ref.getCanvas().style.pointerEvents = 'none';
+                          ref.getCanvas().style.opacity = '0.6';
+                        }
                       }}
                       penColor="#4c6fff"
                       backgroundColor="transparent"
@@ -2948,10 +3613,12 @@ const ContractPage: React.FC = () => {
                           display: 'block',
                           borderRadius: 8,
                           background: 'transparent',
+                          pointerEvents: isReadOnly ? 'none' : 'auto',
+                          opacity: isReadOnly ? 0.6 : 1,
                         },
                       }}
                       onEnd={() => {
-                        if (signaturePads && signaturePads[id]) {
+                        if (!isReadOnly && signaturePads && signaturePads[id]) {
                           const dataUrl = signaturePads[id].getTrimmedCanvas().toDataURL('image/png');
                           setClientInputs(inputs => ({ ...inputs, [id]: dataUrl }));
                         }
@@ -2961,18 +3628,66 @@ const ContractPage: React.FC = () => {
                   </div>
                   {/* Stamp image */}
                   <div className="flex-shrink-0">
-                    <img 
-                      src="/חתימה מסמכים (5).png" 
-                      alt="Stamp" 
-                      style={{ 
-                        width: 'auto', 
-                        height: 150, 
+                    <img
+                      src="/חתימה מסמכים (5).png"
+                      alt="Stamp"
+                      style={{
+                        width: 'auto',
+                        height: 150,
                         maxWidth: 250,
                         display: 'block',
                         objectFit: 'contain'
-                      }} 
+                      }}
                     />
                   </div>
+                  {!isReadOnly && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (editor) {
+                          const content = editor.getJSON();
+                          const removePlaceholder = (node: any): any => {
+                            if (node.type === 'text' && node.text) {
+                              const newText = node.text.replace(/\{\{signature\}\}/, '');
+                              if (newText !== node.text) {
+                                return newText ? { ...node, text: newText } : null;
+                              }
+                            }
+                            if (node.content) {
+                              const processedContent = Array.isArray(node.content)
+                                ? node.content.map(removePlaceholder).filter(Boolean)
+                                : removePlaceholder(node.content);
+                              return { ...node, content: processedContent };
+                            }
+                            return node;
+                          };
+                          const newContent = removePlaceholder(content);
+                          editor.commands.setContent(newContent);
+                        }
+                        setClientInputs(inputs => {
+                          const newInputs = { ...inputs };
+                          delete newInputs[id];
+                          return newInputs;
+                        });
+                      }}
+                      className="btn btn-circle btn-xs btn-error"
+                      style={{
+                        position: 'absolute',
+                        top: '-8px',
+                        right: '-8px',
+                        width: '20px',
+                        height: '20px',
+                        minHeight: '20px',
+                        padding: 0,
+                        zIndex: 10
+                      }}
+                      title="Delete field"
+                    >
+                      <MinusIcon className="w-3 h-3" />
+                    </button>
+                  )}
                 </span>
               );
             }
@@ -2994,71 +3709,71 @@ const ContractPage: React.FC = () => {
       // Robustly replace price_per_applicant for each tier row
       if (text && customPricing && customPricing.pricing_tiers && text.includes('{{price_per_applicant}}')) {
         const currency = customPricing.currency || 'USD';
-        
+
         // Get all available tiers in order
         const tierOrder = ['1', '2', '3', '4-7', '8-9', '10-15', '16+'];
-        const availableTiers = tierOrder.filter(key => 
-          customPricing.pricing_tiers[key] !== undefined && 
+        const availableTiers = tierOrder.filter(key =>
+          customPricing.pricing_tiers[key] !== undefined &&
           customPricing.pricing_tiers[key] !== null &&
           customPricing.pricing_tiers[key] !== 0
         );
-        
+
         let currentTierIndex = 0;
-        
+
         // Find each {{price_per_applicant}} placeholder and replace it based on context
         while (text.includes('{{price_per_applicant}}')) {
           const placeholderIndex = text.indexOf('{{price_per_applicant}}');
           const contextBefore = text.substring(Math.max(0, placeholderIndex - 200), placeholderIndex);
-          
+
           let tierKey: string | null = null;
-          
+
           // Check for tier patterns in order of specificity (most specific first)
           // Support both English and Hebrew patterns
           const recentContext = contextBefore.substring(Math.max(0, contextBefore.length - 80));
-          
+
           // 16+ patterns (English and Hebrew)
           if (/16\s*\+\s*applicant|16\s+or\s+more\s+applicant|16\s+applicant.*or\s+more/i.test(recentContext) ||
-              /16\+?\s*מבקש|מעל\s*16|מ-?16\s*ומעלה/i.test(recentContext)) {
+            /16\+?\s*מבקש|מעל\s*16|מ-?16\s*ומעלה/i.test(recentContext)) {
             tierKey = '16+';
           }
           // 10-15 patterns
           else if (/10\s*[-–]\s*15\s+applicant/i.test(recentContext) ||
-                   /10\s*[-–]\s*15\s*מבקש/i.test(recentContext)) {
+            /10\s*[-–]\s*15\s*מבקש/i.test(recentContext)) {
             tierKey = '10-15';
           }
           // 8-9 patterns
           else if (/8\s*[-–]\s*9\s+applicant/i.test(recentContext) ||
-                   /8\s*[-–]\s*9\s*מבקש/i.test(recentContext)) {
+            /8\s*[-–]\s*9\s*מבקש/i.test(recentContext)) {
             tierKey = '8-9';
           }
           // 4-7 patterns
           else if (/4\s*[-–]\s*7\s+applicant/i.test(recentContext) ||
-                   /4\s*[-–]\s*7\s*מבקש/i.test(recentContext)) {
+            /4\s*[-–]\s*7\s*מבקש/i.test(recentContext)) {
             tierKey = '4-7';
           }
           // 3 applicants
           else if (/\b3\s+applicant/i.test(recentContext) ||
-                   /\b3\s*מבקש/i.test(recentContext)) {
+            /\b3\s*מבקש/i.test(recentContext)) {
             tierKey = '3';
           }
           // 2 applicants
           else if (/\b2\s+applicant/i.test(recentContext) ||
-                   /\b2\s*מבקש|שני\s*מבקש/i.test(recentContext)) {
+            /\b2\s*מבקש|שני\s*מבקש/i.test(recentContext)) {
             tierKey = '2';
           }
           // 1 applicant - including "לכל מבקש" (for each applicant)
           else if (/\b1\s+applicant|one\s+applicant|For\s+one\s+applicant/i.test(recentContext) ||
-                   /\b1\s*מבקש|מבקש\s*אחד|לכל\s*מבקש/i.test(recentContext)) {
+            /\b1\s*מבקש|מבקש\s*אחד|לכל\s*מבקש/i.test(recentContext)) {
             tierKey = '1';
           }
-          
+
           // If no specific tier matched, use sequential replacement from available tiers
           if (!tierKey && currentTierIndex < availableTiers.length) {
             tierKey = availableTiers[currentTierIndex];
             console.log(`📝 renderTiptapContent: Using sequential tier ${tierKey} (index ${currentTierIndex} of ${availableTiers.length})`);
             currentTierIndex++;
           }
-          
+
           if (tierKey && customPricing.pricing_tiers[tierKey] !== undefined) {
             const price = (customPricing.pricing_tiers[tierKey] || 0).toLocaleString();
             text = text.replace('{{price_per_applicant}}', `${currency} ${price}`);
@@ -3207,55 +3922,53 @@ const ContractPage: React.FC = () => {
     switch (content.type) {
       case 'paragraph':
         const paragraphContent = renderTiptapContent(content.content, keyPrefix + '-p', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex);
-        // Only render paragraph if it has content
-        if (paragraphContent && (typeof paragraphContent === 'string' ? paragraphContent.trim() : true)) {
-          // Check if there's a saved text alignment from the admin
-          const savedTextAlign = content.attrs?.textAlign;
-          
-          if (savedTextAlign) {
-            // Use the saved alignment from admin
-            return (
-              <p 
-                key={keyPrefix} 
-                className="mb-3"
-                style={{ textAlign: savedTextAlign }}
-              >
-                {paragraphContent}
-              </p>
-            );
-          } else {
-            // No saved alignment - auto-detect RTL
-            const paragraphText = content.content?.map((n: any) => n.text || '').join('') || '';
-            const isRTLParagraph = isRTL(paragraphText);
-            return (
-              <p 
-                key={keyPrefix} 
-                className="mb-3"
-                dir={isRTLParagraph ? 'rtl' : 'ltr'}
-                style={{ 
-                  textAlign: isRTLParagraph ? 'right' : 'left',
-                  direction: isRTLParagraph ? 'rtl' : 'ltr'
-                }}
-              >
-                {paragraphContent}
-              </p>
-            );
-          }
+        // Always render paragraphs - even empty ones represent line breaks
+        // Check if there's a saved text alignment from the admin
+        const savedTextAlign = content.attrs?.textAlign;
+        const hasContent = paragraphContent && (typeof paragraphContent === 'string' ? paragraphContent.trim().length > 0 : true);
+
+        if (savedTextAlign) {
+          // Use the saved alignment from admin
+          return (
+            <p
+              key={keyPrefix}
+              className="mb-3"
+              style={{ textAlign: savedTextAlign }}
+            >
+              {hasContent ? paragraphContent : <br />}
+            </p>
+          );
+        } else {
+          // No saved alignment - auto-detect RTL
+          const paragraphText = content.content?.map((n: any) => n.text || '').join('') || '';
+          const isRTLParagraph = isRTL(paragraphText);
+          return (
+            <p
+              key={keyPrefix}
+              className="mb-3"
+              dir={isRTLParagraph ? 'rtl' : 'ltr'}
+              style={{
+                textAlign: isRTLParagraph ? 'right' : 'left',
+                direction: isRTLParagraph ? 'rtl' : 'ltr'
+              }}
+            >
+              {hasContent ? paragraphContent : <br />}
+            </p>
+          );
         }
-        return null;
       case 'heading':
         const level = content.attrs?.level || 1;
         const headingTags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
         const HeadingTag = headingTags[Math.max(0, Math.min(5, level - 1))] || 'h1';
-        
+
         // Check if there's a saved text alignment from the admin
         const savedHeadingAlign = content.attrs?.textAlign;
-        
+
         if (savedHeadingAlign) {
           // Use the saved alignment from admin
           return React.createElement(
             HeadingTag,
-            { 
+            {
               key: keyPrefix,
               style: { textAlign: savedHeadingAlign }
             },
@@ -3267,7 +3980,7 @@ const ContractPage: React.FC = () => {
           const isRTLHeading = isRTL(headingText);
           return React.createElement(
             HeadingTag,
-            { 
+            {
               key: keyPrefix,
               dir: isRTLHeading ? 'rtl' : 'ltr',
               style: {
@@ -3282,7 +3995,7 @@ const ContractPage: React.FC = () => {
         const bulletListText = JSON.stringify(content.content);
         const isRTLBulletList = isRTL(bulletListText);
         return (
-          <ul 
+          <ul
             key={keyPrefix}
             dir={isRTLBulletList ? 'rtl' : 'ltr'}
             style={{ textAlign: isRTLBulletList ? 'right' : 'left' }}
@@ -3294,7 +4007,7 @@ const ContractPage: React.FC = () => {
         const orderedListText = JSON.stringify(content.content);
         const isRTLOrderedList = isRTL(orderedListText);
         return (
-          <ol 
+          <ol
             key={keyPrefix}
             dir={isRTLOrderedList ? 'rtl' : 'ltr'}
             style={{ textAlign: isRTLOrderedList ? 'right' : 'left' }}
@@ -3311,7 +4024,7 @@ const ContractPage: React.FC = () => {
         }).join('') || '';
         const isRTLListItem = isRTL(listItemText);
         return (
-          <li 
+          <li
             key={keyPrefix}
             dir={isRTLListItem ? 'rtl' : 'ltr'}
             style={{ textAlign: isRTLListItem ? 'right' : 'left' }}
@@ -3323,7 +4036,7 @@ const ContractPage: React.FC = () => {
         const blockquoteText = JSON.stringify(content.content);
         const isRTLBlockquote = isRTL(blockquoteText);
         return (
-          <blockquote 
+          <blockquote
             key={keyPrefix}
             dir={isRTLBlockquote ? 'rtl' : 'ltr'}
             style={{ textAlign: isRTLBlockquote ? 'right' : 'left' }}
@@ -3357,36 +4070,36 @@ const ContractPage: React.FC = () => {
     }
     if (content.type === 'text' && content.text) {
       let newText = content.text;
-      
+
       // Replace {{text:ID}} fields with actual client input values
       newText = newText.replace(/\{\{text:([^}]+)\}\}/g, (_m: string, id: string) => clientInputs[id] || '');
-      
+
       // Replace {{signature:ID}} fields with signature data
       newText = newText.replace(/\{\{signature:([^}]+)\}\}/g, (_m: string, id: string) => clientInputs[id] || '[Signed]');
-      
+
       // Replace {{date:ID}} fields with formatted date values
       newText = newText.replace(/\{\{date:([^}]+)\}\}/g, (_m: string, id: string) => {
         const dateValue = clientInputs[id] || '';
         if (!dateValue) return '';
-        
+
         // Format date for display
         try {
           if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
             const date = new Date(dateValue + 'T00:00:00');
             if (!isNaN(date.getTime())) {
-              return date.toLocaleDateString('en-US', { 
-                year: 'numeric', 
-                month: 'long', 
-                day: 'numeric' 
+              return date.toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
               });
             }
           } else {
             const date = new Date(dateValue);
             if (!isNaN(date.getTime())) {
-              return date.toLocaleDateString('en-US', { 
-                year: 'numeric', 
-                month: 'long', 
-                day: 'numeric' 
+              return date.toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
               });
             }
           }
@@ -3395,7 +4108,7 @@ const ContractPage: React.FC = () => {
         }
         return dateValue;
       });
-      
+
       return { ...content, text: newText };
     }
     if (content.content) {
@@ -3418,6 +4131,38 @@ const ContractPage: React.FC = () => {
     alert('Link copied!');
   };
 
+  const handleMobileShare = async () => {
+    if (!contract) return;
+
+    // Check if Web Share API is available
+    if (navigator.share) {
+      let publicToken = contract.public_token;
+      if (!publicToken) {
+        publicToken = uuidv4();
+        await supabase.from('contracts').update({ public_token: publicToken }).eq('id', contract.id);
+        setContract((prev: any) => ({ ...prev, public_token: publicToken }));
+      }
+      const publicUrl = `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
+
+      try {
+        await navigator.share({
+          title: 'Contract Link',
+          text: 'Check out this contract',
+          url: publicUrl,
+        });
+      } catch (err: any) {
+        // User cancelled or error occurred, fallback to clipboard
+        if (err.name !== 'AbortError') {
+          await navigator.clipboard.writeText(publicUrl);
+          alert('Link copied!');
+        }
+      }
+    } else {
+      // Fallback to regular share function if Web Share API not available
+      handleShareContractLink();
+    }
+  };
+
   // Add save state
   const [isSaving, setIsSaving] = useState(false);
 
@@ -3431,16 +4176,16 @@ const ContractPage: React.FC = () => {
         total_amount: customPricing.total_amount,
         applicant_count: customPricing.applicant_count,
       }).eq('id', contract.id);
-      
+
       // Update local contract state
       setContract((prev: any) => ({ ...prev, custom_pricing: customPricing }));
-      
+
       // Force refresh of contract content to reflect changes
       setRenderKey(prev => prev + 1);
-      
+
       // Reset content hash to force useEffect to refresh content
       lastContentHashRef.current = '';
-      
+
       // Refresh editor content immediately (works for both edit and readonly modes)
       if (editor && template) {
         const content = contract.custom_content || template.content;
@@ -3456,12 +4201,12 @@ const ContractPage: React.FC = () => {
 
             // Clean up any empty nodes
             processedContent = cleanTiptapContent(processedContent);
-            
+
             // Final validation before setting content
             if (!processedContent || processedContent.type !== 'doc') {
               processedContent = { type: 'doc', content: [] };
             }
-            
+
             // Update editor content - this will refresh both edit and readonly views
             editor.commands.setContent(processedContent);
           } catch (error) {
@@ -3469,7 +4214,7 @@ const ContractPage: React.FC = () => {
           }
         }
       }
-      
+
       alert('Pricing and payment plan saved! Contract content has been updated.');
     } catch (err) {
       alert('Failed to save. Please try again.');
@@ -3482,21 +4227,21 @@ const ContractPage: React.FC = () => {
   const handleDeleteContract = async () => {
     if (!contract) return;
     if (!window.confirm('Are you sure you want to delete this contract? This action cannot be undone.')) return;
-    
+
     try {
       const { error } = await supabase
         .from('contracts')
         .delete()
         .eq('id', contract.id);
-      
+
       if (error) {
         console.error('Error deleting contract:', error);
         alert(`Failed to delete contract: ${error.message}`);
         return;
       }
-      
+
       alert('Contract deleted successfully.');
-      
+
       // Navigate back to client page
       if (leadNumber) {
         navigate(`/clients/${leadNumber}`);
@@ -3538,19 +4283,19 @@ const ContractPage: React.FC = () => {
           const dateMatch = placeholder.match(/^{{date(:[^}]+)?}}$/);
           const textMatch = placeholder.match(/^{{text(:[^}]+)?}}$/);
           const sigMatch = placeholder.match(/^{{signature(:[^}]+)?}}$/);
-          
+
           // Handle date fields first
           if (dateMatch) {
             const id = dateMatch[1] ? dateMatch[1].substring(1) : null;
-            
+
             // Try to find the date value in clientInputs
             // The ID from placeholder might be like "date-1" or just a number
             let dateValue = '';
-            
+
             if (id) {
               // Try exact match first
               dateValue = clientInputs[id] || '';
-              
+
               // If no exact match, try variations
               if (!dateValue) {
                 // Try with different ID formats
@@ -3558,11 +4303,11 @@ const ContractPage: React.FC = () => {
                   `date-${id}`,
                   id.replace(/^date-/, ''),
                   id,
-                  ...Object.keys(clientInputs).filter(key => 
+                  ...Object.keys(clientInputs).filter(key =>
                     key.includes(id) || id.includes(key)
                   )
                 ];
-                
+
                 for (const variant of variations) {
                   if (clientInputs[variant]) {
                     dateValue = clientInputs[variant];
@@ -3571,13 +4316,13 @@ const ContractPage: React.FC = () => {
                 }
               }
             }
-            
+
             // If still no value, try to find any date field
             if (!dateValue) {
-              const dateKeys = Object.keys(clientInputs).filter(key => 
+              const dateKeys = Object.keys(clientInputs).filter(key =>
                 key.toLowerCase().includes('date')
               );
-              
+
               if (dateKeys.length === 1) {
                 // Only one date field, use it
                 dateValue = clientInputs[dateKeys[0]];
@@ -3593,16 +4338,16 @@ const ContractPage: React.FC = () => {
                     }
                   }
                 }
-                
+
                 // If still no match and only one date key, use it
                 if (!dateValue && dateKeys.length === 1) {
                   dateValue = clientInputs[dateKeys[0]];
                 }
               }
             }
-            
+
             let displayDate = '';
-            
+
             // Format date for display
             if (dateValue) {
               if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
@@ -3610,10 +4355,10 @@ const ContractPage: React.FC = () => {
                 try {
                   const date = new Date(dateValue + 'T00:00:00'); // Add time to avoid timezone issues
                   if (!isNaN(date.getTime())) {
-                    displayDate = date.toLocaleDateString('en-US', { 
-                      year: 'numeric', 
-                      month: 'long', 
-                      day: 'numeric' 
+                    displayDate = date.toLocaleDateString('en-US', {
+                      year: 'numeric',
+                      month: 'long',
+                      day: 'numeric'
                     });
                   }
                 } catch (e) {
@@ -3623,10 +4368,10 @@ const ContractPage: React.FC = () => {
                 try {
                   const date = new Date(dateValue);
                   if (!isNaN(date.getTime())) {
-                    displayDate = date.toLocaleDateString('en-US', { 
-                      year: 'numeric', 
-                      month: 'long', 
-                      day: 'numeric' 
+                    displayDate = date.toLocaleDateString('en-US', {
+                      year: 'numeric',
+                      month: 'long',
+                      day: 'numeric'
                     });
                   }
                 } catch (e) {
@@ -3634,11 +4379,11 @@ const ContractPage: React.FC = () => {
                 }
               }
             }
-            
+
             // For signed contracts, show the formatted date
             parts.push(
-              <span 
-                key={id || 'date-field'} 
+              <span
+                key={id || 'date-field'}
                 className="inline-block bg-green-50 border-2 border-green-300 rounded-lg px-3 py-2 mx-1 text-sm font-medium text-green-800 min-w-[150px]"
               >
                 {displayDate || dateValue || '[No date provided]'}
@@ -3657,14 +4402,14 @@ const ContractPage: React.FC = () => {
             const id = sigMatch[1] ? sigMatch[1].substring(1) : 'signature';
             // Try to find signature data by ID
             let signatureData = clientInputs[id];
-            
+
             // If not found by exact ID, try variations (e.g., signature-1, signature-0)
             if (!signatureData) {
               // Try to find any signature field in clientInputs
-              const signatureKeys = Object.keys(clientInputs).filter(key => 
+              const signatureKeys = Object.keys(clientInputs).filter(key =>
                 key.toLowerCase().includes('signature') && clientInputs[key] && clientInputs[key].startsWith('data:image/')
               );
-              
+
               // If there's only one signature, use it
               if (signatureKeys.length === 1) {
                 signatureData = clientInputs[signatureKeys[0]];
@@ -3686,7 +4431,7 @@ const ContractPage: React.FC = () => {
                 }
               }
             }
-            
+
             // For signed contracts, show the actual signature if available
             if (signatureData && signatureData.startsWith('data:image/')) {
               parts.push(
@@ -3700,16 +4445,16 @@ const ContractPage: React.FC = () => {
                   </span>
                   {/* Stamp image */}
                   <div className="flex-shrink-0">
-                    <img 
-                      src="/חתימה מסמכים (5).png" 
-                      alt="Stamp" 
-                      style={{ 
-                        width: 'auto', 
-                        height: 150, 
+                    <img
+                      src="/חתימה מסמכים (5).png"
+                      alt="Stamp"
+                      style={{
+                        width: 'auto',
+                        height: 150,
                         maxWidth: 250,
                         display: 'block',
                         objectFit: 'contain'
-                      }} 
+                      }}
                     />
                   </div>
                 </span>
@@ -3722,16 +4467,16 @@ const ContractPage: React.FC = () => {
                   </span>
                   {/* Stamp image */}
                   <div className="flex-shrink-0">
-                    <img 
-                      src="/חתימה מסמכים (5).png" 
-                      alt="Stamp" 
-                      style={{ 
-                        width: 'auto', 
-                        height: 150, 
+                    <img
+                      src="/חתימה מסמכים (5).png"
+                      alt="Stamp"
+                      style={{
+                        width: 'auto',
+                        height: 150,
                         maxWidth: 250,
                         display: 'block',
                         objectFit: 'contain'
-                      }} 
+                      }}
                     />
                   </div>
                 </span>
@@ -3771,16 +4516,16 @@ const ContractPage: React.FC = () => {
               </span>
               {/* Stamp image */}
               <div className="flex-shrink-0">
-                <img 
-                  src="/חתימה מסמכים (5).png" 
-                  alt="Stamp" 
-                  style={{ 
-                    width: 'auto', 
-                    height: 150, 
+                <img
+                  src="/חתימה מסמכים (5).png"
+                  alt="Stamp"
+                  style={{
+                    width: 'auto',
+                    height: 150,
                     maxWidth: 250,
                     display: 'block',
                     objectFit: 'contain'
-                  }} 
+                  }}
                 />
               </div>
             </span>
@@ -3904,7 +4649,7 @@ const ContractPage: React.FC = () => {
 
           // Check if there's a saved text alignment from the admin
           const savedSignedAlign = content.attrs?.textAlign;
-          
+
           let styleProps;
           if (savedSignedAlign) {
             // Use the saved alignment from admin
@@ -3934,15 +4679,15 @@ const ContractPage: React.FC = () => {
         const level = content.attrs?.level || 1;
         const headingTags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
         const HeadingTag = headingTags[Math.max(0, Math.min(5, level - 1))] || 'h1';
-        
+
         // Check if there's a saved text alignment from the admin
         const savedSignedHeadingAlign = content.attrs?.textAlign;
-        
+
         if (savedSignedHeadingAlign) {
           // Use the saved alignment from admin
           return React.createElement(
             HeadingTag,
-            { 
+            {
               key: keyPrefix,
               style: { textAlign: savedSignedHeadingAlign }
             },
@@ -3954,7 +4699,7 @@ const ContractPage: React.FC = () => {
           const isRTLSignedHeading = isRTL(signedHeadingText);
           return React.createElement(
             HeadingTag,
-            { 
+            {
               key: keyPrefix,
               dir: isRTLSignedHeading ? 'rtl' : 'ltr',
               style: {
@@ -3969,7 +4714,7 @@ const ContractPage: React.FC = () => {
         const signedBulletListText = JSON.stringify(content.content);
         const isRTLSignedBulletList = isRTL(signedBulletListText);
         return (
-          <ul 
+          <ul
             key={keyPrefix}
             dir={isRTLSignedBulletList ? 'rtl' : 'ltr'}
             style={{ textAlign: isRTLSignedBulletList ? 'right' : 'left' }}
@@ -3981,7 +4726,7 @@ const ContractPage: React.FC = () => {
         const signedOrderedListText = JSON.stringify(content.content);
         const isRTLSignedOrderedList = isRTL(signedOrderedListText);
         return (
-          <ol 
+          <ol
             key={keyPrefix}
             dir={isRTLSignedOrderedList ? 'rtl' : 'ltr'}
             style={{ textAlign: isRTLSignedOrderedList ? 'right' : 'left' }}
@@ -3998,7 +4743,7 @@ const ContractPage: React.FC = () => {
         }).join('') || '';
         const isRTLSignedListItem = isRTL(signedListItemText);
         return (
-          <li 
+          <li
             key={keyPrefix}
             dir={isRTLSignedListItem ? 'rtl' : 'ltr'}
             style={{ textAlign: isRTLSignedListItem ? 'right' : 'left' }}
@@ -4069,30 +4814,30 @@ const ContractPage: React.FC = () => {
     setPdfLoading(true);
     const clientName = (contract && contract.contact_name) ? contract.contact_name : (client?.name || 'Client');
     const filename = `contract-${clientName.replace(/[^a-z0-9]/gi, '-').toLowerCase()}-${contract.id}.pdf`;
-    
+
     try {
       // Clone and pre-process the element to convert all colors to RGB
       const elementToPrint = contractContentRef.current.cloneNode(true) as HTMLElement;
       elementToPrint.id = 'contract-print-area-pdf';
-      
+
       // Add to DOM temporarily for processing
       elementToPrint.style.position = 'absolute';
       elementToPrint.style.left = '-9999px';
       elementToPrint.style.top = '0';
       elementToPrint.style.visibility = 'hidden';
       document.body.appendChild(elementToPrint);
-      
+
       // Convert all computed styles to inline RGB styles
       const convertColorsToRGB = (el: HTMLElement) => {
         try {
           const computed = window.getComputedStyle(el);
-          
+
           // Convert background colors
           const bgColor = computed.backgroundColor;
           if (bgColor && bgColor !== 'rgba(0, 0, 0, 0)' && bgColor !== 'transparent') {
             el.style.setProperty('background-color', bgColor, 'important');
           }
-          
+
           // Remove gradient backgrounds
           if (computed.backgroundImage && computed.backgroundImage !== 'none') {
             el.style.setProperty('background-image', 'none', 'important');
@@ -4100,13 +4845,13 @@ const ContractPage: React.FC = () => {
               el.style.setProperty('background-color', '#ffffff', 'important');
             }
           }
-          
+
           // Convert text colors
           const textColor = computed.color;
           if (textColor) {
             el.style.setProperty('color', textColor, 'important');
           }
-          
+
           // Process children
           Array.from(el.children).forEach(child => {
             convertColorsToRGB(child as HTMLElement);
@@ -4115,11 +4860,11 @@ const ContractPage: React.FC = () => {
           // Ignore errors for individual elements
         }
       };
-      
+
       // Wait for clone to be in DOM, then process
       setTimeout(() => {
         convertColorsToRGB(elementToPrint);
-        
+
         // Add CSS to override any remaining problematic styles
         const styleOverride = document.createElement('style');
         styleOverride.id = 'pdf-style-override';
@@ -4134,16 +4879,16 @@ const ContractPage: React.FC = () => {
           }
         `;
         document.head.appendChild(styleOverride);
-        
+
         // Wait a bit more for styles to apply
         setTimeout(() => {
           html2pdf(elementToPrint, {
             margin: [10, 10, 10, 10],
             filename: filename,
             image: { type: 'jpeg', quality: 0.98 },
-            html2canvas: { 
-              scale: 2, 
-              useCORS: true, 
+            html2canvas: {
+              scale: 2,
+              useCORS: true,
               logging: false
             },
             jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
@@ -4156,7 +4901,7 @@ const ContractPage: React.FC = () => {
           });
         }, 200);
       }, 100);
-      
+
       const cleanup = () => {
         if (elementToPrint.parentNode) {
           document.body.removeChild(elementToPrint);
@@ -4166,11 +4911,11 @@ const ContractPage: React.FC = () => {
           document.head.removeChild(styleEl);
         }
       };
-      
+
     } catch (error: any) {
       console.error('Error generating PDF:', error);
       setPdfLoading(false);
-      
+
       // Suggest using print instead
       if (confirm('PDF generation failed due to unsupported color formats. Would you like to use the Print dialog instead? (You can save as PDF from there)')) {
         handlePrint();
@@ -4233,12 +4978,12 @@ const ContractPage: React.FC = () => {
   return (
     <div className="min-h-screen bg-white">
       {/* Header */}
-      <div 
-        ref={headerRef} 
-        className={`bg-white shadow-sm border-b border-gray-200 print-hide ${!editing ? 'sticky top-0 z-50' : ''}`}
+      <div
+        ref={headerRef}
+        className={`print-hide ${!editing ? 'sticky top-4 z-50' : ''} flex justify-center px-4`}
       >
-        <div className="w-full px-2 sm:px-4 md:px-8 lg:px-16 xl:px-32 2xl:px-48">
-          <div className="flex justify-between items-center py-2 sm:py-4">
+        <div className="backdrop-blur-md bg-white/80 rounded-2xl shadow-lg border border-white/20 px-4 sm:px-6 py-2 sm:py-3 w-fit max-w-full">
+          <div className="flex justify-between items-center">
             <div className="flex items-center space-x-1 sm:space-x-4 flex-1 min-w-0">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
@@ -4267,31 +5012,269 @@ const ContractPage: React.FC = () => {
                       <span className="badge badge-sm sm:badge-md bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">Draft</span>
                     </>
                   )}
-                  <h1 className="text-sm sm:text-2xl font-bold text-gray-900 truncate">{template?.name || 'Contract'}</h1>
-                  {/* Buttons next to title on desktop only */}
-                  <div className="hidden sm:flex items-center gap-1 sm:gap-2">
+                  <h1 className="text-xs sm:text-lg font-bold text-gray-900 truncate">
+                    {client?.name || 'Client'} • Lead #{renderLeadNumber()}
+                    {(() => {
+                      const displayCategory = getCategoryDisplayName(client?.category_id, client?.category);
+                      return displayCategory ? <span className="ml-2 hidden sm:inline">• {displayCategory}</span> : null;
+                    })()}
+                    {client?.topic && <span className="ml-2">• {client.topic}</span>}
+                  </h1>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="w-full px-2 sm:px-6 xl:pl-16 2xl:pl-32 py-8 pb-20 print-content-wrapper">
+        <div className="relative min-h-screen">
+          {/* Contract Content */}
+          <div className="w-full transition-all duration-300 xl:pr-[400px]">
+            <div ref={contractContentRef} id="contract-print-area" className="text-gray-900 leading-relaxed [&_.ProseMirror_p]:mb-3 [&_p]:mb-3 text-sm sm:text-base [&_*]:text-sm sm:[&_*]:text-base">
+              {editing ? (
+                <>
+                  {/* Editor Toolbar with Field Insertion - Fixed at top */}
+                  <div className="sticky top-0 z-30 flex flex-wrap gap-2 items-center mb-4 p-4 rounded-xl border border-gray-300 bg-gray-50 print-hide shadow-md backdrop-blur-sm bg-white/95">
+                    {/* Formatting buttons */}
+                    <button className={`btn btn-sm ${editor.isActive('bold') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { editor.chain().focus().toggleBold().run(); setTimeout(() => editor.commands.focus(), 10); }} title="Bold"><b className="text-base font-bold">B</b></button>
+                    <button className={`btn btn-sm ${editor.isActive('italic') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { editor.chain().focus().toggleItalic().run(); setTimeout(() => editor.commands.focus(), 10); }} title="Italic"><i className="text-base italic">I</i></button>
+                    <button className={`btn btn-sm ${editor.isActive('underline') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { editor.chain().focus().toggleUnderline().run(); setTimeout(() => editor.commands.focus(), 10); }} title="Underline"><u className="text-base underline">U</u></button>
+                    <button className={`btn btn-sm ${editor.isActive('strike') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { editor.chain().focus().toggleStrike().run(); setTimeout(() => editor.commands.focus(), 10); }} title="Strikethrough"><s className="text-base line-through">S</s></button>
+
+
+                    {/* Font Family Dropdown */}
+                    <select
+                      className="select select-sm select-bordered"
+                      style={{ minWidth: '100px', width: '100px' }}
+                      value={editor.getAttributes('fontFamily').fontFamily || 'Arial'}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        editor.chain().focus().setFontFamily(value).run();
+                        setTimeout(() => editor.commands.focus(), 10);
+                      }}
+                      title="Font Family"
+                    >
+                      <option value="Arial">Arial</option>
+                      <option value="Times New Roman">Times New Roman</option>
+                      <option value="Courier New">Courier New</option>
+                      <option value="Georgia">Georgia</option>
+                      <option value="Verdana">Verdana</option>
+                      <option value="Helvetica">Helvetica</option>
+                      <option value="Comic Sans MS">Comic Sans MS</option>
+                      <option value="Impact">Impact</option>
+                      <option value="Trebuchet MS">Trebuchet MS</option>
+                    </select>
+
+                    {/* Font Size Dropdown */}
+                    <select
+                      className="select select-sm select-bordered"
+                      style={{ minWidth: '90px', width: '90px' }}
+                      value={editor.getAttributes('fontSize').fontSize || '16px'}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        editor.chain().focus().setFontSize(value).run();
+                        setTimeout(() => editor.commands.focus(), 10);
+                      }}
+                      title="Font Size"
+                    >
+                      <option value="8px">8px</option>
+                      <option value="10px">10px</option>
+                      <option value="12px">12px</option>
+                      <option value="14px">14px</option>
+                      <option value="16px">16px</option>
+                      <option value="18px">18px</option>
+                      <option value="20px">20px</option>
+                      <option value="24px">24px</option>
+                      <option value="28px">28px</option>
+                      <option value="32px">32px</option>
+                      <option value="36px">36px</option>
+                      <option value="48px">48px</option>
+                    </select>
+
+                    {/* Undo/Redo */}
+                    <button className="btn btn-sm btn-ghost" onClick={() => { editor.chain().focus().undo().run(); setTimeout(() => editor.commands.focus(), 10); }} title="Undo"><span className="text-lg">⎌</span></button>
+                    <button className="btn btn-sm btn-ghost" onClick={() => { editor.chain().focus().redo().run(); setTimeout(() => editor.commands.focus(), 10); }} title="Redo"><span className="text-lg">⎌⎌</span></button>
+
+                    {/* Add Text Field Button */}
                     <button
-                      className="btn btn-xs sm:btn-sm text-white border-none"
+                      className="btn btn-sm btn-primary"
+                      onClick={() => {
+                        if (!editor) return;
+
+                        // Find the highest text field ID in the content
+                        const content = editor.getJSON();
+                        let highestId = 0;
+                        const findHighestId = (node: any) => {
+                          if (node.type === 'text' && node.text) {
+                            // Match {{text:text-1}}, {{text:text-2}}, etc.
+                            const matches = node.text.match(/\{\{text:text-(\d+)\}\}/g);
+                            if (matches) {
+                              matches.forEach((match: string) => {
+                                const idMatch = match.match(/text-(\d+)/);
+                                if (idMatch) {
+                                  const id = parseInt(idMatch[1], 10);
+                                  if (id > highestId) {
+                                    highestId = id;
+                                  }
+                                }
+                              });
+                            }
+                          }
+                          if (node.content) {
+                            if (Array.isArray(node.content)) {
+                              node.content.forEach(findHighestId);
+                            } else {
+                              findHighestId(node.content);
+                            }
+                          }
+                        };
+                        findHighestId(content);
+
+                        // Create new field ID (highest + 1)
+                        const newFieldId = highestId + 1;
+                        const placeholder = `{{text:text-${newFieldId}}}`;
+
+                        // Insert the placeholder at the current cursor position and maintain focus
+                        editor.chain().focus().insertContent(placeholder).run();
+                        // Ensure focus is maintained after insertion
+                        setTimeout(() => {
+                          editor.commands.focus();
+                        }, 10);
+                      }}
+                      title="Add extra field"
+                    >
+                      <PlusIcon className="w-4 h-4" />
+                      <span className="ml-1">Add extra field</span>
+                    </button>
+                  </div>
+                  {/* Render editor content - placeholders show as plain text in edit mode */}
+                  <div
+                    key={`edit-content-${editorContentKey}-${renderKey}`}
+                    style={{
+                      position: 'relative',
+                      minHeight: '400px'
+                    }}
+                  >
+                    <EditorContent editor={editor} />
+                  </div>
+                </>
+              ) : status === 'signed' ? (
+                // For signed contracts, show the filled-in content using custom rendering
+                <div key={`signed-${renderKey}-${customPricing?.final_amount}-${customPricing?.applicant_count}`}>
+                  {contract.custom_content ? (
+                    (() => {
+                      console.log('🔍 Signed contract.custom_content:', contract.custom_content);
+                      return renderSignedContractContent(contract.custom_content);
+                    })()
+                  ) : (
+                    (() => {
+                      console.log('🎯 Rendering signed template.content:', template.content);
+                      return renderTiptapContent(template.content, '', false, undefined, undefined, undefined, true, { text: 0, signature: 0 });
+                    })()
+                  )}
+                </div>
+              ) : (
+                // For non-signed contracts, use renderTiptapContent to show placeholders as input fields
+                // Key includes pricing tiers hash to force re-render when any tier price changes
+                <div key={`readonly-${renderKey}-${customPricing?.final_amount || 0}-${customPricing?.applicant_count || 0}-${customPricing?.pricing_tiers ? Object.values(customPricing.pricing_tiers).join('-') : ''}`}>
+                  {(() => {
+                    // Get content from contract.custom_content (saved content) or template content
+                    let contentToRender = contract?.custom_content || template?.content;
+
+                    // Process content to fill placeholders but keep {{text}}, {{date}}, and {{signature}}
+                    if (contentToRender && customPricing && client) {
+                      const processedContent = fillPlaceholdersInTiptapContent(
+                        JSON.parse(JSON.stringify(contentToRender)),
+                        customPricing,
+                        client,
+                        contract,
+                        editing,
+                        { current: 0 }
+                      );
+                      return renderTiptapContent(processedContent, '', false, signaturePads, undefined, undefined, !editing, { text: 0, signature: 0 });
+                    }
+                    return renderTiptapContent(contentToRender || { type: 'doc', content: [] }, '', false, signaturePads, undefined, undefined, !editing, { text: 0, signature: 0 });
+                  })()}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Sidebar - Fixed to right edge of viewport - Only show button, no background */}
+          {!showDetailsAndPricingModal && (
+            <>
+              {/* Desktop buttons */}
+              <div
+                className="fixed top-0 right-0 z-[60] transition-all duration-300 ease-in-out hidden xl:block print-hide"
+                style={{
+                  top: `${headerHeight + 32}px`,
+                  paddingRight: '16px'
+                }}
+              >
+                <div className="flex flex-col gap-3">
+                  {/* Button to open Contract Details & Pricing Modal */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setShowDetailsAndPricingModal(true)}
+                      className="btn btn-circle btn-primary"
+                      title="Contract Details & Pricing"
+                    >
+                      <Cog6ToothIcon className="w-5 h-5" />
+                    </button>
+                    <span className="text-sm text-black font-medium">Details & Pricing</span>
+                  </div>
+
+                  {/* Share button */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="btn btn-circle btn-primary"
                       onClick={handleShareContractLink}
                       title="Copy public contract link"
                       style={{ backgroundColor: '#4218CC' }}
                       onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#3414A3'}
                       onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#4218CC'}
                     >
-                      Share
+                      <ShareIcon className="w-5 h-5" />
                     </button>
-                    {!editing && status === 'draft' && (
-                      <button className="btn btn-outline btn-xs sm:btn-sm" onClick={() => setEditing(true)}>
-                        Edit
+                    <span className="text-sm text-black font-medium">Share</span>
+                  </div>
+
+                  {!editing && status === 'draft' && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        className="btn btn-circle btn-outline"
+                        onClick={() => {
+                          setEditing(true);
+                          // Focus editor after entering edit mode
+                          setTimeout(() => {
+                            if (editor) {
+                              editor.commands.focus();
+                            }
+                          }, 100);
+                        }}
+                      >
+                        <PencilIcon className="w-5 h-5" />
                       </button>
-                    )}
-                    {editing && (
-                      <>
-                        <button className="btn btn-primary btn-xs sm:btn-sm" onClick={handleSaveEdit}>
-                          Save
+                      <span className="text-sm text-black font-medium">Edit</span>
+                    </div>
+                  )}
+
+                  {editing && (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <button
+                          className="btn btn-circle btn-primary"
+                          onClick={handleSaveEdit}
+                        >
+                          <CheckIcon className="w-5 h-5" />
                         </button>
-                        <button 
-                          className="btn btn-ghost btn-xs sm:btn-sm" 
+                        <span className="text-sm text-black font-medium">Save</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          className="btn btn-circle bg-white border border-gray-300 hover:bg-gray-50"
                           onClick={async () => {
                             setEditing(false);
                             // Reload contract content to discard changes without full page reload
@@ -4309,1559 +5292,134 @@ const ContractPage: React.FC = () => {
                               }
                             }
                           }}
-                          title="Cancel editing"
                         >
-                          <XMarkIcon className="w-4 h-4" />
-                          Cancel
+                          <XMarkIcon className="w-5 h-5" />
                         </button>
-                      </>
-                    )}
-                    {status === 'signed' && (
-                      <>
-                        <button
-                          className="btn btn-outline btn-xs sm:btn-sm"
-                          onClick={handleRefreshContract}
-                          title="Refresh contract data"
-                        >
-                          Refresh
-                        </button>
-                        <button
-                          className="btn btn-outline btn-xs sm:btn-sm gap-1 sm:gap-2"
-                          onClick={handlePrint}
-                          title="Print contract"
-                        >
-                          <PrinterIcon className="w-4 h-4" />
-                          <span>Print</span>
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-                <div className="flex flex-col sm:flex-row sm:items-center sm:gap-2 sm:mt-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <p className="text-xs sm:text-sm text-gray-500 truncate">
-                      Client: {client?.name} • Lead #{leadNumber || client?.lead_number || 'N/A'}
-                    </p>
-                    {/* Buttons on same row as client info on mobile */}
-                    <div className="flex items-center gap-1 sm:hidden">
-                      <button
-                        className="btn btn-xs text-white border-none"
-                        onClick={handleShareContractLink}
-                        title="Copy public contract link"
-                        style={{ backgroundColor: '#4218CC' }}
-                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#3414A3'}
-                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#4218CC'}
-                      >
-                        Share
-                      </button>
-                      {!editing && status === 'draft' && (
-                        <button className="btn btn-outline btn-xs" onClick={() => setEditing(true)}>
-                          Edit
-                        </button>
-                      )}
-                      {editing && (
-                        <>
-                          <button className="btn btn-primary btn-xs" onClick={handleSaveEdit}>
-                            Save
-                          </button>
-                          <button 
-                            className="btn btn-ghost btn-xs" 
-                            onClick={async () => {
-                              setEditing(false);
-                              // Reload contract content to discard changes without full page reload
-                              if (contract?.id && editor) {
-                                const { data: contractData } = await supabase
-                                  .from('contracts')
-                                  .select('*, contract_templates(*)')
-                                  .eq('id', contract.id)
-                                  .single();
-                                if (contractData) {
-                                  // Update contract and template state - this will trigger the useEffect to reprocess content
-                                  setContract(contractData);
-                                  if (contractData.contract_templates) {
-                                    setTemplate(contractData.contract_templates);
-                                  }
-                                  // Force content reprocessing by incrementing renderKey
-                                  setRenderKey(prev => prev + 1);
-                                }
-                              }
-                            }}
-                            title="Cancel editing"
-                          >
-                            <XMarkIcon className="w-4 h-4" />
-                          </button>
-                        </>
-                      )}
-                      {status === 'signed' && (
-                        <>
-                          <button
-                            className="btn btn-outline btn-xs"
-                            onClick={handleRefreshContract}
-                            title="Refresh contract data"
-                          >
-                            Refresh
-                          </button>
-                          <button
-                            className="btn btn-outline btn-xs gap-1"
-                            onClick={handlePrint}
-                            title="Print contract"
-                          >
-                            <PrinterIcon className="w-4 h-4" />
-                            <span>Print</span>
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  {contract?.contact_name && contract.contact_name !== client?.name && (
-                    <p className="text-xs sm:text-sm text-purple-600 font-medium truncate">
-                      Contact: {contract.contact_name}
-                      {contract.contact_email && (
-                        <span className="text-gray-500 ml-2">• {contract.contact_email}</span>
-                      )}
-                    </p>
-                  )}
-                  {status === 'signed' && contract?.custom_content && (
-                    <p className="text-xs sm:text-sm text-green-600 font-medium truncate">
-                      Contract has been customized
-                    </p>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Main Content */}
-      <div className="w-full px-2 sm:px-6 xl:pl-16 2xl:pl-32 py-8 print-content-wrapper">
-        <div className="relative min-h-screen">
-          {/* Contract Content */}
-          <div className="w-full transition-all duration-300 xl:pr-[580px]">
-            <div ref={contractContentRef} id="contract-print-area" className="text-gray-900 leading-relaxed [&_.ProseMirror_p]:mb-3">
-                  {editing ? (
-                    <>
-                      {/* Editor Toolbar with Field Insertion - Fixed at top */}
-                      <div className="sticky top-0 z-30 flex flex-wrap gap-2 items-center mb-4 p-4 rounded-xl border border-gray-300 bg-gray-50 print-hide shadow-md backdrop-blur-sm bg-white/95">
-                        {/* Formatting buttons */}
-                        <button className={`btn btn-sm ${editor.isActive('bold') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => editor.chain().focus().toggleBold().run()} title="Bold"><b className="text-base font-bold">B</b></button>
-                        <button className={`btn btn-sm ${editor.isActive('italic') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => editor.chain().focus().toggleItalic().run()} title="Italic"><i className="text-base italic">I</i></button>
-                        <button className={`btn btn-sm ${editor.isActive('underline') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => editor.chain().focus().toggleUnderline().run()} title="Underline"><u className="text-base underline">U</u></button>
-                        <button className={`btn btn-sm ${editor.isActive('strike') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => editor.chain().focus().toggleStrike().run()} title="Strikethrough"><s className="text-base line-through">S</s></button>
-                        
-                        {/* Field insertion dropdowns */}
-                        <div className="dropdown dropdown-bottom">
-                          <button className="btn btn-sm btn-outline" type="button">Dynamic Fields</button>
-                          <ul className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-50">
-                            {DYNAMIC_FIELDS.map(f => (
-                              <li key={f.tag}><button type="button" onClick={() => insertField(f.tag)}>{f.label}</button></li>
-                            ))}
-                          </ul>
-                        </div>
-                        <div className="dropdown dropdown-bottom">
-                          <button className="btn btn-sm btn-outline" type="button">Text Fields</button>
-                          <ul className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-64 z-50 max-h-96 overflow-y-auto">
-                            {FIELD_TYPES.map(f => (
-                              <li key={f.tag}><button type="button" onClick={() => insertField(f.tag)}>{f.label}</button></li>
-                            ))}
-                          </ul>
-                        </div>
-                        <div className="dropdown dropdown-bottom">
-                          <button className="btn btn-sm btn-outline" type="button">Pricing Fields</button>
-                          <ul className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-50">
-                            {PRICING_FIELDS.map(f => (
-                              <li key={f.tag}><button type="button" onClick={() => insertField(f.tag)}>{f.label}</button></li>
-                            ))}
-                          </ul>
-                        </div>
-                        <div className="dropdown dropdown-bottom">
-                          <button className="btn btn-sm btn-outline" type="button">Payment Plan Fields</button>
-                          <ul className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-50">
-                            {PAYMENT_PLAN_FIELDS.map(f => (
-                              <li key={f.tag}><button type="button" onClick={() => insertField(f.tag)}>{f.label}</button></li>
-                            ))}
-                          </ul>
-                        </div>
-                        
-                        {/* Undo/Redo */}
-                        <button className="btn btn-sm btn-ghost" onClick={() => editor.chain().focus().undo().run()} title="Undo"><span className="text-lg">⎌</span></button>
-                        <button className="btn btn-sm btn-ghost" onClick={() => editor.chain().focus().redo().run()} title="Redo"><span className="text-lg">⎌⎌</span></button>
+                        <span className="text-sm text-black font-medium">Cancel</span>
                       </div>
-                      <EditorContent editor={editor} />
                     </>
-                  ) : status === 'signed' ? (
-                    // For signed contracts, show the filled-in content using custom rendering
-                    <div key={`signed-${renderKey}-${customPricing?.final_amount}-${customPricing?.applicant_count}`}>
-                      {contract.custom_content ? (
-                        (() => {
-                          console.log('🔍 Signed contract.custom_content:', contract.custom_content);
-                          return renderSignedContractContent(contract.custom_content);
-                        })()
-                      ) : (
-                        (() => {
-                          console.log('🎯 Rendering signed template.content:', template.content);
-                          return renderTiptapContent(template.content, '', false, undefined, undefined, undefined, true, { text: 0, signature: 0 });
-                        })()
-                      )}
-                    </div>
-                  ) : (
-                    // For non-signed contracts, use the SAME EditorContent component with identical styling
-                    // Key includes pricing tiers hash to force re-render when any tier price changes
-                    <EditorContent
-                      editor={editor}
-                      key={`readonly-${renderKey}-${customPricing?.final_amount || 0}-${customPricing?.applicant_count || 0}-${customPricing?.pricing_tiers ? Object.values(customPricing.pricing_tiers).join('-') : ''}`}
-                    />
-                  )}
-            </div>
-          </div>
-
-          {/* Sidebar - Fixed to right edge of viewport */}
-          <div 
-            className={`fixed top-0 right-0 z-[60] transition-all duration-300 ease-in-out hidden xl:block print-hide overflow-y-auto ${!editing ? 'bg-white' : ''}`}
-            style={{
-              top: `${headerHeight + 32}px`,
-              height: `calc(100vh - ${headerHeight + 32}px)`,
-              width: '560px',
-              paddingLeft: '16px',
-              paddingRight: '16px'
-            }}
-          >
-            <div className="space-y-6">
-              {/* Contract Details Box */}
-              <div className={`rounded-lg shadow-lg border border-gray-200 transition-all duration-300 select-none overflow-hidden ${
-                isContractDetailsExpanded 
-                  ? 'bg-white' 
-                  : 'bg-white/30 backdrop-blur-md border-white/50'
-              }`}
-              style={{ touchAction: 'none', userSelect: 'none' }}
-              >
-                <div className={`p-6 ${!isContractDetailsExpanded ? 'overflow-hidden' : ''}`}>
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className={`text-lg font-semibold transition-colors ${
-                      isContractDetailsExpanded ? 'text-gray-900' : 'text-gray-700'
-                    }`}>Contract Details</h3>
-                    <button
-                      onClick={() => setIsContractDetailsExpanded(!isContractDetailsExpanded)}
-                      className="p-1 hover:bg-gray-100 rounded transition-colors"
-                    >
-                      {isContractDetailsExpanded ? (
-                        <ChevronUpIcon className="w-5 h-5 text-gray-500" />
-                      ) : (
-                        <ChevronDownIcon className="w-5 h-5 text-gray-500" />
-                      )}
-                    </button>
-                  </div>
-                  
-                  {isContractDetailsExpanded && (
-                    <div className="space-y-6">
-                    {/* Contact Information Section */}
-                    {contract?.contact_name && (
-                      <div>
-                        <h4 className="text-md font-semibold mb-3 text-gray-800">Contact Information</h4>
-                        <div className="space-y-3 text-sm">
-                          <div className="text-gray-700">
-                            <span className="font-medium">Name:</span>
-                            <span className="ml-2 font-semibold text-purple-600">{contract.contact_name}</span>
-                          </div>
-                          {contract.contact_email && (
-                            <div className="text-gray-700">
-                              <span className="font-medium">Email:</span>
-                              <span className="ml-2">{contract.contact_email}</span>
-                            </div>
-                          )}
-                          {contract.contact_phone && (
-                            <div className="text-gray-700">
-                              <span className="font-medium">Phone:</span>
-                              <span className="ml-2">{contract.contact_phone}</span>
-                            </div>
-                          )}
-                          {contract.contact_mobile && (
-                            <div className="text-gray-700">
-                              <span className="font-medium">Mobile:</span>
-                              <span className="ml-2">{contract.contact_mobile}</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                    
-                    {/* Contract Details Section */}
-                    <div className={contract?.contact_name ? "pt-3 border-t border-gray-200" : ""}>
-                      <div className="flex items-center justify-between mb-3">
-                        <h4 className="text-md font-semibold text-gray-800">Contract Information</h4>
-                        {status !== 'signed' && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setShowChangeTemplateModal(true);
-                            }}
-                            className="btn btn-sm btn-outline btn-primary"
-                          >
-                            Change Template
-                          </button>
-                        )}
-                      </div>
-                      <div className="space-y-3 text-sm">
-                        <div>
-                          <span className="font-medium text-gray-700">Template:</span>
-                          <span className="ml-2 text-gray-900">{template?.name || 'Unknown'}</span>
-                        </div>
-                        <div>
-                          <span className="font-medium text-gray-700">Status:</span>
-                          <span className={`badge badge-sm ml-2 ${status === 'signed' ? 'badge-success' : 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none'}`}>{status}</span>
-                        </div>
-                        <div className="text-gray-700 flex items-center"><span className="font-medium">Applicants:</span> <span className="ml-2">{customPricing?.applicant_count || ''}</span></div>
-                        <div className="text-gray-700"><span className="font-medium">Created:</span> {new Date(contract.created_at).toLocaleDateString()}</div>
-                        {contract.signed_at && (
-                          <div className="text-gray-700"><span className="font-medium">Signed:</span> {new Date(contract.signed_at).toLocaleDateString()}</div>
-                        )}
-                      </div>
-                    </div>
-                    </div>
                   )}
                 </div>
               </div>
 
-              {/* Pricing & Payment Plan Box */}
-              <div className={`rounded-lg shadow-lg border border-gray-200 transition-all duration-300 select-none overflow-hidden ${
-                isPricingExpanded 
-                  ? 'bg-white' 
-                  : 'bg-white/30 backdrop-blur-md border-white/50'
-              }`}
-              style={{ touchAction: 'none', userSelect: 'none' }}
+              {/* Mobile buttons */}
+              <div
+                className="fixed top-1/2 right-2 -translate-y-1/2 z-[60] transition-all duration-300 ease-in-out xl:hidden print-hide"
               >
-                <div className={`p-6 space-y-6 ${!isPricingExpanded ? 'overflow-hidden' : ''}`}>
-                  <div className="flex items-center justify-between">
-                    <h3 className={`text-lg font-semibold transition-colors ${
-                      isPricingExpanded ? 'text-gray-900' : 'text-gray-700'
-                    }`}>Pricing & Payment Plan</h3>
+                <div className="flex flex-col gap-4">
+                  {/* Button to open Contract Details & Pricing Modal */}
+                  <button
+                    onClick={() => setShowDetailsAndPricingModal(true)}
+                    className="btn btn-circle btn-primary w-12 h-12"
+                    title="Contract Details & Pricing"
+                  >
+                    <Cog6ToothIcon className="w-6 h-6" />
+                  </button>
+
+                  {/* Share button - Mobile uses native share */}
+                  <button
+                    className="btn btn-circle btn-primary w-12 h-12"
+                    onClick={handleMobileShare}
+                    title="Share contract link"
+                    style={{ backgroundColor: '#4218CC' }}
+                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#3414A3'}
+                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#4218CC'}
+                  >
+                    <ShareIcon className="w-6 h-6" />
+                  </button>
+
+                  {!editing && status === 'draft' && (
                     <button
-                      onClick={() => setIsPricingExpanded(!isPricingExpanded)}
-                      className="p-1 hover:bg-gray-100 rounded transition-colors"
-                    >
-                      {isPricingExpanded ? (
-                        <ChevronUpIcon className="w-5 h-5 text-gray-500" />
-                      ) : (
-                        <ChevronDownIcon className="w-5 h-5 text-gray-500" />
-                      )}
-                    </button>
-                  </div>
-                  
-                  {isPricingExpanded && (
-                    <>
-                      
-                      {/* Currency Selection */}
-                  {status !== 'signed' && (
-                    <div className="space-y-3 pb-4 border-b border-gray-200">
-                      <label className="font-medium text-gray-700">Currency Type:</label>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          className={`btn btn-sm flex-1 ${currencyType === 'USD' ? 'btn-primary' : 'btn-outline'}`}
-                          onClick={() => {
-                            setCurrencyType('USD');
-                            setVatIncluded(false); // USD/GBP/EUR don't have VAT
-                            // Reload pricing tiers from template for USD
-                            if (template?.default_pricing_tiers_usd) {
-                              const pricingTiers = template.default_pricing_tiers_usd;
-                              const currentTierKey = customPricing?.applicant_count 
-                                ? (customPricing.applicant_count === 1 ? '1' :
-                                   customPricing.applicant_count === 2 ? '2' :
-                                   customPricing.applicant_count === 3 ? '3' :
-                                   customPricing.applicant_count >= 4 && customPricing.applicant_count <= 7 ? '4-7' :
-                                   customPricing.applicant_count >= 8 && customPricing.applicant_count <= 9 ? '8-9' :
-                                   customPricing.applicant_count >= 10 && customPricing.applicant_count <= 15 ? '10-15' : '16+')
-                                : '1';
-                              const currentPricePerApplicant = pricingTiers[currentTierKey] || 0;
-                              const total = currentPricePerApplicant * (customPricing?.applicant_count || 1);
-                              setCustomPricing((prev: any) => ({
-                                ...prev,
-                                pricing_tiers: pricingTiers,
-                                currency: subCurrency === 'EUR' ? '€' : subCurrency === 'GBP' ? '£' : '$',
-                                total_amount: total,
-                                final_amount: total - (prev.discount_amount || 0)
-                              }));
-                            }
-                          }}
-                        >
-                          USD/GBP/EUR
-                        </button>
-                        <button
-                          type="button"
-                          className={`btn btn-sm flex-1 ${currencyType === 'NIS' ? 'btn-primary' : 'btn-outline'}`}
-                          onClick={() => {
-                            setCurrencyType('NIS');
-                            setVatIncluded(true); // NIS has VAT included by default
-                            // Reload pricing tiers from template for NIS
-                            if (template?.default_pricing_tiers_nis) {
-                              const pricingTiers = template.default_pricing_tiers_nis;
-                              const currentTierKey = customPricing?.applicant_count 
-                                ? (customPricing.applicant_count === 1 ? '1' :
-                                   customPricing.applicant_count === 2 ? '2' :
-                                   customPricing.applicant_count === 3 ? '3' :
-                                   customPricing.applicant_count >= 4 && customPricing.applicant_count <= 7 ? '4-7' :
-                                   customPricing.applicant_count >= 8 && customPricing.applicant_count <= 9 ? '8-9' :
-                                   customPricing.applicant_count >= 10 && customPricing.applicant_count <= 15 ? '10-15' : '16+')
-                                : '1';
-                              const currentPricePerApplicant = pricingTiers[currentTierKey] || 0;
-                              const total = currentPricePerApplicant * (customPricing?.applicant_count || 1);
-                              setCustomPricing((prev: any) => ({
-                                ...prev,
-                                pricing_tiers: pricingTiers,
-                                currency: '₪',
-                                total_amount: total,
-                                final_amount: total - (prev.discount_amount || 0)
-                              }));
-                            }
-                          }}
-                        >
-                          NIS
-                        </button>
-                      </div>
-                      
-                      {/* Sub-currency selector for USD type */}
-                      {currencyType === 'USD' && (
-                        <div>
-                          <label className="font-medium text-gray-700 text-sm mb-2 block">Select Currency:</label>
-                          <select
-                            className="select select-bordered select-sm w-full"
-                            value={subCurrency}
-                            onChange={(e) => {
-                              const newSubCurrency = e.target.value as 'USD' | 'GBP' | 'EUR';
-                              setSubCurrency(newSubCurrency);
-                              const currencySymbol = newSubCurrency === 'EUR' ? '€' : newSubCurrency === 'GBP' ? '£' : '$';
-                              setCustomPricing((prev: any) => ({
-                                ...prev,
-                                currency: currencySymbol
-                              }));
-                            }}
-                          >
-                            <option value="USD">USD ($)</option>
-                            <option value="GBP">GBP (£)</option>
-                            <option value="EUR">EUR (€)</option>
-                          </select>
-                        </div>
-                      )}
-                      
-                      {/* VAT Included/Excluded Toggle - Only show for NIS */}
-                      {(currencyType === 'NIS' || (currencyType === 'USD' && customPricing?.currency === '₪')) && (
-                        <div className="mt-3">
-                          <label className="font-medium text-gray-700 text-sm mb-2 block">VAT:</label>
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              className={`btn btn-sm flex-1 ${vatIncluded ? 'btn-primary' : 'btn-outline'}`}
-                              onClick={() => {
-                                setVatIncluded(true);
-                                // Recalculate payment plan with VAT included
-                                const total = customPricing?.total_amount || 0;
-                                const discountAmount = customPricing?.discount_amount || 0;
-                                const archivalFee = customPricing?.archival_research_fee || 0;
-                                const baseTotal = total + archivalFee;
-                                const discountedBaseTotal = baseTotal - discountAmount;
-                                
-                                let paymentPlan = customPricing?.payment_plan || [];
-                                if (paymentPlan.length > 0) {
-                                  const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
-                                  paymentPlan = paymentPlan.map((row: any) => {
-                                    const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
-                                    const vatForThisPercent = Math.round((baseValueForThisPercent * 0.18 * 100) / 100);
-                                    return {
-                                      ...row,
-                                      value: `${baseValueForThisPercent} + ${vatForThisPercent}`,
-                                    };
-                                  });
-                                }
-                                
-                                setCustomPricing((prev: any) => ({
-                                  ...prev,
-                                  payment_plan: paymentPlan
-                                }));
-                              }}
-                            >
-                              Included
-                            </button>
-                            <button
-                              type="button"
-                              className={`btn btn-sm flex-1 ${!vatIncluded ? 'btn-primary' : 'btn-outline'}`}
-                              onClick={() => {
-                                setVatIncluded(false);
-                                // Recalculate payment plan with VAT excluded
-                                const total = customPricing?.total_amount || 0;
-                                const discountAmount = customPricing?.discount_amount || 0;
-                                const archivalFee = customPricing?.archival_research_fee || 0;
-                                const baseTotal = total + archivalFee;
-                                const discountedBaseTotal = baseTotal - discountAmount;
-                                
-                                let paymentPlan = customPricing?.payment_plan || [];
-                                if (paymentPlan.length > 0) {
-                                  const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
-                                  paymentPlan = paymentPlan.map((row: any) => {
-                                    const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
-                                    return {
-                                      ...row,
-                                      value: baseValueForThisPercent.toString(),
-                                    };
-                                  });
-                                }
-                                
-                                setCustomPricing((prev: any) => ({
-                                  ...prev,
-                                  payment_plan: paymentPlan
-                                }));
-                              }}
-                            >
-                              Excluded
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {customPricing ? (
-                    <>
-                      {/* Applicant Count */}
-                      <div className="flex items-center justify-between">
-                        <label className="font-medium text-gray-700">Number of Applicants:</label>
-                        <div className="flex items-center gap-3">
-                          <button
-                            className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
-                            style={{ width: 40, height: 40, '--hover-bg': '#391BC8' } as React.CSSProperties & { '--hover-bg': string }}
-                            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
-                            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
-                            onClick={() => handleApplicantCountChange(Math.max(1, (customPricing.applicant_count || 1) - 1))}
-                            aria-label="Decrease number of applicants"
-                            type="button"
-                            disabled={status === 'signed'}
-                          >
-                            <MinusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
-                          </button>
-                          <input
-                            type="number"
-                            min={1}
-                            max={50}
-                            className="input input-bordered input-lg w-28 text-center bg-white text-lg font-bold px-4 py-2 rounded-xl border-2 no-arrows"
-                            style={{ height: 48, borderColor: '#391BC8' }}
-                            value={customPricing.applicant_count || 1}
-                            onChange={e => handleApplicantCountChange(Number(e.target.value))}
-                            onFocus={(e) => e.target.style.borderColor = '#391BC8'}
-                            onBlur={(e) => e.target.style.borderColor = '#391BC8'}
-                            inputMode="numeric"
-                            pattern="[0-9]*"
-                            disabled={status === 'signed'}
-                          />
-                          <button
-                            className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
-                            style={{ width: 40, height: 40 }}
-                            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
-                            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
-                            onClick={() => handleApplicantCountChange(Math.min(50, (customPricing.applicant_count || 1) + 1))}
-                            aria-label="Increase number of applicants"
-                            type="button"
-                            disabled={status === 'signed'}
-                          >
-                            <PlusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Pricing Tiers */}
-                      <div>
-                        <label className="block font-medium text-gray-700 mb-3">Pricing Tiers (Price per applicant):</label>
-                        <div className="space-y-2">
-                          {customPricing.pricing_tiers ? (() => {
-                            const tierStructure = [
-                              { key: '1', label: 'For one applicant' },
-                              { key: '2', label: 'For 2 applicants' },
-                              { key: '3', label: 'For 3 applicants' },
-                              { key: '4-7', label: 'For 4-7 applicants' },
-                              { key: '8-9', label: 'For 8-9 applicants' },
-                              { key: '10-15', label: 'For 10-15 applicants' },
-                              { key: '16+', label: 'For 16 applicants or more' }
-                            ];
-
-                            const getCurrentTierKey = (count: number) => {
-                              if (count === 1) return '1';
-                              if (count === 2) return '2';
-                              if (count === 3) return '3';
-                              if (count >= 4 && count <= 7) return '4-7';
-                              if (count >= 8 && count <= 9) return '8-9';
-                              if (count >= 10 && count <= 15) return '10-15';
-                              return '16+';
-                            };
-
-                            const currentTierKey = getCurrentTierKey(customPricing.applicant_count);
-
-                            return tierStructure.map(tier => {
-                              const price = customPricing.pricing_tiers[tier.key] || 0;
-                              const isActive = tier.key === currentTierKey;
-                              return (
-                                <div key={tier.key} className={`flex items-center justify-between p-2 rounded-lg ${isActive
-                                    ? 'bg-white border-2'
-                                    : 'bg-white border border-gray-200'
-                                  }`}
-                                  style={isActive ? { borderColor: '#391BC8', backgroundColor: 'rgba(57, 27, 200, 0.05)' } : {}}
-                                >
-                                  <span className="text-base font-semibold text-gray-700">
-                                    {tier.label}:
-                                  </span>
-                                  <div className="flex items-center gap-3">
-                                    <button
-                                      className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
-                                      style={{ width: 40, height: 40 }}
-                                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
-                                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
-                                      onClick={() => handleTierPriceChange(tier.key, Math.max(0, price - 100))}
-                                      aria-label={`Decrease price for ${tier.label}`}
-                                      type="button"
-                                      disabled={status === 'signed'}
-                                    >
-                                      <MinusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
-                                    </button>
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      className="input input-bordered input-lg w-36 text-right bg-white text-lg font-bold px-4 py-2 rounded-xl border-2 no-arrows"
-                                      style={{ height: 48, borderColor: '#391BC8' }}
-                                      value={price}
-                                      onChange={e => handleTierPriceChange(tier.key, Number(e.target.value))}
-                                      onFocus={(e) => e.target.style.borderColor = '#391BC8'}
-                                      onBlur={(e) => e.target.style.borderColor = '#391BC8'}
-                                      disabled={status === 'signed'}
-                                    />
-                                    <button
-                                      className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
-                                      style={{ width: 40, height: 40 }}
-                                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
-                                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
-                                      onClick={() => handleTierPriceChange(tier.key, price + 100)}
-                                      aria-label={`Increase price for ${tier.label}`}
-                                      type="button"
-                                      disabled={status === 'signed'}
-                                    >
-                                      <PlusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
-                                    </button>
-                                    <span className="text-base font-semibold text-gray-600">{customPricing.currency}</span>
-                                  </div>
-                                </div>
-                              );
-                            });
-                          })() : (
-                            <div className="text-gray-500 text-sm p-4 text-center">
-                              Loading pricing tiers...
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Discount */}
-                      <div className="flex items-center justify-between">
-                        <label className="font-medium text-gray-700">Discount:</label>
-                        <select
-                          className="select select-bordered select-md w-24 text-right bg-white"
-                          value={customPricing.discount_percentage}
-                          onChange={e => {
-                            const discount = Number(e.target.value);
-                            const getCurrentTierKey = (count: number) => {
-                              if (count === 1) return '1';
-                              if (count === 2) return '2';
-                              if (count === 3) return '3';
-                              if (count >= 4 && count <= 7) return '4-7';
-                              if (count >= 8 && count <= 9) return '8-9';
-                              if (count >= 10 && count <= 15) return '10-15';
-                              return '16+';
-                            };
-                            const currentTierKey = getCurrentTierKey(customPricing.applicant_count);
-                            const currentTierPrice = customPricing.pricing_tiers?.[currentTierKey] || 0;
-                            const total = currentTierPrice * (customPricing.applicant_count || 1);
-                            const discountAmount = Math.round(total * (discount / 100));
-                            const finalAmount = total - discountAmount;
-
-                            // Calculate final amount with VAT for payment plan calculations
-                            const archivalFee = customPricing?.archival_research_fee || 0;
-                            const baseTotal = total + archivalFee;
-                            const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
-
-                            // Calculate VAT on the discounted amount (baseTotal - discountAmount)
-                            const discountedBaseTotal = baseTotal - discountAmount;
-                            const vatAmount = isIsraeli ? Math.round(discountedBaseTotal * 0.18 * 100) / 100 : 0;
-                            const finalAmountWithVat = discountedBaseTotal + vatAmount;
-
-                            // Recalculate payment plan amounts - each payment should show "value + VAT" only if VAT is included
-                            let paymentPlan = customPricing.payment_plan || [];
-                            if (paymentPlan.length > 0) {
-                              const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
-                              paymentPlan = paymentPlan.map((row: any) => {
-                                // Calculate the base value for this percentage (based on discounted amount)
-                                const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
-                                // Calculate the VAT for this percentage
-                                const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
-                                // The amount field should show "value + VAT" format only if VAT is included, otherwise just the value
-                                return {
-                                  ...row,
-                                  value: (vatIncluded && isIsraeli && vatForThisPercent > 0) ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
-                                };
-                              });
-                            }
-
-                            updateCustomPricing({
-                              discount_percentage: discount,
-                              discount_amount: discountAmount,
-                              final_amount: finalAmount,
-                              payment_plan: paymentPlan,
-                            });
-                          }}
-                          disabled={status === 'signed'}
-                        >
-                          {discountOptions.map(opt => (
-                            <option key={opt} value={opt}>{opt}%</option>
-                          ))}
-                        </select>
-                      </div>
-
-                      {/* Totals */}
-                      {(() => {
-                        const desktopIsIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
-                        const desktopArchivalFee = customPricing?.archival_research_fee || 0;
-                        const desktopBaseTotal = (customPricing?.total_amount || 0) + desktopArchivalFee;
-                        const desktopDiscountAmount = customPricing?.discount_amount || 0;
-                        const desktopDiscountedBaseTotal = desktopBaseTotal - desktopDiscountAmount;
-                        const desktopVatAmount = desktopIsIsraeli ? Math.round(desktopDiscountedBaseTotal * 0.18 * 100) / 100 : 0;
-                        const desktopFinalAmountWithVat = vatIncluded && desktopIsIsraeli ? desktopDiscountedBaseTotal + desktopVatAmount : desktopDiscountedBaseTotal;
-                        const desktopFinalAmountWithoutVat = desktopDiscountedBaseTotal;
-                        
-                        return (
-                          <div className="space-y-2 pt-3 border-t border-gray-200">
-                            <div className="flex items-center justify-between">
-                              <span className="text-gray-600">Total:</span>
-                              <span className="font-semibold text-gray-900">{customPricing.currency} {(customPricing.total_amount || 0).toLocaleString()}</span>
-                            </div>
-                            {customPricing?.archival_research_fee && (
-                              <div className="flex items-center justify-between">
-                                <span className="text-gray-600">Archival Research:</span>
-                                <span className="font-semibold text-gray-900">{customPricing.currency} {customPricing.archival_research_fee.toLocaleString()}</span>
-                              </div>
-                            )}
-                            {desktopIsIsraeli && (
-                              <div className="flex items-center justify-between">
-                                <span className="text-gray-600">VAT (18%):</span>
-                                <span className="font-semibold text-gray-900">{customPricing.currency} {desktopVatAmount.toLocaleString()}</span>
-                              </div>
-                            )}
-                            <div className="flex items-center justify-between">
-                              <span className="text-gray-600">Discount:</span>
-                              <span className="font-semibold text-gray-900">{customPricing.currency} {desktopDiscountAmount.toLocaleString()}</span>
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <span className="font-bold text-gray-900">Final Amount:</span>
-                              <span className="font-bold text-lg" style={{ color: '#391BC8' }}>
-                                {customPricing.currency} {(vatIncluded && desktopIsIsraeli ? desktopFinalAmountWithVat : desktopFinalAmountWithoutVat).toLocaleString()}
-                              </span>
-                            </div>
-                          </div>
-                        );
-                      })()}
-
-                      {/* Payment Plan Editor */}
-                      <div>
-                        <h4 className="font-semibold text-gray-900 mb-3">Payment Plan</h4>
-                        {(() => {
-                          const totalPercent = (customPricing.payment_plan || []).reduce((sum: number, row: any) => sum + Number(row.percent), 0);
-                          if (totalPercent < 100) {
-                            return (
-                              <div className="flex items-center gap-3 p-4 mb-3 rounded-xl shadow-lg bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white">
-                                <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                                </svg>
-                                <span className="font-medium">Payment plan total is {totalPercent}%. Please ensure the total equals 100%.</span>
-                              </div>
-                            );
+                      className="btn btn-circle bg-white border border-gray-300 w-12 h-12 hover:bg-gray-50"
+                      onClick={() => {
+                        setEditing(true);
+                        // Focus editor after entering edit mode
+                        setTimeout(() => {
+                          if (editor) {
+                            editor.commands.focus();
                           }
-                          return null;
-                        })()}
-                        <div className="space-y-3">
-                          {(customPricing.payment_plan || []).map((row: any, idx: number) => (
-                            <div key={idx} className="flex items-center gap-3 bg-white p-4 rounded-lg border border-gray-200">
-                              <input
-                                type="number"
-                                min={0}
-                                max={100}
-                                className="input input-bordered w-24 text-center bg-white text-xl font-bold px-4 py-3 rounded-xl border-2 no-arrows"
-                                style={{ borderColor: '#391BC8' }}
-                                value={row.percent === 0 ? '' : row.percent}
-                                onChange={e => {
-                                  const value = e.target.value;
-                                  // If the field is empty or 0, treat it as 0
-                                  const numValue = value === '' ? 0 : Number(value);
-                                  handlePaymentPlanChange(idx, 'percent', numValue);
-                                }}
-                                onFocus={(e) => e.target.style.borderColor = '#391BC8'}
-                                onBlur={(e) => e.target.style.borderColor = '#391BC8'}
-                                placeholder="%"
-                                disabled={status === 'signed'}
-                              />
-                              <span className="text-lg font-semibold text-gray-700">%</span>
-                              <span className="text-lg font-semibold text-gray-700">=</span>
-                              <input
-                                type="text"
-                                className="input input-bordered w-40 text-center bg-white text-xl font-bold px-4 py-3 rounded-xl border-2"
-                                style={{ borderColor: '#391BC8' }}
-                                value={row.value}
-                                onChange={e => handlePaymentPlanChange(idx, 'value', e.target.value)}
-                                onFocus={(e) => e.target.style.borderColor = '#391BC8'}
-                                onBlur={(e) => e.target.style.borderColor = '#391BC8'}
-                                placeholder="Value + VAT"
-                                disabled={status === 'signed'}
-                              />
-                              <span className="text-lg font-semibold text-gray-700">{customPricing.currency}</span>
-                              <button
-                                className="btn btn-circle btn-ghost text-red-500 hover:bg-red-100 text-xl font-bold w-10 h-10"
-                                onClick={() => handleDeletePaymentRow(idx)}
-                                disabled={status === 'signed'}
-                              >
-                                ×
-                              </button>
-                            </div>
-                          ))}
-                          <button className="btn btn-outline btn-sm w-full" onClick={handleAddPaymentRow} disabled={status === 'signed'}>
-                            + Add Payment
-                          </button>
-                        </div>
-                      </div>
-                      {/* Save Button */}
-                      {status !== 'signed' && (
-                        <button
-                          className="btn btn-primary btn-block mt-4"
-                          onClick={handleSaveCustomPricing}
-                          disabled={isSaving}
-                        >
-                          {isSaving ? 'Saving...' : 'Save'}
-                        </button>
-                      )}
-                      {/* Delete Contract Button (show for all users if signed) */}
-                      {status === 'signed' && (
-                        <button
-                          className="btn btn-error btn-block mt-4"
-                          onClick={handleDeleteContract}
-                        >
-                          Delete Contract
-                        </button>
-                      )}
-                    </>
-                  ) : (
-                    <div className="text-gray-500">Loading pricing data...</div>
+                        }, 100);
+                      }}
+                      title="Edit"
+                    >
+                      <PencilIcon className="w-6 h-6 text-gray-700" />
+                    </button>
                   )}
-                  </>
-                )}
+
+                  {editing && (
+                    <>
+                      <button
+                        className="btn btn-circle btn-primary w-12 h-12"
+                        onClick={handleSaveEdit}
+                        title="Save"
+                      >
+                        <CheckIcon className="w-6 h-6" />
+                      </button>
+                      <button
+                        className="btn btn-circle bg-white border border-gray-300 w-12 h-12 hover:bg-gray-50"
+                        onClick={async () => {
+                          setEditing(false);
+                          // Reload contract content to discard changes without full page reload
+                          if (contract?.id && editor) {
+                            const { data: contractData } = await supabase
+                              .from('contracts')
+                              .select('*, contract_templates(*)')
+                              .eq('id', contract.id)
+                              .single();
+                            if (contractData) {
+                              // Update contract and template state - this will trigger the useEffect to reprocess content
+                              setContract(contractData);
+                              if (contractData.contract_templates) {
+                                setTemplate(contractData.contract_templates);
+                              }
+                              // Force content reprocessing by incrementing renderKey
+                              setRenderKey(prev => prev + 1);
+                            }
+                          }
+                        }}
+                        title="Cancel"
+                      >
+                        <XMarkIcon className="w-6 h-6" />
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
-            </div>
-          </div>
+            </>
+          )}
 
           {/* Mobile Sidebar - Normal layout on mobile */}
-          <div className="xl:hidden w-full mt-6 print-hide">
-            <div className="space-y-6">
-              {/* Contract Details Box */}
-              <div className={`rounded-lg shadow-lg border border-gray-200 transition-all duration-300 select-none overflow-hidden ${
-                isContractDetailsExpanded 
-                  ? 'bg-white' 
-                  : 'bg-white/30 backdrop-blur-md border-white/50'
-              }`}
-              style={{ touchAction: 'none', userSelect: 'none' }}
-              >
-                <div className={`p-4 ${!isContractDetailsExpanded ? 'overflow-hidden' : ''}`}>
-                  <div className="flex items-center justify-between mb-2">
-                    <h3 className={`text-base font-semibold transition-colors ${
-                      isContractDetailsExpanded ? 'text-gray-900' : 'text-gray-700'
-                    }`}>Contract Details</h3>
-                    <button
-                      onClick={() => setIsContractDetailsExpanded(!isContractDetailsExpanded)}
-                      className="p-1 hover:bg-gray-100 rounded transition-colors"
-                    >
-                      {isContractDetailsExpanded ? (
-                        <ChevronUpIcon className="w-4 h-4 text-gray-500" />
-                      ) : (
-                        <ChevronDownIcon className="w-4 h-4 text-gray-500" />
-                      )}
-                    </button>
-                  </div>
-                  
-                  {isContractDetailsExpanded && (
-                    <div className="space-y-4">
-                      {/* Contact Information Section */}
-                      {contract?.contact_name && (
-                        <div>
-                          <h4 className="text-sm font-semibold mb-2 text-gray-800">Contact Information</h4>
-                          <div className="space-y-2 text-xs">
-                            <div className="text-gray-700">
-                              <span className="font-medium">Name:</span>
-                              <span className="ml-2 font-semibold text-purple-600">{contract.contact_name}</span>
-                            </div>
-                            {contract.contact_email && (
-                              <div className="text-gray-700">
-                                <span className="font-medium">Email:</span>
-                                <span className="ml-2">{contract.contact_email}</span>
-                              </div>
-                            )}
-                            {contract.contact_phone && (
-                              <div className="text-gray-700">
-                                <span className="font-medium">Phone:</span>
-                                <span className="ml-2">{contract.contact_phone}</span>
-                              </div>
-                            )}
-                            {contract.contact_mobile && (
-                              <div className="text-gray-700">
-                                <span className="font-medium">Mobile:</span>
-                                <span className="ml-2">{contract.contact_mobile}</span>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                      
-                      {/* Contract Details Section */}
-                      <div className={contract?.contact_name ? "pt-2 border-t border-gray-200" : ""}>
-                        <div className="flex items-center justify-between mb-2">
-                          <h4 className="text-sm font-semibold text-gray-800">Contract Information</h4>
-                          {status !== 'signed' && (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setShowChangeTemplateModal(true);
-                              }}
-                              className="btn btn-xs btn-outline btn-primary"
-                            >
-                              Change Template
-                            </button>
-                          )}
-                        </div>
-                        <div className="space-y-2 text-xs">
-                          <div>
-                            <span className="font-medium text-gray-700">Template:</span>
-                            <span className="ml-2 text-gray-900">{template?.name || 'Unknown'}</span>
-                          </div>
-                          <div>
-                            <span className="font-medium text-gray-700">Status:</span>
-                            <span className={`badge badge-sm ml-2 ${status === 'signed' ? 'badge-success' : 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none'}`}>{status}</span>
-                          </div>
-                          <div className="text-gray-700 flex items-center"><span className="font-medium">Applicants:</span> <span className="ml-2">{customPricing?.applicant_count || ''}</span></div>
-                          <div className="text-gray-700"><span className="font-medium">Created:</span> {new Date(contract.created_at).toLocaleDateString()}</div>
-                          {contract.signed_at && (
-                            <div className="text-gray-700"><span className="font-medium">Signed:</span> {new Date(contract.signed_at).toLocaleDateString()}</div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
+          {/* Mobile code removed - use modal component instead */}
 
-              {/* Pricing & Payment Plan Box */}
-              <div className={`rounded-lg shadow-lg border border-gray-200 transition-all duration-300 select-none overflow-hidden ${
-                isPricingExpanded 
-                  ? 'bg-white' 
-                  : 'bg-white/30 backdrop-blur-md border-white/50'
-              }`}
-              style={{ touchAction: 'none', userSelect: 'none' }}
-              >
-                <div className={`p-6 space-y-6 ${!isPricingExpanded ? 'overflow-hidden' : ''}`}>
-                  <div className="flex items-center justify-between">
-                    <h3 className={`text-lg font-semibold transition-colors ${
-                      isPricingExpanded ? 'text-gray-900' : 'text-gray-700'
-                    }`}>Pricing & Payment Plan</h3>
-                    <button
-                      onClick={() => setIsPricingExpanded(!isPricingExpanded)}
-                      className="p-1 hover:bg-gray-100 rounded transition-colors"
-                    >
-                      {isPricingExpanded ? (
-                        <ChevronUpIcon className="w-5 h-5 text-gray-500" />
-                      ) : (
-                        <ChevronDownIcon className="w-5 h-5 text-gray-500" />
-                      )}
-                    </button>
-                  </div>
-                  
-                  {isPricingExpanded && (
-                    <>
-                    
-                    {/* Currency Selection */}
-                    {status !== 'signed' && (
-                      <div className="space-y-2 pb-3 border-b border-gray-200">
-                        <label className="font-medium text-sm text-gray-700">Currency Type:</label>
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            className={`btn btn-xs flex-1 ${currencyType === 'USD' ? 'btn-primary' : 'btn-outline'}`}
-                            onClick={() => {
-                              setCurrencyType('USD');
-                              setVatIncluded(false); // USD/GBP/EUR don't have VAT
-                              // Reload pricing tiers from template for USD
-                              if (template?.default_pricing_tiers_usd) {
-                                const pricingTiers = template.default_pricing_tiers_usd;
-                                const currentTierKey = customPricing?.applicant_count 
-                                  ? (customPricing.applicant_count === 1 ? '1' :
-                                     customPricing.applicant_count === 2 ? '2' :
-                                     customPricing.applicant_count === 3 ? '3' :
-                                     customPricing.applicant_count >= 4 && customPricing.applicant_count <= 7 ? '4-7' :
-                                     customPricing.applicant_count >= 8 && customPricing.applicant_count <= 9 ? '8-9' :
-                                     customPricing.applicant_count >= 10 && customPricing.applicant_count <= 15 ? '10-15' : '16+')
-                                  : '1';
-                                const currentPricePerApplicant = pricingTiers[currentTierKey] || 0;
-                                const total = currentPricePerApplicant * (customPricing?.applicant_count || 1);
-                                const discountAmount = customPricing?.discount_amount || 0;
-                                const finalAmount = total - discountAmount;
-                                const newCurrency = subCurrency === 'EUR' ? '€' : subCurrency === 'GBP' ? '£' : '$';
-                                const isIsraeli = false; // USD/GBP/EUR don't have VAT
-                                const archivalFee = customPricing?.archival_research_fee || 0;
-                                
-                                // Recalculate payment plan amounts based on new currency and total
-                                let paymentPlan = customPricing?.payment_plan || [];
-                                if (paymentPlan.length > 0) {
-                                  const baseTotal = total + archivalFee;
-                                  const discountedBaseTotal = baseTotal - discountAmount;
-                                  const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
-                                  paymentPlan = paymentPlan.map((row: any) => {
-                                    const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
-                                    const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
-                                    return {
-                                      ...row,
-                                      value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
-                                    };
-                                  });
-                                }
-                                
-                                setCustomPricing((prev: any) => ({
-                                  ...prev,
-                                  pricing_tiers: pricingTiers,
-                                  currency: newCurrency,
-                                  total_amount: total,
-                                  final_amount: finalAmount,
-                                  payment_plan: paymentPlan
-                                }));
-                              }
-                            }}
-                          >
-                            USD/GBP/EUR
-                          </button>
-                          <button
-                            type="button"
-                            className={`btn btn-xs flex-1 ${currencyType === 'NIS' ? 'btn-primary' : 'btn-outline'}`}
-                            onClick={() => {
-                              setCurrencyType('NIS');
-                              // Reload pricing tiers from template for NIS
-                              if (template?.default_pricing_tiers_nis) {
-                                const pricingTiers = template.default_pricing_tiers_nis;
-                                const currentTierKey = customPricing?.applicant_count 
-                                  ? (customPricing.applicant_count === 1 ? '1' :
-                                     customPricing.applicant_count === 2 ? '2' :
-                                     customPricing.applicant_count === 3 ? '3' :
-                                     customPricing.applicant_count >= 4 && customPricing.applicant_count <= 7 ? '4-7' :
-                                     customPricing.applicant_count >= 8 && customPricing.applicant_count <= 9 ? '8-9' :
-                                     customPricing.applicant_count >= 10 && customPricing.applicant_count <= 15 ? '10-15' : '16+')
-                                  : '1';
-                                const currentPricePerApplicant = pricingTiers[currentTierKey] || 0;
-                                const total = currentPricePerApplicant * (customPricing?.applicant_count || 1);
-                                const discountAmount = customPricing?.discount_amount || 0;
-                                const finalAmount = total - discountAmount;
-                                const isIsraeli = true; // NIS has VAT
-                                const archivalFee = customPricing?.archival_research_fee || 0;
-                                
-                                // Recalculate payment plan amounts based on new currency and total
-                                let paymentPlan = customPricing?.payment_plan || [];
-                                if (paymentPlan.length > 0) {
-                                  const baseTotal = total + archivalFee;
-                                  const discountedBaseTotal = baseTotal - discountAmount;
-                                  const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
-                                  paymentPlan = paymentPlan.map((row: any) => {
-                                    const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
-                                    const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
-                                    return {
-                                      ...row,
-                                      value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
-                                    };
-                                  });
-                                }
-                                
-                                setCustomPricing((prev: any) => ({
-                                  ...prev,
-                                  pricing_tiers: pricingTiers,
-                                  currency: '₪',
-                                  total_amount: total,
-                                  final_amount: finalAmount,
-                                  payment_plan: paymentPlan
-                                }));
-                              }
-                            }}
-                          >
-                            NIS
-                          </button>
-                        </div>
-                        
-                        {/* Sub-currency selector for USD type */}
-                        {currencyType === 'USD' && (
-                          <div>
-                            <label className="font-medium text-gray-700 text-xs mb-1 block">Select Currency:</label>
-                            <select
-                              className="select select-bordered select-xs w-full"
-                              value={subCurrency}
-                              onChange={(e) => {
-                                const newSubCurrency = e.target.value as 'USD' | 'GBP' | 'EUR';
-                                setSubCurrency(newSubCurrency);
-                                const currencySymbol = newSubCurrency === 'EUR' ? '€' : newSubCurrency === 'GBP' ? '£' : '$';
-                                const isIsraeli = false; // USD/GBP/EUR don't have VAT
-                                const archivalFee = customPricing?.archival_research_fee || 0;
-                                
-                                // Recalculate payment plan amounts based on new currency
-                                let paymentPlan = customPricing?.payment_plan || [];
-                                if (paymentPlan.length > 0) {
-                                  const total = customPricing?.total_amount || 0;
-                                  const discountAmount = customPricing?.discount_amount || 0;
-                                  const baseTotal = total + archivalFee;
-                                  const discountedBaseTotal = baseTotal - discountAmount;
-                                  const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
-                                  paymentPlan = paymentPlan.map((row: any) => {
-                                    const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
-                                    const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
-                                    return {
-                                      ...row,
-                                      value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
-                                    };
-                                  });
-                                }
-                                
-                                setCustomPricing((prev: any) => ({
-                                  ...prev,
-                                  currency: currencySymbol,
-                                  payment_plan: paymentPlan
-                                }));
-                              }}
-                            >
-                              <option value="USD">USD ($)</option>
-                              <option value="GBP">GBP (£)</option>
-                              <option value="EUR">EUR (€)</option>
-                            </select>
-                          </div>
-                        )}
-                      </div>
-                        )}
-                        
-                        {/* VAT Included/Excluded Toggle - Only show for NIS */}
-                        {(currencyType === 'NIS' || (currencyType === 'USD' && customPricing?.currency === '₪')) && (
-                          <div className="mt-2">
-                            <label className="font-medium text-gray-700 text-xs mb-1 block">VAT:</label>
-                            <div className="flex gap-2">
-                              <button
-                                type="button"
-                                className={`btn btn-xs flex-1 ${vatIncluded ? 'btn-primary' : 'btn-outline'}`}
-                                onClick={() => {
-                                  setVatIncluded(true);
-                                  // Recalculate payment plan with VAT included
-                                  const total = customPricing?.total_amount || 0;
-                                  const discountAmount = customPricing?.discount_amount || 0;
-                                  const archivalFee = customPricing?.archival_research_fee || 0;
-                                  const baseTotal = total + archivalFee;
-                                  const discountedBaseTotal = baseTotal - discountAmount;
-                                  
-                                  let paymentPlan = customPricing?.payment_plan || [];
-                                  if (paymentPlan.length > 0) {
-                                    const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
-                                    paymentPlan = paymentPlan.map((row: any) => {
-                                      const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
-                                      const vatForThisPercent = Math.round((baseValueForThisPercent * 0.18 * 100) / 100);
-                                      return {
-                                        ...row,
-                                        value: `${baseValueForThisPercent} + ${vatForThisPercent}`,
-                                      };
-                                    });
-                                  }
-                                  
-                                  setCustomPricing((prev: any) => ({
-                                    ...prev,
-                                    payment_plan: paymentPlan
-                                  }));
-                                }}
-                              >
-                                Included
-                              </button>
-                              <button
-                                type="button"
-                                className={`btn btn-xs flex-1 ${!vatIncluded ? 'btn-primary' : 'btn-outline'}`}
-                                onClick={() => {
-                                  setVatIncluded(false);
-                                  // Recalculate payment plan with VAT excluded
-                                  const total = customPricing?.total_amount || 0;
-                                  const discountAmount = customPricing?.discount_amount || 0;
-                                  const archivalFee = customPricing?.archival_research_fee || 0;
-                                  const baseTotal = total + archivalFee;
-                                  const discountedBaseTotal = baseTotal - discountAmount;
-                                  
-                                  let paymentPlan = customPricing?.payment_plan || [];
-                                  if (paymentPlan.length > 0) {
-                                    const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
-                                    paymentPlan = paymentPlan.map((row: any) => {
-                                      const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
-                                      return {
-                                        ...row,
-                                        value: baseValueForThisPercent.toString(),
-                                      };
-                                    });
-                                  }
-                                  
-                                  setCustomPricing((prev: any) => ({
-                                    ...prev,
-                                    payment_plan: paymentPlan
-                                  }));
-                                }}
-                              >
-                                Excluded
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      
-                    {customPricing ? (
-                      <>
-                        {/* Applicant Count */}
-                        <div className="flex items-center justify-between">
-                          <label className="font-medium text-sm text-gray-700">Number of Applicants:</label>
-                          <div className="flex items-center gap-2">
-                            <button
-                              className="btn btn-circle btn-xs bg-gray-200 border-none flex items-center justify-center"
-                              style={{ width: 28, height: 28 }}
-                              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
-                              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
-                              onClick={() => handleApplicantCountChange(Math.max(1, (customPricing.applicant_count || 1) - 1))}
-                              aria-label="Decrease number of applicants"
-                              type="button"
-                              disabled={status === 'signed'}
-                            >
-                              <MinusIcon className="w-4 h-4" style={{ color: '#391BC8' }} />
-                            </button>
-                            <input
-                              type="number"
-                              min={1}
-                              max={50}
-                              className="input input-bordered input-sm w-20 text-center bg-white text-sm font-bold px-2 py-1 rounded-lg border-2 no-arrows"
-                              style={{ height: 32, borderColor: '#391BC8' }}
-                              value={customPricing.applicant_count || 1}
-                              onChange={e => handleApplicantCountChange(Number(e.target.value))}
-                              onFocus={(e) => e.target.style.borderColor = '#391BC8'}
-                              onBlur={(e) => e.target.style.borderColor = '#391BC8'}
-                              inputMode="numeric"
-                              pattern="[0-9]*"
-                              disabled={status === 'signed'}
-                            />
-                            <button
-                              className="btn btn-circle btn-xs bg-gray-200 border-none flex items-center justify-center"
-                              style={{ width: 28, height: 28 }}
-                              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
-                              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
-                              onClick={() => handleApplicantCountChange(Math.min(50, (customPricing.applicant_count || 1) + 1))}
-                              aria-label="Increase number of applicants"
-                              type="button"
-                              disabled={status === 'signed'}
-                            >
-                              <PlusIcon className="w-4 h-4" style={{ color: '#391BC8' }} />
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* Pricing Tiers */}
-                        <div>
-                          <label className="block font-medium text-sm text-gray-700 mb-2">Pricing Tiers (Price per applicant):</label>
-                          <div className="space-y-1.5">
-                            {customPricing.pricing_tiers ? (() => {
-                              const tierStructure = [
-                                { key: '1', label: 'For one applicant' },
-                                { key: '2', label: 'For 2 applicants' },
-                                { key: '3', label: 'For 3 applicants' },
-                                { key: '4-7', label: 'For 4-7 applicants' },
-                                { key: '8-9', label: 'For 8-9 applicants' },
-                                { key: '10-15', label: 'For 10-15 applicants' },
-                                { key: '16+', label: 'For 16 applicants or more' }
-                              ];
-
-                              const getCurrentTierKey = (count: number) => {
-                                if (count === 1) return '1';
-                                if (count === 2) return '2';
-                                if (count === 3) return '3';
-                                if (count >= 4 && count <= 7) return '4-7';
-                                if (count >= 8 && count <= 9) return '8-9';
-                                if (count >= 10 && count <= 15) return '10-15';
-                                return '16+';
-                              };
-
-                              const currentTierKey = getCurrentTierKey(customPricing.applicant_count);
-
-                              return tierStructure.map(tier => {
-                                const price = customPricing.pricing_tiers[tier.key] || 0;
-                                const isActive = tier.key === currentTierKey;
-                                return (
-                                  <div key={tier.key} className={`flex items-center justify-between p-1.5 rounded-lg ${isActive
-                                      ? 'bg-white border-2'
-                                      : 'bg-white border border-gray-200'
-                                    }`}
-                                    style={isActive ? { borderColor: '#391BC8', backgroundColor: 'rgba(57, 27, 200, 0.05)' } : {}}
-                                  >
-                                    <span className="text-sm font-semibold text-gray-700">
-                                      {tier.label}:
-                                    </span>
-                                    <div className="flex items-center gap-2">
-                                      <button
-                                        className="btn btn-circle btn-xs bg-gray-200 border-none flex items-center justify-center"
-                                        style={{ width: 28, height: 28 }}
-                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
-                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
-                                        onClick={() => handleTierPriceChange(tier.key, Math.max(0, price - 100))}
-                                        aria-label={`Decrease price for ${tier.label}`}
-                                        type="button"
-                                        disabled={status === 'signed'}
-                                      >
-                                        <MinusIcon className="w-4 h-4" style={{ color: '#391BC8' }} />
-                                      </button>
-                                      <input
-                                        type="number"
-                                        min={0}
-                                        className="input input-bordered input-sm w-28 text-right bg-white text-sm font-bold px-2 py-1 rounded-lg border-2 no-arrows"
-                                        style={{ height: 32, borderColor: '#391BC8' }}
-                                        value={price}
-                                        onChange={e => handleTierPriceChange(tier.key, Number(e.target.value))}
-                                        onFocus={(e) => e.target.style.borderColor = '#391BC8'}
-                                        onBlur={(e) => e.target.style.borderColor = '#391BC8'}
-                                        disabled={status === 'signed'}
-                                      />
-                                      <button
-                                        className="btn btn-circle btn-xs bg-gray-200 border-none flex items-center justify-center"
-                                        style={{ width: 28, height: 28 }}
-                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
-                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
-                                        onClick={() => handleTierPriceChange(tier.key, price + 100)}
-                                        aria-label={`Increase price for ${tier.label}`}
-                                        type="button"
-                                        disabled={status === 'signed'}
-                                      >
-                                        <PlusIcon className="w-4 h-4" style={{ color: '#391BC8' }} />
-                                      </button>
-                                      <span className="text-sm font-semibold text-gray-600">{customPricing.currency}</span>
-                                    </div>
-                                  </div>
-                                );
-                              });
-                            })() : (
-                              <div className="text-gray-500 text-sm p-4 text-center">
-                                Loading pricing tiers...
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Discount */}
-                        <div className="flex items-center justify-between">
-                          <label className="font-medium text-sm text-gray-700">Discount:</label>
-                          <select
-                            className="select select-bordered select-xs w-20 text-right bg-white"
-                            value={customPricing.discount_percentage}
-                            onChange={e => {
-                              const discount = Number(e.target.value);
-                              const getCurrentTierKey = (count: number) => {
-                                if (count === 1) return '1';
-                                if (count === 2) return '2';
-                                if (count === 3) return '3';
-                                if (count >= 4 && count <= 7) return '4-7';
-                                if (count >= 8 && count <= 9) return '8-9';
-                                if (count >= 10 && count <= 15) return '10-15';
-                                return '16+';
-                              };
-                              const currentTierKey = getCurrentTierKey(customPricing.applicant_count);
-                              const currentTierPrice = customPricing.pricing_tiers?.[currentTierKey] || 0;
-                              const total = currentTierPrice * (customPricing.applicant_count || 1);
-                              const discountAmount = Math.round(total * (discount / 100));
-                              const finalAmount = total - discountAmount;
-
-                              // Calculate final amount with VAT for payment plan calculations
-                              const archivalFee = customPricing?.archival_research_fee || 0;
-                              const baseTotal = total + archivalFee;
-                              const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
-
-                              // Calculate VAT on the discounted amount (baseTotal - discountAmount)
-                              const discountedBaseTotal = baseTotal - discountAmount;
-                              const vatAmount = isIsraeli ? Math.round(discountedBaseTotal * 0.18 * 100) / 100 : 0;
-                              const finalAmountWithVat = discountedBaseTotal + vatAmount;
-
-                              // Recalculate payment plan amounts - each payment should show "value + VAT" only if VAT is included
-                              let paymentPlan = customPricing.payment_plan || [];
-                              if (paymentPlan.length > 0) {
-                                const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
-                                paymentPlan = paymentPlan.map((row: any) => {
-                                  // Calculate the base value for this percentage (based on discounted amount)
-                                  const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
-                                  // Calculate the VAT for this percentage
-                                  const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
-                                  // The amount field should show "value + VAT" format only if VAT is included, otherwise just the value
-                                  return {
-                                    ...row,
-                                    value: (vatIncluded && isIsraeli && vatForThisPercent > 0) ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
-                                  };
-                                });
-                              }
-
-                              updateCustomPricing({
-                                discount_percentage: discount,
-                                discount_amount: discountAmount,
-                                final_amount: finalAmount,
-                                payment_plan: paymentPlan,
-                              });
-                            }}
-                            disabled={status === 'signed'}
-                          >
-                            {discountOptions.map(opt => (
-                              <option key={opt} value={opt}>{opt}%</option>
-                            ))}
-                          </select>
-                        </div>
-
-                        {/* Totals */}
-                        <div className="space-y-1.5 pt-2 border-t border-gray-200">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm text-gray-600">Total:</span>
-                            <span className="font-semibold text-sm text-gray-900">{customPricing.currency} {(customPricing.total_amount || 0).toLocaleString()}</span>
-                          </div>
-                          {customPricing?.archival_research_fee && (
-                            <div className="flex items-center justify-between">
-                              <span className="text-sm text-gray-600">Archival Research:</span>
-                              <span className="font-semibold text-sm text-gray-900">{customPricing.currency} {customPricing.archival_research_fee.toLocaleString()}</span>
-                            </div>
-                          )}
-                          {(() => {
-                            const mobileIsIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
-                            const mobileArchivalFee = customPricing?.archival_research_fee || 0;
-                            const mobileBaseTotal = (customPricing?.total_amount || 0) + mobileArchivalFee;
-                            const mobileDiscountAmount = customPricing?.discount_amount || 0;
-                            const mobileDiscountedBaseTotal = mobileBaseTotal - mobileDiscountAmount;
-                            const mobileVatAmount = mobileIsIsraeli ? Math.round(mobileDiscountedBaseTotal * 0.18 * 100) / 100 : 0;
-                            const mobileFinalAmountWithVat = vatIncluded && mobileIsIsraeli ? mobileDiscountedBaseTotal + mobileVatAmount : mobileDiscountedBaseTotal;
-                            const mobileFinalAmountWithoutVat = mobileDiscountedBaseTotal;
-                            
-                            return (
-                              <>
-                                {mobileIsIsraeli && (
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-sm text-gray-600">VAT (18%):</span>
-                                    <span className="font-semibold text-sm text-gray-900">{customPricing.currency} {mobileVatAmount.toLocaleString()}</span>
-                                  </div>
-                                )}
-                                <div className="flex items-center justify-between">
-                                  <span className="text-sm text-gray-600">Discount:</span>
-                                  <span className="font-semibold text-sm text-gray-900">{customPricing.currency} {mobileDiscountAmount.toLocaleString()}</span>
-                                </div>
-                                <div className="flex items-center justify-between">
-                                  <span className="font-bold text-sm text-gray-900">Final Amount:</span>
-                                  <span className="font-bold text-base" style={{ color: '#391BC8' }}>
-                                    {customPricing.currency} {(vatIncluded && mobileIsIsraeli ? mobileFinalAmountWithVat : mobileFinalAmountWithoutVat).toLocaleString()}
-                                  </span>
-                                </div>
-                              </>
-                            );
-                          })()}
-                        </div>
-
-                        {/* Payment Plan Editor */}
-                        <div>
-                          <h4 className="font-semibold text-sm text-gray-900 mb-2">Payment Plan</h4>
-                          {(() => {
-                            const totalPercent = (customPricing.payment_plan || []).reduce((sum: number, row: any) => sum + Number(row.percent), 0);
-                            if (totalPercent < 100) {
-                              return (
-                                <div className="flex items-center gap-2 p-3 mb-2 rounded-lg shadow-lg bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white">
-                                  <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current shrink-0 h-4 w-4" fill="none" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                                  </svg>
-                                  <span className="font-medium text-xs">Payment plan total is {totalPercent}%. Please ensure the total equals 100%.</span>
-                                </div>
-                              );
-                            }
-                            return null;
-                          })()}
-                          <div className="space-y-2">
-                            {(customPricing.payment_plan || []).map((row: any, idx: number) => (
-                              <div key={idx} className="flex items-center gap-2 bg-white p-2 rounded-lg border border-gray-200">
-                                <input
-                                  type="number"
-                                  min={0}
-                                  max={100}
-                                  className="input input-bordered w-16 text-center bg-white text-sm font-bold px-2 py-1 rounded-lg border-2 no-arrows"
-                                  style={{ borderColor: '#391BC8', height: 32 }}
-                                  value={row.percent === 0 ? '' : row.percent}
-                                  onChange={e => {
-                                    const value = e.target.value;
-                                    // If the field is empty or 0, treat it as 0
-                                    const numValue = value === '' ? 0 : Number(value);
-                                    handlePaymentPlanChange(idx, 'percent', numValue);
-                                  }}
-                                  onFocus={(e) => e.target.style.borderColor = '#391BC8'}
-                                  onBlur={(e) => e.target.style.borderColor = '#391BC8'}
-                                  placeholder="%"
-                                  disabled={status === 'signed'}
-                                />
-                                <span className="text-sm font-semibold text-gray-700">%</span>
-                                <span className="text-sm font-semibold text-gray-700">=</span>
-                                <input
-                                  type="text"
-                                  className="input input-bordered w-28 text-center bg-white text-sm font-bold px-2 py-1 rounded-lg border-2"
-                                  style={{ borderColor: '#391BC8', height: 32 }}
-                                  value={row.value}
-                                  onChange={e => handlePaymentPlanChange(idx, 'value', e.target.value)}
-                                  onFocus={(e) => e.target.style.borderColor = '#391BC8'}
-                                  onBlur={(e) => e.target.style.borderColor = '#391BC8'}
-                                  placeholder="Value + VAT"
-                                  disabled={status === 'signed'}
-                                />
-                                <span className="text-sm font-semibold text-gray-700">{customPricing.currency}</span>
-                                <button
-                                  className="btn btn-circle btn-ghost text-red-500 hover:bg-red-100 text-base font-bold w-7 h-7"
-                                  onClick={() => handleDeletePaymentRow(idx)}
-                                  disabled={status === 'signed'}
-                                >
-                                  ×
-                                </button>
-                              </div>
-                            ))}
-                            <button className="btn btn-outline btn-xs w-full" onClick={handleAddPaymentRow} disabled={status === 'signed'}>
-                              + Add Payment
-                            </button>
-                          </div>
-                        </div>
-                        {/* Save Button */}
-                        {status !== 'signed' && (
-                          <button
-                            className="btn btn-primary btn-sm btn-block mt-3"
-                            onClick={handleSaveCustomPricing}
-                            disabled={isSaving}
-                          >
-                            {isSaving ? 'Saving...' : 'Save'}
-                          </button>
-                        )}
-                        {/* Delete Contract Button (show for all users if signed) */}
-                        {status === 'signed' && (
-                          <button
-                            className="btn btn-error btn-block mt-4"
-                            onClick={handleDeleteContract}
-                          >
-                            Delete Contract
-                          </button>
-                        )}
-                      </>
-                    ) : (
-                      <div className="text-gray-500">Loading pricing data...</div>
-                    )}
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
+
+      {/* Contract Details & Pricing Modal */}
+      <ContractDetailsAndPricingModal
+        isOpen={showDetailsAndPricingModal}
+        onClose={() => setShowDetailsAndPricingModal(false)}
+        contract={contract}
+        customPricing={customPricing}
+        setCustomPricing={setCustomPricing}
+        template={template}
+        status={status}
+        currencyType={currencyType}
+        setCurrencyType={setCurrencyType}
+        subCurrency={subCurrency}
+        setSubCurrency={setSubCurrency}
+        vatIncluded={vatIncluded}
+        setVatIncluded={setVatIncluded}
+        handleApplicantCountChange={handleApplicantCountChange}
+        handleTierPriceChange={handleTierPriceChange}
+        handlePaymentPlanChange={handlePaymentPlanChange}
+        handleDeletePaymentRow={handleDeletePaymentRow}
+        handleAddPaymentRow={handleAddPaymentRow}
+        handleSaveCustomPricing={handleSaveCustomPricing}
+        handleDeleteContract={handleDeleteContract}
+        isSaving={isSaving}
+        discountOptions={discountOptions}
+        updateCustomPricing={updateCustomPricing}
+      />
 
       {/* Change Template Modal */}
       {showChangeTemplateModal && (
@@ -5901,7 +5459,7 @@ const ContractPage: React.FC = () => {
                   ))}
                 </select>
               </div>
-              
+
               <div className="relative mb-4">
                 <input
                   type="text"
@@ -5928,31 +5486,30 @@ const ContractPage: React.FC = () => {
                     return matchesSearch && matchesLanguage;
                   })
                   .length > 0 && (
-                  <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-96 overflow-y-auto">
-                    {availableTemplates
-                      .filter(t => {
-                        // Filter by search query
-                        const matchesSearch = !templateSearchQuery.trim() || t.name.toLowerCase().includes(templateSearchQuery.toLowerCase());
-                        // Filter by language
-                        const matchesLanguage = !templateLanguageFilter || String(t.language_id) === templateLanguageFilter;
-                        return matchesSearch && matchesLanguage;
-                      })
-                      .map(t => (
-                        <div
-                          key={t.id}
-                          className={`px-4 py-2 cursor-pointer hover:bg-gray-100 ${
-                            contract?.template_id === t.id ? 'bg-blue-50' : ''
-                          }`}
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            handleTemplateChange(t.id);
-                          }}
-                        >
-                          {t.name}
-                        </div>
-                      ))}
-                  </div>
-                )}
+                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-96 overflow-y-auto">
+                      {availableTemplates
+                        .filter(t => {
+                          // Filter by search query
+                          const matchesSearch = !templateSearchQuery.trim() || t.name.toLowerCase().includes(templateSearchQuery.toLowerCase());
+                          // Filter by language
+                          const matchesLanguage = !templateLanguageFilter || String(t.language_id) === templateLanguageFilter;
+                          return matchesSearch && matchesLanguage;
+                        })
+                        .map(t => (
+                          <div
+                            key={t.id}
+                            className={`px-4 py-2 cursor-pointer hover:bg-gray-100 ${contract?.template_id === t.id ? 'bg-blue-50' : ''
+                              }`}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              handleTemplateChange(t.id);
+                            }}
+                          >
+                            {t.name}
+                          </div>
+                        ))}
+                    </div>
+                  )}
               </div>
             </div>
           </div>
@@ -6070,7 +5627,7 @@ const ContractPage: React.FC = () => {
           }
         }
       `}</style>
-      
+
       {/* Remove default arrows from all number inputs */}
       <style>{`
         input[type=number].no-arrows::-webkit-inner-spin-button, 
@@ -6196,6 +5753,49 @@ const ContractPage: React.FC = () => {
           font-style: italic;
         }
       `}</style>
+
+      {/* Fixed Bottom Bar with Created Date, Template Name, and Change Template Button */}
+      {contract?.created_at && (
+        <div className="fixed bottom-4 left-0 right-0 z-40 print-hide flex justify-center px-4">
+          <div className="backdrop-blur-md bg-white/80 rounded-2xl shadow-lg border border-white/20 px-4 sm:px-6 py-3 w-fit max-w-full">
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <div className="flex items-center gap-4 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <CalendarIcon className="w-4 h-4 text-gray-500" />
+                  <p className="text-xs sm:text-sm text-gray-600">
+                    {new Date(contract.created_at).toLocaleDateString()}
+                  </p>
+                </div>
+              </div>
+              {status === 'draft' && (
+                <>
+                  {/* Mobile: Round icon button */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowChangeTemplateModal(true);
+                    }}
+                    className="btn btn-circle btn-primary w-10 h-10 sm:hidden"
+                    title="Change Template"
+                  >
+                    <ClipboardDocumentIcon className="w-5 h-5" />
+                  </button>
+                  {/* Desktop: Text button */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowChangeTemplateModal(true);
+                    }}
+                    className="hidden sm:flex btn btn-outline btn-xs sm:btn-sm btn-primary"
+                  >
+                    Change Template
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

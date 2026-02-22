@@ -31,7 +31,7 @@ function normalizeTiptapContent(content: any): any {
   if (!content) {
     return { type: 'doc', content: [] };
   }
-  
+
   // If content is a string, try to parse it as JSON
   if (typeof content === 'string') {
     try {
@@ -47,11 +47,11 @@ function normalizeTiptapContent(content: any): any {
       }
     }
   }
-  
+
   // Check if content has html/delta properties (Quill format - convert HTML to TipTap JSON)
   if (content && typeof content === 'object' && ('html' in content || 'delta' in content)) {
     const htmlContent = content.html;
-    
+
     if (htmlContent && typeof htmlContent === 'string') {
       try {
         return generateJSON(htmlContent, editorExtensionsForConversion);
@@ -63,7 +63,7 @@ function normalizeTiptapContent(content: any): any {
       return { type: 'doc', content: [] };
     }
   }
-  
+
   // Check if content is a valid TipTap JSON structure
   if (content && typeof content === 'object' && content.type === 'doc') {
     if (Array.isArray(content.content)) {
@@ -72,22 +72,22 @@ function normalizeTiptapContent(content: any): any {
       return { type: 'doc', content: content.content || [] };
     }
   }
-  
+
   // If content is an object but not a valid TipTap doc, try to wrap it
   if (content && typeof content === 'object') {
     if (Array.isArray(content)) {
       return { type: 'doc', content: content };
     }
-    
+
     if (content.type && content.content !== undefined) {
       return { type: 'doc', content: [content] };
     }
-    
+
     if (content.content && Array.isArray(content.content)) {
       return { type: 'doc', content: content.content };
     }
   }
-  
+
   // Fallback: return empty doc
   return { type: 'doc', content: [] };
 }
@@ -97,7 +97,7 @@ function preprocessTemplatePlaceholders(content: any): any {
   let textId = 1;
   let signatureId = 1;
   let dateId = 1;
-  
+
   function processContent(content: any): any {
     if (!content) return content;
     if (Array.isArray(content)) {
@@ -106,18 +106,18 @@ function preprocessTemplatePlaceholders(content: any): any {
     if (content.type === 'text' && content.text) {
       // Process date FIRST to avoid conflicts, then signature, then text
       let newText = content.text
-                               .replace(/\{\{date\}\}/g, () => {
-                                 const dateIdStr = `date-${dateId++}`;
-                                 return `{{date:${dateIdStr}}}`;
-                               })
-                               .replace(/\{\{signature\}\}/g, () => {
-                                 const sigIdStr = `signature-${signatureId++}`;
-                                 return `{{signature:${sigIdStr}}}`;
-                               })
-                               .replace(/\{\{text\}\}/g, () => {
-                                 const textIdStr = `text-${textId++}`;
-                                 return `{{text:${textIdStr}}}`;
-                               });
+        .replace(/\{\{date\}\}/g, () => {
+          const dateIdStr = `date-${dateId++}`;
+          return `{{date:${dateIdStr}}}`;
+        })
+        .replace(/\{\{signature\}\}/g, () => {
+          const sigIdStr = `signature-${signatureId++}`;
+          return `{{signature:${sigIdStr}}}`;
+        })
+        .replace(/\{\{text\}\}/g, () => {
+          const textIdStr = `text-${textId++}`;
+          return `{{text:${textIdStr}}}`;
+        });
       return { ...content, text: newText };
     }
     if (content.content) {
@@ -125,7 +125,7 @@ function preprocessTemplatePlaceholders(content: any): any {
     }
     return content;
   }
-  
+
   const result = processContent(content);
   return result;
 }
@@ -141,7 +141,7 @@ function fillAllPlaceholders(text: string, customPricing: any, client: any, cont
     result = result.replace(/{{discount_amount}}/g, customPricing.discount_amount?.toLocaleString() || '');
     result = result.replace(/{{currency}}/g, customPricing.currency || '');
   }
-  
+
   // Use contact information if available, otherwise fall back to client
   if (contract && contract.contact_name) {
     result = result.replace(/{{client_name}}/g, contract.contact_name || '');
@@ -152,7 +152,7 @@ function fillAllPlaceholders(text: string, customPricing: any, client: any, cont
     result = result.replace(/{{client_phone}}/g, client.phone || client.mobile || '');
     result = result.replace(/{{client_email}}/g, client.email || '');
   }
-  
+
   // Don't auto-replace {{date}} - let user pick the date via date picker
   // The {{date:ID}} placeholders will be handled in renderTiptapContent
   return result;
@@ -164,7 +164,7 @@ function convertTemplateToLineBreaks(content: any): any {
   if (Array.isArray(content)) {
     return content.map(convertTemplateToLineBreaks);
   }
-  
+
   // If this is a paragraph with multiple text nodes, combine them with line breaks
   if (content.type === 'paragraph' && content.content && content.content.length > 1) {
     const textNodes = content.content.filter((node: any) => node.type === 'text');
@@ -177,7 +177,7 @@ function convertTemplateToLineBreaks(content: any): any {
       };
     }
   }
-  
+
   if (content.content) {
     return { ...content, content: convertTemplateToLineBreaks(content.content) };
   }
@@ -202,10 +202,10 @@ const PublicContractView: React.FC = () => {
   const [activeApplicantFields, setActiveApplicantFields] = useState<string[]>([]); // Fields that are currently visible (can be added/removed)
   const [dynamicApplicantFieldCounter, setDynamicApplicantFieldCounter] = useState(0); // Counter for generating new field IDs
   const [leadNumber, setLeadNumber] = useState<string | null>(null);
-  
+
   // Ref for contract content area (for PDF generation)
   const contractContentRef = useRef<HTMLDivElement>(null);
-  
+
   // PDF loading state
   const [pdfLoading, setPdfLoading] = useState(false);
 
@@ -229,25 +229,25 @@ const PublicContractView: React.FC = () => {
         text = text.replace(/\{\{date:([^}]+)\}\}/g, (match: string, id: string) => {
           const dateValue = clientFields[id] || '';
           if (!dateValue) return '';
-          
+
           // Format date for display
           try {
             if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
               const date = new Date(dateValue + 'T00:00:00');
               if (!isNaN(date.getTime())) {
-                return date.toLocaleDateString('en-US', { 
-                  year: 'numeric', 
-                  month: 'long', 
-                  day: 'numeric' 
+                return date.toLocaleDateString('en-US', {
+                  year: 'numeric',
+                  month: 'long',
+                  day: 'numeric'
                 });
               }
             } else {
               const date = new Date(dateValue);
               if (!isNaN(date.getTime())) {
-                return date.toLocaleDateString('en-US', { 
-                  year: 'numeric', 
-                  month: 'long', 
-                  day: 'numeric' 
+                return date.toLocaleDateString('en-US', {
+                  year: 'numeric',
+                  month: 'long',
+                  day: 'numeric'
                 });
               }
             }
@@ -272,10 +272,10 @@ const PublicContractView: React.FC = () => {
     console.log('📝 handleClientFieldChange called:', { key, value, valueType: typeof value, valueLength: value?.length });
     setClientFields(prev => {
       const newFields = { ...prev, [key]: value };
-      console.log('📝 Setting clientFields:', { 
-        key, 
-        oldValue: prev[key], 
-        newValue: value, 
+      console.log('📝 Setting clientFields:', {
+        key,
+        oldValue: prev[key],
+        newValue: value,
         allFields: Object.keys(newFields).length,
         fieldValue: newFields[key]
       });
@@ -308,16 +308,16 @@ const PublicContractView: React.FC = () => {
       }
       setContract(contractData);
       setCustomPricing(contractData.custom_pricing);
-      
+
       // Fetch template - handle both new templates (contract_templates) and legacy templates (misc_contracttemplate)
       let templateData = contractData.contract_templates;
-      
+
       // If no template from join, check if we need to fetch from misc_contracttemplate (legacy)
       if (!templateData) {
         // First check if template_id is set and try fetching as legacy template
         if (contractData.template_id) {
           const isLegacyTemplate = !isNaN(Number(contractData.template_id)) || contractData.template_id.toString().startsWith('legacy_');
-          
+
           if (isLegacyTemplate) {
             const templateId = contractData.template_id.toString().replace('legacy_', '');
             const { data: legacyTemplate, error: legacyTemplateError } = await supabase
@@ -325,7 +325,7 @@ const PublicContractView: React.FC = () => {
               .select('*')
               .eq('id', templateId)
               .single();
-            
+
             if (!legacyTemplateError && legacyTemplate) {
               templateData = legacyTemplate;
             }
@@ -339,23 +339,23 @@ const PublicContractView: React.FC = () => {
             .select('*')
             .eq('id', legacyTemplateId)
             .single();
-          
+
           if (!legacyTemplateError && legacyTemplate) {
             templateData = legacyTemplate;
           }
         }
       }
-      
+
       // Process template to add text and signature placeholders
       if (templateData) {
         // First normalize to ensure valid TipTap JSON (handles HTML/delta format)
         let normalizedContent = normalizeTiptapContent(templateData.content);
-        
+
         // Then preprocess placeholders
         const processedContent = normalizedContent && normalizedContent.type === 'doc' ?
           preprocessTemplatePlaceholders(normalizedContent) :
           normalizedContent;
-        
+
         const processedTemplate = {
           ...templateData,
           content: processedContent
@@ -375,7 +375,7 @@ const PublicContractView: React.FC = () => {
           .select('id, lead_number, manual_id, master_id, name, email, phone, mobile')
           .eq('id', contractData.legacy_id)
           .single();
-        
+
         if (legacyLeadData) {
           setClient({
             id: legacyLeadData.id,
@@ -384,11 +384,11 @@ const PublicContractView: React.FC = () => {
             phone: legacyLeadData.phone,
             mobile: legacyLeadData.mobile
           });
-          
+
           // Format lead number: handle subleads (master_id/suffix) or master leads
           let formattedLeadNumber: string;
           const masterId = legacyLeadData.master_id;
-          
+
           if (masterId && String(masterId).trim() !== '') {
             // It's a sub-lead - calculate suffix from all subleads with same master_id
             const { data: allSubLeads } = await supabase
@@ -397,7 +397,7 @@ const PublicContractView: React.FC = () => {
               .eq('master_id', masterId)
               .not('master_id', 'is', null)
               .order('id', { ascending: true });
-            
+
             if (allSubLeads && allSubLeads.length > 0) {
               const suffix = allSubLeads.findIndex(subLead => subLead.id === legacyLeadData.id) + 2;
               formattedLeadNumber = `${masterId}/${suffix}`;
@@ -407,13 +407,13 @@ const PublicContractView: React.FC = () => {
             }
           } else {
             // It's a master lead - use lead_number, then manual_id, then id
-            formattedLeadNumber = legacyLeadData.lead_number 
+            formattedLeadNumber = legacyLeadData.lead_number
               ? String(legacyLeadData.lead_number)
-              : (legacyLeadData.manual_id 
+              : (legacyLeadData.manual_id
                 ? String(legacyLeadData.manual_id)
                 : String(legacyLeadData.id));
           }
-          
+
           setLeadNumber(formattedLeadNumber);
         }
       } else if (contractData.client_id) {
@@ -423,22 +423,22 @@ const PublicContractView: React.FC = () => {
           .select('id, lead_number, name, email, phone, mobile')
           .eq('id', contractData.client_id)
           .single();
-        
+
         if (leadData) {
           setClient(leadData);
           // Format lead number: use lead_number with L prefix if it doesn't have it
-          const formattedLeadNumber = leadData.lead_number 
+          const formattedLeadNumber = leadData.lead_number
             ? (leadData.lead_number.startsWith('L') ? leadData.lead_number : `L${leadData.lead_number}`)
             : null;
           setLeadNumber(formattedLeadNumber);
         }
       }
-      
+
       // Load saved client inputs if contract was previously started
       if (contractData.client_inputs) {
         setClientFields(contractData.client_inputs);
       }
-      
+
       setLoading(false);
     })();
   }, [contractId, token]);
@@ -447,9 +447,9 @@ const PublicContractView: React.FC = () => {
   // Track applicant fields for UI purposes only
   useEffect(() => {
     if (!template?.content || contract?.status === 'signed') return;
-    
+
     const contentStr = JSON.stringify(template.content);
-    
+
     // Helper function to recursively extract text content from template structure
     const extractTextFromContent = (content: any, depth = 0): string => {
       if (typeof content === 'string') return content;
@@ -462,11 +462,11 @@ const PublicContractView: React.FC = () => {
       }
       return '';
     };
-    
+
     // Helper function to find all text field positions with their surrounding context
     const findTextFieldsWithContext = (content: any, path: string[] = []): Array<{ id: string; context: string; position: number }> => {
       const results: Array<{ id: string; context: string; position: number }> = [];
-      
+
       if (Array.isArray(content)) {
         content.forEach((item, idx) => {
           results.push(...findTextFieldsWithContext(item, [...path, String(idx)]));
@@ -474,7 +474,7 @@ const PublicContractView: React.FC = () => {
       } else if (content && typeof content === 'object') {
         // Extract all text from this node and its siblings
         const nodeText = extractTextFromContent(content);
-        
+
         // Look for text field placeholders
         const fieldMatches = nodeText.match(/\{\{text:([^}]+)\}\}/g);
         if (fieldMatches) {
@@ -490,16 +490,16 @@ const PublicContractView: React.FC = () => {
             }
           });
         }
-        
+
         // Recursively check children
         if (content.content) {
           results.push(...findTextFieldsWithContext(content.content, [...path, 'content']));
         }
       }
-      
+
       return results;
     };
-    
+
     // Get all date field IDs (for applicant field detection)
     const dateFieldIds = new Set<string>();
     const dateMatches = contentStr.match(/\{\{date:([^}]+)\}\}/g) || [];
@@ -509,38 +509,38 @@ const PublicContractView: React.FC = () => {
         dateFieldIds.add(id);
       }
     });
-    
+
     // Find text matches for applicant field detection
     const textMatches = contentStr.match(/\{\{text:([^}]+)\}\}/g) || [];
-    
+
     // Identify applicant fields for UI purposes
     const applicantFields: Array<{ id: string; position: number; context: string }> = [];
     const fieldContexts = findTextFieldsWithContext(template?.content || {});
-    
+
     textMatches.forEach(match => {
       const id = match.match(/\{\{text:([^}]+)\}\}/)?.[1];
       if (!id) return;
-      
+
       // Skip if this is a date field
       if (dateFieldIds.has(id)) {
         return;
       }
-      
+
       // Check if this field is an applicant name field by ID
       const idLower = id.toLowerCase();
       let isApplicantField = idLower.startsWith('text:applicant') || idLower.startsWith('applicant');
-      
+
       // Find the position and context of this placeholder
       const placeholderPattern = `{{text:${id}}}`;
       let placeholderIndex = contentStr.indexOf(placeholderPattern);
       let context = '';
-      
+
       // Get context from the fieldContexts we found
       const fieldContext = fieldContexts.find(fc => fc.id === id);
       if (fieldContext) {
         context = fieldContext.context;
       }
-      
+
       // Also check surrounding context in the JSON string
       if (placeholderIndex !== -1) {
         // Check 500 characters before and after for "applicant" mentions
@@ -549,25 +549,25 @@ const PublicContractView: React.FC = () => {
         const jsonContext = contentStr.substring(contextStart, contextEnd).toLowerCase();
         context = context || jsonContext;
       }
-      
+
       if (isApplicantField) {
         applicantFields.push({ id, position: placeholderIndex !== -1 ? placeholderIndex : 999999, context });
       }
     });
-    
+
     // Sort applicant fields by position in the content
     applicantFields.sort((a, b) => a.position - b.position);
     const sortedApplicantIds = applicantFields.map(f => f.id);
     setApplicantFieldIds(sortedApplicantIds);
-    
+
     // Initialize activeApplicantFields with detected fields if not already set
     setActiveApplicantFields(prev => {
       if (sortedApplicantIds.length === 0) return prev;
-      
+
       if (prev.length === 0 && sortedApplicantIds.length > 0) {
         return [...sortedApplicantIds];
       }
-      
+
       const merged = [...prev];
       let hasChanges = false;
       sortedApplicantIds.forEach(id => {
@@ -576,7 +576,7 @@ const PublicContractView: React.FC = () => {
           hasChanges = true;
         }
       });
-      
+
       return hasChanges ? merged : prev;
     });
   }, [template, contract?.status]);
@@ -584,7 +584,7 @@ const PublicContractView: React.FC = () => {
   // Add a handler for submitting the contract (signing)
   const handleSubmitContract = async () => {
     if (!contract) return;
-    
+
     setIsSubmitting(true);
     try {
       // Fill in client fields in the contract content
@@ -601,14 +601,14 @@ const PublicContractView: React.FC = () => {
         .select('*')
         .eq('id', contract.id)
         .single();
-      
+
       // For new leads (has client_id), directly update stage in leads and leads_leadstage tables
       if (updatedContract && updatedContract.client_id && !updatedContract.legacy_id) {
         console.log('📝 Public contract signing: Updating lead stage to "Client signed agreement" for new lead:', updatedContract.client_id);
-        
+
         const timestamp = new Date().toISOString();
         const stageId = 60; // Client signed agreement
-        
+
         // Step 1: Insert into leads_leadstage table
         const { error: stageInsertError } = await supabase
           .from('leads_leadstage')
@@ -620,14 +620,14 @@ const PublicContractView: React.FC = () => {
             udate: timestamp,
             creator_id: null, // No creator for public contract signing
           });
-        
+
         if (stageInsertError) {
           console.error('❌ Failed to insert stage record:', stageInsertError);
           alert(`Warning: Contract signed but stage history update failed: ${stageInsertError.message || 'Database error'}. Please contact support.`);
         } else {
           console.log('✅ Stage history record inserted successfully');
         }
-        
+
         // Step 2: Update the lead's stage in leads table
         const { error: leadUpdateError } = await supabase
           .from('leads')
@@ -636,7 +636,7 @@ const PublicContractView: React.FC = () => {
             stage_changed_at: timestamp,
           })
           .eq('id', updatedContract.client_id);
-        
+
         if (leadUpdateError) {
           console.error('❌ Failed to update lead stage:', {
             error: leadUpdateError,
@@ -653,13 +653,13 @@ const PublicContractView: React.FC = () => {
       } else if (updatedContract && updatedContract.legacy_id) {
         // For legacy leads (has legacy_id) in new contracts table, directly update stage
         console.log('📝 Public contract signing: Updating lead stage to 60 for legacy lead in contracts table:', updatedContract.legacy_id);
-        
+
         const timestamp = new Date().toISOString();
         const stageId = 60; // Client signed agreement
-        const legacyId = typeof updatedContract.legacy_id === 'number' 
-          ? updatedContract.legacy_id 
+        const legacyId = typeof updatedContract.legacy_id === 'number'
+          ? updatedContract.legacy_id
           : parseInt(updatedContract.legacy_id, 10);
-        
+
         // Step 1: Insert into leads_leadstage table
         const { error: stageInsertError } = await supabase
           .from('leads_leadstage')
@@ -671,14 +671,14 @@ const PublicContractView: React.FC = () => {
             udate: timestamp,
             creator_id: null, // No creator for public contract signing
           });
-        
+
         if (stageInsertError) {
           console.error('❌ Failed to insert stage record:', stageInsertError);
           alert(`Warning: Contract signed but stage history update failed: ${stageInsertError.message || 'Database error'}. Please contact support.`);
         } else {
           console.log('✅ Stage history record inserted successfully');
         }
-        
+
         // Step 2: Update the lead's stage in leads_lead table
         const { error: leadUpdateError } = await supabase
           .from('leads_lead')
@@ -687,7 +687,7 @@ const PublicContractView: React.FC = () => {
             stage_changed_at: timestamp,
           })
           .eq('id', legacyId);
-        
+
         if (leadUpdateError) {
           console.error('❌ Failed to update legacy lead stage:', {
             error: leadUpdateError,
@@ -702,15 +702,15 @@ const PublicContractView: React.FC = () => {
           console.log('✅ Lead stage 60 (Client signed agreement) successfully updated');
         }
       }
-      
+
       // Trigger backend logic (e.g., payment plan, lead balance)
       if (updatedContract) {
         await handleContractSigned(updatedContract);
       }
-      
+
       // Only scroll to top AFTER successful submission
       window.scrollTo({ top: 0, behavior: 'smooth' });
-      
+
       setThankYou(true);
       setContract(updatedContract);
     } catch (err) {
@@ -728,14 +728,14 @@ const PublicContractView: React.FC = () => {
     window.print();
   };
 
-  // Share contract handler (mobile only - uses Web Share API)
+  // Share contract handler (uses Web Share API on mobile and desktop when available)
   const handleShareContract = async () => {
     if (!contract) return;
-    
+
     const contractUrl = window.location.href;
     const contractTitle = `Contract for ${contract?.contact_name || client?.name || 'Client'}`;
-    
-    // Check if Web Share API is available (mobile devices)
+
+    // Try Web Share API first (works on mobile and some desktop browsers)
     if (navigator.share) {
       try {
         await navigator.share({
@@ -743,26 +743,26 @@ const PublicContractView: React.FC = () => {
           text: `Please review this contract: ${contractTitle}`,
           url: contractUrl,
         });
+        return; // Successfully shared
       } catch (error: any) {
-        // User cancelled or error occurred
-        if (error.name !== 'AbortError') {
-          console.error('Error sharing contract:', error);
+        // User cancelled - don't show error
+        if (error.name === 'AbortError') {
+          return;
         }
-      }
-    } else {
-      // Fallback: copy to clipboard
-      try {
-        await navigator.clipboard.writeText(contractUrl);
-        alert('Contract link copied to clipboard!');
-      } catch (err) {
-        console.error('Failed to copy link:', err);
-        alert('Failed to share contract link.');
+        // Other error - fall through to clipboard fallback
+        console.error('Error sharing contract:', error);
       }
     }
-  };
 
-  // Check if Web Share API is available (for conditional rendering)
-  const canShare = typeof navigator !== 'undefined' && 'share' in navigator;
+    // Fallback: copy to clipboard
+    try {
+      await navigator.clipboard.writeText(contractUrl);
+      alert('Contract link copied to clipboard!');
+    } catch (err) {
+      console.error('Failed to copy link:', err);
+      alert('Failed to share contract link.');
+    }
+  };
 
   // Download PDF handler
   const handleDownloadPDF = async () => {
@@ -770,30 +770,30 @@ const PublicContractView: React.FC = () => {
     setPdfLoading(true);
     const clientName = (contract && contract.contact_name) ? contract.contact_name : (client?.name || 'Client');
     const filename = `contract-${clientName.replace(/[^a-z0-9]/gi, '-').toLowerCase()}-${contract.id}.pdf`;
-    
+
     try {
       // Clone and pre-process the element to convert all colors to RGB
       const elementToPrint = contractContentRef.current.cloneNode(true) as HTMLElement;
       elementToPrint.id = 'contract-print-area-pdf';
-      
+
       // Add to DOM temporarily for processing
       elementToPrint.style.position = 'absolute';
       elementToPrint.style.left = '-9999px';
       elementToPrint.style.top = '0';
       elementToPrint.style.visibility = 'hidden';
       document.body.appendChild(elementToPrint);
-      
+
       // Convert all computed styles to inline RGB styles
       const convertColorsToRGB = (el: HTMLElement) => {
         try {
           const computed = window.getComputedStyle(el);
-          
+
           // Convert background colors
           const bgColor = computed.backgroundColor;
           if (bgColor && bgColor !== 'rgba(0, 0, 0, 0)' && bgColor !== 'transparent') {
             el.style.setProperty('background-color', bgColor, 'important');
           }
-          
+
           // Remove gradient backgrounds
           if (computed.backgroundImage && computed.backgroundImage !== 'none') {
             el.style.setProperty('background-image', 'none', 'important');
@@ -801,13 +801,13 @@ const PublicContractView: React.FC = () => {
               el.style.setProperty('background-color', '#ffffff', 'important');
             }
           }
-          
+
           // Convert text colors
           const textColor = computed.color;
           if (textColor) {
             el.style.setProperty('color', textColor, 'important');
           }
-          
+
           // Process children
           Array.from(el.children).forEach(child => {
             convertColorsToRGB(child as HTMLElement);
@@ -816,11 +816,11 @@ const PublicContractView: React.FC = () => {
           // Ignore errors for individual elements
         }
       };
-      
+
       // Wait for clone to be in DOM, then process
       setTimeout(() => {
         convertColorsToRGB(elementToPrint);
-        
+
         // Add CSS to override any remaining problematic styles
         const styleOverride = document.createElement('style');
         styleOverride.id = 'pdf-style-override';
@@ -835,16 +835,16 @@ const PublicContractView: React.FC = () => {
           }
         `;
         document.head.appendChild(styleOverride);
-        
+
         // Wait a bit more for styles to apply
         setTimeout(() => {
           html2pdf(elementToPrint, {
             margin: [10, 10, 10, 10],
             filename: filename,
             image: { type: 'jpeg', quality: 0.98 },
-            html2canvas: { 
-              scale: 2, 
-              useCORS: true, 
+            html2canvas: {
+              scale: 2,
+              useCORS: true,
               logging: false
             },
             jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
@@ -857,7 +857,7 @@ const PublicContractView: React.FC = () => {
           });
         }, 200);
       }, 100);
-      
+
       const cleanup = () => {
         if (elementToPrint.parentNode) {
           document.body.removeChild(elementToPrint);
@@ -867,11 +867,11 @@ const PublicContractView: React.FC = () => {
           document.head.removeChild(styleEl);
         }
       };
-      
+
     } catch (error: any) {
       console.error('Error generating PDF:', error);
       setPdfLoading(false);
-      
+
       // Suggest using print instead
       if (confirm('PDF generation failed due to unsupported color formats. Would you like to use the Print dialog instead? (You can save as PDF from there)')) {
         handlePrint();
@@ -906,7 +906,7 @@ const PublicContractView: React.FC = () => {
   // Helper function to get placeholder text based on field ID type
   const getTextFieldPlaceholder = (fieldId: string): string => {
     const idLower = fieldId.toLowerCase();
-    
+
     // Check for specific field types
     if (idLower.includes('applicant') || idLower.startsWith('text:applicant')) {
       // This will be handled separately for applicant fields with index
@@ -928,7 +928,7 @@ const PublicContractView: React.FC = () => {
     } else if (idLower.includes('other') || idLower.startsWith('text:other')) {
       return 'Enter text';
     }
-    
+
     // Default placeholder for generic text fields
     return 'Enter text';
   };
@@ -972,76 +972,76 @@ const PublicContractView: React.FC = () => {
       if (!placeholderIndex) placeholderIndex = { text: 0, signature: 0, date: 0 };
       return content.map((n, i) => renderTiptapContent(n, keyPrefix + '-' + i, signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex));
     }
-          if (content.type === 'text') {
-        let text = content.text;
-        text = fillAllPlaceholders(text, customPricing, client, contract);
-        
-        // Handle {{price_per_applicant}} placeholders FIRST, before splitting text into parts
-        if (text && customPricing && customPricing.pricing_tiers && text.includes('{{price_per_applicant}}')) {
-          const currency = customPricing.currency || 'USD';
-          
-          // Find each {{price_per_applicant}} placeholder and replace it based on context
-          while (text.includes('{{price_per_applicant}}')) {
-            const placeholderIndex = text.indexOf('{{price_per_applicant}}');
-            
-            // Get context before the placeholder - look at more text to catch tier labels
-            const contextBefore = text.substring(Math.max(0, placeholderIndex - 200), placeholderIndex);
-            
-            let tierKey: string | null = null;
-            
-            // Check for tier patterns in order of specificity (most specific first)
-            // 16+ patterns
-            if (/16\s*\+\s*applicant|16\s+or\s+more\s+applicant|16\s+applicant.*or\s+more/i.test(contextBefore)) {
-              tierKey = '16+';
-            }
-            // 10-15 patterns - match "10-15 applicants:" or "10-15 applicant:"
-            else if (/10\s*[-–]\s*15\s+applicant/i.test(contextBefore)) {
-              tierKey = '10-15';
-            }
-            // 8-9 patterns - match "8-9 applicants:" or "8-9 applicant:"
-            else if (/8\s*[-–]\s*9\s+applicant/i.test(contextBefore)) {
-              tierKey = '8-9';
-            }
-            // 4-7 patterns - match "4-7 applicants:" or "4-7 applicant:"
-            else if (/4\s*[-–]\s*7\s+applicant/i.test(contextBefore)) {
-              tierKey = '4-7';
-            }
-            // Single numbers - check for exact matches
-            else {
-              const recentContext = contextBefore.substring(Math.max(0, contextBefore.length - 80));
-              if (/\b3\s+applicant/i.test(recentContext)) {
-                tierKey = '3';
-              } else if (/\b2\s+applicant/i.test(recentContext)) {
-                tierKey = '2';
-              } else if (/\b1\s+applicant|one\s+applicant|For\s+one\s+applicant/i.test(recentContext)) {
-                tierKey = '1';
-              }
-            }
-            
-            if (tierKey && customPricing.pricing_tiers[tierKey] !== undefined) {
-              const price = (customPricing.pricing_tiers[tierKey] || 0).toLocaleString();
-              const replacement = `${currency} ${price}`;
-              text = text.replace('{{price_per_applicant}}', replacement);
-            } else {
-              // If no tier matched, replace with 0
-              text = text.replace('{{price_per_applicant}}', `${currency} 0`);
+    if (content.type === 'text') {
+      let text = content.text;
+      text = fillAllPlaceholders(text, customPricing, client, contract);
+
+      // Handle {{price_per_applicant}} placeholders FIRST, before splitting text into parts
+      if (text && customPricing && customPricing.pricing_tiers && text.includes('{{price_per_applicant}}')) {
+        const currency = customPricing.currency || 'USD';
+
+        // Find each {{price_per_applicant}} placeholder and replace it based on context
+        while (text.includes('{{price_per_applicant}}')) {
+          const placeholderIndex = text.indexOf('{{price_per_applicant}}');
+
+          // Get context before the placeholder - look at more text to catch tier labels
+          const contextBefore = text.substring(Math.max(0, placeholderIndex - 200), placeholderIndex);
+
+          let tierKey: string | null = null;
+
+          // Check for tier patterns in order of specificity (most specific first)
+          // 16+ patterns
+          if (/16\s*\+\s*applicant|16\s+or\s+more\s+applicant|16\s+applicant.*or\s+more/i.test(contextBefore)) {
+            tierKey = '16+';
+          }
+          // 10-15 patterns - match "10-15 applicants:" or "10-15 applicant:"
+          else if (/10\s*[-–]\s*15\s+applicant/i.test(contextBefore)) {
+            tierKey = '10-15';
+          }
+          // 8-9 patterns - match "8-9 applicants:" or "8-9 applicant:"
+          else if (/8\s*[-–]\s*9\s+applicant/i.test(contextBefore)) {
+            tierKey = '8-9';
+          }
+          // 4-7 patterns - match "4-7 applicants:" or "4-7 applicant:"
+          else if (/4\s*[-–]\s*7\s+applicant/i.test(contextBefore)) {
+            tierKey = '4-7';
+          }
+          // Single numbers - check for exact matches
+          else {
+            const recentContext = contextBefore.substring(Math.max(0, contextBefore.length - 80));
+            if (/\b3\s+applicant/i.test(recentContext)) {
+              tierKey = '3';
+            } else if (/\b2\s+applicant/i.test(recentContext)) {
+              tierKey = '2';
+            } else if (/\b1\s+applicant|one\s+applicant|For\s+one\s+applicant/i.test(recentContext)) {
+              tierKey = '1';
             }
           }
-          
-          // Also handle specific tier placeholders like {{price_1}}, {{price_2}}, etc.
-          Object.keys(customPricing.pricing_tiers).forEach(tierKey => {
-            const placeholder = `{{price_${tierKey}}}`;
-            if (text.includes(placeholder)) {
-              const price = (customPricing.pricing_tiers[tierKey] || 0).toLocaleString();
-              text = text.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), `${currency} ${price}`);
-            }
-          });
+
+          if (tierKey && customPricing.pricing_tiers[tierKey] !== undefined) {
+            const price = (customPricing.pricing_tiers[tierKey] || 0).toLocaleString();
+            const replacement = `${currency} ${price}`;
+            text = text.replace('{{price_per_applicant}}', replacement);
+          } else {
+            // If no tier matched, replace with 0
+            text = text.replace('{{price_per_applicant}}', `${currency} 0`);
+          }
         }
-        
-        // Render {{text}}, {{date}}, and {{signature}} fields (before preprocessing) or {{text:ID}}, {{date:ID}}, and {{signature:ID}} fields (after preprocessing)
-        if (text && /\{\{(text|date|signature)(:[^}]+)?\}\}/.test(text)) {
-          // Ensure placeholderIndex is defined
-          if (!placeholderIndex) placeholderIndex = { text: 0, signature: 0, date: 0 };
+
+        // Also handle specific tier placeholders like {{price_1}}, {{price_2}}, etc.
+        Object.keys(customPricing.pricing_tiers).forEach(tierKey => {
+          const placeholder = `{{price_${tierKey}}}`;
+          if (text.includes(placeholder)) {
+            const price = (customPricing.pricing_tiers[tierKey] || 0).toLocaleString();
+            text = text.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), `${currency} ${price}`);
+          }
+        });
+      }
+
+      // Render {{text}}, {{date}}, and {{signature}} fields (before preprocessing) or {{text:ID}}, {{date:ID}}, and {{signature:ID}} fields (after preprocessing)
+      if (text && /\{\{(text|date|signature)(:[^}]+)?\}\}/.test(text)) {
+        // Ensure placeholderIndex is defined
+        if (!placeholderIndex) placeholderIndex = { text: 0, signature: 0, date: 0 };
         const parts = [];
         let lastIndex = 0;
         // IMPORTANT: Match date fields FIRST, then signature, then text to prevent confusion
@@ -1049,19 +1049,19 @@ const PublicContractView: React.FC = () => {
         let match;
         // Counter for applicant field instances - ensures each gets a unique ID
         let applicantInstanceCounter = 0;
-        
+
         while ((match = regex.exec(text)) !== null) {
           if (match.index > lastIndex) {
             const normalText = text.slice(lastIndex, match.index);
             parts.push(normalText);
           }
           const placeholder = match[1];
-          
+
           // Use specific regex patterns to ensure correct matching
           const dateMatch = placeholder.match(/^{{date(:[^}]+)?}}$/);
           const sigMatch = placeholder.match(/^{{signature(:[^}]+)?}}$/);
           const textMatch = placeholder.match(/^{{text(:[^}]+)?}}$/);
-          
+
           // Process date fields FIRST to prevent them from being treated as text fields
           if (dateMatch) {
             // Extract ID from the match - dateMatch[1] will be ":date-1" or similar, so substring(1) removes the colon
@@ -1073,7 +1073,7 @@ const PublicContractView: React.FC = () => {
             if (applicantFieldIds.includes(id)) {
               setApplicantFieldIds(prev => prev.filter(aid => aid !== id));
             }
-            
+
             // Format date value for input (YYYY-MM-DD format required)
             let formattedDate = '';
             let displayDate = '';
@@ -1084,10 +1084,10 @@ const PublicContractView: React.FC = () => {
                 try {
                   const date = new Date(dateValue + 'T00:00:00'); // Add time to avoid timezone issues
                   if (!isNaN(date.getTime())) {
-                    displayDate = date.toLocaleDateString('en-US', { 
-                      year: 'numeric', 
-                      month: 'long', 
-                      day: 'numeric' 
+                    displayDate = date.toLocaleDateString('en-US', {
+                      year: 'numeric',
+                      month: 'long',
+                      day: 'numeric'
                     });
                   }
                 } catch (e) {
@@ -1101,10 +1101,10 @@ const PublicContractView: React.FC = () => {
                     const month = String(date.getMonth() + 1).padStart(2, '0');
                     const day = String(date.getDate()).padStart(2, '0');
                     formattedDate = `${year}-${month}-${day}`;
-                    displayDate = date.toLocaleDateString('en-US', { 
-                      year: 'numeric', 
-                      month: 'long', 
-                      day: 'numeric' 
+                    displayDate = date.toLocaleDateString('en-US', {
+                      year: 'numeric',
+                      month: 'long',
+                      day: 'numeric'
                     });
                   }
                 } catch (e) {
@@ -1112,7 +1112,7 @@ const PublicContractView: React.FC = () => {
                 }
               }
             }
-            
+
             // For signed contracts, show date as formatted text instead of input
             if (contract?.status === 'signed') {
               parts.push(
@@ -1137,9 +1137,9 @@ const PublicContractView: React.FC = () => {
               );
             } else {
               parts.push(
-                <span 
-                  key={id} 
-                  className="inline-flex items-center gap-2 relative" 
+                <span
+                  key={id}
+                  className="inline-flex items-center gap-2 relative"
                   style={{ verticalAlign: 'middle' }}
                   data-field-id={id}
                   data-field-type="date"
@@ -1150,9 +1150,9 @@ const PublicContractView: React.FC = () => {
                     value={formattedDate}
                     onChange={e => handleClientFieldChange(id, e.target.value)}
                     data-input-type="date"
-                    style={{ 
-                      minWidth: 180, 
-                      display: 'inline-block', 
+                    style={{
+                      minWidth: 180,
+                      display: 'inline-block',
                       verticalAlign: 'middle',
                       color: '#111827',
                       cursor: 'text'
@@ -1169,11 +1169,11 @@ const PublicContractView: React.FC = () => {
           } else if (textMatch) {
             // Extract the base ID from the placeholder
             const baseId = textMatch[1] ? textMatch[1].substring(1) : `text-${++placeholderIndex.text}`;
-            
+
             // Check if this is an applicant field based on base ID (will need unique instance IDs)
             const baseIdLower = baseId.toLowerCase();
             const isApplicantFieldBase = baseIdLower.startsWith('text:applicant') || baseIdLower.startsWith('applicant') || applicantFieldIds.includes(baseId);
-            
+
             // For applicant fields, create a unique ID for each instance to prevent state sharing
             // CRITICAL: Use a combination that ensures uniqueness and stability
             let id: string;
@@ -1187,15 +1187,15 @@ const PublicContractView: React.FC = () => {
             } else {
               id = baseId;
             }
-            
+
             // CRITICAL: Check if this text field is actually a date field based on context
             // Look for "Date:" label immediately before the placeholder in the text
             const textBeforePlaceholderForDate = text.slice(Math.max(0, match.index - 50), match.index);
             // Check if the text ends with "Date:" or "Date: " (case insensitive)
             const trimmedBefore = textBeforePlaceholderForDate.trim();
-            const isActuallyDateField = /date\s*:\s*$/i.test(trimmedBefore) || 
-                                       /^date\s*:/i.test(trimmedBefore) ||
-                                       (trimmedBefore.toLowerCase().endsWith('date:') || trimmedBefore.toLowerCase().endsWith('date: '));
+            const isActuallyDateField = /date\s*:\s*$/i.test(trimmedBefore) ||
+              /^date\s*:/i.test(trimmedBefore) ||
+              (trimmedBefore.toLowerCase().endsWith('date:') || trimmedBefore.toLowerCase().endsWith('date: '));
             // If this is actually a date field, render it as a date input instead
             if (isActuallyDateField) {
               // Remove from applicant fields if it's there (using base ID)
@@ -1205,7 +1205,7 @@ const PublicContractView: React.FC = () => {
               if (activeApplicantFields.includes(baseId)) {
                 setActiveApplicantFields(prev => prev.filter(aid => aid !== baseId));
               }
-              
+
               // Format date value for input (YYYY-MM-DD format required)
               const dateValue = clientFields[id];
               let formattedDate = '';
@@ -1217,10 +1217,10 @@ const PublicContractView: React.FC = () => {
                   try {
                     const date = new Date(dateValue + 'T00:00:00'); // Add time to avoid timezone issues
                     if (!isNaN(date.getTime())) {
-                      displayDate = date.toLocaleDateString('en-US', { 
-                        year: 'numeric', 
-                        month: 'long', 
-                        day: 'numeric' 
+                      displayDate = date.toLocaleDateString('en-US', {
+                        year: 'numeric',
+                        month: 'long',
+                        day: 'numeric'
                       });
                     }
                   } catch (e) {
@@ -1234,10 +1234,10 @@ const PublicContractView: React.FC = () => {
                       const month = String(date.getMonth() + 1).padStart(2, '0');
                       const day = String(date.getDate()).padStart(2, '0');
                       formattedDate = `${year}-${month}-${day}`;
-                      displayDate = date.toLocaleDateString('en-US', { 
-                        year: 'numeric', 
-                        month: 'long', 
-                        day: 'numeric' 
+                      displayDate = date.toLocaleDateString('en-US', {
+                        year: 'numeric',
+                        month: 'long',
+                        day: 'numeric'
                       });
                     }
                   } catch (e) {
@@ -1245,7 +1245,7 @@ const PublicContractView: React.FC = () => {
                   }
                 }
               }
-              
+
               // For signed contracts, show date as formatted text instead of input
               if (contract?.status === 'signed') {
                 parts.push(
@@ -1270,9 +1270,9 @@ const PublicContractView: React.FC = () => {
                 );
               } else {
                 parts.push(
-                  <span 
-                    key={id} 
-                    className="inline-flex items-center gap-2 relative" 
+                  <span
+                    key={id}
+                    className="inline-flex items-center gap-2 relative"
                     style={{ verticalAlign: 'middle' }}
                     data-field-id={id}
                     data-field-type="date"
@@ -1283,9 +1283,9 @@ const PublicContractView: React.FC = () => {
                       value={formattedDate}
                       onChange={e => handleClientFieldChange(id, e.target.value)}
                       data-input-type="date"
-                      style={{ 
-                        minWidth: 180, 
-                        display: 'inline-block', 
+                      style={{
+                        minWidth: 180,
+                        display: 'inline-block',
                         verticalAlign: 'middle',
                         color: '#111827',
                         cursor: 'text'
@@ -1302,18 +1302,18 @@ const PublicContractView: React.FC = () => {
               lastIndex = match.index + match[1].length;
               continue; // Skip the rest of the text field processing
             }
-            
+
             // Determine if this is specifically an applicant field by checking the ID pattern
             // Use the base ID to check if it's an applicant field, but use unique instance ID for state
             const isApplicantField = isApplicantFieldBase;
             // For applicant fields with unique instance IDs, check using base ID for tracking
             // But use the unique instance ID for state management
             const isActiveApplicantField = isApplicantField && (activeApplicantFields.includes(id) || activeApplicantFields.includes(baseId));
-            
+
             // Note: We don't add to activeApplicantFields during render to avoid infinite loops
             // The useEffect will handle initializing activeApplicantFields from applicantFieldIds
             // Unique instance IDs will be tracked through the rendering process
-            
+
             // For applicant fields, calculate the correct index based on activeApplicantFields
             // Use unique instance IDs in activeApplicantFields, but fallback to base IDs if needed
             const currentActiveFields = activeApplicantFields.length > 0 ? activeApplicantFields : applicantFieldIds;
@@ -1330,7 +1330,7 @@ const PublicContractView: React.FC = () => {
             const totalFields = currentActiveFields.length;
             const isLastApplicantField = isApplicantField && applicantFieldIndex >= 0 && applicantFieldIndex === totalFields - 1;
             const canRemoveApplicantField = isApplicantField && totalFields > 1;
-            
+
             // Skip rendering if this is an applicant field that's been explicitly removed
             // Only skip if activeApplicantFields has items AND this field is not in it
             // This allows fields to render on initial load even if activeApplicantFields is not yet populated
@@ -1341,17 +1341,17 @@ const PublicContractView: React.FC = () => {
               lastIndex = match.index + match[1].length;
               continue;
             }
-            
-            
+
+
             // For applicant fields, render as block-level elements with buttons
             // Always render applicant fields with buttons, even if not yet in activeApplicantFields
             if (isApplicantField) {
               // Don't set state during render - let the useEffect handle initialization
               // For now, just render the field - the useEffect will properly initialize activeApplicantFields
               parts.push(
-                <div 
-                  key={id} 
-                  className="flex items-center gap-2 mb-2 relative field-wrapper group w-full" 
+                <div
+                  key={id}
+                  className="flex items-center gap-2 mb-2 relative field-wrapper group w-full"
                   data-field-id={id}
                   data-is-applicant="true"
                   style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}
@@ -1367,21 +1367,21 @@ const PublicContractView: React.FC = () => {
                   />
                 </div>
               );
-              
+
               // After rendering the last template applicant field, render any dynamic fields that come after it
               if (isLastApplicantField) {
                 // Find dynamic fields that should be rendered after this one
                 const currentIndexInActive = activeApplicantFields.indexOf(id);
                 const dynamicFieldsAfter = activeApplicantFields.slice(currentIndexInActive + 1)
                   .filter(fieldId => fieldId.startsWith('applicant-dynamic-'));
-                
+
                 // Render dynamic fields inline right after this field
                 dynamicFieldsAfter.forEach((dynamicFieldId) => {
                   const dynamicIndex = activeApplicantFields.indexOf(dynamicFieldId);
                   parts.push(
-                    <div 
-                      key={dynamicFieldId} 
-                      className="flex items-center gap-2 mb-2 relative field-wrapper group w-full" 
+                    <div
+                      key={dynamicFieldId}
+                      className="flex items-center gap-2 mb-2 relative field-wrapper group w-full"
                       data-field-id={dynamicFieldId}
                       data-is-applicant="true"
                       style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}
@@ -1399,16 +1399,16 @@ const PublicContractView: React.FC = () => {
                   );
                 });
               }
-              
+
               lastIndex = match.index + match[1].length;
               continue; // Skip the rest of the text field processing
             }
-            
+
             // For non-applicant text fields, render inline as before
             parts.push(
-              <span 
-                key={id} 
-                className="inline-block relative field-wrapper group" 
+              <span
+                key={id}
+                className="inline-block relative field-wrapper group"
                 style={{ verticalAlign: 'middle', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
                 data-field-id={id}
                 data-is-applicant={isApplicantField ? 'true' : 'false'}
@@ -1425,16 +1425,16 @@ const PublicContractView: React.FC = () => {
             );
           } else if (sigMatch) {
             const id = sigMatch[1] ? sigMatch[1].substring(1) : `signature-${++placeholderIndex.signature}`;
-            
+
             parts.push(
-              <span 
-                key={id} 
-                className="inline-flex items-center gap-4 relative field-wrapper" 
+              <span
+                key={id}
+                className="inline-flex items-center gap-4 relative field-wrapper"
                 style={{ display: 'inline-flex', minWidth: 220, minHeight: 100, verticalAlign: 'middle' }}
                 data-field-id={id}
               >
-                <span 
-                  className="border-2 rounded-lg bg-gray-50 p-3 border-gray-300" 
+                <span
+                  className="border-2 rounded-lg bg-gray-50 p-3 border-gray-300"
                   style={{ display: 'inline-block' }}
                 >
                   {contract?.status === 'signed' && clientSignature ? (
@@ -1446,14 +1446,14 @@ const PublicContractView: React.FC = () => {
                       }}
                       penColor="#4c6fff"
                       backgroundColor="transparent"
-                      canvasProps={{ 
-                        width: 200, 
-                        height: 80, 
-                        style: { 
-                          display: 'block', 
+                      canvasProps={{
+                        width: 200,
+                        height: 80,
+                        style: {
+                          display: 'block',
                           borderRadius: 8,
                           background: 'transparent'
-                        } 
+                        }
                       }}
                       onEnd={() => {
                         if (signaturePads && signaturePads[id]) {
@@ -1471,16 +1471,16 @@ const PublicContractView: React.FC = () => {
                 </span>
                 {/* Stamp image */}
                 <div className="flex-shrink-0">
-                  <img 
-                    src="/חתימה מסמכים (5).png" 
-                    alt="Stamp" 
-                    style={{ 
-                      width: 'auto', 
-                      height: 150, 
+                  <img
+                    src="/חתימה מסמכים (5).png"
+                    alt="Stamp"
+                    style={{
+                      width: 'auto',
+                      height: 150,
                       maxWidth: 250,
                       display: 'block',
                       objectFit: 'contain'
-                    }} 
+                    }}
                   />
                 </div>
                 {contract?.status !== 'signed' && (
@@ -1534,7 +1534,7 @@ const PublicContractView: React.FC = () => {
         }
         return result.length > 0 ? result : text;
       }
-      
+
       // Handle base64 image data that might be directly in the text (for signatures)
       if (text && text.includes('data:image/png;base64,')) {
         const parts = [];
@@ -1549,10 +1549,10 @@ const PublicContractView: React.FC = () => {
           const imageData = match[1];
           parts.push(
             <span key={keyPrefix + '-img-' + match.index} className="inline-block mx-1">
-              <img 
-                src={imageData} 
-                alt="Signature" 
-                style={{ width: 150, height: 60, display: 'block', borderRadius: 4, border: '1px solid #ccc' }} 
+              <img
+                src={imageData}
+                alt="Signature"
+                style={{ width: 150, height: 60, display: 'block', borderRadius: 4, border: '1px solid #ccc' }}
               />
             </span>
           );
@@ -1563,7 +1563,7 @@ const PublicContractView: React.FC = () => {
         }
         return parts.length > 0 ? parts : text;
       }
-      
+
       // Apply text formatting (bold, italic, etc.)
       if (content.marks && content.marks.length > 0) {
         const formattedText = content.marks.reduce((acc: any, mark: any) => {
@@ -1573,7 +1573,7 @@ const PublicContractView: React.FC = () => {
           if (mark.type === 'strike') return <s key={keyPrefix}>{acc}</s>;
           return acc;
         }, text);
-        
+
         // Handle line breaks after formatting
         if (typeof formattedText === 'string' && formattedText.includes('\n')) {
           const lines = formattedText.split('\n');
@@ -1586,7 +1586,7 @@ const PublicContractView: React.FC = () => {
         }
         return formattedText;
       }
-      
+
       // Handle line breaks in plain text
       if (text && text.includes('\n')) {
         const lines = text.split('\n');
@@ -1597,54 +1597,54 @@ const PublicContractView: React.FC = () => {
           </React.Fragment>
         ));
       }
-      
+
       // Default: just return the text
       return text;
     }
     switch (content.type) {
       case 'paragraph':
         const paragraphContent = renderTiptapContent(content.content, keyPrefix + '-p', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex);
-        // Only render paragraph if it has content
-        if (paragraphContent && (typeof paragraphContent === 'string' ? paragraphContent.trim() : true)) {
-          // Check if paragraph contains input fields (React elements)
-          const hasInputFields = React.isValidElement(paragraphContent) || 
-            (Array.isArray(paragraphContent) && paragraphContent.some(item => React.isValidElement(item)));
-          
-          // Extract text to determine direction
-          const textContent = extractTextContent(content.content);
-          const direction = isRTL(textContent) ? 'rtl' : 'ltr';
-          const textAlign = isRTL(textContent) ? 'right' : 'left';
-          
-          if (hasInputFields) {
-            // Use div instead of p to avoid DOM nesting issues with input fields
-            return (
-              <div 
-                key={keyPrefix} 
-                className="mb-2 md:mb-3 text-sm md:text-base" 
-                dir={direction}
-                style={{ textAlign }}
-              >
-                {paragraphContent}
-              </div>
-            );
-          } else {
-            return (
-              <p 
-                key={keyPrefix} 
-                className="mb-2 md:mb-3 text-sm md:text-base" 
-                dir={direction}
-                style={{ textAlign }}
-              >
-                {paragraphContent}
-              </p>
-            );
-          }
+        // Always render paragraph, even if empty, to preserve line breaks
+        const paragraphText = content.content?.map((n: any) => n.text || '').join('') || '';
+        const isRTLParagraph = isRTL(paragraphText);
+
+        // Check if paragraph contains input fields (React elements)
+        const hasInputFields = React.isValidElement(paragraphContent) ||
+          (Array.isArray(paragraphContent) && paragraphContent.some(item => React.isValidElement(item)));
+
+        // Extract text to determine direction
+        const textContent = extractTextContent(content.content);
+        const direction = isRTLParagraph || isRTL(textContent) ? 'rtl' : 'ltr';
+        const textAlign = isRTLParagraph || isRTL(textContent) ? 'right' : 'left';
+
+        if (hasInputFields) {
+          // Use div instead of p to avoid DOM nesting issues with input fields
+          return (
+            <div
+              key={keyPrefix}
+              className="mb-2 md:mb-3 text-sm md:text-base"
+              dir={direction}
+              style={{ textAlign }}
+            >
+              {paragraphContent || <br />}
+            </div>
+          );
+        } else {
+          return (
+            <p
+              key={keyPrefix}
+              className="mb-2 md:mb-3 text-sm md:text-base"
+              dir={direction}
+              style={{ textAlign }}
+            >
+              {paragraphContent || <br />}
+            </p>
+          );
         }
-        return null;
       case 'heading': {
         const level = content.attrs?.level || 1;
-        const headingTags = ['h1','h2','h3','h4','h5','h6'];
-        const HeadingTag = headingTags[Math.max(0, Math.min(5, level-1))] || 'h1';
+        const headingTags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
+        const HeadingTag = headingTags[Math.max(0, Math.min(5, level - 1))] || 'h1';
         const headingSizes = {
           h1: 'text-lg md:text-2xl',
           h2: 'text-base md:text-xl',
@@ -1654,16 +1654,16 @@ const PublicContractView: React.FC = () => {
           h6: 'text-xs md:text-sm'
         };
         const sizeClass = headingSizes[HeadingTag as keyof typeof headingSizes] || 'text-base md:text-lg';
-        
+
         // Extract text to determine direction
         const textContent = extractTextContent(content.content);
         const direction = isRTL(textContent) ? 'rtl' : 'ltr';
         const textAlign = isRTL(textContent) ? 'right' : 'left';
-        
+
         return React.createElement(
           HeadingTag,
-          { 
-            key: keyPrefix, 
+          {
+            key: keyPrefix,
             className: `${sizeClass} font-semibold mb-2 md:mb-3`,
             dir: direction,
             style: { textAlign }
@@ -1677,9 +1677,9 @@ const PublicContractView: React.FC = () => {
         const bulletDirection = isRTL(bulletTextContent) ? 'rtl' : 'ltr';
         const bulletAlign = isRTL(bulletTextContent) ? 'right' : 'left';
         return (
-          <div 
-            key={keyPrefix} 
-            className="text-sm md:text-base mb-2 md:mb-3" 
+          <div
+            key={keyPrefix}
+            className="text-sm md:text-base mb-2 md:mb-3"
             dir={bulletDirection}
             style={{ textAlign: bulletAlign }}
           >
@@ -1693,9 +1693,9 @@ const PublicContractView: React.FC = () => {
         const orderedDirection = isRTL(orderedTextContent) ? 'rtl' : 'ltr';
         const orderedAlign = isRTL(orderedTextContent) ? 'right' : 'left';
         return (
-          <div 
-            key={keyPrefix} 
-            className="text-sm md:text-base mb-2 md:mb-3" 
+          <div
+            key={keyPrefix}
+            className="text-sm md:text-base mb-2 md:mb-3"
             dir={orderedDirection}
             style={{ textAlign: orderedAlign }}
           >
@@ -1709,9 +1709,9 @@ const PublicContractView: React.FC = () => {
         const listItemDirection = isRTL(listItemTextContent) ? 'rtl' : 'ltr';
         const listItemAlign = isRTL(listItemTextContent) ? 'right' : 'left';
         return (
-          <div 
-            key={keyPrefix} 
-            className="text-sm md:text-base" 
+          <div
+            key={keyPrefix}
+            className="text-sm md:text-base"
             dir={listItemDirection}
             style={{ textAlign: listItemAlign }}
           >
@@ -1724,8 +1724,8 @@ const PublicContractView: React.FC = () => {
         const blockquoteDirection = isRTL(blockquoteTextContent) ? 'rtl' : 'ltr';
         const blockquoteAlign = isRTL(blockquoteTextContent) ? 'right' : 'left';
         return (
-          <blockquote 
-            key={keyPrefix} 
+          <blockquote
+            key={keyPrefix}
             dir={blockquoteDirection}
             style={{ textAlign: blockquoteAlign }}
           >
@@ -1761,14 +1761,26 @@ const PublicContractView: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-white flex items-center justify-center px-2 py-8">
-      <div className="w-full max-w-3xl bg-white rounded-lg shadow-lg border border-gray-200 p-4 md:p-8">
+      <div className="w-full max-w-3xl bg-white rounded-lg shadow-lg border border-gray-200 p-4 md:p-8 relative">
+        {/* Share button in top right corner */}
+        <button
+          className="btn btn-circle btn-primary btn-sm absolute top-4 right-4 print-hide"
+          onClick={handleShareContract}
+          title="Share contract"
+          style={{ backgroundColor: '#4218CC' }}
+          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#3414A3'}
+          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#4218CC'}
+        >
+          <ShareIcon className="w-5 h-5" />
+        </button>
+
         {/* Show signed message at the top if contract is signed */}
         {contract.status === 'signed' && !thankYou && (
           <div className="alert alert-success mb-4 md:mb-6 text-sm md:text-base">
             This contract has been signed and is now read-only.
           </div>
         )}
-        
+
         {/* Print and Share buttons for signed contracts */}
         {contract.status === 'signed' && (
           <div className="flex justify-center gap-2 mb-4 print-hide">
@@ -1790,46 +1802,35 @@ const PublicContractView: React.FC = () => {
               <ArrowDownTrayIcon className="w-5 h-5" />
               {pdfLoading ? 'Generating...' : 'Download PDF'}
             </button> */}
-            {/* Share button - mobile only */}
-            {canShare && (
-              <button
-                className="btn btn-outline btn-sm gap-2 md:hidden"
-                onClick={handleShareContract}
-                title="Share contract"
-              >
-                <ShareIcon className="w-5 h-5" />
-                Share
-              </button>
-            )}
           </div>
         )}
-        
+
         <div className="mb-4 md:mb-6 text-center">
           <h1 className="text-xl md:text-2xl font-bold">
             Contract for {contract?.contact_name || client?.name || 'Client'}
           </h1>
           {leadNumber && (
             <p className="text-sm md:text-base text-gray-600 mt-2">
-              Lead Number: <span className="font-mono font-semibold text-blue-600">#{leadNumber}</span>
+              Case: <span className="font-mono font-semibold text-blue-600">#{leadNumber}</span>
             </p>
           )}
         </div>
-        
+
         <div ref={contractContentRef} id="contract-print-area" className="prose prose-sm md:prose-base max-w-none">
-                  {thankYou ? (
-          <>
-            <div className="alert alert-success text-sm md:text-lg font-semibold mb-4 md:mb-6">Thank you! Your contract was signed and submitted. You will be notified soon.</div>
-            {(() => {
+          {thankYou ? (
+            <>
+              <div className="alert alert-success text-sm md:text-lg font-semibold mb-4 md:mb-6">Thank you! Your contract was signed and submitted. You will be notified soon.</div>
+              {(() => {
+                return renderTiptapContent(contract.custom_content || template.content, '', signaturePads, undefined, undefined, { text: 0, signature: 0, date: 0 });
+              })()}
+            </>
+          ) : (
+            (() => {
               return renderTiptapContent(contract.custom_content || template.content, '', signaturePads, undefined, undefined, { text: 0, signature: 0, date: 0 });
-            })()}
-          </>
-        ) : (
-          (() => {
-            return renderTiptapContent(contract.custom_content || template.content, '', signaturePads, undefined, undefined, { text: 0, signature: 0, date: 0 });
-          })()
-        )}
+            })()
+          )}
         </div>
-        
+
         {/* Submit Contract Button (only if not signed) */}
         {contract.status !== 'signed' && !thankYou && (
           <div className="mt-8">
@@ -1843,7 +1844,7 @@ const PublicContractView: React.FC = () => {
           </div>
         )}
       </div>
-      
+
       {/* Print-specific CSS */}
       <style>{`
         @media print {
@@ -1955,7 +1956,7 @@ const PublicContractView: React.FC = () => {
           }
         }
       `}</style>
-      
+
       {/* CSS for animations and RTL support */}
       <style>{`
         @keyframes fade-in {
