@@ -68,30 +68,30 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] overflow-y-auto">
         {/* Modal Header */}
-        <div className="sticky top-0 bg-white border-b border-gray-200 p-4 flex items-center justify-between z-10">
-          <h2 className="text-xl font-bold text-gray-900">Pricing & Payment Plan</h2>
+        <div className="sticky top-0 bg-white border-b border-gray-200 p-3 sm:p-4 flex items-center justify-between z-10">
+          <h2 className="text-base sm:text-xl font-bold text-gray-900">Pricing & Payment Plan</h2>
           <button
             onClick={onClose}
-            className="btn btn-ghost btn-sm btn-circle"
+            className="btn btn-ghost btn-xs sm:btn-sm btn-circle"
           >
             ✕
           </button>
         </div>
 
         {/* Modal Content */}
-        <div className="p-6 space-y-6">
+        <div className="p-3 sm:p-6 space-y-3 sm:space-y-6 text-sm sm:text-base">
           {/* Pricing & Payment Plan Section */}
-          <div className="space-y-6">
+          <div className="space-y-3 sm:space-y-6">
             
             <>
                   {/* Currency Selection */}
                   {status !== 'signed' && (
-                    <div className="space-y-3 pb-4 border-b border-gray-200">
-                      <label className="font-medium text-gray-700">Currency Type:</label>
-                      <div className="flex gap-2">
+                    <div className="space-y-2 sm:space-y-3 pb-3 sm:pb-4 border-b border-gray-200">
+                      <label className="font-medium text-gray-700 text-xs sm:text-sm">Currency Type:</label>
+                      <div className="flex gap-1 sm:gap-2">
                         <button
                           type="button"
-                          className={`btn btn-sm flex-1 ${currencyType === 'USD' ? 'btn-primary' : 'btn-outline'}`}
+                          className={`btn btn-xs sm:btn-sm flex-1 text-xs sm:text-sm ${currencyType === 'USD' ? 'btn-primary' : 'btn-outline'}`}
                           onClick={() => {
                             setCurrencyType('USD');
                             setVatIncluded(false);
@@ -116,7 +116,7 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                         </button>
                         <button
                           type="button"
-                          className={`btn btn-sm flex-1 ${currencyType === 'NIS' ? 'btn-primary' : 'btn-outline'}`}
+                          className={`btn btn-xs sm:btn-sm flex-1 text-xs sm:text-sm ${currencyType === 'NIS' ? 'btn-primary' : 'btn-outline'}`}
                           onClick={() => {
                             setCurrencyType('NIS');
                             setVatIncluded(true);
@@ -143,9 +143,9 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                       
                       {currencyType === 'USD' && (
                         <div>
-                          <label className="font-medium text-gray-700 text-sm mb-2 block">Select Currency:</label>
+                          <label className="font-medium text-gray-700 text-xs sm:text-sm mb-1 sm:mb-2 block">Select Currency:</label>
                           <select
-                            className="select select-bordered select-sm w-full"
+                            className="select select-bordered select-xs sm:select-sm w-full text-xs sm:text-sm"
                             value={subCurrency}
                             onChange={(e) => {
                               const newSubCurrency = e.target.value as 'USD' | 'GBP' | 'EUR';
@@ -166,11 +166,11 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                       
                       {(currencyType === 'NIS' || (currencyType === 'USD' && customPricing?.currency === '₪')) && (
                         <div className="mt-3">
-                          <label className="font-medium text-gray-700 text-sm mb-2 block">VAT:</label>
-                          <div className="flex gap-2">
+                          <label className="font-medium text-gray-700 text-xs sm:text-sm mb-1 sm:mb-2 block">VAT:</label>
+                          <div className="flex gap-1 sm:gap-2">
                             <button
                               type="button"
-                              className={`btn btn-sm flex-1 ${vatIncluded ? 'btn-primary' : 'btn-outline'}`}
+                              className={`btn btn-xs sm:btn-sm flex-1 text-xs sm:text-sm ${vatIncluded ? 'btn-primary' : 'btn-outline'}`}
                               onClick={() => {
                                 setVatIncluded(true);
                                 const total = customPricing?.total_amount || 0;
@@ -202,7 +202,7 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                             </button>
                             <button
                               type="button"
-                              className={`btn btn-sm flex-1 ${!vatIncluded ? 'btn-primary' : 'btn-outline'}`}
+                              className={`btn btn-xs sm:btn-sm flex-1 text-xs sm:text-sm ${!vatIncluded ? 'btn-primary' : 'btn-outline'}`}
                               onClick={() => {
                                 setVatIncluded(false);
                                 const total = customPricing?.total_amount || 0;
@@ -241,11 +241,11 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                     <>
                       {/* Applicant Count */}
                       <div className="flex items-center justify-between">
-                        <label className="font-medium text-gray-700">Number of Applicants:</label>
-                        <div className="flex items-center gap-3">
+                        <label className="font-medium text-gray-700 text-xs sm:text-sm">Number of Applicants:</label>
+                        <div className="flex items-center gap-2 sm:gap-3">
                           <button
-                            className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
-                            style={{ width: 40, height: 40 }}
+                            className="btn btn-circle btn-sm sm:btn-md bg-gray-200 border-none flex items-center justify-center"
+                            style={{ width: '32px', height: '32px' }}
                             onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
                             onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
                             onClick={() => handleApplicantCountChange(Math.max(1, (customPricing.applicant_count || 1) - 1))}
@@ -253,14 +253,14 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                             type="button"
                             disabled={status === 'signed'}
                           >
-                            <MinusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
+                            <MinusIcon className="w-4 h-4 sm:w-6 sm:h-6" style={{ color: '#391BC8' }} />
                           </button>
                           <input
                             type="number"
                             min={1}
                             max={50}
-                            className="input input-bordered input-lg w-28 text-center bg-white text-lg font-bold px-4 py-2 rounded-xl border-2 no-arrows"
-                            style={{ height: 48, borderColor: '#391BC8' }}
+                            className="input input-bordered input-sm sm:input-lg w-20 sm:w-28 text-center bg-white text-sm sm:text-lg font-bold px-2 sm:px-4 py-1 sm:py-2 rounded-xl border-2 no-arrows"
+                            style={{ height: 'auto', minHeight: '36px', borderColor: '#391BC8' }}
                             value={customPricing.applicant_count || 1}
                             onChange={e => handleApplicantCountChange(Number(e.target.value))}
                             onFocus={(e) => e.target.style.borderColor = '#391BC8'}
@@ -270,8 +270,8 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                             disabled={status === 'signed'}
                           />
                           <button
-                            className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
-                            style={{ width: 40, height: 40 }}
+                            className="btn btn-circle btn-sm sm:btn-md bg-gray-200 border-none flex items-center justify-center"
+                            style={{ width: '32px', height: '32px' }}
                             onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
                             onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
                             onClick={() => handleApplicantCountChange(Math.min(50, (customPricing.applicant_count || 1) + 1))}
@@ -279,14 +279,14 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                             type="button"
                             disabled={status === 'signed'}
                           >
-                            <PlusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
+                            <PlusIcon className="w-4 h-4 sm:w-6 sm:h-6" style={{ color: '#391BC8' }} />
                           </button>
                         </div>
                       </div>
 
                       {/* Pricing Tiers */}
                       <div>
-                        <label className="block font-medium text-gray-700 mb-3">Pricing Tiers (Price per applicant):</label>
+                        <label className="block font-medium text-gray-700 text-xs sm:text-sm mb-2 sm:mb-3">Pricing Tiers (Price per applicant):</label>
                         <div className="space-y-2">
                           {customPricing.pricing_tiers ? (() => {
                             const tierStructure = [
@@ -311,13 +311,13 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                                   }`}
                                   style={isActive ? { borderColor: '#391BC8', backgroundColor: 'rgba(57, 27, 200, 0.05)' } : {}}
                                 >
-                                  <span className="text-base font-semibold text-gray-700">
+                                  <span className="text-xs sm:text-base font-semibold text-gray-700">
                                     {tier.label}:
                                   </span>
-                                  <div className="flex items-center gap-3">
+                                  <div className="flex items-center gap-2 sm:gap-3">
                                     <button
-                                      className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
-                                      style={{ width: 40, height: 40 }}
+                                      className="btn btn-circle btn-sm sm:btn-md bg-gray-200 border-none flex items-center justify-center"
+                                      style={{ width: '32px', height: '32px' }}
                                       onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
                                       onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
                                       onClick={() => handleTierPriceChange(tier.key, Math.max(0, price - 100))}
@@ -325,13 +325,13 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                                       type="button"
                                       disabled={status === 'signed'}
                                     >
-                                      <MinusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
+                                      <MinusIcon className="w-4 h-4 sm:w-6 sm:h-6" style={{ color: '#391BC8' }} />
                                     </button>
                                     <input
                                       type="number"
                                       min={0}
-                                      className="input input-bordered input-lg w-36 text-right bg-white text-lg font-bold px-4 py-2 rounded-xl border-2 no-arrows"
-                                      style={{ height: 48, borderColor: '#391BC8' }}
+                                      className="input input-bordered input-sm sm:input-lg w-24 sm:w-36 text-right bg-white text-sm sm:text-lg font-bold px-2 sm:px-4 py-1 sm:py-2 rounded-xl border-2 no-arrows"
+                                      style={{ height: 'auto', minHeight: '36px', borderColor: '#391BC8' }}
                                       value={price}
                                       onChange={e => handleTierPriceChange(tier.key, Number(e.target.value))}
                                       onFocus={(e) => e.target.style.borderColor = '#391BC8'}
@@ -339,8 +339,8 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                                       disabled={status === 'signed'}
                                     />
                                     <button
-                                      className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
-                                      style={{ width: 40, height: 40 }}
+                                      className="btn btn-circle btn-sm sm:btn-md bg-gray-200 border-none flex items-center justify-center"
+                                      style={{ width: '32px', height: '32px' }}
                                       onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
                                       onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
                                       onClick={() => handleTierPriceChange(tier.key, price + 100)}
@@ -348,9 +348,9 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                                       type="button"
                                       disabled={status === 'signed'}
                                     >
-                                      <PlusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
+                                      <PlusIcon className="w-4 h-4 sm:w-6 sm:h-6" style={{ color: '#391BC8' }} />
                                     </button>
-                                    <span className="text-base font-semibold text-gray-600">{customPricing.currency}</span>
+                                    <span className="text-xs sm:text-base font-semibold text-gray-600">{customPricing.currency}</span>
                                   </div>
                                 </div>
                               );
@@ -365,9 +365,9 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
 
                       {/* Discount */}
                       <div className="flex items-center justify-between">
-                        <label className="font-medium text-gray-700">Discount:</label>
+                        <label className="font-medium text-gray-700 text-xs sm:text-sm">Discount:</label>
                         <select
-                          className="select select-bordered select-md w-24 text-right bg-white"
+                          className="select select-bordered select-xs sm:select-md w-20 sm:w-24 text-right bg-white text-xs sm:text-sm"
                           value={customPricing.discount_percentage}
                           onChange={e => {
                             const discount = Number(e.target.value);
@@ -423,30 +423,30 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                         const desktopFinalAmountWithoutVat = desktopDiscountedBaseTotal;
                         
                         return (
-                          <div className="space-y-2 pt-3 border-t border-gray-200">
+                          <div className="space-y-1 sm:space-y-2 pt-2 sm:pt-3 border-t border-gray-200">
                             <div className="flex items-center justify-between">
-                              <span className="text-gray-600">Total:</span>
-                              <span className="font-semibold text-gray-900">{customPricing.currency} {(customPricing.total_amount || 0).toLocaleString()}</span>
+                              <span className="text-gray-600 text-xs sm:text-sm">Total:</span>
+                              <span className="font-semibold text-gray-900 text-xs sm:text-sm">{customPricing.currency} {(customPricing.total_amount || 0).toLocaleString()}</span>
                             </div>
                             {customPricing?.archival_research_fee && (
                               <div className="flex items-center justify-between">
-                                <span className="text-gray-600">Archival Research:</span>
-                                <span className="font-semibold text-gray-900">{customPricing.currency} {customPricing.archival_research_fee.toLocaleString()}</span>
+                                <span className="text-gray-600 text-xs sm:text-sm">Archival Research:</span>
+                                <span className="font-semibold text-gray-900 text-xs sm:text-sm">{customPricing.currency} {customPricing.archival_research_fee.toLocaleString()}</span>
                               </div>
                             )}
                             {desktopIsIsraeli && (
                               <div className="flex items-center justify-between">
-                                <span className="text-gray-600">VAT (18%):</span>
-                                <span className="font-semibold text-gray-900">{customPricing.currency} {desktopVatAmount.toLocaleString()}</span>
+                                <span className="text-gray-600 text-xs sm:text-sm">VAT (18%):</span>
+                                <span className="font-semibold text-gray-900 text-xs sm:text-sm">{customPricing.currency} {desktopVatAmount.toLocaleString()}</span>
                               </div>
                             )}
                             <div className="flex items-center justify-between">
-                              <span className="text-gray-600">Discount:</span>
-                              <span className="font-semibold text-gray-900">{customPricing.currency} {desktopDiscountAmount.toLocaleString()}</span>
+                              <span className="text-gray-600 text-xs sm:text-sm">Discount:</span>
+                              <span className="font-semibold text-gray-900 text-xs sm:text-sm">{customPricing.currency} {desktopDiscountAmount.toLocaleString()}</span>
                             </div>
                             <div className="flex items-center justify-between">
-                              <span className="font-bold text-gray-900">Final Amount:</span>
-                              <span className="font-bold text-lg" style={{ color: '#391BC8' }}>
+                              <span className="font-bold text-gray-900 text-xs sm:text-sm">Final Amount:</span>
+                              <span className="font-bold text-sm sm:text-lg" style={{ color: '#391BC8' }}>
                                 {customPricing.currency} {(vatIncluded && desktopIsIsraeli ? desktopFinalAmountWithVat : desktopFinalAmountWithoutVat).toLocaleString()}
                               </span>
                             </div>
@@ -456,7 +456,7 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
 
                       {/* Payment Plan Editor */}
                       <div>
-                        <h4 className="font-semibold text-gray-900 mb-3">Payment Plan</h4>
+                        <h4 className="font-semibold text-gray-900 text-xs sm:text-base mb-2 sm:mb-3">Payment Plan</h4>
                         {(() => {
                           const totalPercent = (customPricing.payment_plan || []).reduce((sum: number, row: any) => sum + Number(row.percent), 0);
                           if (totalPercent < 100) {
@@ -465,20 +465,20 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                                 <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
                                 </svg>
-                                <span className="font-medium">Payment plan total is {totalPercent}%. Please ensure the total equals 100%.</span>
+                                <span className="font-medium text-xs sm:text-sm">Payment plan total is {totalPercent}%. Please ensure the total equals 100%.</span>
                               </div>
                             );
                           }
                           return null;
                         })()}
-                        <div className="space-y-3">
+                        <div className="space-y-2 sm:space-y-3">
                           {(customPricing.payment_plan || []).map((row: any, idx: number) => (
-                            <div key={idx} className="flex items-center gap-3 bg-white p-4 rounded-lg border border-gray-200">
+                            <div key={idx} className="flex items-center gap-2 sm:gap-3 bg-white p-2 sm:p-4 rounded-lg border border-gray-200">
                               <input
                                 type="number"
                                 min={0}
                                 max={100}
-                                className="input input-bordered w-24 text-center bg-white text-xl font-bold px-4 py-3 rounded-xl border-2 no-arrows"
+                                className="input input-bordered w-16 sm:w-24 text-center bg-white text-sm sm:text-xl font-bold px-2 sm:px-4 py-1 sm:py-3 rounded-xl border-2 no-arrows"
                                 style={{ borderColor: '#391BC8' }}
                                 value={row.percent === 0 ? '' : row.percent}
                                 onChange={e => {
@@ -491,11 +491,11 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                                 placeholder="%"
                                 disabled={status === 'signed'}
                               />
-                              <span className="text-lg font-semibold text-gray-700">%</span>
-                              <span className="text-lg font-semibold text-gray-700">=</span>
+                              <span className="text-xs sm:text-lg font-semibold text-gray-700">%</span>
+                              <span className="text-xs sm:text-lg font-semibold text-gray-700">=</span>
                               <input
                                 type="text"
-                                className="input input-bordered w-40 text-center bg-white text-xl font-bold px-4 py-3 rounded-xl border-2"
+                                className="input input-bordered w-24 sm:w-40 text-center bg-white text-sm sm:text-xl font-bold px-2 sm:px-4 py-1 sm:py-3 rounded-xl border-2"
                                 style={{ borderColor: '#391BC8' }}
                                 value={row.value}
                                 onChange={e => handlePaymentPlanChange(idx, 'value', e.target.value)}
@@ -504,9 +504,9 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                                 placeholder="Value + VAT"
                                 disabled={status === 'signed'}
                               />
-                              <span className="text-lg font-semibold text-gray-700">{customPricing.currency}</span>
+                              <span className="text-xs sm:text-lg font-semibold text-gray-700">{customPricing.currency}</span>
                               <button
-                                className="btn btn-circle btn-ghost text-red-500 hover:bg-red-100 text-xl font-bold w-10 h-10"
+                                className="btn btn-circle btn-ghost text-red-500 hover:bg-red-100 text-base sm:text-xl font-bold w-8 h-8 sm:w-10 sm:h-10"
                                 onClick={() => handleDeletePaymentRow(idx)}
                                 disabled={status === 'signed'}
                               >
@@ -514,7 +514,7 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                               </button>
                             </div>
                           ))}
-                          <button className="btn btn-outline btn-sm w-full" onClick={handleAddPaymentRow} disabled={status === 'signed'}>
+                          <button className="btn btn-outline btn-xs sm:btn-sm w-full text-xs sm:text-sm" onClick={handleAddPaymentRow} disabled={status === 'signed'}>
                             + Add Payment
                           </button>
                         </div>
@@ -523,7 +523,7 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                       {/* Save Button */}
                       {status !== 'signed' && (
                         <button
-                          className="btn btn-primary btn-block mt-4"
+                          className="btn btn-primary btn-block btn-sm sm:btn-md mt-3 sm:mt-4 text-xs sm:text-base"
                           onClick={handleSaveCustomPricing}
                           disabled={isSaving}
                         >
@@ -534,7 +534,7 @@ const ContractDetailsAndPricingModal: React.FC<ContractDetailsAndPricingModalPro
                       {/* Delete Contract Button */}
                       {status === 'signed' && (
                         <button
-                          className="btn btn-error btn-block mt-4"
+                          className="btn btn-error btn-block btn-sm sm:btn-md mt-3 sm:mt-4 text-xs sm:text-base"
                           onClick={handleDeleteContract}
                         >
                           Delete Contract

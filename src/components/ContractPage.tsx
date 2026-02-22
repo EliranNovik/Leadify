@@ -12,7 +12,7 @@ import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
 import { generateJSON } from '@tiptap/html';
-import { CheckIcon, ArrowLeftIcon, ChevronDownIcon, ChevronUpIcon, PrinterIcon, ArrowDownTrayIcon, XMarkIcon, Cog6ToothIcon, ShareIcon, PencilIcon, CalendarIcon, ClipboardDocumentIcon } from '@heroicons/react/24/outline';
+import { CheckIcon, ArrowLeftIcon, ChevronDownIcon, ChevronUpIcon, PrinterIcon, ArrowDownTrayIcon, XMarkIcon, Cog6ToothIcon, ShareIcon, PencilIcon, CalendarIcon, ClipboardDocumentIcon, TrashIcon, PhoneIcon, EnvelopeIcon, UserIcon, TagIcon, DocumentTextIcon } from '@heroicons/react/24/outline';
 import { handleContractSigned } from '../lib/contractAutomation';
 import { getPricePerApplicant } from '../lib/contractPricing';
 import SignaturePad from 'react-signature-canvas';
@@ -23,6 +23,9 @@ import { PlusIcon, MinusIcon } from '@heroicons/react/24/solid';
 import html2pdf from 'html2pdf.js';
 import { getFrontendBaseUrl } from '../lib/api';
 import ContractDetailsAndPricingModal from './ContractDetailsAndPricingModal';
+import CallOptionsModal from './CallOptionsModal';
+import { fetchLeadContacts } from '../lib/contactHelpers';
+import type { ContactInfo } from '../lib/contactHelpers';
 
 function fillAllPlaceholders(text: string, customPricing: any, client: any, contract?: any) {
   if (!text) return text;
@@ -733,6 +736,8 @@ const ContractPage: React.FC = () => {
   const [client, setClient] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [allCategories, setAllCategories] = useState<any[]>([]);
+  const [allEmployees, setAllEmployees] = useState<any[]>([]);
+  const [allCurrencies, setAllCurrencies] = useState<Array<{ id: number | string, name: string, iso_code: string | null }>>([]);
 
   // Fetch categories (same logic as ClientHeader.tsx)
   useEffect(() => {
@@ -754,6 +759,42 @@ const ContractPage: React.FC = () => {
       }
     };
     fetchCategories();
+  }, []);
+
+  // Fetch employees
+  useEffect(() => {
+    const fetchEmployees = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name, photo_url, photo')
+          .order('display_name', { ascending: true });
+
+        if (error) throw error;
+        setAllEmployees(data || []);
+      } catch (error) {
+        console.error('Error fetching employees:', error);
+      }
+    };
+    fetchEmployees();
+  }, []);
+
+  // Fetch currencies
+  useEffect(() => {
+    const fetchCurrencies = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('accounting_currencies')
+          .select('id, name, iso_code')
+          .order('order', { ascending: true, nullsFirst: false });
+
+        if (error) throw error;
+        setAllCurrencies(data || []);
+      } catch (error) {
+        console.error('Error fetching currencies:', error);
+      }
+    };
+    fetchCurrencies();
   }, []);
 
   // Helper function to get category display name with main category (same logic as ClientHeader.tsx)
@@ -835,6 +876,148 @@ const ContractPage: React.FC = () => {
     return baseNumber;
   };
 
+  // Helper function to get employee display name from ID (same logic as ClientHeader.tsx)
+  const getEmployeeDisplayNameFromId = (employeeId: string | number | null | undefined): string => {
+    if (!employeeId || employeeId === '---' || employeeId === null || employeeId === undefined) return '---';
+    if (!allEmployees || allEmployees.length === 0) return '---';
+
+    const idAsNumber = typeof employeeId === 'string' ? parseInt(employeeId, 10) : Number(employeeId);
+    if (isNaN(idAsNumber)) return '---';
+
+    const employee = allEmployees.find((emp: any) => {
+      if (!emp || !emp.id) return false;
+      const empId = typeof emp.id === 'bigint' ? Number(emp.id) : (typeof emp.id === 'string' ? parseInt(emp.id, 10) : Number(emp.id));
+      return !isNaN(empId) && empId === idAsNumber;
+    });
+
+    return employee?.display_name || '---';
+  };
+
+  // Helper function to get employee by ID
+  const getEmployeeById = (employeeId: string | number | null | undefined) => {
+    if (!employeeId || employeeId === '---' || employeeId === '--' || employeeId === '') {
+      return null;
+    }
+
+    const employeeById = allEmployees.find((emp: any) => {
+      const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
+      const searchId = typeof employeeId === 'string' ? parseInt(employeeId, 10) : employeeId;
+
+      if (isNaN(Number(searchId))) return false;
+
+      if (empId.toString() === searchId.toString()) return true;
+      if (Number(empId) === Number(searchId)) return true;
+
+      return false;
+    });
+
+    if (employeeById) {
+      return employeeById;
+    }
+
+    if (typeof employeeId === 'string') {
+      const employeeByName = allEmployees.find((emp: any) => {
+        if (!emp.display_name) return false;
+        return emp.display_name.trim().toLowerCase() === employeeId.trim().toLowerCase();
+      });
+
+      if (employeeByName) {
+        return employeeByName;
+      }
+    }
+
+    return null;
+  };
+
+  // Helper function to get employee initials
+  const getEmployeeInitials = (name: string | null | undefined): string => {
+    if (!name || name === '---' || name === '--' || name === 'Not assigned') return '';
+    const parts = name.trim().split(' ');
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+    return name.substring(0, 2).toUpperCase();
+  };
+
+  // Track image errors per employee to prevent flickering
+  const imageErrorCache = useRef<Map<string | number, boolean>>(new Map());
+
+  // Component to render employee avatar (same as ClientHeader.tsx)
+  const EmployeeAvatar: React.FC<{
+    employeeId: string | number | null | undefined;
+    size?: 'sm' | 'md' | 'lg';
+  }> = ({ employeeId, size = 'md' }) => {
+    const [imageError, setImageError] = useState(false);
+    const employee = getEmployeeById(employeeId);
+    const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : size === 'md' ? 'w-12 h-12 text-sm' : 'w-16 h-16 text-base';
+
+    if (!employee) {
+      return null;
+    }
+
+    const photoUrl = employee.photo_url || employee.photo;
+    const initials = getEmployeeInitials(employee.display_name);
+
+    const cacheKey = employeeId?.toString() || '';
+    const cachedError = imageErrorCache.current.get(cacheKey) || false;
+    const hasError = cachedError || imageError;
+
+    if (hasError || !photoUrl) {
+      return (
+        <div
+          className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold flex-shrink-0`}
+          title={employee.display_name}
+        >
+          {initials}
+        </div>
+      );
+    }
+
+    return (
+      <img
+        src={photoUrl}
+        alt={employee.display_name}
+        className={`${sizeClasses} rounded-full object-cover flex-shrink-0`}
+        onError={() => {
+          if (cacheKey) {
+            imageErrorCache.current.set(cacheKey, true);
+          }
+          setImageError(true);
+        }}
+        title={employee.display_name}
+      />
+    );
+  };
+
+  // Helper function to get currency name from accounting_currencies table (same logic as ClientHeader.tsx)
+  const getCurrencyName = (currencyId: string | number | null | undefined): string => {
+    if (!currencyId || currencyId === null || currencyId === undefined) {
+      return '₪'; // Default fallback
+    }
+
+    if (!allCurrencies || allCurrencies.length === 0) {
+      return '₪'; // Default fallback until currencies load
+    }
+
+    const currencyIdNum = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+    if (isNaN(currencyIdNum)) {
+      return '₪'; // Default fallback
+    }
+
+    const currency = allCurrencies.find((curr: any) => {
+      if (!curr || !curr.id) return false;
+      const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
+      const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
+      return !isNaN(currIdNum) && currIdNum === currencyIdNum;
+    });
+
+    if (currency && currency.name && currency.name.trim() !== '') {
+      return currency.name.trim();
+    }
+
+    return '₪';
+  };
+
   const [signaturePads, setSignaturePads] = useState<{ [key: string]: any }>({});
   const [editing, setEditing] = useState(false);
   const [contractStatuses, setContractStatuses] = useState<{ [id: string]: { status: string; signed_at?: string } }>({});
@@ -859,6 +1042,15 @@ const ContractPage: React.FC = () => {
   const [templateSearchQuery, setTemplateSearchQuery] = useState('');
   const [showTemplateDropdown, setShowTemplateDropdown] = useState(false);
   const [templateLanguageFilter, setTemplateLanguageFilter] = useState<string | null>(null);
+
+  // Call and Email modals state
+  const [showCallContactModal, setShowCallContactModal] = useState(false);
+  const [showEmailContactModal, setShowEmailContactModal] = useState(false);
+  const [availableContacts, setAvailableContacts] = useState<ContactInfo[]>([]);
+  const [loadingContacts, setLoadingContacts] = useState(false);
+  const [isCallModalOpen, setIsCallModalOpen] = useState(false);
+  const [callPhoneNumber, setCallPhoneNumber] = useState('');
+  const [callContactName, setCallContactName] = useState('');
   const [availableLanguages, setAvailableLanguages] = useState<any[]>([]);
 
   // TipTap editor setup for editing - must be called before any early returns
@@ -1102,7 +1294,8 @@ const ContractPage: React.FC = () => {
               balance: String(legacyClient.total || ''),
               lead_type: 'legacy',
               client_country: null,
-              closer: null,
+              closer: legacyClient.closer_id || null, // Preserve closer_id for legacy leads
+              closer_id: legacyClient.closer_id || null, // Also keep closer_id field
               handler: null,
               unactivation_reason: null,
               balance_currency: currency, // Store currency for consistency
@@ -1302,6 +1495,28 @@ const ContractPage: React.FC = () => {
                 clientError = legacyError;
               } else if (legacyClient) {
                 // Transform legacy client to match new client structure
+                // Get currency from accounting_currencies
+                let currency = '₪'; // Default
+                const currencyData = Array.isArray(legacyClient.accounting_currencies)
+                  ? legacyClient.accounting_currencies[0]
+                  : legacyClient.accounting_currencies;
+                if (currencyData) {
+                  const isoCode = currencyData.iso_code?.toUpperCase();
+                  if (isoCode === 'ILS' || isoCode === 'NIS') currency = '₪';
+                  else if (isoCode === 'USD') currency = '$';
+                  else if (isoCode === 'EUR') currency = '€';
+                  else if (isoCode === 'GBP') currency = '£';
+                  else currency = isoCode || currencyData.name || '₪';
+                } else if (legacyClient.currency_id) {
+                  // Fallback: map currency_id to symbol
+                  switch (legacyClient.currency_id) {
+                    case 1: currency = '₪'; break;
+                    case 2: currency = '$'; break;
+                    case 3: currency = '€'; break;
+                    default: currency = '₪';
+                  }
+                }
+
                 clientData = {
                   ...legacyClient,
                   id: `legacy_${legacyClient.id}`,
@@ -1318,6 +1533,11 @@ const ContractPage: React.FC = () => {
                   language: String(legacyClient.language_id || ''),
                   balance: String(legacyClient.total || ''),
                   lead_type: 'legacy',
+                  client_country: null,
+                  closer: legacyClient.closer_id || null, // Preserve closer_id for legacy leads
+                  closer_id: legacyClient.closer_id || null, // Also keep closer_id field
+                  handler: null,
+                  unactivation_reason: null,
                   balance_currency: legacyClient.accounting_currencies?.name || (() => {
                     // Fallback currency mapping based on currency_id
                     switch (legacyClient.currency_id) {
@@ -5027,46 +5247,61 @@ const ContractPage: React.FC = () => {
       {/* Header */}
       <div
         ref={headerRef}
-        className={`print-hide ${!editing ? 'sticky top-4 z-50' : ''} flex justify-center px-4`}
+        className="print-hide px-4 sm:px-6 pt-4 pb-2"
       >
-        <div className="backdrop-blur-md bg-white/80 rounded-2xl shadow-lg border border-white/20 px-4 sm:px-6 py-2 sm:py-3 w-fit max-w-full">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center space-x-1 sm:space-x-4 flex-1 min-w-0">
-              <div className="min-w-0 flex-1">
+        <div className="flex justify-between items-center">
+          <div className="flex items-center space-x-1 sm:space-x-4 flex-1 min-w-0">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+                {status === 'signed' && (
+                  <span className="badge badge-success badge-sm sm:badge-md">Signed</span>
+                )}
+                {status === 'draft' && (
+                  <>
+                    <button
+                      onClick={() => {
+                        let targetUrl = '/clients';
+                        if (leadNumber) {
+                          targetUrl = `/clients/${leadNumber}`;
+                        } else if (client?.id) {
+                          const clientLeadNumber = client.lead_number || client.id.toString().replace('legacy_', '');
+                          targetUrl = `/clients/${clientLeadNumber}`;
+                        }
+                        // Use window.location.href to force full page navigation
+                        window.location.href = targetUrl;
+                      }}
+                      className="btn btn-ghost btn-xs sm:btn-sm p-1 sm:p-2"
+                      title="Back to client"
+                    >
+                      <ArrowLeftIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                    </button>
+                    <span className="badge badge-sm sm:badge-md bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">Draft</span>
+                  </>
+                )}
                 <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-                  {status === 'signed' && (
-                    <span className="badge badge-success badge-sm sm:badge-md">Signed</span>
+                  <div className="flex items-center gap-1.5">
+                    <UserIcon className="w-4 h-4 sm:w-5 sm:h-5 text-gray-600" />
+                    <span className="text-xs sm:text-lg font-bold text-gray-900">{client?.name || 'Client'}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <ClipboardDocumentIcon className="w-4 h-4 sm:w-5 sm:h-5 text-gray-600" />
+                    <span className="text-xs sm:text-lg font-bold text-gray-900">Lead #{renderLeadNumber()}</span>
+                  </div>
+                  {(() => {
+                    const displayCategory = getCategoryDisplayName(client?.category_id, client?.category);
+                    return displayCategory ? (
+                      <div className="flex items-center gap-1.5 hidden sm:flex">
+                        <TagIcon className="w-4 h-4 sm:w-5 sm:h-5 text-gray-600" />
+                        <span className="text-xs sm:text-lg font-bold text-gray-900">{displayCategory}</span>
+                      </div>
+                    ) : null;
+                  })()}
+                  {client?.topic && (
+                    <div className="flex items-center gap-1.5">
+                      <DocumentTextIcon className="w-4 h-4 sm:w-5 sm:h-5 text-gray-600" />
+                      <span className="text-xs sm:text-lg font-bold text-gray-900">{client.topic}</span>
+                    </div>
                   )}
-                  {status === 'draft' && (
-                    <>
-                      <button
-                        onClick={() => {
-                          let targetUrl = '/clients';
-                          if (leadNumber) {
-                            targetUrl = `/clients/${leadNumber}`;
-                          } else if (client?.id) {
-                            const clientLeadNumber = client.lead_number || client.id.toString().replace('legacy_', '');
-                            targetUrl = `/clients/${clientLeadNumber}`;
-                          }
-                          // Use window.location.href to force full page navigation
-                          window.location.href = targetUrl;
-                        }}
-                        className="btn btn-ghost btn-xs sm:btn-sm p-1 sm:p-2"
-                        title="Back to client"
-                      >
-                        <ArrowLeftIcon className="w-4 h-4 sm:w-5 sm:h-5" />
-                      </button>
-                      <span className="badge badge-sm sm:badge-md bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">Draft</span>
-                    </>
-                  )}
-                  <h1 className="text-xs sm:text-lg font-bold text-gray-900 truncate">
-                    {client?.name || 'Client'} • Lead #{renderLeadNumber()}
-                    {(() => {
-                      const displayCategory = getCategoryDisplayName(client?.category_id, client?.category);
-                      return displayCategory ? <span className="ml-2 hidden sm:inline">• {displayCategory}</span> : null;
-                    })()}
-                    {client?.topic && <span className="ml-2">• {client.topic}</span>}
-                  </h1>
                 </div>
               </div>
             </div>
@@ -5075,10 +5310,10 @@ const ContractPage: React.FC = () => {
       </div>
 
       {/* Main Content */}
-      <div className="w-full px-2 sm:px-6 py-8 pb-20 print-content-wrapper">
+      <div className="w-full px-2 sm:px-6 py-8 pb-24 xl:pb-20 print-content-wrapper">
         <div className="relative min-h-screen">
           {/* Contract Content */}
-          <div className="w-full transition-all duration-300 xl:pr-[400px]">
+          <div className="w-full transition-all duration-300 xl:pr-[280px]">
             <div ref={contractContentRef} id="contract-print-area" className="text-gray-900 leading-relaxed [&_.ProseMirror_p]:mb-3 [&_p]:mb-3 text-sm sm:text-base [&_*]:text-sm sm:[&_*]:text-base">
               {editing ? (
                 <>
@@ -5257,181 +5492,335 @@ const ContractPage: React.FC = () => {
                 className="fixed top-0 right-0 z-[60] transition-all duration-300 ease-in-out hidden xl:block print-hide"
                 style={{
                   top: `${headerHeight + 32}px`,
-                  paddingRight: '16px'
+                  paddingRight: '16px',
+                  height: `calc(100vh - ${headerHeight + 32}px)`
                 }}
               >
-                <div className="flex flex-col gap-3">
-                  {/* Button to open Contract Details & Pricing Modal */}
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setShowDetailsAndPricingModal(true)}
-                      className="btn btn-circle btn-primary"
-                      title="Contract Details & Pricing"
-                    >
-                      <Cog6ToothIcon className="w-5 h-5" />
-                    </button>
-                    <span className="text-sm text-black font-medium">Details & Pricing</span>
-                  </div>
-
-                  {/* Share button */}
-                  <div className="flex items-center gap-2">
-                    <button
-                      className="btn btn-circle btn-primary"
-                      onClick={handleShareContractLink}
-                      title="Copy public contract link"
-                      style={{ backgroundColor: '#4218CC' }}
-                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#3414A3'}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#4218CC'}
-                    >
-                      <ShareIcon className="w-5 h-5" />
-                    </button>
-                    <span className="text-sm text-black font-medium">Share</span>
-                  </div>
-
-                  {!editing && status === 'draft' && (
+                <div className="flex flex-col h-full relative">
+                  <div className="flex flex-col gap-3">
+                    {/* Button to open Contract Details & Pricing Modal */}
                     <div className="flex items-center gap-2">
                       <button
-                        className="btn btn-circle btn-outline"
-                        onClick={() => {
-                          setEditing(true);
-                          // Focus editor after entering edit mode
-                          setTimeout(() => {
-                            if (editor) {
-                              editor.commands.focus();
-                            }
-                          }, 100);
-                        }}
+                        onClick={() => setShowDetailsAndPricingModal(true)}
+                        className="btn btn-circle btn-primary"
+                        title="Contract Details & Pricing"
                       >
-                        <PencilIcon className="w-5 h-5" />
+                        <Cog6ToothIcon className="w-6 h-6" />
                       </button>
-                      <span className="text-sm text-black font-medium">Edit</span>
+                      <span className="text-sm text-black font-medium">Pricing</span>
                     </div>
-                  )}
 
-                  {editing && (
-                    <>
+                    {/* Share button */}
+                    <div className="flex items-center gap-2">
+                      <button
+                        className="btn btn-circle btn-primary"
+                        onClick={handleShareContractLink}
+                        title="Copy public contract link"
+                        style={{ backgroundColor: '#4218CC' }}
+                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#3414A3'}
+                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#4218CC'}
+                      >
+                        <ShareIcon className="w-6 h-6" />
+                      </button>
+                      <span className="text-sm text-black font-medium">Share</span>
+                    </div>
+
+                    {!editing && status === 'draft' && (
                       <div className="flex items-center gap-2">
                         <button
-                          className="btn btn-circle btn-primary"
-                          onClick={handleSaveEdit}
-                        >
-                          <CheckIcon className="w-5 h-5" />
-                        </button>
-                        <span className="text-sm text-black font-medium">Save</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          className="btn btn-circle bg-white border border-gray-300 hover:bg-gray-50"
-                          onClick={async () => {
-                            setEditing(false);
-                            // Reload contract content to discard changes without full page reload
-                            if (contract?.id && editor) {
-                              const { data: contractData } = await supabase
-                                .from('contracts')
-                                .select('*, contract_templates(*)')
-                                .eq('id', contract.id)
-                                .single();
-                              if (contractData) {
-                                // Update contract state - this will trigger the useEffect to reprocess content
-                                setContract(contractData);
-                                // Force content reprocessing by incrementing renderKey
-                                setRenderKey(prev => prev + 1);
+                          className="btn btn-circle btn-outline"
+                          onClick={() => {
+                            setEditing(true);
+                            // Focus editor after entering edit mode
+                            setTimeout(() => {
+                              if (editor) {
+                                editor.commands.focus();
                               }
-                            }
+                            }, 100);
                           }}
                         >
-                          <XMarkIcon className="w-5 h-5" />
+                          <PencilIcon className="w-6 h-6" />
                         </button>
-                        <span className="text-sm text-black font-medium">Cancel</span>
+                        <span className="text-sm text-black font-medium">Edit</span>
                       </div>
-                    </>
-                  )}
-                </div>
-              </div>
+                    )}
 
-              {/* Mobile buttons */}
-              <div
-                className="fixed top-1/2 right-2 -translate-y-1/2 z-[60] transition-all duration-300 ease-in-out xl:hidden print-hide"
-              >
-                <div className="flex flex-col gap-4">
-                  {/* Button to open Contract Details & Pricing Modal */}
-                  <button
-                    onClick={() => setShowDetailsAndPricingModal(true)}
-                    className="btn btn-circle btn-primary w-12 h-12"
-                    title="Contract Details & Pricing"
-                  >
-                    <Cog6ToothIcon className="w-6 h-6" />
-                  </button>
-
-                  {/* Share button - Mobile uses native share */}
-                  <button
-                    className="btn btn-circle btn-primary w-12 h-12"
-                    onClick={handleMobileShare}
-                    title="Share contract link"
-                    style={{ backgroundColor: '#4218CC' }}
-                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#3414A3'}
-                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#4218CC'}
-                  >
-                    <ShareIcon className="w-6 h-6" />
-                  </button>
-
-                  {!editing && status === 'draft' && (
-                    <button
-                      className="btn btn-circle bg-white border border-gray-300 w-12 h-12 hover:bg-gray-50"
-                      onClick={() => {
-                        setEditing(true);
-                        // Focus editor after entering edit mode
-                        setTimeout(() => {
-                          if (editor) {
-                            editor.commands.focus();
-                          }
-                        }, 100);
-                      }}
-                      title="Edit"
-                    >
-                      <PencilIcon className="w-6 h-6 text-gray-700" />
-                    </button>
-                  )}
-
-                  {editing && (
-                    <>
-                      <button
-                        className="btn btn-circle btn-primary w-12 h-12"
-                        onClick={handleSaveEdit}
-                        title="Save"
-                      >
-                        <CheckIcon className="w-6 h-6" />
-                      </button>
-                      <button
-                        className="btn btn-circle bg-white border border-gray-300 w-12 h-12 hover:bg-gray-50"
-                        onClick={async () => {
-                          setEditing(false);
-                          // Reload contract content to discard changes without full page reload
-                          if (contract?.id && editor) {
-                            const { data: contractData } = await supabase
-                              .from('contracts')
-                              .select('*, contract_templates(*)')
-                              .eq('id', contract.id)
-                              .single();
-                            if (contractData) {
-                              // Update contract and template state - this will trigger the useEffect to reprocess content
-                              setContract(contractData);
-                              if (contractData.contract_templates) {
-                                setTemplate(contractData.contract_templates);
+                    {editing && (
+                      <>
+                        <div className="flex items-center gap-2">
+                          <button
+                            className="btn btn-circle btn-primary"
+                            onClick={handleSaveEdit}
+                          >
+                            <CheckIcon className="w-6 h-6" />
+                          </button>
+                          <span className="text-sm text-black font-medium">Save</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            className="btn btn-circle bg-white border border-gray-300 hover:bg-gray-50"
+                            onClick={async () => {
+                              setEditing(false);
+                              // Reload contract content to discard changes without full page reload
+                              if (contract?.id && editor) {
+                                const { data: contractData } = await supabase
+                                  .from('contracts')
+                                  .select('*, contract_templates(*)')
+                                  .eq('id', contract.id)
+                                  .single();
+                                if (contractData) {
+                                  // Update contract state - this will trigger the useEffect to reprocess content
+                                  setContract(contractData);
+                                  // Force content reprocessing by incrementing renderKey
+                                  setRenderKey(prev => prev + 1);
+                                }
                               }
-                              // Force content reprocessing by incrementing renderKey
-                              setRenderKey(prev => prev + 1);
-                            }
+                            }}
+                          >
+                            <XMarkIcon className="w-6 h-6" />
+                          </button>
+                          <span className="text-sm text-black font-medium">Cancel</span>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Closer Role, Applicants, and Total Value */}
+                  <div className="mt-6 pt-6 space-y-4">
+                    {/* Closer Role */}
+                    {(() => {
+                      if (!client) return null;
+                      const isLegacyLead = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
+                      let closerId: string | number | null = null;
+
+                      if (isLegacyLead) {
+                        // For legacy leads, check closer_id first, then closer field
+                        closerId = (client as any).closer_id || (client as any).closer || null;
+                      } else {
+                        // For new leads, check closer field
+                        const closer = client.closer;
+                        if (closer && closer !== '---' && closer !== '--' && closer !== null) {
+                          if (/^\d+$/.test(String(closer).trim())) {
+                            closerId = Number(closer);
+                          } else {
+                            // It's a display name, find the employee
+                            const employee = allEmployees.find((emp: any) =>
+                              emp.display_name && emp.display_name.trim().toLowerCase() === String(closer).trim().toLowerCase()
+                            );
+                            closerId = employee?.id || null;
+                          }
+                        }
+                        // Also check if there's a closer_id field for new leads
+                        if (!closerId && (client as any).closer_id) {
+                          closerId = (client as any).closer_id;
+                        }
+                      }
+
+                      const closerDisplay = getEmployeeDisplayNameFromId(closerId);
+                      if (!closerId || closerDisplay === '---' || closerDisplay === '') return null;
+
+                      return (
+                        <div className="flex flex-col items-start">
+                          <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Closer</p>
+                          <div className="flex items-center gap-2 h-12">
+                            <EmployeeAvatar employeeId={closerId} size="md" />
+                            <p className="font-medium truncate text-sm leading-5">{closerDisplay}</p>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Applicants Number */}
+                    {(() => {
+                      const applicantCount = customPricing?.applicant_count || contract?.applicant_count || 0;
+                      if (!applicantCount || applicantCount === 0) return null;
+
+                      return (
+                        <div className="flex flex-col items-start">
+                          <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Applicants</p>
+                          <div className="flex items-center gap-2">
+                            <span className="badge badge-sm badge-ghost font-medium text-xs px-2 py-0.5 border-gray-200 text-gray-600">
+                              {applicantCount} {applicantCount === 1 ? 'Applicant' : 'Applicants'}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Total Value with VAT */}
+                    {(() => {
+                      if (!client || !customPricing) return null;
+
+                      const isLegacyLead = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
+
+                      // 1. Currency Resolution
+                      let currency = '';
+                      if (client?.currency_id) {
+                        const currencyFromId = getCurrencyName(client.currency_id);
+                        if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
+                          currency = currencyFromId;
+                        }
+                      }
+                      if (isLegacyLead && (client as any)?.currency_id && !currency) {
+                        const currencyFromId = getCurrencyName((client as any).currency_id);
+                        if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
+                          currency = currencyFromId;
+                        }
+                      }
+                      if (!currency) {
+                        currency = client?.proposal_currency ?? client?.balance_currency ?? customPricing?.currency ?? '';
+                      }
+                      if (!currency || currency.trim() === '') {
+                        const defaultCurrency = allCurrencies.find((curr: any) => {
+                          if (!curr || !curr.id) return false;
+                          const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
+                          const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
+                          return !isNaN(currIdNum) && currIdNum === 1;
+                        });
+                        currency = (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '')
+                          ? defaultCurrency.name.trim()
+                          : '₪';
+                      }
+
+                      // 2. Base Amount
+                      let baseAmount: number;
+                      if (isLegacyLead) {
+                        const currencyId = (client as any)?.currency_id;
+                        let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                        if (!numericCurrencyId || isNaN(numericCurrencyId)) numericCurrencyId = 1;
+
+                        if (numericCurrencyId === 1) {
+                          baseAmount = Number((client as any)?.total_base ?? 0);
+                        } else {
+                          baseAmount = Number((client as any)?.total ?? 0);
+                        }
+                      } else {
+                        baseAmount = Number(client?.balance || client?.proposal_total || customPricing?.total_amount || 0);
+                      }
+
+                      // 3. Subcontractor Fee & Net Amount
+                      const subcontractorFee = Number(client?.subcontractor_fee ?? 0);
+                      const mainAmount = baseAmount - subcontractorFee;
+
+                      // 4. VAT
+                      let vatAmount = 0;
+                      let shouldShowVAT = false;
+                      const vatValue = client?.vat;
+
+                      if (isLegacyLead) {
+                        shouldShowVAT = true;
+                        if (vatValue !== null && vatValue !== undefined) {
+                          const vatStr = String(vatValue).toLowerCase().trim();
+                          if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
+                        }
+                        if (shouldShowVAT) {
+                          vatAmount = baseAmount * 0.18;
+                        }
+                      } else {
+                        shouldShowVAT = true;
+                        if (vatValue !== null && vatValue !== undefined) {
+                          const vatStr = String(vatValue).toLowerCase().trim();
+                          if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
+                        }
+
+                        if (shouldShowVAT) {
+                          if (client?.vat_value && Number(client.vat_value) > 0) {
+                            vatAmount = Number(client.vat_value);
+                          } else {
+                            vatAmount = baseAmount * 0.18;
+                          }
+                        }
+                      }
+
+                      if (mainAmount === 0 && vatAmount === 0) return null;
+
+                      return (
+                        <div className="flex flex-col items-start">
+                          <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Total Value</p>
+                          <div className="space-y-1">
+                            <div className="flex items-end gap-2">
+                              <p className="text-2xl font-bold text-gray-900 leading-none tracking-tight">
+                                {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
+                              </p>
+                              {shouldShowVAT && vatAmount > 0 && (
+                                <p className="text-sm text-gray-600 pb-1">
+                                  +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Call and Email Icons - At the bottom, aligned with bottom bar */}
+                  <div className="absolute w-full pt-6 space-y-3 flex-shrink-0" style={{ bottom: '80px' }}>
+                    {/* Call Icon */}
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={async () => {
+                          if (!client) return;
+                          setShowCallContactModal(true);
+                          setLoadingContacts(true);
+                          try {
+                            const isLegacyLead = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
+                            const leadId = isLegacyLead
+                              ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+                              : client.id;
+                            const contacts = await fetchLeadContacts(leadId, isLegacyLead);
+                            // Filter contacts with phone numbers
+                            const contactsWithPhone = contacts.filter(c => (c.phone || c.mobile) && (c.phone?.trim() || c.mobile?.trim()));
+                            setAvailableContacts(contactsWithPhone.length > 0 ? contactsWithPhone : contacts);
+                          } catch (error) {
+                            console.error('Error fetching contacts:', error);
+                            setAvailableContacts([]);
+                          } finally {
+                            setLoadingContacts(false);
                           }
                         }}
-                        title="Cancel"
+                        className="btn btn-circle btn-primary"
+                        title="Call"
                       >
-                        <XMarkIcon className="w-6 h-6" />
+                        <PhoneIcon className="w-6 h-6" />
                       </button>
-                    </>
-                  )}
+                      <span className="text-sm text-black font-medium">Call</span>
+                    </div>
+
+                    {/* Email Icon */}
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={async () => {
+                          if (!client) return;
+                          setShowEmailContactModal(true);
+                          setLoadingContacts(true);
+                          try {
+                            const isLegacyLead = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
+                            const leadId = isLegacyLead
+                              ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+                              : client.id;
+                            const contacts = await fetchLeadContacts(leadId, isLegacyLead);
+                            // Filter contacts with emails
+                            const contactsWithEmail = contacts.filter(c => c.email && c.email.trim());
+                            setAvailableContacts(contactsWithEmail.length > 0 ? contactsWithEmail : contacts);
+                          } catch (error) {
+                            console.error('Error fetching contacts:', error);
+                            setAvailableContacts([]);
+                          } finally {
+                            setLoadingContacts(false);
+                          }
+                        }}
+                        className="btn btn-circle btn-primary"
+                        title="Email"
+                      >
+                        <EnvelopeIcon className="w-6 h-6" />
+                      </button>
+                      <span className="text-sm text-black font-medium">Email</span>
+                    </div>
+                  </div>
                 </div>
               </div>
+
             </>
           )}
 
@@ -5585,6 +5974,120 @@ const ContractPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Call Contact Selection Modal */}
+      {showCallContactModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between p-6 border-b border-gray-200">
+              <div className="flex items-center gap-3">
+                <PhoneIcon className="w-6 h-6 text-blue-600" />
+                <h2 className="text-lg font-semibold text-gray-900">Select Contact to Call</h2>
+              </div>
+              <button
+                onClick={() => setShowCallContactModal(false)}
+                className="btn btn-ghost btn-sm btn-circle"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 flex-1 overflow-y-auto">
+              {loadingContacts ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="loading loading-spinner loading-md"></div>
+                </div>
+              ) : availableContacts.length === 0 ? (
+                <p className="text-center text-gray-500 py-8">No contacts with phone numbers found</p>
+              ) : (
+                <div className="space-y-2">
+                  {availableContacts.map((contact) => {
+                    const phoneNumber = contact.phone || contact.mobile || '';
+                    if (!phoneNumber) return null;
+                    return (
+                      <button
+                        key={contact.id}
+                        onClick={() => {
+                          setCallPhoneNumber(phoneNumber);
+                          setCallContactName(contact.name || client?.name || '');
+                          setShowCallContactModal(false);
+                          setIsCallModalOpen(true);
+                        }}
+                        className="w-full text-left p-4 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors"
+                      >
+                        <div className="font-medium text-gray-900">{contact.name || 'Unnamed Contact'}</div>
+                        <div className="text-sm text-gray-600 mt-1">{phoneNumber}</div>
+                        {contact.email && (
+                          <div className="text-xs text-gray-500 mt-1">{contact.email}</div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Email Contact Selection Modal */}
+      {showEmailContactModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between p-6 border-b border-gray-200">
+              <div className="flex items-center gap-3">
+                <EnvelopeIcon className="w-6 h-6 text-blue-600" />
+                <h2 className="text-lg font-semibold text-gray-900">Select Contact to Email</h2>
+              </div>
+              <button
+                onClick={() => setShowEmailContactModal(false)}
+                className="btn btn-ghost btn-sm btn-circle"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 flex-1 overflow-y-auto">
+              {loadingContacts ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="loading loading-spinner loading-md"></div>
+                </div>
+              ) : availableContacts.length === 0 ? (
+                <p className="text-center text-gray-500 py-8">No contacts with email addresses found</p>
+              ) : (
+                <div className="space-y-2">
+                  {availableContacts.map((contact) => {
+                    const email = contact.email || '';
+                    if (!email) return null;
+                    return (
+                      <button
+                        key={contact.id}
+                        onClick={() => {
+                          window.location.href = `mailto:${email}`;
+                          setShowEmailContactModal(false);
+                        }}
+                        className="w-full text-left p-4 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors"
+                      >
+                        <div className="font-medium text-gray-900">{contact.name || 'Unnamed Contact'}</div>
+                        <div className="text-sm text-gray-600 mt-1">{email}</div>
+                        {(contact.phone || contact.mobile) && (
+                          <div className="text-xs text-gray-500 mt-1">{contact.phone || contact.mobile}</div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Call Options Modal */}
+      <CallOptionsModal
+        isOpen={isCallModalOpen}
+        onClose={() => setIsCallModalOpen(false)}
+        phoneNumber={callPhoneNumber}
+        leadName={callContactName}
+      />
 
       {/* Print-specific CSS */}
       <style>{`
@@ -5824,44 +6327,144 @@ const ContractPage: React.FC = () => {
         }
       `}</style>
 
-      {/* Fixed Bottom Bar with Created Date, Template Name, and Change Template Button */}
+      {/* Fixed Bottom Bar with Created Date, Template Name, Change Template Button, and Action Buttons */}
       {contract?.created_at && (
-        <div className="fixed bottom-4 left-0 right-0 z-40 print-hide flex justify-center px-4">
-          <div className="backdrop-blur-md bg-white/80 rounded-2xl shadow-lg border border-white/20 px-4 sm:px-6 py-3 w-fit max-w-full">
-            <div className="flex items-center justify-between gap-4 flex-wrap">
-              <div className="flex items-center gap-4 flex-wrap">
+        <div className="fixed bottom-0 left-0 right-0 z-40 print-hide">
+          <div className="backdrop-blur-md bg-white/95 rounded-t-2xl sm:rounded-2xl shadow-lg border-t sm:border border-white/20 px-2 sm:px-4 py-2 sm:py-3 w-full sm:w-fit sm:max-w-full sm:mx-auto sm:mb-4">
+            <div className="flex items-center justify-between gap-2 sm:gap-4 flex-wrap">
+              {/* Mobile: Action buttons row */}
+              <div className="flex items-center justify-around gap-1 flex-1 sm:hidden">
+                {!showDetailsAndPricingModal && (
+                  <>
+                    {/* Button to open Contract Details & Pricing Modal */}
+                    <button
+                      onClick={() => setShowDetailsAndPricingModal(true)}
+                      className="btn btn-circle btn-primary w-12 h-12"
+                      title="Contract Details & Pricing"
+                    >
+                      <Cog6ToothIcon className="w-6 h-6" />
+                    </button>
+
+                    {/* Share button - Mobile uses native share */}
+                    <button
+                      className="btn btn-circle btn-primary w-12 h-12"
+                      onClick={handleMobileShare}
+                      title="Share contract link"
+                      style={{ backgroundColor: '#4218CC' }}
+                    >
+                      <ShareIcon className="w-6 h-6" />
+                    </button>
+
+                    {!editing && status === 'draft' && (
+                      <button
+                        className="btn btn-circle btn-primary w-12 h-12"
+                        onClick={() => {
+                          setEditing(true);
+                          // Focus editor after entering edit mode
+                          setTimeout(() => {
+                            if (editor) {
+                              editor.commands.focus();
+                            }
+                          }, 100);
+                        }}
+                        title="Edit"
+                      >
+                        <PencilIcon className="w-6 h-6" />
+                      </button>
+                    )}
+
+                    {editing && (
+                      <>
+                        <button
+                          className="btn btn-circle btn-primary w-12 h-12"
+                          onClick={handleSaveEdit}
+                          title="Save"
+                        >
+                          <CheckIcon className="w-6 h-6" />
+                        </button>
+                        <button
+                          className="btn btn-circle bg-white border border-gray-300 w-12 h-12 hover:bg-gray-50"
+                          onClick={async () => {
+                            setEditing(false);
+                            // Reload contract content to discard changes without full page reload
+                            if (contract?.id && editor) {
+                              const { data: contractData } = await supabase
+                                .from('contracts')
+                                .select('*, contract_templates(*)')
+                                .eq('id', contract.id)
+                                .single();
+                              if (contractData) {
+                                // Update contract and template state - this will trigger the useEffect to reprocess content
+                                setContract(contractData);
+                                if (contractData.contract_templates) {
+                                  setTemplate(contractData.contract_templates);
+                                }
+                                // Force content reprocessing by incrementing renderKey
+                                setRenderKey(prev => prev + 1);
+                              }
+                            }
+                          }}
+                          title="Cancel"
+                        >
+                          <XMarkIcon className="w-6 h-6" />
+                        </button>
+                      </>
+                    )}
+
+                    {/* Change Template button on mobile */}
+                    {status === 'draft' && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowChangeTemplateModal(true);
+                        }}
+                        className="btn btn-circle btn-primary w-12 h-12"
+                        title="Change Template"
+                      >
+                        <ClipboardDocumentIcon className="w-6 h-6" />
+                      </button>
+                    )}
+
+                    {/* Delete button on mobile */}
+                    <button
+                      onClick={handleDeleteContract}
+                      className="btn btn-circle btn-error w-12 h-12"
+                      title="Delete Contract"
+                    >
+                      <TrashIcon className="w-6 h-6" />
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* Desktop: Created Date, Change Template Button, Delete Button */}
+              <div className="hidden sm:flex items-center gap-4 flex-wrap">
                 <div className="flex items-center gap-2">
                   <CalendarIcon className="w-4 h-4 text-gray-500" />
                   <p className="text-xs sm:text-sm text-gray-600">
                     {new Date(contract.created_at).toLocaleDateString()}
                   </p>
                 </div>
-              </div>
-              {status === 'draft' && (
-                <>
-                  {/* Mobile: Round icon button */}
+                {status === 'draft' && (
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       setShowChangeTemplateModal(true);
                     }}
-                    className="btn btn-circle btn-primary w-10 h-10 sm:hidden"
-                    title="Change Template"
-                  >
-                    <ClipboardDocumentIcon className="w-5 h-5" />
-                  </button>
-                  {/* Desktop: Text button */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowChangeTemplateModal(true);
-                    }}
-                    className="hidden sm:flex btn btn-outline btn-xs sm:btn-sm btn-primary"
+                    className="btn btn-outline btn-xs sm:btn-sm btn-primary"
                   >
                     Change Template
                   </button>
-                </>
-              )}
+                )}
+                <button
+                  onClick={handleDeleteContract}
+                  className="btn btn-outline btn-xs sm:btn-sm btn-error"
+                  title="Delete Contract"
+                >
+                  <TrashIcon className="w-4 h-4 sm:w-5 sm:h-5 mr-1" />
+                  Delete
+                </button>
+              </div>
             </div>
           </div>
         </div>
