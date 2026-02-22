@@ -1758,7 +1758,9 @@ const ContractPage: React.FC = () => {
       const isLegacyTemplate = !isNaN(Number(newTemplateId)) || newTemplateId.startsWith('legacy_');
 
       // Prepare update data
-      const updateData: any = {};
+      const updateData: any = {
+        custom_content: null // Clear custom_content so new template content is used
+      };
 
       if (isLegacyTemplate) {
         // For legacy templates, set template_id to NULL and store ID in custom_pricing.legacy_template_id
@@ -1780,13 +1782,35 @@ const ContractPage: React.FC = () => {
         updateData.custom_pricing = restCustomPricing;
       }
 
-      // Update contract
+      // Update contract in database
+      console.log('🔄 Updating contract template in database:', { contractId, updateData });
       const { error } = await supabase
         .from('contracts')
         .update(updateData)
         .eq('id', contractId);
 
-      if (error) throw error;
+      if (error) {
+        console.error('❌ Error updating contract template:', error);
+        throw error;
+      }
+      console.log('✅ Contract template updated successfully in database');
+
+      // Fetch updated contract with template
+      const { data: updatedContractData, error: fetchError } = await supabase
+        .from('contracts')
+        .select('*, contract_templates(*)')
+        .eq('id', contractId)
+        .single();
+
+      if (fetchError) {
+        console.error('❌ Error fetching updated contract:', fetchError);
+        throw fetchError;
+      }
+      console.log('✅ Fetched updated contract:', {
+        template_id: updatedContractData.template_id,
+        legacy_template_id: updatedContractData.custom_pricing?.legacy_template_id,
+        has_custom_content: !!updatedContractData.custom_content
+      });
 
       // Fetch new template
       const newTemplate = availableTemplates.find(t => t.id === newTemplateId);
@@ -1812,20 +1836,43 @@ const ContractPage: React.FC = () => {
         }
 
         if (fullTemplate) {
-          setTemplate(fullTemplate);
+          // Process template to add IDs to placeholders
+          let normalizedContent = normalizeTiptapContent(fullTemplate.content);
+          const processedContent = normalizedContent && normalizedContent.type === 'doc' ?
+            preprocessTemplatePlaceholders(normalizedContent) :
+            normalizedContent;
+
+          const processedTemplate = {
+            ...fullTemplate,
+            content: processedContent
+          };
+
+          setTemplate(processedTemplate);
+
+          // Update contract state - clear custom_content so new template content is used
+          // Also update the contract with the new template_id/legacy_template_id
+          const updatedContract = {
+            ...updatedContractData,
+            custom_content: null // Clear custom_content to use new template
+          };
+          setContract(updatedContract);
+
           // Update editor content
-          if (editor && fullTemplate.content) {
-            const normalizedContent = normalizeTiptapContent(fullTemplate.content);
+          if (editor && processedTemplate.content) {
             try {
-              editor.commands.setContent(normalizedContent);
+              editor.commands.setContent(processedTemplate.content);
             } catch (error) {
               console.error('❌ Error setting editor content after template change:', error);
               editor.commands.setContent({ type: 'doc', content: [] });
             }
           }
-          // Refresh contract
-          window.location.reload();
+
+          // Force re-render
+          setRenderKey(prev => prev + 1);
         }
+      } else {
+        // If template not found, still update contract state
+        setContract(updatedContractData);
       }
 
       setShowChangeTemplateModal(false);
@@ -5028,7 +5075,7 @@ const ContractPage: React.FC = () => {
       </div>
 
       {/* Main Content */}
-      <div className="w-full px-2 sm:px-6 xl:pl-16 2xl:pl-32 py-8 pb-20 print-content-wrapper">
+      <div className="w-full px-2 sm:px-6 py-8 pb-20 print-content-wrapper">
         <div className="relative min-h-screen">
           {/* Contract Content */}
           <div className="w-full transition-all duration-300 xl:pr-[400px]">
@@ -5178,7 +5225,7 @@ const ContractPage: React.FC = () => {
               ) : (
                 // For non-signed contracts, use renderTiptapContent to show placeholders as input fields
                 // Key includes pricing tiers hash to force re-render when any tier price changes
-                <div key={`readonly-${renderKey}-${customPricing?.final_amount || 0}-${customPricing?.applicant_count || 0}-${customPricing?.pricing_tiers ? Object.values(customPricing.pricing_tiers).join('-') : ''}`}>
+                <div key={`readonly-${renderKey}-${template?.id || 'no-template'}-${contract?.template_id || contract?.custom_pricing?.legacy_template_id || 'no-id'}-${customPricing?.final_amount || 0}-${customPricing?.applicant_count || 0}-${customPricing?.pricing_tiers ? Object.values(customPricing.pricing_tiers).join('-') : ''}`}>
                   {(() => {
                     // Get content from contract.custom_content (saved content) or template content
                     let contentToRender = contract?.custom_content || template?.content;
@@ -5423,8 +5470,21 @@ const ContractPage: React.FC = () => {
 
       {/* Change Template Modal */}
       {showChangeTemplateModal && (
-        <div className="fixed inset-0 bg-white z-50 flex flex-col h-screen">
-          <div className="w-full h-full overflow-hidden flex flex-col">
+        <div
+          className={`fixed inset-0 bg-black/50 z-50 flex items-start justify-center p-4 pt-8 sm:pt-16 ${showTemplateDropdown ? 'overflow-visible' : ''
+            }`}
+          onClick={() => {
+            setShowChangeTemplateModal(false);
+            setTemplateSearchQuery('');
+            setTemplateLanguageFilter(null);
+          }}
+        >
+          <div
+            className={`bg-white rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col transition-all duration-200 ${showTemplateDropdown ? 'max-h-[75vh] overflow-visible' : 'max-h-[70vh] overflow-hidden'
+              }`}
+            onClick={(e) => e.stopPropagation()}
+            style={showTemplateDropdown ? { overflow: 'visible' } : {}}
+          >
             <div className="p-6 border-b border-gray-200 flex-shrink-0">
               <div className="flex items-center justify-between">
                 <h2 className="text-2xl font-bold text-gray-900">Change Contract Template</h2>
@@ -5440,7 +5500,7 @@ const ContractPage: React.FC = () => {
                 </button>
               </div>
             </div>
-            <div className="p-6 overflow-y-auto flex-1 min-h-0">
+            <div className={`p-6 flex-1 min-h-0 ${showTemplateDropdown ? 'overflow-visible' : 'overflow-y-auto'}`}>
               {/* Language Filter */}
               <div className="mb-4">
                 <select
@@ -5486,7 +5546,7 @@ const ContractPage: React.FC = () => {
                     return matchesSearch && matchesLanguage;
                   })
                   .length > 0 && (
-                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-96 overflow-y-auto">
+                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg overflow-y-auto" style={{ maxHeight: '400px', top: '100%' }}>
                       {availableTemplates
                         .filter(t => {
                           // Filter by search query
@@ -5495,19 +5555,29 @@ const ContractPage: React.FC = () => {
                           const matchesLanguage = !templateLanguageFilter || String(t.language_id) === templateLanguageFilter;
                           return matchesSearch && matchesLanguage;
                         })
-                        .map(t => (
-                          <div
-                            key={t.id}
-                            className={`px-4 py-2 cursor-pointer hover:bg-gray-100 ${contract?.template_id === t.id ? 'bg-blue-50' : ''
-                              }`}
-                            onMouseDown={(e) => {
-                              e.preventDefault();
-                              handleTemplateChange(t.id);
-                            }}
-                          >
-                            {t.name}
-                          </div>
-                        ))}
+                        .map(t => {
+                          // Check if this template is the currently selected one
+                          // For new templates: check template_id
+                          // For legacy templates: check custom_pricing.legacy_template_id
+                          const isLegacyTemplate = !isNaN(Number(t.id)) || t.id.toString().startsWith('legacy_');
+                          const isSelected = isLegacyTemplate
+                            ? contract?.custom_pricing?.legacy_template_id === t.id.toString().replace('legacy_', '')
+                            : contract?.template_id === t.id;
+
+                          return (
+                            <div
+                              key={t.id}
+                              className={`px-4 py-2 cursor-pointer hover:bg-gray-100 ${isSelected ? 'bg-blue-50' : ''
+                                }`}
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                handleTemplateChange(t.id);
+                              }}
+                            >
+                              {t.name}
+                            </div>
+                          );
+                        })}
                     </div>
                   )}
               </div>

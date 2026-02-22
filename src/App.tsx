@@ -98,6 +98,7 @@ const AppContentInner: React.FC = () => {
   const isReportsPage = useMemo(() => location.pathname.startsWith('/reports'), [location.pathname]);
   const isSignedSalesPage = useMemo(() => location.pathname === '/sales/signed', [location.pathname]);
   const isCaseManagerPage = useMemo(() => location.pathname.startsWith('/case-manager'), [location.pathname]);
+  const isContractPage = useMemo(() => location.pathname.includes('/contract') && !location.pathname.includes('/public-contract'), [location.pathname]);
   const msalAccount = instance.getActiveAccount() || accounts[0];
   const userName = accounts.length > 0 ? accounts[0].name : undefined;
 
@@ -786,7 +787,7 @@ const AppContentInner: React.FC = () => {
         element={
           < ProtectedRoute user={authUser} >
             <div className={`flex h-screen bg-base-100 ${appJustLoggedIn ? 'fade-in' : ''}`}>
-              {!isSignedSalesPage && !isCaseManagerPage && (
+              {!isSignedSalesPage && !isCaseManagerPage && !isContractPage && (
                 <Sidebar
                   userName={sidebarUserName}
                   userInitials={userInitials}
@@ -796,7 +797,7 @@ const AppContentInner: React.FC = () => {
                   mobileOnly={sidebarMobileOnly}
                 />
               )}
-              <div className={`flex-1 flex flex-col overflow-hidden ${!isAdminPage && !isReportsPage && !isSignedSalesPage && !isCaseManagerPage ? 'md:pl-24' : ''}`}>
+              <div className={`flex-1 flex flex-col overflow-hidden ${!isAdminPage && !isReportsPage && !isSignedSalesPage && !isCaseManagerPage && !isContractPage ? 'md:pl-24' : ''}`}>
                 <Header
                   onMenuClick={handleMenuClick}
                   onSearchClick={handleSearchClick}
