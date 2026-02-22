@@ -133,7 +133,7 @@ interface FinanceTabProps extends HandlerTabProps {
 const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymentMarkedPaid, onCreateFinancePlan, hideTimelineHistory = false }) => {
   // Use the first lead as the client
   const client = leads && leads.length > 0 ? leads[0] : null;
-  
+
   if (!client) {
     return <div className="flex justify-center items-center h-32"><span className="loading loading-spinner loading-md text-primary"></span></div>;
   }
@@ -386,15 +386,15 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
       // Update local state
       setFinancePlan((prev: any) => {
         if (!prev) return prev;
-          return {
+        return {
           ...prev,
           payments: prev.payments.map((p: PaymentPlan) =>
             p.id === selectedPaymentForNotes.id
               ? { ...p, notes: notes || '' }
               : p
           )
-          };
-        });
+        };
+      });
 
       toast.success('Notes updated successfully!');
       setShowNotesModal(false);
@@ -437,16 +437,16 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
           const total = Number(totalAmount);
           paymentAmounts = prev.paymentPercents.map(percent => (total * percent) / 100);
         }
-              
-              return {
+
+        return {
           ...prev,
           currency,
           totalAmount,
           paymentAmounts,
           // Set default contact to main client name if not set
           contact: prev.contact || client?.name || '',
-              };
-            });
+        };
+      });
     }
   }, [client]);
 
@@ -503,7 +503,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
       await navigator.clipboard.writeText(paymentUrl);
 
       toast.success('Payment link copied to clipboard!');
-        } catch (error) {
+    } catch (error) {
       console.error('Error generating payment link:', error);
       toast.error('Failed to generate payment link');
     }
@@ -648,7 +648,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
           })
           .eq('id', payment.id);
         error = legacyError;
-        } else {
+      } else {
         // For new leads, update payment_plans table
         const { error: newError } = await supabase
           .from('payment_plans')
@@ -744,7 +744,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
       return {
         ...prev,
         payments: prev.payments.map(payment =>
-          payment.id === id 
+          payment.id === id
             ? { ...payment, paid: true, paid_at: new Date(paidDate).toISOString() }
             : payment
         )
@@ -752,11 +752,11 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
     });
 
     if (onPaymentMarkedPaid) onPaymentMarkedPaid(id);
-    
+
     try {
       const currentUserName = await getCurrentUserName();
       const paidAtDate = new Date(paidDate).toISOString();
-      
+
       if (isLegacyPayment) {
         // For legacy payments, update finances_paymentplanrow table
         const { error } = await supabase
@@ -792,19 +792,19 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
         // For regular payments, log the payment marked as paid (only for new payments)
         // Legacy payments don't use this table since lead_id has NOT NULL constraint
         if (!(client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_'))) {
-        const { error: historyError } = await supabase
-          .from('finance_changes_history')
-          .insert({
+          const { error: historyError } = await supabase
+            .from('finance_changes_history')
+            .insert({
               lead_id: client?.id, // Use UUID for new leads
-            change_type: 'payment_marked_paid',
+              change_type: 'payment_marked_paid',
               table_name: 'payment_plans',
-            record_id: id,
-            old_values: { paid: false },
-            new_values: { paid: true, paid_at: paidAtDate, paid_by: currentUserName },
-            changed_by: currentUserName,
-            notes: `Payment marked as paid by ${currentUserName} on ${paidDate}`
-          });
-        
+              record_id: id,
+              old_values: { paid: false },
+              new_values: { paid: true, paid_at: paidAtDate, paid_by: currentUserName },
+              changed_by: currentUserName,
+              notes: `Payment marked as paid by ${currentUserName} on ${paidDate}`
+            });
+
           if (historyError) console.error('Error logging payment marked as paid:', historyError);
         } else {
           // Legacy payment marked as paid - skipping change logging
@@ -815,49 +815,49 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
 
         // Update DB based on lead type
         let error = null;
-      if (isLegacyLead) {
+        if (isLegacyLead) {
           // For legacy leads, update finances_paymentplanrow table
-        const { error: legacyError } = await supabase
-          .from('finances_paymentplanrow')
-          .update({
+          const { error: legacyError } = await supabase
+            .from('finances_paymentplanrow')
+            .update({
               actual_date: paidDate, // Use actual_date for legacy
-          })
-          .eq('id', id);
-        error = legacyError;
-      } else {
+            })
+            .eq('id', id);
+          error = legacyError;
+        } else {
           // For new leads, update payment_plans table
-        const { error: newError } = await supabase
-          .from('payment_plans')
-          .update({
-            paid: true,
-            paid_at: paidAtDate,
-            paid_by: currentUserName,
-          })
-          .eq('id', id);
-        error = newError;
-      }
-        
-      if (!error) {
-        toast.success('Payment marked as paid!');
-        setShowPaidDateModal(false);
-        setSelectedPaymentForPaid(null);
-        setPaidDate('');
+          const { error: newError } = await supabase
+            .from('payment_plans')
+            .update({
+              paid: true,
+              paid_at: paidAtDate,
+              paid_by: currentUserName,
+            })
+            .eq('id', id);
+          error = newError;
+        }
+
+        if (!error) {
+          toast.success('Payment marked as paid!');
+          setShowPaidDateModal(false);
+          setSelectedPaymentForPaid(null);
+          setPaidDate('');
           await refreshPaymentPlans();
-      } else {
+        } else {
           // Revert the UI state if database update fails
           setPaidMap(prev => ({ ...prev, [id]: false }));
           setFinancePlan(prev => {
-          if (!prev) return prev;
-          return {
-            ...prev,
+            if (!prev) return prev;
+            return {
+              ...prev,
               payments: prev.payments.map(payment =>
-              payment.id === id 
-                ? { ...payment, paid: false, paid_at: undefined }
-                : payment
-            )
-          };
-        });
-        toast.error('Failed to mark as paid.');
+                payment.id === id
+                  ? { ...payment, paid: false, paid_at: undefined }
+                  : payment
+              )
+            };
+          });
+          toast.error('Failed to mark as paid.');
         }
       }
     } catch (error) {
@@ -869,7 +869,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
         return {
           ...prev,
           payments: prev.payments.map(payment =>
-            payment.id === id 
+            payment.id === id
               ? { ...payment, paid: false, paid_at: undefined }
               : payment
           )
@@ -1448,12 +1448,12 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
 
           data = regularData;
           error = regularError;
-      }
+        }
 
-      if (error) {
+        if (error) {
           console.error('Error fetching payment plans:', error);
-        return;
-      }
+          return;
+        }
 
         if (data && data.length > 0) {
           let total = 0;
@@ -1727,7 +1727,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
           setFinancePlan(null);
           setPaidMap({});
         }
-    } catch (error) {
+      } catch (error) {
         console.error('Error fetching payment plans:', error);
         setFinancePlan(null);
         setPaidMap({});
@@ -2619,13 +2619,13 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
           .eq('lead_id', legacyId)
           .order('cdate', { ascending: false });
 
-      if (error) {
+        if (error) {
           console.error('Error fetching legacy proformas:', error);
-        return;
-      }
+          return;
+        }
 
         setLegacyProformas(proformaData || []);
-    } catch (error) {
+      } catch (error) {
         console.error('Error fetching legacy proformas:', error);
       }
     }
@@ -2851,7 +2851,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
     setIsSavingPaymentRow(true);
     try {
       const currentUserName = await getCurrentUserName();
-      
+
       // Check if this is a legacy payment
       const isLegacyPayment = editPaymentData.isLegacy;
 
@@ -2868,7 +2868,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
       } else {
         // For new payments, fetch from payment_plans table
         const { data: newPayment } = await supabase
-        .from('payment_plans')
+          .from('payment_plans')
           .select('*')
           .eq('id', editPaymentData.id)
           .single();
@@ -3049,11 +3049,11 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
 
         const { error: legacyError } = await supabase
           .from('finances_paymentplanrow')
-        .update({
+          .update({
             due_percent: duePercentValue,
             date: dueDateValue,
             // Removed due_date: dueDateValue - do not update due_date when editing payment plan
-          value: editPaymentData.value,
+            value: editPaymentData.value,
             vat_value: editPaymentData.valueVat,
             order: orderValue,
             notes: editPaymentData.notes,
@@ -3087,15 +3087,15 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
             due_date: editPaymentData.dueDate || null, // Set to null if empty
             value: editPaymentData.value,
             value_vat: vatValue, // Save VAT: 0 if checkbox unchecked, otherwise use value from state
-          client_name: editPaymentData.client,
-          payment_order: editPaymentData.order,
-          notes: editPaymentData.notes,
-        })
-        .eq('id', editPaymentData.id);
+            client_name: editPaymentData.client,
+            payment_order: editPaymentData.order,
+            notes: editPaymentData.notes,
+          })
+          .eq('id', editPaymentData.id);
         error = newError;
       }
       if (error) throw error;
-      
+
       // Insert all changes into payment_plan_changes table (only for new payments)
       // Legacy payments don't use this table since lead_id has NOT NULL constraint
       if (changes.length > 0 && !isLegacyPayment) {
@@ -3132,39 +3132,39 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
     if (!window.confirm('Are you sure you want to delete this payment row?')) return;
     try {
       const currentUserName = await getCurrentUserName();
-      
+
       // Check if this is a legacy payment
       const isLegacyPayment = row.isLegacy;
 
       // Log the deletion in payment_plan_changes table (only for new payments)
       // Legacy payments don't use this table since lead_id has NOT NULL constraint
       if (!isLegacyPayment) {
-      const { error: historyError } = await supabase
-        .from('payment_plan_changes')
-        .insert({
+        const { error: historyError } = await supabase
+          .from('payment_plan_changes')
+          .insert({
             payment_plan_id: null, // Set to null since we're deleting it
             lead_id: client?.id, // Use UUID for new leads
-          field_name: 'payment_deleted',
-          old_value: JSON.stringify({
-            id: row.id,
-            due_percent: row.duePercent,
-            due_date: row.dueDate,
-            value: row.value,
-            value_vat: row.valueVat,
+            field_name: 'payment_deleted',
+            old_value: JSON.stringify({
+              id: row.id,
+              due_percent: row.duePercent,
+              due_date: row.dueDate,
+              value: row.value,
+              value_vat: row.valueVat,
               client_name: row.client,
-            payment_order: row.order,
+              payment_order: row.order,
               notes: row.notes,
               isLegacy: isLegacyPayment
-          }),
-          new_value: '',
-          changed_by: currentUserName,
-          changed_at: new Date().toISOString()
-        });
-      
-      if (historyError) {
-        console.error('Error logging deletion:', historyError);
-        toast.error('Failed to log deletion history.');
-        return;
+            }),
+            new_value: '',
+            changed_by: currentUserName,
+            changed_at: new Date().toISOString()
+          });
+
+        if (historyError) {
+          console.error('Error logging deletion:', historyError);
+          toast.error('Failed to log deletion history.');
+          return;
         }
       } else {
         // Legacy payment deletion - skipping change logging
@@ -3182,13 +3182,13 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
       } else {
         // For new payments, use soft delete by setting cancel_date
         const { error: newError } = await supabase
-        .from('payment_plans')
+          .from('payment_plans')
           .update({ cancel_date: new Date().toISOString().split('T')[0] })
-        .eq('id', row.id);
+          .eq('id', row.id);
         error = newError;
       }
       if (error) throw error;
-      
+
       toast.success('Payment row deleted!');
       await refreshPaymentPlans();
     } catch (error) {
@@ -3410,7 +3410,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
             .single();
           if (!error && userData?.full_name) {
             createdBy = userData.full_name;
-    } else {
+          } else {
             createdBy = user.email;
           }
         }
@@ -3596,7 +3596,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
     setIsSavingPaymentRow(true);
     try {
       const currentUserName = await getCurrentUserName();
-      
+
       // Check if this is a legacy lead
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
 
@@ -3640,8 +3640,8 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
         // Get client_id for the contact (from context, as dropdown is removed)
         const contactForPayment = newPaymentData.client || addingPaymentContact || client?.name || '';
         const clientIdForContact = getClientIdForContact(contactForPayment);
-      
-      const paymentData = {
+
+        const paymentData = {
           id: paymentId,
           cdate: new Date().toISOString().split('T')[0], // Current date
           udate: new Date().toISOString().split('T')[0], // Current date
@@ -3695,21 +3695,21 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
           payment_order: dataToSave.paymentOrder || 'One-time Payment',
           notes: dataToSave.notes || '',
           currency: dataToSave.currency || '₪',
-        created_by: currentUserName,
-      };
+          created_by: currentUserName,
+        };
 
         // Add client_id if available (int8 column for contact_id)
         // This ensures payments are correctly associated with the specific contact for this lead
         if (clientIdForContact !== null) {
           paymentData.client_id = clientIdForContact;
         }
-      
-      const { data, error } = await supabase
-        .from('payment_plans')
-        .insert(paymentData)
-        .select();
 
-      if (error) throw error;
+        const { data, error } = await supabase
+          .from('payment_plans')
+          .insert(paymentData)
+          .select();
+
+        if (error) throw error;
       }
 
       // Payment created successfully
@@ -4036,7 +4036,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
 
         // Insert the payment plans first
         const { data: insertedPayments, error: paymentInsertError } = await supabase
-        .from('payment_plans')
+          .from('payment_plans')
           .insert(payments)
           .select('id');
 
@@ -4226,7 +4226,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
   };
 
   if (isLoadingFinancePlan) {
-  return (
+    return (
       <div className="flex flex-col items-center justify-center h-64 text-center">
         <span className="loading loading-spinner loading-lg text-primary"></span>
         <div className="text-lg font-medium text-gray-600 mt-4">Loading finance plan...</div>
@@ -4260,18 +4260,18 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
             <div className="fixed inset-0 bg-black/30" onClick={handleCloseStagesDrawer} />
             {/* Drawer */}
             <div className="ml-auto w-full max-w-4xl h-full bg-white shadow-2xl p-0 flex flex-col animate-slideInRight z-[110] overflow-hidden">
-      {/* Header */}
+              {/* Header */}
               <div className="bg-gradient-to-r from-purple-700 to-blue-600 text-white p-6 border-b border-purple-200">
                 <div className="flex items-center justify-between">
-        <div>
+                  <div>
                     <h2 className="text-2xl font-bold mb-1">Finance Plan Stages</h2>
                     <p className="text-purple-100">Client: {client?.name}</p>
                   </div>
                   <button className="btn btn-ghost btn-lg text-white hover:bg-white/20" onClick={handleCloseStagesDrawer}>
                     <XMarkIcon className="w-6 h-6" />
                   </button>
-        </div>
-      </div>
+                </div>
+              </div>
 
               {/* Main Content */}
               <div className="flex-1 p-6 overflow-y-auto">
@@ -4294,7 +4294,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                           onChange={(e) => setAutoPlanData(prev => ({ ...prev, totalAmount: e.target.value }))}
                           placeholder="Enter total amount"
                         />
-        </div>
+                      </div>
                       <div className="form-control">
                         <label className="label">
                           <span className="label-text font-medium">Currency</span>
@@ -4876,8 +4876,8 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                   <div>
                     <h3 className="text-xl font-bold text-gray-900">Payments Plan</h3>
                     <p className="text-gray-500 text-sm">Payment schedule and financial overview</p>
+                  </div>
                 </div>
-              </div>
                 <div className="flex items-center gap-4">
                   {/* Total Amount Display */}
                   <div className="text-right">
@@ -4986,7 +4986,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                   const dueDatePaymentId = dueDatePayment ? dueDatePayment.id : sortedContactPayments[0]?.id;
                   return (
                     <div key={contactName} className="mb-8">
-                    {/* Contact Header */}
+                      {/* Contact Header */}
                       <div className="mb-4">
                         <div className="mb-2 flex justify-end">
                           <button
@@ -5027,44 +5027,44 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                         )}
                         <div
                           className="flex items-center gap-3 bg-white rounded-lg p-4 border border-purple-200 cursor-pointer hover:from-purple-100 hover:to-blue-100 transition-all duration-200"
-                      onClick={() => setCollapsedContacts(prev => ({ ...prev, [contactName]: !prev[contactName] }))}
+                          onClick={() => setCollapsedContacts(prev => ({ ...prev, [contactName]: !prev[contactName] }))}
                           title={collapsedContacts[contactName] ? "Expand payments" : "Collapse payments"}
                         >
                           <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-blue-600 rounded-full flex items-center justify-center">
                             <UserIcon className="w-5 h-5 text-white" />
-                      </div>
-                      <div className="flex-1">
+                          </div>
+                          <div className="flex-1">
                             <h3 className="text-lg font-bold text-gray-900">{contactName}</h3>
                             <p className="text-sm text-gray-600">Finance Plan</p>
-                      </div>
+                          </div>
                           <div className="text-right mr-4">
                             <div className="text-lg font-bold text-gray-900">
                               {/* Use the currency of the first payment for this contact */}
                               {getCurrencySymbol(payments[0]?.currency)}{payments.reduce((sum, p) => sum + p.value + p.valueVat, 0).toLocaleString()}
-                        </div>
-                        <div className="text-xs text-gray-500">Total for {contactName}</div>
-                      </div>
+                            </div>
+                            <div className="text-xs text-gray-500">Total for {contactName}</div>
+                          </div>
                           {/* Collapse/Expand Arrow */}
                           <div className="flex items-center justify-center w-8 h-8">
-                        {collapsedContacts[contactName] ? (
+                            {collapsedContacts[contactName] ? (
                               <svg className="w-5 h-5 text-purple-600 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                          </svg>
-                        ) : (
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                              </svg>
+                            ) : (
                               <svg className="w-5 h-5 text-purple-600 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-                          </svg>
-                        )}
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                              </svg>
+                            )}
                           </div>
+                        </div>
                       </div>
-                    </div>
 
-                    {/* Table or Box view for this contact */}
-                    {!collapsedContacts[contactName] && (
+                      {/* Table or Box view for this contact */}
+                      {!collapsedContacts[contactName] && (
                         <>
-                        {viewMode === 'table' ? (
+                          {viewMode === 'table' ? (
                             <div className="bg-white rounded-xl p-4 border border-gray-200 overflow-x-auto">
-                            <table className="min-w-full rounded-xl overflow-hidden">
+                              <table className="min-w-full rounded-xl overflow-hidden">
                                 <thead className="sticky top-0 z-10">
                                   <tr>
                                     <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due %</th>
@@ -5076,9 +5076,9 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                     <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Proforma</th>
                                     <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Notes</th>
                                     <th className="px-4 py-3 text-center"></th>
-                                </tr>
-                              </thead>
-                              <tbody>
+                                  </tr>
+                                </thead>
+                                <tbody>
                                   {sortedContactPayments.map((p: PaymentPlan, idx: number) => {
                                     const isPaid = p.paid;
                                     return (
@@ -5104,17 +5104,17 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                         {/* Each column in correct order: */}
                                         <td className="font-bold text-lg align-middle text-center px-4 py-3 whitespace-nowrap">
                                           {p.duePercent}
-                                      </td>
-                                      <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                        </td>
+                                        <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
                                           <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
-                                      </td>
-                                      <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
+                                        </td>
+                                        <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
                                           <span className="text-sm font-bold text-gray-900">
                                             {getCurrencySymbol(p.currency)}
                                             {p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                             + {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                           </span>
-                                      </td>
+                                        </td>
                                         <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
                                           <span className="text-sm font-bold text-gray-900">{getCurrencySymbol(p.currency)}{(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                                         </td>
@@ -5187,7 +5187,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                               <PlusIcon className="w-5 h-5" />
                                             </button>
                                           )}
-                                      </td>
+                                        </td>
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
                                           <button
                                             onClick={() => handleOpenNotesModal(p)}
@@ -5200,31 +5200,31 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                               ? `${p.notes.substring(0, 20)}...`
                                               : p.notes || '---'}
                                           </button>
-                                      </td>
+                                        </td>
                                         <td className="flex gap-2 justify-end align-middle min-w-[80px] px-4 py-3" style={{ overflow: 'visible', position: 'relative' }}>
                                           {p.id ? (
                                             <>
                                               {/* Payment Link icon - disabled for legacy */}
                                               {p.proforma && !isPaid && !p.isLegacy && (
-                                        <button
+                                                <button
                                                   className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
                                                   title="Generate Payment Link"
                                                   onClick={() => handleGeneratePaymentLink(p)}
                                                   style={{ padding: 0 }}
                                                 >
                                                   <LinkIcon className="w-5 h-5" />
-                                        </button>
+                                                </button>
                                               )}
                                               {/* Ready to Pay button - available for all */}
                                               {!isPaid && !p.ready_to_pay && (
-                                        <button
+                                                <button
                                                   className="btn btn-sm btn-circle bg-yellow-100 hover:bg-yellow-200 text-yellow-700 border-yellow-300 border-2 shadow-sm flex items-center justify-center"
                                                   title="Mark as Ready to Pay"
                                                   onClick={() => handleMarkAsReadyToPay(p)}
                                                   style={{ padding: 0 }}
                                                 >
                                                   <PaperAirplaneIcon className="w-5 h-5" />
-                                        </button>
+                                                </button>
                                               )}
                                               {/* Sent to Finances indicator with revert button */}
                                               {!isPaid && p.ready_to_pay && (
@@ -5334,8 +5334,8 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                             </>
                                           ) : (
                                             <span className="text-gray-400">—</span>
-                                      )}
-                                    </td>
+                                          )}
+                                        </td>
                                       </tr>
                                     );
                                   })}
@@ -5343,7 +5343,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                     viewMode === 'table' ? (
                                       <tr key={`new-payment-${contactName}`}>
                                         <td className="font-bold text-lg align-middle text-center px-4 py-3 whitespace-nowrap">
-                                        <input
+                                          <input
                                             type="number"
                                             className="input input-bordered w-20 text-center"
                                             value={newPaymentData.duePercent}
@@ -5353,8 +5353,8 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                         </td>
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
                                           <input type="date" className="input input-bordered w-48 text-right" value={newPaymentData.dueDate} onChange={e => setNewPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))} />
-                                    </td>
-                                    <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
+                                        </td>
+                                        <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
                                           <div className="flex items-center gap-2 justify-center">
                                             <input type="number" className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows" value={newPaymentData.value} onChange={e => {
                                               const value = e.target.value;
@@ -5403,7 +5403,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                               <select
                                                 className="select select-bordered select-xs w-24"
                                                 value={newPaymentData.currency || '₪'}
-                                            onChange={e => {
+                                                onChange={e => {
                                                   const selectedCurrency = e.target.value;
                                                   const selectedCurrencyData = availableCurrencies.find(c => c.name === selectedCurrency);
                                                   let vat = 0;
@@ -5422,19 +5422,19 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                               >
                                                 {availableCurrencies.length === 0 ? (
                                                   <>
-                                            <option value="₪">₪</option>
-                                            <option value="€">€</option>
-                                            <option value="$">$</option>
-                                            <option value="£">£</option>
+                                                    <option value="₪">₪</option>
+                                                    <option value="€">€</option>
+                                                    <option value="$">$</option>
+                                                    <option value="£">£</option>
                                                   </>
                                                 ) : (
                                                   availableCurrencies.map((curr) => (
                                                     <option key={curr.id} value={curr.name}>{curr.name}</option>
                                                   ))
                                                 )}
-                                          </select>
+                                              </select>
                                               <label className="label cursor-pointer gap-1">
-                                          <input
+                                                <input
                                                   type="checkbox"
                                                   className="checkbox checkbox-xs"
                                                   checked={newPaymentData.includeVat !== false && (newPaymentData.currency || '₪') === '₪'}
@@ -5488,8 +5488,8 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                                 value={''}
                                                 disabled
                                               />
-                                          )}
-                                        </div>
+                                            )}
+                                          </div>
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Value</span>
                                             <input type="number" className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows" value={newPaymentData.value} onChange={e => {
@@ -5571,7 +5571,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                           </div>
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Order</span>
-                                          <select
+                                            <select
                                               className="select select-bordered w-full"
                                               value={newPaymentData.paymentOrder}
                                               onChange={e => setNewPaymentData((d: any) => ({ ...d, paymentOrder: e.target.value }))}
@@ -5581,7 +5581,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                               <option value="Final Payment">Final Payment</option>
                                               <option value="Single Payment">Single Payment</option>
                                               <option value="Expense (no VAT)">Expense (no VAT)</option>
-                                          </select>
+                                            </select>
                                           </div>
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Notes</span>
@@ -5634,7 +5634,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                         <span className="text-base font-medium text-gray-600">Total Amount</span>
                                         <span className="text-2xl font-bold text-purple-600">
                                           {getCurrencySymbol(financePlan?.payments[0]?.currency || '₪')}{getTotalAmount().toLocaleString()}
-                                          </span>
+                                        </span>
                                       </div>
                                       <button
                                         className="btn btn-md bg-purple-600 text-white border-purple-600 hover:bg-purple-700 hover:border-purple-700 rounded-full px-4"
@@ -5658,7 +5658,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                         <span className="text-base font-medium text-gray-600">Left to Plan</span>
                                         <span className="text-2xl font-bold text-green-600">
                                           {getCurrencySymbol(financePlan?.payments[0]?.currency || '₪')}{getLeftToPlanAmount(newPaymentData.client || addingPaymentContact || undefined).toLocaleString()}
-                                          </span>
+                                        </span>
                                       </div>
                                       <button
                                         className="btn btn-md btn-success rounded-full px-4"
@@ -5672,9 +5672,9 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                       </button>
                                     </div>
                                   </div>
-                                          </div>
-                                        )}
-                                      </div>
+                                </div>
+                              )}
+                            </div>
                           ) : (
                             <>
                               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 gap-y-8">
@@ -5719,30 +5719,30 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                           </span>
                                           {/* Actions (right) */}
                                           <div className="flex gap-2 items-center ml-4">
-                                      {p.id ? (
-                                          <>
+                                            {p.id ? (
+                                              <>
                                                 {!p.isLegacy && isSuperuser && (
-                                            <button
+                                                  <button
                                                     className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
                                                     title="Delete"
                                                     onClick={() => handleDeletePayment(p)}
                                                     style={{ padding: 0 }}
                                                   >
                                                     <TrashIcon className="w-5 h-5" />
-                                            </button>
+                                                  </button>
                                                 )}
                                                 {!p.isLegacy && (!isPaid || isSuperuser || isCollection) && (
-                                            <button
+                                                  <button
                                                     className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
                                                     title="Edit"
                                                     onClick={() => handleEditPayment(p)}
                                                     style={{ padding: 0 }}
                                                   >
                                                     <PencilIcon className="w-5 h-5" />
-                                            </button>
+                                                  </button>
                                                 )}
-                                          </>
-                                        ) : (
+                                              </>
+                                            ) : (
                                               <span className="text-gray-400">—</span>
                                             )}
                                           </div>
@@ -5797,7 +5797,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                                     return (
                                                       <div className="flex flex-col gap-1">
                                                         {paymentProformas.slice(0, 1).map((proforma, idx) => (
-                                              <button
+                                                          <button
                                                             key={proforma.id}
                                                             className="btn btn-sm btn-outline btn-success border-success/40 text-xs font-medium"
                                                             title={`View Proforma ${proforma.id}`}
@@ -5817,8 +5817,8 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                                         className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
                                                         title="Create Proforma"
                                                         onClick={e => { e.preventDefault(); navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}`); }}
-                                                style={{ padding: 0 }}
-                                              >
+                                                        style={{ padding: 0 }}
+                                                      >
                                                         <PlusIcon className="w-5 h-5" />
                                                       </button>
                                                     );
@@ -5840,13 +5840,13 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                                   style={{ padding: 0 }}
                                                 >
                                                   <PlusIcon className="w-5 h-5" />
-                                              </button>
-                                            )}
+                                                </button>
+                                              )}
                                             </div>
                                           </div>
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">NOTES</span>
-                                              <button
+                                            <button
                                               onClick={() => handleOpenNotesModal(p)}
                                               className="text-sm font-bold text-gray-900 hover:text-indigo-600 transition-colors cursor-pointer max-w-[200px] truncate"
                                               title={p.notes || 'Click to add notes'}
@@ -5877,34 +5877,34 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                           {!isPaid && !p.ready_to_pay && (
                                             <button
                                               className="btn btn-circle btn-md bg-yellow-100 hover:bg-yellow-200 text-yellow-700 border-yellow-300 border-2 shadow-sm flex items-center justify-center"
-                                                title="Mark as Ready to Pay"
-                                                onClick={() => handleMarkAsReadyToPay(p)}
-                                                style={{ padding: 0 }}
-                                              >
+                                              title="Mark as Ready to Pay"
+                                              onClick={() => handleMarkAsReadyToPay(p)}
+                                              style={{ padding: 0 }}
+                                            >
                                               <PaperAirplaneIcon className="w-5 h-5" />
-                                              </button>
-                                            )}
+                                            </button>
+                                          )}
                                           {/* Sent to Finances indicator with revert button */}
                                           {!isPaid && p.ready_to_pay && (
                                             <div className="tooltip tooltip-top z-[9999]" data-tip={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Ready to pay - Click to revert'}>
-                                                <button
+                                              <button
                                                 className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-700 border-red-300 border-2 shadow-sm flex items-center justify-center"
                                                 title={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Revert Ready to Pay'}
-                                                  onClick={() => handleRevertReadyToPay(p)}
-                                                  style={{ padding: 0 }}
-                                                >
+                                                onClick={() => handleRevertReadyToPay(p)}
+                                                style={{ padding: 0 }}
+                                              >
                                                 <XMarkIcon className="w-5 h-5" />
-                                                </button>
-                                              </div>
-                                            )}
+                                              </button>
+                                            </div>
+                                          )}
                                           {/* Dollar icon (small) - only for superusers or collection users */}
                                           {!isPaid && (isSuperuser || isCollection) && (
-                                              <button
+                                            <button
                                               className="btn btn-circle btn-md bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
                                               title={p.isLegacy ? "Mark Legacy Payment as Paid" : "Mark as Paid"}
                                               onClick={() => handleOpenPaidDateModal(p.id)}
-                                                style={{ padding: 0 }}
-                                              >
+                                              style={{ padding: 0 }}
+                                            >
                                               <CurrencyDollarIcon className="w-5 h-5" />
                                             </button>
                                           )}
@@ -5981,14 +5981,14 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                             </button>
                                           )}
                                           {/* Delete icon (small) - available for all users */}
-                                            <button
+                                          <button
                                             className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
-                                              title="Delete"
-                                              onClick={() => handleDeletePayment(p)}
-                                              style={{ padding: 0 }}
-                                            >
+                                            title="Delete"
+                                            onClick={() => handleDeletePayment(p)}
+                                            style={{ padding: 0 }}
+                                          >
                                             <TrashIcon className="w-5 h-5" />
-                                            </button>
+                                          </button>
                                         </div>
                                       </div>
                                     </div>
@@ -6027,14 +6027,16 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
 
               {/* Buttons for creating payment plans */}
               <div className="mt-10 flex justify-start gap-4">
-                                        <button
+                <button
                   type="button"
-                  className="btn btn-outline btn-primary text-xs font-medium flex items-center gap-2"
-                  onClick={handleOpenStagesDrawer}
+                  className="btn btn-md bg-black text-white border-none gap-3 shadow-sm text-lg font-bold py-3 px-6"
+                  onClick={() => {
+                    handleOpenStagesDrawer();
+                  }}
                 >
-                  <ChartPieIcon className="w-4 h-4" />
-                  Create New Payment Plan
-                                        </button>
+                  <BanknotesIcon className="w-5 h-5 text-white" />
+                  Create Finance Plan
+                </button>
               </div>
 
               {/* Deleted Payments Section */}
@@ -6171,8 +6173,8 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                     </span>
                                   ) : (
                                     <span className="text-sm text-gray-400">---</span>
-                                      )}
-                                    </td>
+                                  )}
+                                </td>
 
                                 {/* Notes */}
                                 <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
@@ -6207,25 +6209,25 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                                     Restore
                                   </button>
                                 </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        ) : (
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
                       <div className="text-center py-8 text-gray-500">
                         <TrashIcon className="w-12 h-12 mx-auto mb-4 text-gray-300" />
                         <p>No deleted payments found</p>
                       </div>
-                                    )}
-                                  </div>
+                    )}
+                  </div>
                 )}
-                                    </div>
-                                    </div>
-                                    </div>
-                                    </div>
-                                  </div>
-                                  
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Proforma Drawer */}
       {showProformaDrawer && proformaData && ReactDOM.createPortal(
         <div className="fixed inset-0 z-[100] flex">
@@ -6302,12 +6304,12 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                             </td>
                             {!proformaData?.isViewMode && (
                               <td>
-                                      <button
+                                <button
                                   className="btn btn-ghost btn-xs text-red-500 hover:bg-red-50"
                                   onClick={() => handleDeleteProformaRow(idx)}
-                                      >
+                                >
                                   <TrashIcon className="w-4 h-4" />
-                                      </button>
+                                </button>
                               </td>
                             )}
                           </tr>
@@ -6316,14 +6318,14 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                     </table>
                   </div>
                   {!proformaData?.isViewMode && (
-                                      <button
+                    <button
                       className="btn btn-outline btn-sm mt-4 text-blue-600 border-blue-300 hover:bg-blue-50"
                       onClick={handleAddProformaRow}
-                                      >
+                    >
                       <PlusIcon className="w-4 h-4 mr-1" />
                       Add Row
-                                      </button>
-                                    )}
+                    </button>
+                  )}
                 </div>
 
                 {/* Settings Section */}
@@ -6392,8 +6394,8 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                     </h3>
                     <button className="btn btn-ghost btn-xs" onClick={() => setIsEditingSubtotal(true)} title="Edit total amount">
                       <PencilLine className="w-4 h-4 text-gray-500" />
-                                        </button>
-                                      </div>
+                    </button>
+                  </div>
                   <div className="space-y-3">
                     {/* In the subtotal row, remove the edit button and just show the value or input: */}
                     <div className="flex justify-between items-center">
@@ -6463,9 +6465,9 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                       }}>
                         Edit Proforma
                       </button>
-                                          </>
-                                        ) : (
-                                          <>
+                    </>
+                  ) : (
+                    <>
                       <button className="btn btn-primary w-full shadow-lg hover:shadow-xl transition-shadow" onClick={handleCreateProforma}>
                         <DocumentCheckIcon className="w-5 h-5 mr-2" />
                         Create Proforma
@@ -6473,8 +6475,8 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                       <div className="text-xs text-gray-500 text-center bg-yellow-50 p-3 rounded-lg border border-yellow-200">
                         ⚠️ Once created, changes cannot be made!
                       </div>
-                                          </>
-                                        )}
+                    </>
+                  )}
                 </div>
                 {proformaData?.createdBy && (
                   <div className="absolute bottom-4 left-6 text-xs text-gray-400">
@@ -6505,7 +6507,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                 </div>
                 <button className="btn btn-ghost btn-lg text-white hover:bg-white/20" onClick={handleCloseStagesDrawer}>
                   <XMarkIcon className="w-6 h-6" />
-                                      </button>
+                </button>
               </div>
             </div>
 
@@ -6787,7 +6789,7 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                       <span className="label-text font-medium">Include VAT (18%)</span>
                     </label>
                   </div>
-                                    <button
+                  <button
                     className="btn btn-primary w-full"
                     onClick={handleCreateAutoPlan}
                     disabled={isSavingPaymentRow || !autoPlanData.totalAmount || !autoPlanData.contact}
@@ -6798,10 +6800,10 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                       <PlusIcon className="w-4 h-4 mr-2" />
                     )}
                     Create Auto Finance Plan
-                                    </button>
-                                  </div>
-                                </div>
-                              </div>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>, document.body)
       }
@@ -6833,9 +6835,9 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                     >
                       {percentage}%
                     </button>
-                            ))}
-                          </div>
-                      </div>
+                  ))}
+                </div>
+              </div>
 
               {/* Custom Input */}
               <div className="border-t pt-4">
@@ -6858,23 +6860,23 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                   >
                     Apply
                   </button>
-                  </div>
-            </div>
+                </div>
+              </div>
 
               {/* Base Amount Info */}
               <div className="bg-blue-50 rounded-lg p-3">
                 <div className="text-sm text-gray-600">
                   <span className="font-medium">Base amount:</span> {getCurrencySymbol(financePlan?.payments[0]?.currency || '₪')}
                   <span className="font-bold text-lg">{(percentageType === 'total' ? getTotalAmount() : getLeftToPlanAmount(newPaymentData.client || addingPaymentContact || undefined)).toLocaleString()}</span>
-            </div>
+                </div>
                 {percentageValue > 0 && (
                   <div className="text-sm text-gray-600 mt-1">
                     <span className="font-medium">Calculated amount:</span> {getCurrencySymbol(financePlan?.payments[0]?.currency || '₪')}
                     <span className="font-bold text-lg text-green-600">
                       {Math.round(((percentageType === 'total' ? getTotalAmount() : getLeftToPlanAmount(newPaymentData.client || addingPaymentContact || undefined)) * percentageValue) / 100).toLocaleString()}
                     </span>
-        </div>
-      )}
+                  </div>
+                )}
               </div>
             </div>
 

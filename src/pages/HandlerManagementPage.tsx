@@ -1137,6 +1137,56 @@ const HandlerManagementPage: React.FC = () => {
     }
   };
 
+  // Helper function to build client route (similar to CalendarPage.tsx)
+  const buildClientRoute = (lead: UnassignedLead): string => {
+    if (!lead) return '/clients';
+
+    // For legacy leads
+    if (lead.isLegacy) {
+      const legacyId = typeof lead.id === 'string' && lead.id.startsWith('legacy_')
+        ? lead.id.replace('legacy_', '')
+        : lead.id;
+      const isSubLead = lead.lead_number && lead.lead_number.includes('/');
+
+      if (isSubLead) {
+        // Legacy sublead: use numeric ID in path, formatted lead_number in query
+        return `/clients/${encodeURIComponent(legacyId)}?lead=${encodeURIComponent(lead.lead_number || '')}`;
+      } else {
+        // Legacy master lead: use numeric ID
+        return `/clients/${encodeURIComponent(legacyId)}`;
+      }
+    }
+    // For new leads
+    else if (lead.lead_number) {
+      const isSubLead = lead.lead_number.includes('/');
+      if (isSubLead) {
+        // Sublead: extract base from lead_number
+        const baseLeadNumber = lead.lead_number.split('/')[0];
+        return `/clients/${encodeURIComponent(baseLeadNumber)}?lead=${encodeURIComponent(lead.lead_number)}`;
+      } else {
+        // Regular new lead: use lead_number
+        return `/clients/${encodeURIComponent(lead.lead_number)}`;
+      }
+    }
+
+    // Fallback: use id if lead_number is not available
+    return `/clients/${encodeURIComponent(lead.id)}`;
+  };
+
+  const handleViewClient = (lead: UnassignedLead, event?: React.MouseEvent) => {
+    const isNewTab = event?.metaKey || event?.ctrlKey;
+    const navigationUrl = buildClientRoute(lead);
+
+    if (isNewTab) {
+      // Open in new tab
+      window.open(navigationUrl, '_blank');
+      return;
+    }
+
+    // Normal navigation in same tab
+    navigate(navigationUrl);
+  };
+
   const formatCurrency = (value: number, currency: string = 'NIS') => {
     // Normalize currency code - handle shekel symbol and various formats
     let normalizedCurrency = currency || 'NIS';
@@ -2000,8 +2050,7 @@ const HandlerManagementPage: React.FC = () => {
                         className="text-blue-600 hover:underline"
                         onClick={(e) => {
                           e.stopPropagation();
-                          const caseId = lead.isLegacy ? lead.id : lead.id;
-                          navigate(`/case-manager/${caseId}`);
+                          handleViewClient(lead, e);
                         }}
                       >
                         {lead.name}
@@ -2061,7 +2110,20 @@ const HandlerManagementPage: React.FC = () => {
                       <td>
                         <button
                           className="text-blue-600 hover:underline"
-                          onClick={() => navigate(`/case-manager/${payment.lead_id}`)}
+                          onClick={(e) => {
+                            // Try to find the lead in unassignedLeads to get lead_number
+                            const matchingLead = unassignedLeads.find(lead => lead.id === payment.lead_id);
+
+                            // Convert payment to UnassignedLead-like object for buildClientRoute
+                            const leadForRoute: UnassignedLead = {
+                              id: payment.lead_id,
+                              name: payment.contact_name,
+                              lead_number: matchingLead?.lead_number || (payment.isLegacy ? payment.lead_id.toString().replace('legacy_', '') : payment.lead_id.toString()),
+                              stage: 0,
+                              isLegacy: payment.isLegacy
+                            };
+                            handleViewClient(leadForRoute, e);
+                          }}
                         >
                           {payment.contact_name}
                         </button>
@@ -2281,6 +2343,12 @@ const HandlerManagementPage: React.FC = () => {
                         )}
                       </div>
                       <div className="flex-shrink-0 flex items-center gap-3">
+                        <div className="text-right">
+                          <p className="text-xs text-gray-500">Due</p>
+                          <p className="text-sm font-semibold text-gray-900">
+                            {formatCurrency(handler.dueAmount || 0, 'NIS')}
+                          </p>
+                        </div>
                         <div className="text-right">
                           <p className="text-xs text-gray-500">New Cases</p>
                           <p className="text-sm font-semibold text-gray-900">{handler.newCasesCount ?? 0}</p>

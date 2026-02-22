@@ -13,7 +13,7 @@ import { createPaymentLink } from '../lib/supabase';
 // And run: npm install html2pdf.js
 
 // MinimalInvoice: style-isolated, hex/rgb only, no class names
-const MinimalInvoice = React.forwardRef(({ proforma }: { proforma: any }, ref: React.Ref<HTMLDivElement>) => (
+const MinimalInvoice = React.forwardRef(({ proforma, formatLeadNumber }: { proforma: any, formatLeadNumber?: () => string }, ref: React.Ref<HTMLDivElement>) => (
   <div ref={ref} style={{ background: '#fff', color: '#18181b', maxWidth: 800, width: '100%', margin: '0 auto', padding: 32, borderRadius: 24, boxShadow: '0 2px 8px #e5e7eb', border: '1px solid #e5e7eb', overflow: 'hidden', fontFamily: 'Inter, Arial, sans-serif' }}>
     {/* Google Fonts link for Inter */}
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
@@ -43,7 +43,7 @@ const MinimalInvoice = React.forwardRef(({ proforma }: { proforma: any }, ref: R
         <div style={{ color: '#404040', fontWeight: 600, marginBottom: 4, fontFamily: 'Inter, Arial, sans-serif' }}>Bill To:</div>
         <div style={{ color: '#18181b', fontWeight: 700, fontSize: 18, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.client}</div>
         {proforma.lead_number && (
-          <div style={{ color: '#4b5563', fontSize: 14, fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Lead #: {proforma.lead_number}</div>
+          <div style={{ color: '#4b5563', fontSize: 14, fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Lead #: {formatLeadNumber ? formatLeadNumber() : proforma.lead_number}</div>
         )}
         {proforma.phone && (
           <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.phone}</div>
@@ -125,14 +125,18 @@ const ProformaViewPage: React.FC = () => {
   const { instance, accounts } = useMsal();
   const [sendingEmail, setSendingEmail] = useState(false);
   const minimalInvoiceRef = useRef<HTMLDivElement>(null);
+  const [leadData, setLeadData] = useState<any>(null);
+  const [subLeadsCount, setSubLeadsCount] = useState<number>(0);
+  const [isMasterLead, setIsMasterLead] = useState<boolean>(false);
 
   useEffect(() => {
     const fetchProforma = async () => {
       setLoading(true);
       setError(null);
+      // Fetch both proforma and client_id from payment plan
       const { data, error } = await supabase
         .from('payment_plans')
-        .select('proforma')
+        .select('proforma, client_id')
         .eq('id', id)
         .single();
       if (error || !data || !data.proforma) {
@@ -142,9 +146,43 @@ const ProformaViewPage: React.FC = () => {
       }
       try {
         let parsed = JSON.parse(data.proforma);
-        // Patch: If email/phone/name missing, fetch from contact (not lead)
-        if ((!parsed.email || !parsed.phone || !parsed.client) && parsed.clientId) {
-          // Try to get contact info from contacts table via lead_leadcontact
+        // Patch: If email/phone/name missing, fetch from the specific contact (client_id or contactId) that the payment plan is based on
+        // Prefer contactId from parsed proforma data, then fallback to client_id from payment plan
+        const contactIdToUse = parsed.contactId || data.client_id;
+        if ((!parsed.email || !parsed.phone || !parsed.client) && contactIdToUse) {
+          try {
+            // Use contactId (from proforma data) or client_id (from payment plan) to get the correct contact
+            // First try new contacts table
+            const { data: newContactData } = await supabase
+              .from('contacts')
+              .select('name, email, phone')
+              .eq('id', contactIdToUse)
+              .single();
+
+            if (newContactData) {
+              if (!parsed.client) parsed.client = newContactData.name || '';
+              if (!parsed.email) parsed.email = newContactData.email || '';
+              if (!parsed.phone) parsed.phone = newContactData.phone || '';
+            } else {
+              // If not found in new contacts, try legacy leads_contact table
+              const { data: legacyContactData } = await supabase
+                .from('leads_contact')
+                .select('name, email, phone')
+                .eq('id', contactIdToUse)
+                .single();
+
+              if (legacyContactData) {
+                if (!parsed.client) parsed.client = legacyContactData.name || '';
+                if (!parsed.email) parsed.email = legacyContactData.email || '';
+                if (!parsed.phone) parsed.phone = legacyContactData.phone || '';
+              }
+            }
+          } catch (contactError) {
+            console.error('Error fetching contact data:', contactError);
+            // Error handling - contact data will remain null
+          }
+        } else if ((!parsed.email || !parsed.phone || !parsed.client) && parsed.clientId) {
+          // Fallback: if no client_id, try to get main contact from lead (old behavior)
           try {
             // First, try to get the main contact
             const { data: leadContacts, error: leadContactsError } = await supabase
@@ -156,7 +194,7 @@ const ProformaViewPage: React.FC = () => {
               .eq('newlead_id', parsed.clientId)
               .eq('main', 'true')
               .limit(1);
-            
+
             let contactId = null;
             if (!leadContactsError && leadContacts && leadContacts.length > 0) {
               contactId = leadContacts[0].contact_id;
@@ -167,19 +205,19 @@ const ProformaViewPage: React.FC = () => {
                 .select('contact_id')
                 .eq('newlead_id', parsed.clientId)
                 .limit(1);
-              
+
               if (allContacts && allContacts.length > 0) {
                 contactId = allContacts[0].contact_id;
               }
             }
-            
+
             if (contactId) {
               const { data: contactData } = await supabase
                 .from('contacts')
                 .select('name, email, phone')
                 .eq('id', contactId)
                 .single();
-              
+
               if (contactData) {
                 if (!parsed.client) parsed.client = contactData.name || '';
                 if (!parsed.email) parsed.email = contactData.email || '';
@@ -189,17 +227,42 @@ const ProformaViewPage: React.FC = () => {
           } catch (contactError) {
             // Error handling - contact data will remain null
           }
-          
-          // Still fetch lead_number from leads table if missing
-          if (!parsed.lead_number) {
-            const { data: leadData } = await supabase
+        }
+
+        // Fetch lead data for lead number formatting (including master_id, stage, subleads)
+        if (parsed.clientId) {
+          try {
+            const { data: leadInfo } = await supabase
               .from('leads')
-              .select('lead_number')
+              .select('lead_number, manual_id, master_id, stage')
               .eq('id', parsed.clientId)
               .single();
-            if (leadData) {
-              parsed.lead_number = leadData.lead_number || '';
+
+            if (leadInfo) {
+              setLeadData(leadInfo);
+
+              // Check if it's a master lead (no master_id)
+              const hasNoMasterId = !leadInfo.master_id || String(leadInfo.master_id).trim() === '';
+
+              if (hasNoMasterId) {
+                // Count subleads
+                const { data: subLeads } = await supabase
+                  .from('leads')
+                  .select('id', { count: 'exact', head: false })
+                  .eq('master_id', parsed.clientId);
+
+                const subLeadsCountValue = subLeads?.length || 0;
+                setSubLeadsCount(subLeadsCountValue);
+                setIsMasterLead(subLeadsCountValue > 0);
+              }
+
+              // Set lead_number if missing
+              if (!parsed.lead_number) {
+                parsed.lead_number = leadInfo.lead_number || '';
+              }
             }
+          } catch (error) {
+            console.error('Error fetching lead data:', error);
           }
         }
         // Patch: If addVat true, currency is NIS/ILS/₪, and vat is 0, recalc vat
@@ -219,6 +282,34 @@ const ProformaViewPage: React.FC = () => {
     };
     if (id) fetchProforma();
   }, [id]);
+
+  // Format lead number using same logic as ClientHeader
+  const formatLeadNumber = () => {
+    if (!leadData) return proforma?.lead_number || '---';
+    let displayNumber = leadData.lead_number || leadData.manual_id || '---';
+    const displayStr = displayNumber.toString();
+    const hasExistingSuffix = displayStr.includes('/');
+    let baseNumber = hasExistingSuffix ? displayStr.split('/')[0] : displayStr;
+    const existingSuffix = hasExistingSuffix ? displayStr.split('/').slice(1).join('/') : null;
+
+    const isSuccessStage = leadData.stage === '100' || leadData.stage === 100;
+    if (isSuccessStage && baseNumber && !baseNumber.toString().startsWith('C')) {
+      baseNumber = baseNumber.toString().replace(/^L/, 'C');
+    }
+
+    // Add /1 suffix to master leads (frontend only)
+    const hasNoMasterId = !leadData.master_id || String(leadData.master_id).trim() === '';
+    const hasSubLeads = (subLeadsCount || 0) > 0;
+    const isMasterWithSubLeads = hasNoMasterId && (isMasterLead || hasSubLeads);
+
+    // Only add /1 to master leads that actually have subleads
+    if (isMasterWithSubLeads && !hasExistingSuffix) {
+      return `${baseNumber}/1`;
+    } else if (hasExistingSuffix) {
+      return `${baseNumber}/${existingSuffix}`;
+    }
+    return baseNumber;
+  };
 
   const handlePrint = () => {
     window.print();
@@ -459,7 +550,7 @@ const ProformaViewPage: React.FC = () => {
             <div className="font-semibold text-gray-700 mb-1">Bill To:</div>
             <div className="text-lg font-bold text-gray-900">{proforma.client}</div>
             {proforma.lead_number && (
-              <div className="text-sm text-gray-600 font-semibold">Lead #: {proforma.lead_number}</div>
+              <div className="text-sm text-gray-600 font-semibold">Lead #: {formatLeadNumber()}</div>
             )}
             {proforma.phone && (
               <div className="text-sm text-gray-500">{proforma.phone}</div>
@@ -532,7 +623,7 @@ const ProformaViewPage: React.FC = () => {
       </div>
       {/* Hidden minimal invoice for PDF generation */}
       <div style={{ position: 'absolute', left: -9999, top: 0, width: 0, height: 0, overflow: 'hidden' }} aria-hidden="true">
-        {proforma && <MinimalInvoice ref={minimalInvoiceRef} proforma={proforma} />}
+        {proforma && <MinimalInvoice ref={minimalInvoiceRef} proforma={proforma} formatLeadNumber={formatLeadNumber} />}
       </div>
       {/* Created by, visible on screen only, hidden in print */}
       {proforma.createdBy && (

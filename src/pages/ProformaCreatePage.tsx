@@ -13,6 +13,9 @@ const ProformaCreatePage: React.FC = () => {
   const [proformaData, setProformaData] = useState<any>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [userFullName, setUserFullName] = useState<string | null>(null);
+  const [leadData, setLeadData] = useState<any>(null);
+  const [subLeadsCount, setSubLeadsCount] = useState<number>(0);
+  const [isMasterLead, setIsMasterLead] = useState<boolean>(false);
 
   useEffect(() => {
     const fetchPayment = async () => {
@@ -27,35 +30,63 @@ const ProformaCreatePage: React.FC = () => {
         setLoading(false);
         return;
       }
-      // Fetch client info from contact (not lead) - support both new and legacy leads
+      // Fetch client info from the specific contact (client_id) that the payment plan is based on
       let clientName = data.client_name || 'Client';
       let clientEmail = '';
       let clientPhone = '';
-      
-      if (data.lead_id) {
-        // First try new leads - get contact from contacts table via lead_leadcontact
+
+      // Use client_id from payment plan to get the correct contact
+      if (data.client_id) {
+        try {
+          // First try new leads - get contact from contacts table
+          const { data: newContactData } = await supabase
+            .from('contacts')
+            .select('name, email, phone')
+            .eq('id', data.client_id)
+            .single();
+
+          if (newContactData) {
+            clientName = newContactData.name || clientName;
+            clientEmail = newContactData.email || '';
+            clientPhone = newContactData.phone || '';
+          } else {
+            // If not found in new contacts, try legacy leads_contact table
+            const { data: legacyContactData } = await supabase
+              .from('leads_contact')
+              .select('name, email, phone')
+              .eq('id', data.client_id)
+              .single();
+
+            if (legacyContactData) {
+              clientName = legacyContactData.name || clientName;
+              clientEmail = legacyContactData.email || '';
+              clientPhone = legacyContactData.phone || '';
+            }
+          }
+        } catch (contactError) {
+          console.error('Error fetching contact data:', contactError);
+          // Fallback to client_name if contact fetch fails
+        }
+      } else if (data.lead_id) {
+        // Fallback: if no client_id, try to get main contact from lead (old behavior)
         const { data: newLeadData } = await supabase
           .from('leads')
           .select('id')
           .eq('id', data.lead_id)
           .single();
-        
+
         if (newLeadData) {
-          // Try to get contact info from contacts table via lead_leadcontact
           try {
             // Try to get the main contact
-            const { data: leadContacts, error: leadContactsError } = await supabase
+            const { data: leadContacts } = await supabase
               .from('lead_leadcontact')
-              .select(`
-                main,
-                contact_id
-              `)
+              .select('contact_id')
               .eq('newlead_id', data.lead_id)
               .eq('main', 'true')
               .limit(1);
-            
+
             let contactId = null;
-            if (!leadContactsError && leadContacts && leadContacts.length > 0) {
+            if (leadContacts && leadContacts.length > 0) {
               contactId = leadContacts[0].contact_id;
             } else {
               // Fallback: get any contact for this lead
@@ -64,19 +95,19 @@ const ProformaCreatePage: React.FC = () => {
                 .select('contact_id')
                 .eq('newlead_id', data.lead_id)
                 .limit(1);
-              
+
               if (allContacts && allContacts.length > 0) {
                 contactId = allContacts[0].contact_id;
               }
             }
-            
+
             if (contactId) {
               const { data: contactData } = await supabase
                 .from('contacts')
                 .select('name, email, phone')
                 .eq('id', contactId)
                 .single();
-              
+
               if (contactData) {
                 clientName = contactData.name || clientName;
                 clientEmail = contactData.email || '';
@@ -87,100 +118,15 @@ const ProformaCreatePage: React.FC = () => {
             // Error handling - contact data will remain empty
           }
         } else {
-          // If not found in new leads, try legacy leads_lead table
+          // Try legacy leads_lead table
           const { data: legacyLeadData } = await supabase
             .from('leads_lead')
             .select('name')
             .eq('id', data.lead_id)
             .single();
-          
+
           if (legacyLeadData) {
             clientName = legacyLeadData.name || 'Client';
-            
-            // Try to get contact info from leads_contact via lead_leadcontact
-            try {
-              const { data: allContacts } = await supabase
-                .from('lead_leadcontact')
-                .select(`
-                  main,
-                  contact_id
-                `)
-                .eq('lead_id', data.lead_id);
-              
-              if (allContacts && allContacts.length > 0) {
-                // Try different main field values
-                let leadContacts = null;
-                
-                const { data: contactsTrue } = await supabase
-                  .from('lead_leadcontact')
-                  .select(`
-                    main,
-                    contact_id
-                  `)
-                  .eq('lead_id', data.lead_id)
-                  .eq('main', 'true')
-                  .limit(1);
-                
-                if (contactsTrue && contactsTrue.length > 0) {
-                  leadContacts = contactsTrue;
-                } else {
-                  const { data: contactsBool } = await supabase
-                    .from('lead_leadcontact')
-                    .select(`
-                      main,
-                      contact_id
-                    `)
-                    .eq('lead_id', data.lead_id)
-                    .eq('main', true)
-                    .limit(1);
-                  
-                  if (contactsBool && contactsBool.length > 0) {
-                    leadContacts = contactsBool;
-                  } else {
-                    const { data: contactsNum } = await supabase
-                      .from('lead_leadcontact')
-                      .select(`
-                        main,
-                        contact_id
-                      `)
-                      .eq('lead_id', data.lead_id)
-                      .eq('main', 1)
-                      .limit(1);
-                    
-                    leadContacts = contactsNum;
-                  }
-                }
-                
-                if (leadContacts && leadContacts.length > 0) {
-                  const { data: contactData } = await supabase
-                    .from('leads_contact')
-                    .select('name, email, phone')
-                    .eq('id', leadContacts[0].contact_id)
-                    .single();
-                  
-                  if (contactData) {
-                    clientName = contactData.name || clientName;
-                    clientEmail = contactData.email || '';
-                    clientPhone = contactData.phone || '';
-                  }
-                } else if (allContacts && allContacts.length > 0) {
-                  // Fallback: use first available contact
-                  const { data: contactData } = await supabase
-                    .from('leads_contact')
-                    .select('name, email, phone')
-                    .eq('id', allContacts[0].contact_id)
-                    .single();
-                  
-                  if (contactData) {
-                    clientName = contactData.name || clientName;
-                    clientEmail = contactData.email || '';
-                    clientPhone = contactData.phone || '';
-                  }
-                }
-              }
-            } catch (contactError) {
-              // Error handling - contact data will remain empty
-            }
           }
         }
       }
@@ -224,6 +170,43 @@ const ProformaCreatePage: React.FC = () => {
     };
     fetchUser();
   }, []);
+
+  // Fetch lead data for lead number formatting
+  useEffect(() => {
+    const fetchLeadData = async () => {
+      if (proformaData?.clientId) {
+        try {
+          const { data: leadInfo } = await supabase
+            .from('leads')
+            .select('lead_number, manual_id, master_id, stage')
+            .eq('id', proformaData.clientId)
+            .single();
+
+          if (leadInfo) {
+            setLeadData(leadInfo);
+
+            // Check if it's a master lead (no master_id)
+            const hasNoMasterId = !leadInfo.master_id || String(leadInfo.master_id).trim() === '';
+
+            if (hasNoMasterId) {
+              // Count subleads
+              const { data: subLeads } = await supabase
+                .from('leads')
+                .select('id', { count: 'exact', head: false })
+                .eq('master_id', proformaData.clientId);
+
+              const subLeadsCountValue = subLeads?.length || 0;
+              setSubLeadsCount(subLeadsCountValue);
+              setIsMasterLead(subLeadsCountValue > 0);
+            }
+          }
+        } catch (error) {
+          console.error('Error fetching lead data:', error);
+        }
+      }
+    };
+    fetchLeadData();
+  }, [proformaData?.clientId]);
 
   const handleProformaRowChange = (idx: number, field: string, value: any) => {
     setProformaData((prev: any) => {
@@ -343,69 +326,69 @@ const ProformaCreatePage: React.FC = () => {
           <h3 className="text-lg font-bold text-gray-800 mb-4">Invoice Items</h3>
           <div className="overflow-x-auto mb-4">
             <table className="table w-full min-w-[500px]">
-                <thead>
-                  <tr className="bg-gray-50">
-                    <th className="text-sm font-semibold text-gray-700">Description</th>
-                    <th className="text-sm font-semibold text-gray-700">Qty</th>
-                    <th className="text-sm font-semibold text-gray-700">Rate</th>
-                    <th className="text-sm font-semibold text-gray-700">Total</th>
-                    <th className="text-sm font-semibold text-gray-700">Actions</th>
+              <thead>
+                <tr className="bg-gray-50">
+                  <th className="text-sm font-semibold text-gray-700">Description</th>
+                  <th className="text-sm font-semibold text-gray-700">Qty</th>
+                  <th className="text-sm font-semibold text-gray-700">Rate</th>
+                  <th className="text-sm font-semibold text-gray-700">Total</th>
+                  <th className="text-sm font-semibold text-gray-700">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {proformaData.rows.map((row: any, idx: number) => (
+                  <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                    <td>
+                      <input
+                        className="input input-bordered w-56 text-base py-3 px-4"
+                        value={row.description}
+                        onChange={e => handleProformaRowChange(idx, 'description', e.target.value)}
+                        placeholder="Item description"
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="input input-bordered w-16 text-base text-right py-3 px-4 no-arrows"
+                        type="number"
+                        value={row.qty}
+                        onChange={e => handleProformaRowChange(idx, 'qty', Number(e.target.value))}
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        style={{ MozAppearance: 'textfield' }}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="input input-bordered w-32 text-base text-right py-3 px-4 no-arrows"
+                        type="number"
+                        value={row.rate}
+                        onChange={e => handleProformaRowChange(idx, 'rate', Number(e.target.value))}
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        style={{ MozAppearance: 'textfield' }}
+                      />
+                    </td>
+                    <td>
+                      <input className="input input-bordered w-32 text-base text-right font-semibold py-3 px-4 no-arrows" type="number" value={row.total} readOnly
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        style={{ MozAppearance: 'textfield' }}
+                      />
+                    </td>
+                    <td>
+                      <button
+                        className="btn btn-ghost btn-xs text-red-500 hover:bg-red-50"
+                        onClick={() => handleDeleteProformaRow(idx)}
+                      >
+                        <XMarkIcon className="w-4 h-4" />
+                      </button>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {proformaData.rows.map((row: any, idx: number) => (
-                    <tr key={idx} className="hover:bg-gray-50 transition-colors">
-                      <td>
-                        <input 
-                          className="input input-bordered w-56 text-base py-3 px-4" 
-                          value={row.description} 
-                          onChange={e => handleProformaRowChange(idx, 'description', e.target.value)}
-                          placeholder="Item description"
-                        />
-                      </td>
-                      <td>
-                        <input 
-                          className="input input-bordered w-16 text-base text-right py-3 px-4 no-arrows" 
-                          type="number" 
-                          value={row.qty} 
-                          onChange={e => handleProformaRowChange(idx, 'qty', Number(e.target.value))}
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                          style={{ MozAppearance: 'textfield' }}
-                        />
-                      </td>
-                      <td>
-                        <input 
-                          className="input input-bordered w-32 text-base text-right py-3 px-4 no-arrows" 
-                          type="number" 
-                          value={row.rate} 
-                          onChange={e => handleProformaRowChange(idx, 'rate', Number(e.target.value))}
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                          style={{ MozAppearance: 'textfield' }}
-                        />
-                      </td>
-                      <td>
-                        <input className="input input-bordered w-32 text-base text-right font-semibold py-3 px-4 no-arrows" type="number" value={row.total} readOnly 
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                          style={{ MozAppearance: 'textfield' }}
-                        />
-                      </td>
-                      <td>
-                        <button 
-                          className="btn btn-ghost btn-xs text-red-500 hover:bg-red-50" 
-                          onClick={() => handleDeleteProformaRow(idx)}
-                        >
-                          <XMarkIcon className="w-4 h-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            <button 
-              className="btn btn-outline btn-sm mt-4 text-blue-600 border-blue-300 hover:bg-blue-50" 
+                ))}
+              </tbody>
+            </table>
+            <button
+              className="btn btn-outline btn-sm mt-4 text-blue-600 border-blue-300 hover:bg-blue-50"
               onClick={handleAddProformaRow}
             >
               Add Row
@@ -416,10 +399,10 @@ const ProformaCreatePage: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
             <div className="form-control">
               <label className="label cursor-pointer justify-start gap-3">
-                <input 
-                  type="checkbox" 
-                  className="checkbox checkbox-primary" 
-                  checked={proformaData.addVat} 
+                <input
+                  type="checkbox"
+                  className="checkbox checkbox-primary"
+                  checked={proformaData.addVat}
                   onChange={e => setProformaData((prev: any) => ({ ...prev, addVat: e.target.checked }))}
                 />
                 <span className="label-text font-medium">Add VAT (18%)</span>
@@ -429,9 +412,9 @@ const ProformaCreatePage: React.FC = () => {
               <label className="label">
                 <span className="label-text font-medium">Bank Account</span>
               </label>
-              <select 
-                className="select select-bordered w-full" 
-                value={proformaData.bankAccount} 
+              <select
+                className="select select-bordered w-full"
+                value={proformaData.bankAccount}
                 onChange={e => setProformaData((prev: any) => ({ ...prev, bankAccount: e.target.value }))}
               >
                 <option value="">Select account...</option>
@@ -442,9 +425,9 @@ const ProformaCreatePage: React.FC = () => {
           </div>
           {/* Notes */}
           <h3 className="text-lg font-bold text-gray-800 mb-4">Notes</h3>
-          <textarea 
-            className="textarea textarea-bordered w-full min-h-[120px] text-sm mb-4" 
-            value={proformaData.notes} 
+          <textarea
+            className="textarea textarea-bordered w-full min-h-[120px] text-sm mb-4"
+            value={proformaData.notes}
             onChange={e => setProformaData((prev: any) => ({ ...prev, notes: e.target.value }))}
             placeholder="Add any additional notes or terms..."
           />
@@ -491,9 +474,39 @@ const ProformaCreatePage: React.FC = () => {
               {proformaData.email && (
                 <div className="text-sm text-gray-500">{proformaData.email}</div>
               )}
-              {proformaData.clientId && (
-                <div className="text-sm text-gray-500 font-semibold">Lead #: {proformaData.clientId}</div>
-              )}
+              {proformaData.clientId && (() => {
+                // Format lead number using same logic as ClientHeader
+                const formatLeadNumber = () => {
+                  if (!leadData) return '---';
+                  let displayNumber = leadData.lead_number || leadData.manual_id || '---';
+                  const displayStr = displayNumber.toString();
+                  const hasExistingSuffix = displayStr.includes('/');
+                  let baseNumber = hasExistingSuffix ? displayStr.split('/')[0] : displayStr;
+                  const existingSuffix = hasExistingSuffix ? displayStr.split('/').slice(1).join('/') : null;
+
+                  const isSuccessStage = leadData.stage === '100' || leadData.stage === 100;
+                  if (isSuccessStage && baseNumber && !baseNumber.toString().startsWith('C')) {
+                    baseNumber = baseNumber.toString().replace(/^L/, 'C');
+                  }
+
+                  // Add /1 suffix to master leads (frontend only)
+                  const hasNoMasterId = !leadData.master_id || String(leadData.master_id).trim() === '';
+                  const hasSubLeads = (subLeadsCount || 0) > 0;
+                  const isMasterWithSubLeads = hasNoMasterId && (isMasterLead || hasSubLeads);
+
+                  // Only add /1 to master leads that actually have subleads
+                  if (isMasterWithSubLeads && !hasExistingSuffix) {
+                    return `${baseNumber}/1`;
+                  } else if (hasExistingSuffix) {
+                    return `${baseNumber}/${existingSuffix}`;
+                  }
+                  return baseNumber;
+                };
+
+                return (
+                  <div className="text-sm text-gray-500 font-semibold">Lead #: {formatLeadNumber()}</div>
+                );
+              })()}
               {!(proformaData.phone || proformaData.email) && (
                 <div className="text-xs text-red-400">No client phone/email found.</div>
               )}

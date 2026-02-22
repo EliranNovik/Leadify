@@ -16,27 +16,27 @@ const getVatRateForLegacyLead = (dateString: string | null | undefined): number 
     // If no date provided, default to 18% (current rate)
     return 0.18;
   }
-  
+
   const paymentDate = new Date(dateString);
   if (isNaN(paymentDate.getTime())) {
     // If date is invalid, default to 18%
     return 0.18;
   }
-  
+
   // VAT rate change date: 2025-01-01
   const vatChangeDate = new Date('2025-01-01T00:00:00');
-  
+
   // If payment date is before 2025-01-01, use 17% VAT
   if (paymentDate < vatChangeDate) {
     return 0.17;
   }
-  
+
   // Otherwise, use 18% VAT (for dates on or after 2025-01-01)
   return 0.18;
 };
 
 // MinimalInvoice: style-isolated, hex/rgb only, no class names
-const MinimalInvoice = React.forwardRef(({ proforma, getCurrencySymbol }: { proforma: any, getCurrencySymbol: (currency?: string) => string }, ref: React.Ref<HTMLDivElement>) => {
+const MinimalInvoice = React.forwardRef(({ proforma, getCurrencySymbol, formatLeadNumber }: { proforma: any, getCurrencySymbol: (currency?: string) => string, formatLeadNumber?: () => string }, ref: React.Ref<HTMLDivElement>) => {
   // Add null check to prevent rendering when proforma is null
   if (!proforma) {
     return <div ref={ref} style={{ background: '#fff', color: '#18181b', maxWidth: 800, width: '100%', margin: '0 auto', padding: 32, borderRadius: 24, boxShadow: '0 2px 8px #e5e7eb', border: '1px solid #e5e7eb', overflow: 'hidden', fontFamily: 'Inter, Arial, sans-serif' }}>
@@ -45,111 +45,111 @@ const MinimalInvoice = React.forwardRef(({ proforma, getCurrencySymbol }: { prof
   }
 
   return (
-  <div ref={ref} style={{ background: '#fff', color: '#18181b', maxWidth: 800, width: '100%', margin: '0 auto', padding: 32, borderRadius: 24, boxShadow: '0 2px 8px #e5e7eb', border: '1px solid #e5e7eb', overflow: 'hidden', fontFamily: 'Inter, Arial, sans-serif' }}>
-    {/* Google Fonts link for Inter */}
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
-    <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 56 }}>
-      <div style={{ width: 110, height: 110, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <img src="/dpl_logo2.jpg" alt="DPL Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+    <div ref={ref} style={{ background: '#fff', color: '#18181b', maxWidth: 800, width: '100%', margin: '0 auto', padding: 32, borderRadius: 24, boxShadow: '0 2px 8px #e5e7eb', border: '1px solid #e5e7eb', overflow: 'hidden', fontFamily: 'Inter, Arial, sans-serif' }}>
+      {/* Google Fonts link for Inter */}
+      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 56 }}>
+        <div style={{ width: 110, height: 110, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <img src="/dpl_logo2.jpg" alt="DPL Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+        </div>
+        <div>
+          <div style={{ color: '#18181b', fontWeight: 800, fontSize: 32, letterSpacing: '-0.02em', fontFamily: 'Inter, Arial, sans-serif' }}>Proforma Invoice</div>
+          <div style={{ color: '#6b7280', fontWeight: 600, fontSize: 16, marginTop: 4, fontFamily: 'Inter, Arial, sans-serif' }}>Proforma #{proforma.id}</div>
+        </div>
       </div>
-      <div>
-        <div style={{ color: '#18181b', fontWeight: 800, fontSize: 32, letterSpacing: '-0.02em', fontFamily: 'Inter, Arial, sans-serif' }}>Proforma Invoice</div>
-        <div style={{ color: '#6b7280', fontWeight: 600, fontSize: 16, marginTop: 4, fontFamily: 'Inter, Arial, sans-serif' }}>Proforma #{proforma.id}</div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 32, marginBottom: 32 }}>
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ color: '#404040', fontWeight: 600, marginBottom: 4, fontFamily: 'Inter, Arial, sans-serif' }}>From:</div>
+          <div style={{ color: '#18181b', fontWeight: 700, fontSize: 18, fontFamily: 'Inter, Arial, sans-serif' }}>Decker Pex Levi Law office</div>
+          <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>Yad Haruzim 10, Jerusalem;</div>
+          <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>150 Begin Rd. Tel-Aviv, Israel</div>
+          <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>Phone: +972737895444, +972262914009</div>
+          <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>PaymentReport3@lawoffice.org.il</div>
+          <div style={{ marginBottom: 48 }}></div>
+        </div>
+        <div>
+          <div style={{ color: '#404040', fontWeight: 600, marginBottom: 4, fontFamily: 'Inter, Arial, sans-serif' }}>Bill To:</div>
+          <div style={{ color: '#18181b', fontWeight: 700, fontSize: 18, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.client_name}</div>
+          {proforma.client_phone && (
+            <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.client_phone}</div>
+          )}
+          {proforma.client_email && (
+            <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.client_email}</div>
+          )}
+          {proforma.lead_number && (
+            <div style={{ color: '#6b7280', fontSize: 14, fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Lead #: {formatLeadNumber ? formatLeadNumber() : proforma.lead_number}</div>
+          )}
+          {!(proforma.client_phone || proforma.client_email) && (
+            <div style={{ color: '#f87171', fontSize: 12, fontFamily: 'Inter, Arial, sans-serif' }}>No client phone/email saved in proforma.</div>
+          )}
+        </div>
       </div>
-    </div>
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 32, marginBottom: 32 }}>
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ color: '#404040', fontWeight: 600, marginBottom: 4, fontFamily: 'Inter, Arial, sans-serif' }}>From:</div>
-        <div style={{ color: '#18181b', fontWeight: 700, fontSize: 18, fontFamily: 'Inter, Arial, sans-serif' }}>Decker Pex Levi Law office</div>
-        <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>Yad Haruzim 10, Jerusalem;</div>
-        <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>150 Begin Rd. Tel-Aviv, Israel</div>
-        <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>Phone: +972737895444, +972262914009</div>
-        <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>PaymentReport3@lawoffice.org.il</div>
-        <div style={{ marginBottom: 48 }}></div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32 }}>
+        <div><span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Proforma #:</span> <span style={{ color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.id}</span></div>
+        <div><span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Date:</span> <span style={{ color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>{new Date(proforma.cdate).toLocaleDateString()}</span></div>
       </div>
-      <div>
-        <div style={{ color: '#404040', fontWeight: 600, marginBottom: 4, fontFamily: 'Inter, Arial, sans-serif' }}>Bill To:</div>
-        <div style={{ color: '#18181b', fontWeight: 700, fontSize: 18, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.client_name}</div>
-        {proforma.client_phone && (
-          <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.client_phone}</div>
-        )}
-        {proforma.client_email && (
-          <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.client_email}</div>
-        )}
-        {proforma.lead_number && (
-          <div style={{ color: '#6b7280', fontSize: 14, fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Lead #: {proforma.lead_number}</div>
-        )}
-        {!(proforma.client_phone || proforma.client_email) && (
-          <div style={{ color: '#f87171', fontSize: 12, fontFamily: 'Inter, Arial, sans-serif' }}>No client phone/email saved in proforma.</div>
-        )}
-      </div>
-    </div>
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32 }}>
-      <div><span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Proforma #:</span> <span style={{ color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.id}</span></div>
-      <div><span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Date:</span> <span style={{ color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>{new Date(proforma.cdate).toLocaleDateString()}</span></div>
-    </div>
-    <div style={{ marginBottom: 32, width: '100%', maxWidth: 720, marginLeft: 'auto', marginRight: 'auto' }}>
-      <table style={{ width: '100%', borderRadius: 12, overflow: 'hidden', border: '1px solid #e5e7eb', fontFamily: 'Inter, Arial, sans-serif' }}>
-        <thead style={{ background: '#f3f4f6', borderBottom: '1px solid #e5e7eb' }}>
-          <tr>
-            <th style={{ padding: '12px 16px', textAlign: 'left', fontSize: 12, fontWeight: 700, color: '#404040', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Inter, Arial, sans-serif' }}>Description</th>
-            <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: 12, fontWeight: 700, color: '#404040', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Inter, Arial, sans-serif' }}>Qty</th>
-            <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: 12, fontWeight: 700, color: '#404040', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Inter, Arial, sans-serif' }}>Rate</th>
-            <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: 12, fontWeight: 700, color: '#404040', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Inter, Arial, sans-serif' }}>Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(proforma.rows || []).map((row: any, idx: number) => (
-            <tr key={idx} style={{ background: idx % 2 === 0 ? '#fff' : '#f3f4f6' }}>
-              <td style={{ padding: '8px 16px', color: '#18181b', fontWeight: 500, fontFamily: 'Inter, Arial, sans-serif' }}>{row.description}</td>
-              <td style={{ padding: '8px 16px', textAlign: 'right', color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>{row.qty}</td>
-              <td style={{ padding: '8px 16px', textAlign: 'right', color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>{getCurrencySymbol(proforma.currency_code)} {row.rate}</td>
-              <td style={{ padding: '8px 16px', textAlign: 'right', color: '#18181b', fontWeight: 700, fontFamily: 'Inter, Arial, sans-serif' }}>{getCurrencySymbol(proforma.currency_code)} {row.total}</td>
+      <div style={{ marginBottom: 32, width: '100%', maxWidth: 720, marginLeft: 'auto', marginRight: 'auto' }}>
+        <table style={{ width: '100%', borderRadius: 12, overflow: 'hidden', border: '1px solid #e5e7eb', fontFamily: 'Inter, Arial, sans-serif' }}>
+          <thead style={{ background: '#f3f4f6', borderBottom: '1px solid #e5e7eb' }}>
+            <tr>
+              <th style={{ padding: '12px 16px', textAlign: 'left', fontSize: 12, fontWeight: 700, color: '#404040', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Inter, Arial, sans-serif' }}>Description</th>
+              <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: 12, fontWeight: 700, color: '#404040', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Inter, Arial, sans-serif' }}>Qty</th>
+              <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: 12, fontWeight: 700, color: '#404040', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Inter, Arial, sans-serif' }}>Rate</th>
+              <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: 12, fontWeight: 700, color: '#404040', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Inter, Arial, sans-serif' }}>Total</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 24, justifyContent: 'flex-end', width: '100%', maxWidth: 720, marginLeft: 'auto', marginRight: 'auto' }}>
-      <div style={{ width: '100%', maxWidth: 400, background: '#f3f4f6', borderRadius: 16, padding: 24, border: '1px solid #e5e7eb', fontFamily: 'Inter, Arial, sans-serif', marginLeft: 'auto', marginRight: 0 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, marginBottom: 8 }}>
-          <span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Subtotal</span>
-          <span style={{ color: '#18181b', fontWeight: 700, fontFamily: 'Inter, Arial, sans-serif' }}>{getCurrencySymbol(proforma.currency_code)} {Number(proforma.sub_total || proforma.total_base || 0).toFixed(2)}</span>
+          </thead>
+          <tbody>
+            {(proforma.rows || []).map((row: any, idx: number) => (
+              <tr key={idx} style={{ background: idx % 2 === 0 ? '#fff' : '#f3f4f6' }}>
+                <td style={{ padding: '8px 16px', color: '#18181b', fontWeight: 500, fontFamily: 'Inter, Arial, sans-serif' }}>{row.description}</td>
+                <td style={{ padding: '8px 16px', textAlign: 'right', color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>{row.qty}</td>
+                <td style={{ padding: '8px 16px', textAlign: 'right', color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>{getCurrencySymbol(proforma.currency_code)} {row.rate}</td>
+                <td style={{ padding: '8px 16px', textAlign: 'right', color: '#18181b', fontWeight: 700, fontFamily: 'Inter, Arial, sans-serif' }}>{getCurrencySymbol(proforma.currency_code)} {row.total}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 24, justifyContent: 'flex-end', width: '100%', maxWidth: 720, marginLeft: 'auto', marginRight: 'auto' }}>
+        <div style={{ width: '100%', maxWidth: 400, background: '#f3f4f6', borderRadius: 16, padding: 24, border: '1px solid #e5e7eb', fontFamily: 'Inter, Arial, sans-serif', marginLeft: 'auto', marginRight: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, marginBottom: 8 }}>
+            <span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Subtotal</span>
+            <span style={{ color: '#18181b', fontWeight: 700, fontFamily: 'Inter, Arial, sans-serif' }}>{getCurrencySymbol(proforma.currency_code)} {Number(proforma.sub_total || proforma.total_base || 0).toFixed(2)}</span>
+          </div>
+          {proforma.add_vat === 't' && (() => {
+            // Determine VAT rate based on payment plan date or proforma creation date
+            const vatDate = proforma.paymentPlanDate || proforma.cdate || null;
+            const vatRate = getVatRateForLegacyLead(vatDate);
+            const vatPercentage = Math.round(vatRate * 100);
+            return (
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, marginBottom: 8 }}>
+                <span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>VAT ({vatPercentage}%)</span>
+                <span style={{ color: '#18181b', fontWeight: 700, fontFamily: 'Inter, Arial, sans-serif' }}>{getCurrencySymbol(proforma.currency_code)} {Number(proforma.vat_value || 0).toFixed(2)}</span>
+              </div>
+            );
+          })()}
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 22, marginTop: 16, borderTop: '1px solid #e5e7eb', paddingTop: 16, fontWeight: 800 }}>
+            <span style={{ color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>Total</span>
+            <span style={{ color: '#006BB1', fontWeight: 800, fontFamily: 'Inter, Arial, sans-serif' }}>{getCurrencySymbol(proforma.currency_code)} {Number(proforma.total || 0).toFixed(2)}</span>
+          </div>
         </div>
-        {proforma.add_vat === 't' && (() => {
-          // Determine VAT rate based on payment plan date or proforma creation date
-          const vatDate = proforma.paymentPlanDate || proforma.cdate || null;
-          const vatRate = getVatRateForLegacyLead(vatDate);
-          const vatPercentage = Math.round(vatRate * 100);
-          return (
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, marginBottom: 8 }}>
-              <span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>VAT ({vatPercentage}%)</span>
-              <span style={{ color: '#18181b', fontWeight: 700, fontFamily: 'Inter, Arial, sans-serif' }}>{getCurrencySymbol(proforma.currency_code)} {Number(proforma.vat_value || 0).toFixed(2)}</span>
+      </div>
+      {/* Issued by and timestamp at bottom */}
+      {(proforma.issuedBy || proforma.issuedDate) && (
+        <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid #e5e7eb', fontSize: 12, color: '#6b7280', fontFamily: 'Inter, Arial, sans-serif' }}>
+          {proforma.issuedBy && (
+            <div style={{ marginBottom: 4 }}>
+              <span style={{ fontWeight: 600 }}>Issued by:</span> <span>{proforma.issuedBy}</span>
             </div>
-          );
-        })()}
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 22, marginTop: 16, borderTop: '1px solid #e5e7eb', paddingTop: 16, fontWeight: 800 }}>
-          <span style={{ color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>Total</span>
-          <span style={{ color: '#006BB1', fontWeight: 800, fontFamily: 'Inter, Arial, sans-serif' }}>{getCurrencySymbol(proforma.currency_code)} {Number(proforma.total || 0).toFixed(2)}</span>
+          )}
+          {proforma.issuedDate && (
+            <div>
+              <span style={{ fontWeight: 600 }}>Date:</span> <span>{new Date(proforma.issuedDate).toLocaleDateString()}</span>
+            </div>
+          )}
         </div>
-      </div>
+      )}
     </div>
-    {/* Issued by and timestamp at bottom */}
-    {(proforma.issuedBy || proforma.issuedDate) && (
-      <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid #e5e7eb', fontSize: 12, color: '#6b7280', fontFamily: 'Inter, Arial, sans-serif' }}>
-        {proforma.issuedBy && (
-          <div style={{ marginBottom: 4 }}>
-            <span style={{ fontWeight: 600 }}>Issued by:</span> <span>{proforma.issuedBy}</span>
-          </div>
-        )}
-        {proforma.issuedDate && (
-          <div>
-            <span style={{ fontWeight: 600 }}>Date:</span> <span>{new Date(proforma.issuedDate).toLocaleDateString()}</span>
-          </div>
-        )}
-      </div>
-    )}
-  </div>
   );
 });
 
@@ -164,6 +164,9 @@ const ProformaLegacyViewPage: React.FC = () => {
   const { instance, accounts } = useMsal();
   const [sendingEmail, setSendingEmail] = useState(false);
   const minimalInvoiceRef = useRef<HTMLDivElement>(null);
+  const [leadData, setLeadData] = useState<any>(null);
+  const [subLeadsCount, setSubLeadsCount] = useState<number>(0);
+  const [isMasterLead, setIsMasterLead] = useState<boolean>(false);
 
   // Helper to get currency symbol
   const getCurrencySymbol = (currency: string | undefined) => {
@@ -200,43 +203,45 @@ const ProformaLegacyViewPage: React.FC = () => {
     const fetchProforma = async () => {
       setLoading(true);
       setError(null);
-      
+
       // Variables to store issued by information
       let issuedBy: string | null = null;
       let issuedDate: string | null = null;
-      
+
       // Try fetching from the view first
       let { data, error } = await supabase
         .from('proforma_with_rows')
         .select('*')
         .eq('id', id)
         .single();
-      
+
       // Fetch cxd_by_id, creator_id, cxd_date, cdate, and ppr_id from proformainvoice table (for both view and direct fetch paths)
       const { data: proformaData, error: proformaError } = await supabase
         .from('proformainvoice')
         .select('cxd_by_id, creator_id, cxd_date, cdate, ppr_id')
         .eq('id', id)
         .single();
-      
-      // Fetch payment plan row date if ppr_id exists
+
+      // Fetch payment plan row date and client_id if ppr_id exists
       let paymentPlanDate: string | null = null;
+      let paymentPlanClientId: number | null = null;
       if (!proformaError && proformaData?.ppr_id) {
         const { data: pprData } = await supabase
           .from('finances_paymentplanrow')
-          .select('date, due_date')
+          .select('date, due_date, client_id')
           .eq('id', proformaData.ppr_id)
           .single();
-        
+
         if (pprData) {
           paymentPlanDate = pprData.date || pprData.due_date || null;
+          paymentPlanClientId = pprData.client_id ? Number(pprData.client_id) : null;
         }
       }
-      
+
       if (!proformaError && proformaData) {
         // Use cdate (creation date) as issued date (cxd_date is cancellation date, which is NULL for active proformas)
         issuedDate = proformaData.cdate || null;
-        
+
         // Try cxd_by_id first (cancelled by), then creator_id (created by) to get employee display_name
         const employeeId = proformaData.cxd_by_id || proformaData.creator_id;
         if (employeeId) {
@@ -245,107 +250,122 @@ const ProformaLegacyViewPage: React.FC = () => {
             .select('display_name')
             .eq('id', employeeId)
             .single();
-          
+
           if (!employeeError && employeeData?.display_name) {
             issuedBy = employeeData.display_name;
           }
         }
       }
-        
-      // If view fetch succeeds, also fetch client data from contact
+
+      // If view fetch succeeds, also fetch client data from the specific contact (client_id from payment plan)
       if (!error && data && data.lead_id) {
-        // Try to get contact info from leads_contact via lead_leadcontact
         try {
-          // First, let's check what contacts exist for this lead
-          const { data: allContacts, error: allContactsError } = await supabase
-            .from('lead_leadcontact')
-            .select(`
-              main,
-              contact_id
-            `)
-            .eq('lead_id', data.lead_id);
-          
-          // Try to get the main contact (try different main values)
-          let leadContacts = null;
-          let leadContactsError = null;
-          
-          // Try with 'true' (string)
-          const { data: contactsTrue, error: errorTrue } = await supabase
-            .from('lead_leadcontact')
-            .select(`
-              main,
-              contact_id
-            `)
-            .eq('lead_id', data.lead_id)
-            .eq('main', 'true');
-          
-          if (!errorTrue && contactsTrue && contactsTrue.length > 0) {
-            leadContacts = contactsTrue;
-            leadContactsError = errorTrue;
-          } else {
-            // Try with true (boolean)
-            const { data: contactsBool, error: errorBool } = await supabase
-              .from('lead_leadcontact')
-              .select(`
-                main,
-                contact_id
-              `)
-              .eq('lead_id', data.lead_id)
-              .eq('main', true);
-            
-            if (!errorBool && contactsBool && contactsBool.length > 0) {
-              leadContacts = contactsBool;
-              leadContactsError = errorBool;
-            } else {
-              // Try with 1 (numeric)
-              const { data: contactsNum, error: errorNum } = await supabase
-                .from('lead_leadcontact')
-                .select(`
-                  main,
-                  contact_id
-                `)
-                .eq('lead_id', data.lead_id)
-                .eq('main', 1);
-              
-              leadContacts = contactsNum;
-              leadContactsError = errorNum;
-            }
-          }
-          
-          if (!leadContactsError && leadContacts && leadContacts.length > 0) {
-            // Get the contact details from leads_contact table (including name)
+          // Use client_id from payment plan row if available
+          if (paymentPlanClientId) {
             const { data: contactData, error: contactError } = await supabase
               .from('leads_contact')
               .select('name, email, phone')
-              .eq('id', leadContacts[0].contact_id)
+              .eq('id', paymentPlanClientId)
               .single();
-            
+
             if (!contactError && contactData) {
               data.client_name = contactData.name || data.client_name || 'Client';
               data.client_email = contactData.email || data.client_email || '';
               data.client_phone = contactData.phone || data.client_phone || '';
             }
           } else {
-            // Fallback: try to get any contact for this lead
-            if (allContacts && allContacts.length > 0) {
+            // Fallback: get main contact from lead_leadcontact
+            const { data: allContacts, error: allContactsError } = await supabase
+              .from('lead_leadcontact')
+              .select(`
+                main,
+                contact_id
+              `)
+              .eq('lead_id', data.lead_id);
+
+            // Try to get the main contact (try different main values)
+            let leadContacts = null;
+            let leadContactsError = null;
+
+            // Try with 'true' (string)
+            const { data: contactsTrue, error: errorTrue } = await supabase
+              .from('lead_leadcontact')
+              .select(`
+                main,
+                contact_id
+              `)
+              .eq('lead_id', data.lead_id)
+              .eq('main', 'true');
+
+            if (!errorTrue && contactsTrue && contactsTrue.length > 0) {
+              leadContacts = contactsTrue;
+              leadContactsError = errorTrue;
+            } else {
+              // Try with true (boolean)
+              const { data: contactsBool, error: errorBool } = await supabase
+                .from('lead_leadcontact')
+                .select(`
+                  main,
+                  contact_id
+                `)
+                .eq('lead_id', data.lead_id)
+                .eq('main', true);
+
+              if (!errorBool && contactsBool && contactsBool.length > 0) {
+                leadContacts = contactsBool;
+                leadContactsError = errorBool;
+              } else {
+                // Try with 1 (numeric)
+                const { data: contactsNum, error: errorNum } = await supabase
+                  .from('lead_leadcontact')
+                  .select(`
+                    main,
+                    contact_id
+                  `)
+                  .eq('lead_id', data.lead_id)
+                  .eq('main', 1);
+
+                leadContacts = contactsNum;
+                leadContactsError = errorNum;
+              }
+            }
+
+            if (!leadContactsError && leadContacts && leadContacts.length > 0) {
+              // Get the contact details from leads_contact table (including name)
               const { data: contactData, error: contactError } = await supabase
                 .from('leads_contact')
                 .select('name, email, phone')
-                .eq('id', allContacts[0].contact_id)
+                .eq('id', leadContacts[0].contact_id)
                 .single();
-              
+
               if (!contactError && contactData) {
                 data.client_name = contactData.name || data.client_name || 'Client';
                 data.client_email = contactData.email || data.client_email || '';
                 data.client_phone = contactData.phone || data.client_phone || '';
               }
+            } else {
+              // Fallback: try to get any contact for this lead
+              if (allContacts && allContacts.length > 0) {
+                const { data: contactData, error: contactError } = await supabase
+                  .from('leads_contact')
+                  .select('name, email, phone')
+                  .eq('id', allContacts[0].contact_id)
+                  .single();
+
+                if (!contactError && contactData) {
+                  data.client_name = contactData.name || data.client_name || 'Client';
+                  data.client_email = contactData.email || data.client_email || '';
+                  data.client_phone = contactData.phone || data.client_phone || '';
+                }
+              }
             }
           }
         } catch (contactError) {
+          console.error('Error fetching contact data:', contactError);
           // Error handling - contact data will remain null
         }
       }
-        
+
       // If view fails, try direct table fetch
       if (error || !data) {
         const { data: directData, error: directError } = await supabase
@@ -356,24 +376,24 @@ const ProformaLegacyViewPage: React.FC = () => {
           `)
           .eq('id', id)
           .single();
-        
+
         if (directError) {
           setError(`Error fetching proforma: ${directError.message}`);
           setLoading(false);
           return;
         }
-        
+
         if (!directData) {
           setError('Proforma not found.');
           setLoading(false);
           return;
         }
-        
+
         // Fetch client information from contact (not lead)
         let clientName = 'Client';
         let clientEmail = '';
         let clientPhone = '';
-        
+
         if (directData.lead_id) {
           // Try to get contact info from leads_contact via lead_leadcontact
           try {
@@ -385,11 +405,11 @@ const ProformaLegacyViewPage: React.FC = () => {
                 contact_id
               `)
               .eq('lead_id', directData.lead_id);
-            
+
             // Try to get the main contact (try different main values)
             let leadContacts = null;
             let leadContactsError = null;
-            
+
             // Try with 'true' (string)
             const { data: contactsTrue, error: errorTrue } = await supabase
               .from('lead_leadcontact')
@@ -399,7 +419,7 @@ const ProformaLegacyViewPage: React.FC = () => {
               `)
               .eq('lead_id', directData.lead_id)
               .eq('main', 'true');
-            
+
             if (!errorTrue && contactsTrue && contactsTrue.length > 0) {
               leadContacts = contactsTrue;
               leadContactsError = errorTrue;
@@ -413,7 +433,7 @@ const ProformaLegacyViewPage: React.FC = () => {
                 `)
                 .eq('lead_id', directData.lead_id)
                 .eq('main', true);
-              
+
               if (!errorBool && contactsBool && contactsBool.length > 0) {
                 leadContacts = contactsBool;
                 leadContactsError = errorBool;
@@ -427,12 +447,12 @@ const ProformaLegacyViewPage: React.FC = () => {
                   `)
                   .eq('lead_id', directData.lead_id)
                   .eq('main', 1);
-                
+
                 leadContacts = contactsNum;
                 leadContactsError = errorNum;
               }
             }
-            
+
             if (!leadContactsError && leadContacts && leadContacts.length > 0) {
               // Get the contact details from leads_contact table (including name)
               const { data: contactData, error: contactError } = await supabase
@@ -440,7 +460,7 @@ const ProformaLegacyViewPage: React.FC = () => {
                 .select('name, email, phone')
                 .eq('id', leadContacts[0].contact_id)
                 .single();
-              
+
               if (!contactError && contactData) {
                 clientName = contactData.name || 'Client';
                 clientEmail = contactData.email || '';
@@ -454,7 +474,7 @@ const ProformaLegacyViewPage: React.FC = () => {
                   .select('name, email, phone')
                   .eq('id', allContacts[0].contact_id)
                   .single();
-                
+
                 if (!contactError && contactData) {
                   clientName = contactData.name || 'Client';
                   clientEmail = contactData.email || '';
@@ -466,7 +486,7 @@ const ProformaLegacyViewPage: React.FC = () => {
             // Error handling - contact data will remain null
           }
         }
-        
+
         // Transform direct table data to match view format
         data = {
           ...directData,
@@ -480,21 +500,123 @@ const ProformaLegacyViewPage: React.FC = () => {
           issuedBy: issuedBy,
           issuedDate: issuedDate
         };
+
+        // Fetch lead data for lead number formatting (for legacy leads)
+        if (directData.lead_id) {
+          try {
+            const { data: leadInfo } = await supabase
+              .from('leads_lead')
+              .select('id, master_id, stage')
+              .eq('id', directData.lead_id)
+              .single();
+
+            if (leadInfo) {
+              setLeadData(leadInfo);
+
+              const masterId = leadInfo.master_id;
+              const leadId = String(leadInfo.id);
+
+              // If master_id exists, it's a sub-lead - calculate suffix based on existing sub-leads with same master_id
+              if (masterId && String(masterId).trim() !== '') {
+                // Fetch all subleads with the same master_id, sorted by ID
+                const { data: allSubLeads } = await supabase
+                  .from('leads_lead')
+                  .select('id')
+                  .eq('master_id', masterId)
+                  .order('id', { ascending: true });
+
+                if (allSubLeads && allSubLeads.length > 0) {
+                  // Find the index of current lead in the sorted list
+                  const currentIndex = allSubLeads.findIndex((sub: any) => String(sub.id) === leadId);
+                  // Suffix starts from 2 (master is /1, first sublead is /2, etc.)
+                  const suffix = currentIndex >= 0 ? currentIndex + 2 : allSubLeads.length + 2;
+                  // Store the suffix for formatting
+                  setSubLeadsCount(suffix);
+                } else {
+                  setSubLeadsCount(2); // Default to /2 if no other subleads found
+                }
+              } else {
+                // It's a master lead - count subleads to determine if it has subleads
+                const { data: subLeads } = await supabase
+                  .from('leads_lead')
+                  .select('id', { count: 'exact', head: false })
+                  .eq('master_id', leadInfo.id);
+
+                const subLeadsCountValue = subLeads?.length || 0;
+                setSubLeadsCount(subLeadsCountValue);
+                setIsMasterLead(subLeadsCountValue > 0);
+              }
+            }
+          } catch (error) {
+            console.error('Error fetching lead data:', error);
+          }
+        }
       } else {
         // Add issued by information and payment plan date to view data
         if (data) {
           data.issuedBy = issuedBy;
           data.issuedDate = issuedDate;
           data.paymentPlanDate = paymentPlanDate; // Store payment plan date for VAT rate display
+
+          // Fetch lead data for lead number formatting (for legacy leads)
+          if (data.lead_id) {
+            try {
+              const { data: leadInfo } = await supabase
+                .from('leads_lead')
+                .select('id, master_id, stage')
+                .eq('id', data.lead_id)
+                .single();
+
+              if (leadInfo) {
+                setLeadData(leadInfo);
+
+                const masterId = leadInfo.master_id;
+                const leadId = String(leadInfo.id);
+
+                // If master_id exists, it's a sub-lead - calculate suffix based on existing sub-leads with same master_id
+                if (masterId && String(masterId).trim() !== '') {
+                  // Fetch all subleads with the same master_id, sorted by ID
+                  const { data: allSubLeads } = await supabase
+                    .from('leads_lead')
+                    .select('id')
+                    .eq('master_id', masterId)
+                    .order('id', { ascending: true });
+
+                  if (allSubLeads && allSubLeads.length > 0) {
+                    // Find the index of current lead in the sorted list
+                    const currentIndex = allSubLeads.findIndex((sub: any) => String(sub.id) === leadId);
+                    // Suffix starts from 2 (master is /1, first sublead is /2, etc.)
+                    const suffix = currentIndex >= 0 ? currentIndex + 2 : allSubLeads.length + 2;
+                    // Store the suffix for formatting
+                    setSubLeadsCount(suffix);
+                  } else {
+                    setSubLeadsCount(2); // Default to /2 if no other subleads found
+                  }
+                } else {
+                  // It's a master lead - count subleads to determine if it has subleads
+                  const { data: subLeads } = await supabase
+                    .from('leads_lead')
+                    .select('id', { count: 'exact', head: false })
+                    .eq('master_id', leadInfo.id);
+
+                  const subLeadsCountValue = subLeads?.length || 0;
+                  setSubLeadsCount(subLeadsCountValue);
+                  setIsMasterLead(subLeadsCountValue > 0);
+                }
+              }
+            } catch (error) {
+              console.error('Error fetching lead data:', error);
+            }
+          }
         }
       }
-      
+
       if (error && !data) {
         setError(`Error fetching proforma: ${error.message}`);
         setLoading(false);
         return;
       }
-      
+
       if (!data) {
         setError('Proforma not found.');
         setLoading(false);
@@ -505,6 +627,38 @@ const ProformaLegacyViewPage: React.FC = () => {
     };
     if (id) fetchProforma();
   }, [id]);
+
+  // Format lead number using same logic as Clients.tsx formatLegacyLeadNumber (for legacy leads)
+  const formatLeadNumber = () => {
+    if (!leadData) return proforma?.lead_number || '---';
+
+    const masterId = leadData.master_id;
+    const leadId = String(leadData.id || proforma?.lead_number || '---');
+
+    // If master_id is null/empty, it's a master lead - return just the ID (no /1 suffix for legacy leads)
+    if (!masterId || String(masterId).trim() === '') {
+      // For legacy leads, add "C" prefix for success stage (stage 100)
+      const isSuccessStage = leadData.stage === 100 || leadData.stage === '100';
+      if (isSuccessStage && leadId && !leadId.toString().startsWith('C')) {
+        return `C${leadId}`;
+      }
+      return leadId;
+    }
+
+    // If master_id exists, it's a sub-lead - format as masterId/suffix
+    // Use the calculated suffix from subLeadsCount (which stores the suffix, not count)
+    const suffix = subLeadsCount > 0 ? subLeadsCount : 2; // Default to /2 if not calculated
+    const formattedNumber = `${masterId}/${suffix}`;
+
+    // For legacy leads, add "C" prefix for success stage (stage 100)
+    const isSuccessStage = leadData.stage === 100 || leadData.stage === '100';
+    if (isSuccessStage && !formattedNumber.startsWith('C')) {
+      // Replace L prefix with C if success stage, or add C prefix to masterId
+      return formattedNumber.replace(/^L/, 'C').replace(/^(\d+)/, 'C$1');
+    }
+
+    return formattedNumber;
+  };
 
   const handlePrint = () => {
     window.print();
@@ -530,17 +684,17 @@ const ProformaLegacyViewPage: React.FC = () => {
         .from('proformainvoicerow')
         .delete()
         .eq('invoice_id', id);
-      
+
       if (rowsError) throw rowsError;
-      
+
       // Delete proforma
       const { error: proformaError } = await supabase
         .from('proformainvoice')
         .delete()
         .eq('id', id);
-      
+
       if (proformaError) throw proformaError;
-      
+
       toast.success('Proforma deleted successfully!');
       navigate(-1);
     } catch (error) {
@@ -758,7 +912,7 @@ const ProformaLegacyViewPage: React.FC = () => {
               <div className="text-sm text-gray-500">{proforma.client_email}</div>
             )}
             {proforma.lead_number && (
-              <div className="text-sm text-gray-500 font-semibold">Lead #: {proforma.lead_number}</div>
+              <div className="text-sm text-gray-500 font-semibold">Lead #: {formatLeadNumber()}</div>
             )}
             {!(proforma.client_phone || proforma.client_email) && (
               <div className="text-xs text-red-400">No client phone/email saved in proforma.</div>
@@ -835,7 +989,7 @@ const ProformaLegacyViewPage: React.FC = () => {
       </div>
       {/* Hidden minimal invoice for PDF generation */}
       <div style={{ position: 'absolute', left: -9999, top: 0, width: 0, height: 0, overflow: 'hidden' }} aria-hidden="true">
-        {proforma && <MinimalInvoice ref={minimalInvoiceRef} proforma={proforma} getCurrencySymbol={getCurrencySymbol} />}
+        {proforma && <MinimalInvoice ref={minimalInvoiceRef} proforma={proforma} getCurrencySymbol={getCurrencySymbol} formatLeadNumber={formatLeadNumber} />}
       </div>
       {pdfLoading && (
         <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center z-50">

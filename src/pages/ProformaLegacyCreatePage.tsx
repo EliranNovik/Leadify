@@ -12,21 +12,21 @@ const getVatRateForLegacyLead = (dateString: string | null | undefined): number 
     // If no date provided, default to 18% (current rate)
     return 0.18;
   }
-  
+
   const paymentDate = new Date(dateString);
   if (isNaN(paymentDate.getTime())) {
     // If date is invalid, default to 18%
     return 0.18;
   }
-  
+
   // VAT rate change date: 2025-01-01
   const vatChangeDate = new Date('2025-01-01T00:00:00');
-  
+
   // If payment date is before 2025-01-01, use 17% VAT
   if (paymentDate < vatChangeDate) {
     return 0.17;
   }
-  
+
   // Otherwise, use 18% VAT (for dates on or after 2025-01-01)
   return 0.18;
 };
@@ -42,22 +42,24 @@ const ProformaLegacyCreatePage: React.FC = () => {
   const [userFullName, setUserFullName] = useState<string | null>(null);
   const [clientId, setClientId] = useState<number | null>(null);
   const [employeeId, setEmployeeId] = useState<number | null>(null);
+  const [subLeadsCount, setSubLeadsCount] = useState<number>(0);
+  const [isMasterLead, setIsMasterLead] = useState<boolean>(false);
 
   useEffect(() => {
     const fetchLead = async () => {
       setLoading(true);
-      
+
       console.log('🔍 Full URL:', window.location.href);
       console.log('🔍 Location search:', location.search);
-      
+
       // Get ppr_id and client_id from URL parameters
       const urlParams = new URLSearchParams(location.search);
       const pprId = urlParams.get('ppr_id');
       const clientIdParam = urlParams.get('client_id');
-      
+
       console.log('🔍 ProformaLegacyCreate - pprId from URL:', pprId);
       console.log('🔍 ProformaLegacyCreate - clientId from URL:', clientIdParam);
-      
+
       // Set client_id if provided
       if (clientIdParam) {
         const parsedClientId = parseInt(clientIdParam);
@@ -65,45 +67,45 @@ const ProformaLegacyCreatePage: React.FC = () => {
           setClientId(parsedClientId);
         }
       }
-      
+
       // Fetch payment plan row description and order if ppr_id is available
       let paymentPlanDescription = '';
       let paymentPlanOrder = '';
       let pprData: any = null;
-      
+
       if (pprId) {
         console.log('🔍 Fetching payment plan data for pprId:', pprId);
-        
+
         // First, let's check if there are any records with this ID
         const { data: allRecords, error: allRecordsError } = await supabase
           .from('finances_paymentplanrow')
           .select('id, "order", notes')
           .eq('id', pprId);
-        
+
         console.log('🔍 All records with this ID:', { allRecords, allRecordsError });
-        
+
         const { data: fetchedPprData, error: pprError } = await supabase
           .from('finances_paymentplanrow')
           .select('"order", notes, value, value_base, vat_value, currency_id, date, due_date')
           .eq('id', pprId)
           .single();
-        
+
         console.log('🔍 Payment plan data result:', { fetchedPprData, pprError });
         if (pprError) {
           console.error('❌ Payment plan query error:', pprError);
         }
-        
+
         if (fetchedPprData) {
           pprData = fetchedPprData;
-          console.log('🔍 Payment plan data:', { 
-            notes: pprData.notes, 
+          console.log('🔍 Payment plan data:', {
+            notes: pprData.notes,
             order: pprData.order,
             value: pprData.value,
             value_base: pprData.value_base,
             vat_value: pprData.vat_value,
             currency_id: pprData.currency_id
           });
-          
+
           if (pprData.notes) {
             paymentPlanDescription = pprData.notes;
             console.log('🔍 Set paymentPlanDescription from notes:', paymentPlanDescription);
@@ -127,7 +129,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
       } else {
         console.log('🔍 No pprId found in URL parameters');
       }
-      
+
       const { data, error } = await supabase
         .from('leads_lead')
         .select(`
@@ -145,97 +147,155 @@ const ProformaLegacyCreatePage: React.FC = () => {
         return;
       }
       setLead(data);
-      
-      // Fetch client contact info from leads_contact via lead_leadcontact
+
+      // Fetch subleads data for lead number formatting (for legacy leads)
+      try {
+        const masterId = data.master_id;
+        const leadId = String(data.id);
+
+        // If master_id exists, it's a sub-lead - calculate suffix based on existing sub-leads with same master_id
+        if (masterId && String(masterId).trim() !== '') {
+          // Fetch all subleads with the same master_id, sorted by ID
+          const { data: allSubLeads } = await supabase
+            .from('leads_lead')
+            .select('id')
+            .eq('master_id', masterId)
+            .order('id', { ascending: true });
+
+          if (allSubLeads && allSubLeads.length > 0) {
+            // Find the index of current lead in the sorted list
+            const currentIndex = allSubLeads.findIndex((sub: any) => String(sub.id) === leadId);
+            // Suffix starts from 2 (master is /1, first sublead is /2, etc.)
+            const suffix = currentIndex >= 0 ? currentIndex + 2 : allSubLeads.length + 2;
+            // Store the suffix for formatting
+            setSubLeadsCount(suffix);
+          } else {
+            setSubLeadsCount(2); // Default to /2 if no other subleads found
+          }
+        } else {
+          // It's a master lead - count subleads to determine if it has subleads
+          const { data: subLeads } = await supabase
+            .from('leads_lead')
+            .select('id', { count: 'exact', head: false })
+            .eq('master_id', data.id);
+
+          const subLeadsCountValue = subLeads?.length || 0;
+          setSubLeadsCount(subLeadsCountValue);
+          setIsMasterLead(subLeadsCountValue > 0);
+        }
+      } catch (error) {
+        console.error('Error fetching subleads data:', error);
+      }
+
+      // Fetch client contact info using client_id from URL parameter (if available) or fallback to main contact
       let clientName = data.name || 'Client';
       let clientEmail = '';
       let clientPhone = '';
-      
+
       try {
-        // First, let's check what contacts exist for this lead
-        const { data: allContacts } = await supabase
-          .from('lead_leadcontact')
-          .select(`
-            main,
-            contact_id
-          `)
-          .eq('lead_id', data.id);
-        
-        if (allContacts && allContacts.length > 0) {
-          // Try different main field values
-          let leadContacts = null;
-          
-          const { data: contactsTrue } = await supabase
+        // If client_id is provided in URL, use it to fetch the specific contact
+        if (clientIdParam) {
+          const parsedClientId = parseInt(clientIdParam);
+          if (!isNaN(parsedClientId)) {
+            const { data: contactData } = await supabase
+              .from('leads_contact')
+              .select('name, email, phone')
+              .eq('id', parsedClientId)
+              .single();
+
+            if (contactData) {
+              clientName = contactData.name || clientName;
+              clientEmail = contactData.email || '';
+              clientPhone = contactData.phone || '';
+            }
+          }
+        } else {
+          // Fallback: get main contact from lead_leadcontact
+          const { data: allContacts } = await supabase
             .from('lead_leadcontact')
             .select(`
               main,
               contact_id
             `)
-            .eq('lead_id', data.id)
-            .eq('main', 'true')
-            .limit(1);
-          
-          if (contactsTrue && contactsTrue.length > 0) {
-            leadContacts = contactsTrue;
-          } else {
-            const { data: contactsBool } = await supabase
+            .eq('lead_id', data.id);
+
+          if (allContacts && allContacts.length > 0) {
+            // Try different main field values
+            let leadContacts = null;
+
+            const { data: contactsTrue } = await supabase
               .from('lead_leadcontact')
               .select(`
                 main,
                 contact_id
               `)
               .eq('lead_id', data.id)
-              .eq('main', true)
+              .eq('main', 'true')
               .limit(1);
-            
-            if (contactsBool && contactsBool.length > 0) {
-              leadContacts = contactsBool;
+
+            if (contactsTrue && contactsTrue.length > 0) {
+              leadContacts = contactsTrue;
             } else {
-              const { data: contactsNum } = await supabase
+              const { data: contactsBool } = await supabase
                 .from('lead_leadcontact')
                 .select(`
                   main,
                   contact_id
                 `)
                 .eq('lead_id', data.id)
-                .eq('main', 1)
+                .eq('main', true)
                 .limit(1);
-              
-              leadContacts = contactsNum;
+
+              if (contactsBool && contactsBool.length > 0) {
+                leadContacts = contactsBool;
+              } else {
+                const { data: contactsNum } = await supabase
+                  .from('lead_leadcontact')
+                  .select(`
+                    main,
+                    contact_id
+                  `)
+                  .eq('lead_id', data.id)
+                  .eq('main', 1)
+                  .limit(1);
+
+                leadContacts = contactsNum;
+              }
             }
-          }
-          
-          if (leadContacts && leadContacts.length > 0) {
-            const { data: contactData } = await supabase
-              .from('leads_contact')
-              .select('name, email, phone')
-              .eq('id', leadContacts[0].contact_id)
-              .single();
-            
-            if (contactData) {
-              clientName = contactData.name || clientName;
-              clientEmail = contactData.email || '';
-              clientPhone = contactData.phone || '';
-            }
-          } else if (allContacts && allContacts.length > 0) {
-            // Fallback: use first available contact
-            const { data: contactData } = await supabase
-              .from('leads_contact')
-              .select('name, email, phone')
-              .eq('id', allContacts[0].contact_id)
-              .single();
-            
-            if (contactData) {
-              clientName = contactData.name || clientName;
-              clientEmail = contactData.email || '';
-              clientPhone = contactData.phone || '';
+
+            if (leadContacts && leadContacts.length > 0) {
+              const { data: contactData } = await supabase
+                .from('leads_contact')
+                .select('name, email, phone')
+                .eq('id', leadContacts[0].contact_id)
+                .single();
+
+              if (contactData) {
+                clientName = contactData.name || clientName;
+                clientEmail = contactData.email || '';
+                clientPhone = contactData.phone || '';
+              }
+            } else if (allContacts && allContacts.length > 0) {
+              // Fallback: use first available contact
+              const { data: contactData } = await supabase
+                .from('leads_contact')
+                .select('name, email, phone')
+                .eq('id', allContacts[0].contact_id)
+                .single();
+
+              if (contactData) {
+                clientName = contactData.name || clientName;
+                clientEmail = contactData.email || '';
+                clientPhone = contactData.phone || '';
+              }
             }
           }
         }
       } catch (contactError) {
+        console.error('Error fetching contact data:', contactError);
         // Error handling - contact data will remain empty
       }
-      
+
       console.log('🔍 Final description values:', {
         pprId,
         paymentPlanOrder,
@@ -243,13 +303,13 @@ const ProformaLegacyCreatePage: React.FC = () => {
         leadDescription: data.description,
         finalDescription: paymentPlanOrder || paymentPlanDescription || data.description || 'Legal Services'
       });
-      
+
       // Determine currency and amounts - prioritize payment plan data over lead data
       const currencyId = pprData?.currency_id || data.currency_id;
       const paymentAmount = pprData?.value ? Number(pprData.value) : (data.total || 0);
       const baseAmount = pprData?.value_base ? Number(pprData.value_base) : (data.total || 0);
       const vatAmount = pprData?.vat_value ? Number(pprData.vat_value) : 0;
-      
+
       // Get currency symbol - use accounting_currencies data if available, otherwise fallback to mapping
       let currencySymbol = '₪'; // Default
       if (data.accounting_currencies) {
@@ -257,7 +317,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
       } else {
         currencySymbol = getCurrencySymbol(currencyId);
       }
-      
+
       console.log('🔍 Currency info:', {
         leadCurrencyId: data.currency_id,
         paymentPlanCurrencyId: pprData?.currency_id,
@@ -265,7 +325,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
         accountingCurrency: data.accounting_currencies,
         currencySymbol: currencySymbol
       });
-      
+
       console.log('🔍 Amount info:', {
         leadTotal: data.total,
         paymentPlanValue: pprData?.value,
@@ -275,10 +335,10 @@ const ProformaLegacyCreatePage: React.FC = () => {
         finalBaseAmount: baseAmount,
         finalVatAmount: vatAmount
       });
-      
+
       // Get payment plan row date for VAT calculation (use date or due_date)
       const paymentPlanDate = pprData?.date || pprData?.due_date || null;
-      
+
       setProformaData({
         client: clientName,
         clientId: data.id,
@@ -317,14 +377,14 @@ const ProformaLegacyCreatePage: React.FC = () => {
         if (!error && userData?.full_name) {
           setUserFullName(userData.full_name);
         }
-        
+
         // Fetch employee ID from users table (users.employee_id -> tenants_employee.id)
         const { data: userWithEmployee, error: userError } = await supabase
           .from('users')
           .select('id, email, employee_id, tenants_employee!employee_id(id, display_name)')
           .eq('email', user.email)
           .single();
-        
+
         if (!userError && userWithEmployee?.employee_id) {
           setEmployeeId(userWithEmployee.employee_id);
           console.log('✅ [ProformaLegacyCreate] Employee ID found via users table:', {
@@ -339,14 +399,14 @@ const ProformaLegacyCreatePage: React.FC = () => {
             error: userError,
             userData: userWithEmployee
           });
-          
+
           // Fallback: Try direct lookup in tenants_employee by email (in case email field exists there)
           const { data: employeeData, error: employeeError } = await supabase
             .from('tenants_employee')
             .select('id, email, display_name')
             .eq('email', user.email)
             .maybeSingle();
-          
+
           if (!employeeError && employeeData?.id) {
             setEmployeeId(employeeData.id);
             console.log('✅ [ProformaLegacyCreate] Employee ID found via direct tenants_employee lookup:', {
@@ -395,11 +455,11 @@ const ProformaLegacyCreatePage: React.FC = () => {
     try {
       // Generate proforma name
       const proformaName = await generateProformaName();
-      
+
       // Calculate totals
       const total = proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
       const totalBase = total;
-      
+
       // Calculate VAT if needed - use date-based rate for legacy leads
       let vat = 0;
       if (proformaData.addVat) {
@@ -471,7 +531,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
         employeeIdState: employeeId,
         hasEmployeeId: !!employeeId
       });
-      
+
       // Create proforma using the function we created in SQL
       let { data, error } = await supabase.rpc('create_proforma_with_rows', {
         p_lead_id: parseInt(leadId!),
@@ -488,7 +548,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
         p_creator_id: employeeId, // Use employee ID from logged-in user
         p_rows: rowsData // Pass array directly, Supabase converts to jsonb
       });
-      
+
       if (error) {
         console.error('❌ [ProformaLegacyCreate] Error creating proforma:', error);
       } else {
@@ -498,19 +558,19 @@ const ProformaLegacyCreatePage: React.FC = () => {
       // If we get a duplicate key error (sequence out of sync), try to fix it and retry
       if (error && error.code === '23505') {
         console.log('🔧 Duplicate key error detected - fixing sequences and retrying...');
-        
+
         // Fix both sequences (proformainvoice and proformainvoicerow)
         const { error: fixError } = await supabase.rpc('fix_proformainvoice_sequence');
         if (fixError) {
           console.error('❌ Error fixing sequences:', fixError);
           throw new Error('Failed to fix sequences. Please run the fix script manually.');
         }
-        
+
         console.log('✅ Sequences fixed, retrying proforma creation...');
-        
+
         // Retry creating the proforma (with a small delay to ensure sequences are updated)
         await new Promise(resolve => setTimeout(resolve, 100));
-        
+
         const retryResult = await supabase.rpc('create_proforma_with_rows', {
           p_lead_id: parseInt(leadId!),
           p_total: totalWithVat,
@@ -526,13 +586,13 @@ const ProformaLegacyCreatePage: React.FC = () => {
           p_creator_id: employeeId, // Use employee ID from logged-in user
           p_rows: rowsData
         });
-        
+
         if (retryResult.error) {
           // If it still fails after fixing, it might be a different issue
           console.error('❌ Error after sequence fix:', retryResult.error);
           throw retryResult.error;
         }
-        
+
         data = retryResult.data;
         console.log('✅ Proforma created successfully after sequence fix');
       } else if (error) {
@@ -556,10 +616,10 @@ const ProformaLegacyCreatePage: React.FC = () => {
   // Helper to get currency symbol
   const getCurrencySymbol = (currencyId: string | number | undefined) => {
     if (!currencyId) return '₪';
-    
+
     // Convert to number if it's a string
     const id = typeof currencyId === 'string' ? parseInt(currencyId) : currencyId;
-    
+
     // Map currency IDs to symbols (based on common currency ID mappings)
     switch (id) {
       case 1: return '₪'; // NIS/ILS
@@ -596,69 +656,69 @@ const ProformaLegacyCreatePage: React.FC = () => {
           <h3 className="text-lg font-bold text-gray-800 mb-4">Invoice Items</h3>
           <div className="overflow-x-auto mb-4">
             <table className="table w-full min-w-[500px]">
-                <thead>
-                  <tr className="bg-gray-50">
-                    <th className="text-sm font-semibold text-gray-700">Description</th>
-                    <th className="text-sm font-semibold text-gray-700">Qty</th>
-                    <th className="text-sm font-semibold text-gray-700">Rate</th>
-                    <th className="text-sm font-semibold text-gray-700">Total</th>
-                    <th className="text-sm font-semibold text-gray-700">Actions</th>
+              <thead>
+                <tr className="bg-gray-50">
+                  <th className="text-sm font-semibold text-gray-700">Description</th>
+                  <th className="text-sm font-semibold text-gray-700">Qty</th>
+                  <th className="text-sm font-semibold text-gray-700">Rate</th>
+                  <th className="text-sm font-semibold text-gray-700">Total</th>
+                  <th className="text-sm font-semibold text-gray-700">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {proformaData.rows.map((row: any, idx: number) => (
+                  <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                    <td>
+                      <input
+                        className="input input-bordered w-56 text-base py-3 px-4"
+                        value={row.description}
+                        onChange={e => handleProformaRowChange(idx, 'description', e.target.value)}
+                        placeholder="Item description"
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="input input-bordered w-16 text-base text-right py-3 px-4 no-arrows"
+                        type="number"
+                        value={row.qty}
+                        onChange={e => handleProformaRowChange(idx, 'qty', Number(e.target.value))}
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        style={{ MozAppearance: 'textfield' }}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="input input-bordered w-32 text-base text-right py-3 px-4 no-arrows"
+                        type="number"
+                        value={row.rate}
+                        onChange={e => handleProformaRowChange(idx, 'rate', Number(e.target.value))}
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        style={{ MozAppearance: 'textfield' }}
+                      />
+                    </td>
+                    <td>
+                      <input className="input input-bordered w-32 text-base text-right font-semibold py-3 px-4 no-arrows" type="number" value={row.total} readOnly
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        style={{ MozAppearance: 'textfield' }}
+                      />
+                    </td>
+                    <td>
+                      <button
+                        className="btn btn-ghost btn-xs text-red-500 hover:bg-red-50"
+                        onClick={() => handleDeleteProformaRow(idx)}
+                      >
+                        <XMarkIcon className="w-4 h-4" />
+                      </button>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {proformaData.rows.map((row: any, idx: number) => (
-                    <tr key={idx} className="hover:bg-gray-50 transition-colors">
-                      <td>
-                        <input 
-                          className="input input-bordered w-56 text-base py-3 px-4" 
-                          value={row.description} 
-                          onChange={e => handleProformaRowChange(idx, 'description', e.target.value)}
-                          placeholder="Item description"
-                        />
-                      </td>
-                      <td>
-                        <input 
-                          className="input input-bordered w-16 text-base text-right py-3 px-4 no-arrows" 
-                          type="number" 
-                          value={row.qty} 
-                          onChange={e => handleProformaRowChange(idx, 'qty', Number(e.target.value))}
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                          style={{ MozAppearance: 'textfield' }}
-                        />
-                      </td>
-                      <td>
-                        <input 
-                          className="input input-bordered w-32 text-base text-right py-3 px-4 no-arrows" 
-                          type="number" 
-                          value={row.rate} 
-                          onChange={e => handleProformaRowChange(idx, 'rate', Number(e.target.value))}
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                          style={{ MozAppearance: 'textfield' }}
-                        />
-                      </td>
-                      <td>
-                        <input className="input input-bordered w-32 text-base text-right font-semibold py-3 px-4 no-arrows" type="number" value={row.total} readOnly 
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                          style={{ MozAppearance: 'textfield' }}
-                        />
-                      </td>
-                      <td>
-                        <button 
-                          className="btn btn-ghost btn-xs text-red-500 hover:bg-red-50" 
-                          onClick={() => handleDeleteProformaRow(idx)}
-                        >
-                          <XMarkIcon className="w-4 h-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            <button 
-              className="btn btn-outline btn-sm mt-4 text-blue-600 border-blue-300 hover:bg-blue-50" 
+                ))}
+              </tbody>
+            </table>
+            <button
+              className="btn btn-outline btn-sm mt-4 text-blue-600 border-blue-300 hover:bg-blue-50"
               onClick={handleAddProformaRow}
             >
               Add Row
@@ -669,14 +729,14 @@ const ProformaLegacyCreatePage: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
             <div className="form-control">
               <label className="label cursor-pointer justify-start gap-3">
-                <input 
-                  type="checkbox" 
-                  className="checkbox checkbox-primary" 
-                  checked={proformaData.addVat} 
+                <input
+                  type="checkbox"
+                  className="checkbox checkbox-primary"
+                  checked={proformaData.addVat}
                   onChange={e => setProformaData((prev: any) => ({ ...prev, addVat: e.target.checked }))}
                 />
                 <span className="label-text font-medium">
-                  Add VAT ({proformaData?.paymentPlanDate 
+                  Add VAT ({proformaData?.paymentPlanDate
                     ? `${Math.round(getVatRateForLegacyLead(proformaData.paymentPlanDate) * 100)}%`
                     : '18%'})
                 </span>
@@ -686,9 +746,9 @@ const ProformaLegacyCreatePage: React.FC = () => {
               <label className="label">
                 <span className="label-text font-medium">Bank Account</span>
               </label>
-              <select 
-                className="select select-bordered w-full" 
-                value={proformaData.bankAccount} 
+              <select
+                className="select select-bordered w-full"
+                value={proformaData.bankAccount}
                 onChange={e => setProformaData((prev: any) => ({ ...prev, bankAccount: e.target.value }))}
               >
                 <option value="">Select account...</option>
@@ -699,9 +759,9 @@ const ProformaLegacyCreatePage: React.FC = () => {
           </div>
           {/* Notes */}
           <h3 className="text-lg font-bold text-gray-800 mb-4">Notes</h3>
-          <textarea 
-            className="textarea textarea-bordered w-full min-h-[120px] text-sm mb-4" 
-            value={proformaData.notes} 
+          <textarea
+            className="textarea textarea-bordered w-full min-h-[120px] text-sm mb-4"
+            value={proformaData.notes}
             onChange={e => setProformaData((prev: any) => ({ ...prev, notes: e.target.value }))}
             placeholder="Add any additional notes or terms..."
           />
@@ -748,9 +808,43 @@ const ProformaLegacyCreatePage: React.FC = () => {
               {proformaData.email && (
                 <div className="text-sm text-gray-500">{proformaData.email}</div>
               )}
-              {proformaData.clientId && (
-                <div className="text-sm text-gray-500 font-semibold">Lead #: {proformaData.clientId}</div>
-              )}
+              {proformaData.clientId && (() => {
+                // Format lead number using same logic as Clients.tsx formatLegacyLeadNumber (for legacy leads)
+                const formatLeadNumber = () => {
+                  if (!lead) return proformaData.clientId || '---';
+
+                  const masterId = lead.master_id;
+                  const leadId = String(lead.id || proformaData.clientId || '---');
+
+                  // If master_id is null/empty, it's a master lead - return just the ID (no /1 suffix for legacy leads)
+                  if (!masterId || String(masterId).trim() === '') {
+                    // For legacy leads, add "C" prefix for success stage (stage 100)
+                    const isSuccessStage = lead.stage === 100 || lead.stage === '100';
+                    if (isSuccessStage && leadId && !leadId.toString().startsWith('C')) {
+                      return `C${leadId}`;
+                    }
+                    return leadId;
+                  }
+
+                  // If master_id exists, it's a sub-lead - format as masterId/suffix
+                  // Use the calculated suffix from subLeadsCount (which stores the suffix, not count)
+                  const suffix = subLeadsCount > 0 ? subLeadsCount : 2; // Default to /2 if not calculated
+                  const formattedNumber = `${masterId}/${suffix}`;
+
+                  // For legacy leads, add "C" prefix for success stage (stage 100)
+                  const isSuccessStage = lead.stage === 100 || lead.stage === '100';
+                  if (isSuccessStage && !formattedNumber.startsWith('C')) {
+                    // Replace L prefix with C if success stage, or add C prefix
+                    return formattedNumber.replace(/^L/, 'C').replace(/^(\d+)/, 'C$1');
+                  }
+
+                  return formattedNumber;
+                };
+
+                return (
+                  <div className="text-sm text-gray-500 font-semibold">Lead #: {formatLeadNumber()}</div>
+                );
+              })()}
               {!(proformaData.phone || proformaData.email) && (
                 <div className="text-xs text-red-400">No client phone/email found.</div>
               )}
@@ -807,14 +901,14 @@ const ProformaLegacyCreatePage: React.FC = () => {
               <div className="flex justify-between text-xl mt-4 border-t pt-4 font-extrabold">
                 <span>Total</span>
                 <span style={{ color: '#006BB1' }}>
-                  {proformaData.currency} {proformaData.addVat 
+                  {proformaData.currency} {proformaData.addVat
                     ? (() => {
-                        const subtotal = proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
-                        const paymentPlanDate = proformaData.paymentPlanDate;
-                        const vatRate = getVatRateForLegacyLead(paymentPlanDate);
-                        const totalWithVat = Math.round(subtotal * (1 + vatRate) * 100) / 100;
-                        return totalWithVat.toFixed(2);
-                      })()
+                      const subtotal = proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
+                      const paymentPlanDate = proformaData.paymentPlanDate;
+                      const vatRate = getVatRateForLegacyLead(paymentPlanDate);
+                      const totalWithVat = Math.round(subtotal * (1 + vatRate) * 100) / 100;
+                      return totalWithVat.toFixed(2);
+                    })()
                     : proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)}
                 </span>
               </div>
