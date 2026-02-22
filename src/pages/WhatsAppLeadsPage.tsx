@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { buildApiUrl } from '../lib/api';
@@ -30,6 +30,7 @@ import {
   UserGroupIcon,
   LinkIcon,
   MicrophoneIcon,
+  Squares2X2Icon,
 } from '@heroicons/react/24/outline';
 import EmojiPicker from 'emoji-picker-react';
 import { FaWhatsapp } from 'react-icons/fa';
@@ -65,9 +66,11 @@ interface WhatsAppLead {
 }
 
 const WhatsAppLeadsPage: React.FC = () => {
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [leads, setLeads] = useState<WhatsAppLead[]>([]);
   const [loading, setLoading] = useState(true);
+  const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedLead, setSelectedLead] = useState<WhatsAppLead | null>(null);
   const [messages, setMessages] = useState<any[]>([]);
@@ -84,9 +87,10 @@ const WhatsAppLeadsPage: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const leadsListRef = useRef<HTMLDivElement>(null);
+  const mobileToolsRef = useRef<HTMLDivElement>(null);
 
   // Media modal state
-  const [selectedMedia, setSelectedMedia] = useState<{url: string, type: 'image' | 'video', caption?: string} | null>(null);
+  const [selectedMedia, setSelectedMedia] = useState<{ url: string, type: 'image' | 'video', caption?: string } | null>(null);
 
   // Edit/Delete message state
   const [editingMessage, setEditingMessage] = useState<number | null>(null);
@@ -101,15 +105,16 @@ const WhatsAppLeadsPage: React.FC = () => {
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
   const [templateSearchTerm, setTemplateSearchTerm] = useState('');
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
+  const [selectedLanguage, setSelectedLanguage] = useState<string>('');
 
   // AI suggestions state
   const [isLoadingAI, setIsLoadingAI] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
   const [showAISuggestions, setShowAISuggestions] = useState(false);
-  
+
   // Mobile dropdown state
   const [showMobileDropdown, setShowMobileDropdown] = useState(false);
-  
+
   // Emoji picker state
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
 
@@ -135,14 +140,14 @@ const WhatsAppLeadsPage: React.FC = () => {
   const getUserName = async (userId: string) => {
     if (!userId) return null;
     if (userCache[userId]) return userCache[userId];
-    
+
     try {
       const { data } = await supabase
         .from('users')
         .select('first_name, full_name')
         .eq('id', userId)
         .single();
-      
+
       if (data) {
         const name = data.first_name || data.full_name || 'Unknown User';
         setUserCache(prev => ({ ...prev, [userId]: name }));
@@ -166,13 +171,13 @@ const WhatsAppLeadsPage: React.FC = () => {
             .select('id, full_name, email, first_name')
             .eq('email', user.email)
             .single();
-          
+
           if (userRow) {
             setCurrentUser(userRow);
             return;
           }
         }
-        
+
         // Fallback: create a user object with available data
         const fallbackUser = {
           id: user.id,
@@ -199,15 +204,15 @@ const WhatsAppLeadsPage: React.FC = () => {
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
-      
+
       if (isEmojiPickerOpen) {
         if (!target.closest('.emoji-picker-container') && !target.closest('button[type="button"]')) {
           setIsEmojiPickerOpen(false);
         }
       }
-      
+
       if (showMobileDropdown) {
-        if (!target.closest('.mobile-dropdown-container')) {
+        if (mobileToolsRef.current && !mobileToolsRef.current.contains(target)) {
           setShowMobileDropdown(false);
         }
       }
@@ -218,6 +223,159 @@ const WhatsAppLeadsPage: React.FC = () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, [isEmojiPickerOpen, showMobileDropdown]);
+
+  // Fetch employees
+  useEffect(() => {
+    const fetchEmployees = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name, photo_url, photo')
+          .order('display_name', { ascending: true });
+
+        if (!error && data) {
+          setAllEmployees(data);
+        }
+      } catch (error) {
+        console.error('Error fetching employees:', error);
+      }
+    };
+
+    fetchEmployees();
+  }, []);
+
+  // Helper function to get employee by ID or name
+  const getEmployeeById = (employeeIdOrName: string | number | null | undefined) => {
+    if (!employeeIdOrName || employeeIdOrName === '---' || employeeIdOrName === '--' || employeeIdOrName === '') {
+      return null;
+    }
+
+    // First, try to match by ID
+    const employeeById = allEmployees.find((emp: any) => {
+      const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
+      const searchId = typeof employeeIdOrName === 'string' ? parseInt(employeeIdOrName, 10) : employeeIdOrName;
+
+      if (isNaN(Number(searchId))) return false;
+
+      if (empId.toString() === searchId.toString()) return true;
+      if (Number(empId) === Number(searchId)) return true;
+
+      return false;
+    });
+
+    if (employeeById) {
+      return employeeById;
+    }
+
+    // If not found by ID, try to match by display name
+    if (typeof employeeIdOrName === 'string') {
+      const employeeByName = allEmployees.find((emp: any) => {
+        if (!emp.display_name) return false;
+        return emp.display_name.trim().toLowerCase() === employeeIdOrName.trim().toLowerCase();
+      });
+
+      if (employeeByName) {
+        return employeeByName;
+      }
+    }
+
+    return null;
+  };
+
+  // Helper function to get employee initials
+  const getEmployeeInitials = (name: string | null | undefined): string => {
+    if (!name || name === '---' || name === '--' || name === 'Not assigned') return '';
+    const parts = name.trim().split(' ');
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+    return name.substring(0, 2).toUpperCase();
+  };
+
+  // Component to render employee avatar
+  const EmployeeAvatar: React.FC<{
+    employeeId: string | number | null | undefined;
+    size?: 'sm' | 'md' | 'lg';
+  }> = ({ employeeId, size = 'sm' }) => {
+    const [imageError, setImageError] = useState(false);
+    const employee = getEmployeeById(employeeId);
+    const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : size === 'md' ? 'w-12 h-12 text-sm' : 'w-16 h-16 text-base';
+
+    if (!employee) {
+      return null;
+    }
+
+    const photoUrl = employee.photo_url || employee.photo;
+    const initials = getEmployeeInitials(employee.display_name);
+
+    // If we know there's no photo URL or we have an error, show initials immediately
+    if (imageError || !photoUrl) {
+      return (
+        <div
+          className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
+          onClick={() => {
+            if (employee.id) {
+              navigate(`/my-profile/${employee.id}`);
+            }
+          }}
+          title={`View ${employee.display_name}'s profile`}
+        >
+          {initials}
+        </div>
+      );
+    }
+
+    // Try to render image
+    return (
+      <img
+        src={photoUrl}
+        alt={employee.display_name}
+        className={`${sizeClasses} rounded-full object-cover flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
+        onClick={() => {
+          if (employee.id) {
+            navigate(`/my-profile/${employee.id}`);
+          }
+        }}
+        onError={() => setImageError(true)}
+        title={`View ${employee.display_name}'s profile`}
+      />
+    );
+  };
+
+  // Helper function to normalize language codes (en and en_US both become 'en')
+  const normalizeLanguage = (lang: string | undefined | null): string => {
+    if (!lang) return 'en';
+    const normalized = lang.toLowerCase();
+    if (normalized === 'en_us' || normalized === 'en') return 'en';
+    return normalized;
+  };
+
+  // Helper function to get display name for language
+  const getLanguageDisplayName = (lang: string): string => {
+    const normalized = normalizeLanguage(lang);
+    const langMap: { [key: string]: string } = {
+      'en': 'English',
+      'he': 'Hebrew',
+      'fr': 'French',
+      'ar': 'Arabic',
+      'ru': 'Russian',
+      'es': 'Spanish',
+      'de': 'German',
+      'it': 'Italian',
+      'pt': 'Portuguese',
+      'zh': 'Chinese',
+      'ja': 'Japanese',
+      'ko': 'Korean',
+      'tr': 'Turkish',
+      'pl': 'Polish',
+      'nl': 'Dutch',
+      'sv': 'Swedish',
+      'da': 'Danish',
+      'no': 'Norwegian',
+      'fi': 'Finnish',
+    };
+    return langMap[normalized] || lang.toUpperCase();
+  };
 
   // Fetch WhatsApp templates
   useEffect(() => {
@@ -235,31 +393,31 @@ const WhatsAppLeadsPage: React.FC = () => {
         setIsLoadingTemplates(false);
       }
     };
-    
+
     loadTemplates();
   }, []);
 
   // Helper function to process messages and create leads map
   const processMessagesToLeads = (incomingMessages: any[]) => {
     const leadMap = new Map<string, WhatsAppLead>();
-    
+
     incomingMessages?.forEach((message) => {
       // CRITICAL: Only use phone_number from database - never extract or fallback
       // This prevents different numbers from being grouped together
       const phoneNumber = message.phone_number || 'unknown';
-      
+
       // Skip messages without a valid phone_number
       if (!phoneNumber || phoneNumber === 'unknown') {
         return;
       }
-      
+
       if (!leadMap.has(phoneNumber)) {
         // Consider connected only if linked to a lead via FK (lead_id or legacy_id)
         const isConnected = !!message.lead_id || !!message.legacy_id;
-        
+
         // Count unread messages (messages that are not read or is_read is null/false)
         const isUnread = !message.is_read || message.is_read === false;
-        
+
         leadMap.set(phoneNumber, {
           ...message,
           phone_number: phoneNumber,
@@ -271,13 +429,13 @@ const WhatsAppLeadsPage: React.FC = () => {
       } else {
         const existingLead = leadMap.get(phoneNumber)!;
         existingLead.message_count += 1;
-        
+
         // Increment unread count if this message is unread
         const isUnread = !message.is_read || message.is_read === false;
         if (isUnread) {
           existingLead.unread_count = (existingLead.unread_count || 0) + 1;
         }
-        
+
         // Keep the most recent message as the main message (but preserve phone_number)
         if (new Date(message.sent_at) > new Date(existingLead.last_message_at)) {
           const updatedLead = {
@@ -325,7 +483,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         const unconnectedLeads = processMessagesToLeads(incomingMessages || []);
 
         console.log('📊 Unconnected leads found:', unconnectedLeads.length);
-        
+
         if (showLoading) {
           // Initial load - replace all leads
           setLeads(unconnectedLeads);
@@ -361,7 +519,7 @@ const WhatsAppLeadsPage: React.FC = () => {
             });
 
             // Sort by last_message_at (descending - most recent first)
-            mergedLeads.sort((a, b) => 
+            mergedLeads.sort((a, b) =>
               new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()
             );
 
@@ -383,7 +541,7 @@ const WhatsAppLeadsPage: React.FC = () => {
 
     // Initial load with loading screen
     fetchWhatsAppLeads(true);
-    
+
     // Set up polling to refresh every 30 seconds (without loading screen)
     const interval = setInterval(() => fetchWhatsAppLeads(false), 30000);
     return () => clearInterval(interval);
@@ -402,13 +560,13 @@ const WhatsAppLeadsPage: React.FC = () => {
         const extracted = extractPhoneNumber(lead.sender_name) || extractPhoneFromMessage(lead.message);
         if (extracted === normalizedPhoneParam) return true;
         // Try partial match (in case of formatting differences)
-        if (lead.phone_number && normalizedPhoneParam && 
-            (lead.phone_number.includes(normalizedPhoneParam) || normalizedPhoneParam.includes(lead.phone_number))) {
+        if (lead.phone_number && normalizedPhoneParam &&
+          (lead.phone_number.includes(normalizedPhoneParam) || normalizedPhoneParam.includes(lead.phone_number))) {
           return true;
         }
         return false;
       });
-      
+
       if (matchingLead) {
         console.log('✅ Auto-selecting lead from URL parameter:', normalizedPhoneParam, matchingLead);
         setSelectedLead(matchingLead);
@@ -426,7 +584,7 @@ const WhatsAppLeadsPage: React.FC = () => {
   // Helper function to extract phone number from sender name
   const extractPhoneNumber = (senderName: string): string | null => {
     if (!senderName) return null;
-    
+
     // Try to extract full phone number from various formats
     // Israeli phone numbers: +972501234567, 972501234567, 0501234567, 501234567
     const phoneRegex = /(\+?9725[0-9]{8}|05[0-9]{8}|5[0-9]{8})/;
@@ -437,7 +595,7 @@ const WhatsAppLeadsPage: React.FC = () => {
   // Helper function to extract phone number from message content
   const extractPhoneFromMessage = (message: string): string | null => {
     if (!message) return null;
-    
+
     // Try to extract full phone number from message content
     // Israeli phone numbers: +972501234567, 972501234567, 0501234567, 501234567
     const phoneRegex = /(\+?9725[0-9]{8}|05[0-9]{8}|5[0-9]{8})/;
@@ -455,7 +613,7 @@ const WhatsAppLeadsPage: React.FC = () => {
 
       try {
         console.log('🔄 Fetching messages for lead:', selectedLead.phone_number);
-        
+
         // CRITICAL: Only fetch messages by exact phone_number match
         // Do NOT query by sender_name to avoid mixing messages from different numbers
         const { data, error } = await supabase
@@ -463,7 +621,7 @@ const WhatsAppLeadsPage: React.FC = () => {
           .select('*')
           .eq('phone_number', selectedLead.phone_number)
           .order('sent_at', { ascending: true });
-        
+
         console.log('🔍 Query results:', {
           phoneNumber: selectedLead.phone_number,
           messagesCount: data?.length || 0
@@ -476,7 +634,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         }
 
         console.log('📨 Messages fetched for lead:', data?.length || 0);
-        
+
         // For outgoing messages, look up the user's first name
         const messagesWithSenderNames = await Promise.all(
           (data || []).map(async (message) => {
@@ -487,21 +645,21 @@ const WhatsAppLeadsPage: React.FC = () => {
                 .select('first_name, full_name, email')
                 .eq('email', message.sender_name)
                 .single();
-              
+
               if (user) {
                 return {
                   ...message,
                   sender_first_name: user.first_name || user.full_name || message.sender_name
                 };
               }
-              
+
               // Try to find by full_name if sender_name is not an email
               const { data: userByName } = await supabase
                 .from('users')
                 .select('first_name, full_name')
                 .eq('full_name', message.sender_name)
                 .single();
-              
+
               if (userByName) {
                 return {
                   ...message,
@@ -509,32 +667,32 @@ const WhatsAppLeadsPage: React.FC = () => {
                 };
               }
             }
-            
+
             return message;
           })
         );
-        
+
         // Process template messages for display
         const processedMessages = messagesWithSenderNames.map(processTemplateMessage);
         setMessages(processedMessages);
-        
+
         // Mark incoming messages as read when viewing the conversation
         if (currentUser && data && data.length > 0) {
           const incomingMessageIds = data
             .filter(msg => msg.direction === 'in' && (!msg.is_read || msg.is_read === false))
             .map(msg => msg.id);
-          
+
           if (incomingMessageIds.length > 0) {
             try {
               const { error } = await supabase
                 .from('whatsapp_messages')
-                .update({ 
-                  is_read: true, 
+                .update({
+                  is_read: true,
                   read_at: new Date().toISOString(),
-                  read_by: currentUser.id 
+                  read_by: currentUser.id
                 })
                 .in('id', incomingMessageIds);
-              
+
               if (error) {
                 console.error('Error marking messages as read:', error);
               } else {
@@ -545,7 +703,7 @@ const WhatsAppLeadsPage: React.FC = () => {
             }
           }
         }
-        
+
         // Auto-scroll to bottom
         setTimeout(() => {
           messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -575,21 +733,21 @@ const WhatsAppLeadsPage: React.FC = () => {
 
     if (lastIncomingMessage) {
       calculateTimeLeft(lastIncomingMessage.sent_at);
-      
+
       // Update timer every minute
       const interval = setInterval(() => {
         calculateTimeLeft(lastIncomingMessage.sent_at);
       }, 60000); // Update every minute
-      
+
       return () => clearInterval(interval);
     } else {
       // If no incoming messages, check the selected lead's last message time
       calculateTimeLeft(selectedLead.last_message_at);
-      
+
       const interval = setInterval(() => {
         calculateTimeLeft(selectedLead.last_message_at);
       }, 60000);
-      
+
       return () => clearInterval(interval);
     }
   }, [selectedLead, messages]);
@@ -598,7 +756,7 @@ const WhatsAppLeadsPage: React.FC = () => {
   useEffect(() => {
     const loadUserNames = async () => {
       const userIds = new Set<string>();
-      
+
       messages.forEach(msg => {
         if ((msg as any).edited_by) userIds.add((msg as any).edited_by);
         if ((msg as any).deleted_by) userIds.add((msg as any).deleted_by);
@@ -658,8 +816,8 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       // Update message in local state
-      setMessages(prev => prev.map(m => 
-        m.id === messageId 
+      setMessages(prev => prev.map(m =>
+        m.id === messageId
           ? { ...m, message: newText, is_edited: true as any }
           : m
       ));
@@ -706,8 +864,8 @@ const WhatsAppLeadsPage: React.FC = () => {
         toast.success('Message deleted for everyone!');
       } else {
         // Mark as deleted for me
-        setMessages(prev => prev.map(m => 
-          m.id === messageId 
+        setMessages(prev => prev.map(m =>
+          m.id === messageId
             ? { ...m, is_deleted: true as any }
             : m
         ));
@@ -739,13 +897,13 @@ const WhatsAppLeadsPage: React.FC = () => {
 
       // Store filled template content separately so we can use it for the local message display
       let filledTemplateContent: string | null = null;
-      
+
       // Build the message payload
       const messagePayload: any = {
         leadId: null, // No lead ID for new WhatsApp leads
         phoneNumber: selectedLead.phone_number,
-        message: selectedTemplate && selectedTemplate.params === '0' 
-          ? `TEMPLATE_MARKER:${selectedTemplate.title}` 
+        message: selectedTemplate && selectedTemplate.params === '0'
+          ? `TEMPLATE_MARKER:${selectedTemplate.title}`
           : newMessage.trim(),
         sender_name: currentUser.full_name || currentUser.email,
         hasTemplate: !!selectedTemplate,
@@ -759,10 +917,10 @@ const WhatsAppLeadsPage: React.FC = () => {
         messagePayload.templateId = typeof selectedTemplate.id === 'string' ? parseInt(selectedTemplate.id, 10) : selectedTemplate.id;
         messagePayload.templateName = selectedTemplate.name360;
         messagePayload.templateLanguage = selectedTemplate.language || 'en_US'; // Use template's language
-        
+
         // Debug log to verify templateId is being sent
         console.log('📤 Template ID being sent:', messagePayload.templateId, '(type:', typeof messagePayload.templateId, ')');
-        
+
         // Generate parameters based on actual param count
         const paramCount = Number(selectedTemplate.params) || 0;
         if (paramCount > 0) {
@@ -776,21 +934,21 @@ const WhatsAppLeadsPage: React.FC = () => {
             // For WhatsApp leads, we might not have a lead yet, so skip meeting lookup
             _isWhatsAppLead: true // Flag to indicate this is a WhatsApp lead without a proper lead
           };
-          
+
           // If no lead_id or legacy_id, explicitly set id to undefined (not null, not the message ID)
           if (!selectedLead.lead_id && !selectedLead.legacy_id) {
             clientForParams.id = undefined;
             clientForParams.lead_type = undefined;
           }
-          
+
           // Try to get specific param definitions first, otherwise use generic
           // This ensures phone, mobile, and email come from the user's data (same as WhatsAppPage)
           let templateParams: Array<{ type: string; text: string }> = [];
-          
+
           try {
             const { getTemplateParamDefinitions, generateParamsFromDefinitions } = await import('../lib/whatsappTemplateParamMapping');
             const paramDefinitions = await getTemplateParamDefinitions(selectedTemplate.id, selectedTemplate.name360);
-            
+
             if (paramDefinitions.length > 0) {
               console.log('✅ Using template-specific param definitions (Leads)');
               templateParams = await generateParamsFromDefinitions(paramDefinitions, clientForParams, null);
@@ -806,9 +964,9 @@ const WhatsAppLeadsPage: React.FC = () => {
             const { generateTemplateParameters } = await import('../lib/whatsappTemplateParams');
             templateParams = await generateTemplateParameters(paramCount, clientForParams, null);
           }
-          
+
           messagePayload.templateParameters = templateParams;
-          
+
           // Generate the filled template content for display (replace {{1}}, {{2}}, etc. with actual values)
           filledTemplateContent = selectedTemplate.content || '';
           if (templateParams && templateParams.length > 0) {
@@ -820,7 +978,7 @@ const WhatsAppLeadsPage: React.FC = () => {
               }
             });
           }
-          
+
           messagePayload.message = filledTemplateContent || selectedTemplate.content || 'Template sent';
           console.log(`📱 Template with ${paramCount} param(s) - auto-filled parameters:`, messagePayload.templateParameters);
           console.log(`✅ Filled template content:`, filledTemplateContent);
@@ -857,7 +1015,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         // For regular messages, use newMessage
         displayMessage = newMessage.trim();
       }
-      
+
       const newMsg = {
         id: Date.now(), // Temporary ID
         phone_number: selectedLead.phone_number,
@@ -880,12 +1038,12 @@ const WhatsAppLeadsPage: React.FC = () => {
         setIsInputFocused(false);
         textareaRef.current?.blur();
       }
-      
+
       // Refresh messages to get updated data (including any new incoming messages)
       // This will update the timer based on the latest message
       const refreshMessages = async () => {
         if (!selectedLead) return;
-        
+
         try {
           // CRITICAL: Only fetch by exact phone_number match to avoid mixing messages
           const { data: uniqueMessages } = await supabase
@@ -893,21 +1051,21 @@ const WhatsAppLeadsPage: React.FC = () => {
             .select('*')
             .eq('phone_number', selectedLead.phone_number)
             .order('sent_at', { ascending: true });
-          
+
           // Process template messages for display
           const processedMessages = (uniqueMessages || []).map(processTemplateMessage);
-          
+
           // Only update if there are actual changes
           setMessages(prevMessages => {
             const hasChanges = processedMessages.length !== prevMessages.length ||
               processedMessages.some((newMsg, index) => {
                 const prevMsg = prevMessages[index];
-                return !prevMsg || 
-                       newMsg.id !== prevMsg.id || 
-                       newMsg.message !== prevMsg.message ||
-                       newMsg.whatsapp_status !== prevMsg.whatsapp_status;
+                return !prevMsg ||
+                  newMsg.id !== prevMsg.id ||
+                  newMsg.message !== prevMsg.message ||
+                  newMsg.whatsapp_status !== prevMsg.whatsapp_status;
               });
-            
+
             if (hasChanges) {
               console.log('🔄 Refresh detected changes, updating messages (Leads)');
               return processedMessages;
@@ -920,11 +1078,11 @@ const WhatsAppLeadsPage: React.FC = () => {
           console.error('Error refreshing messages:', error);
         }
       };
-      
+
       // Refresh messages after a short delay to allow server to process
       setTimeout(() => {
         refreshMessages();
-        
+
         // Also refresh the leads list to update the lock status
         // This will ensure the lock icon updates immediately when a new message arrives
         const refreshLeads = async () => {
@@ -937,7 +1095,7 @@ const WhatsAppLeadsPage: React.FC = () => {
 
             if (incomingMessages) {
               const unconnectedLeads = processMessagesToLeads(incomingMessages);
-              
+
               // Merge intelligently without resetting (same as polling)
               setLeads(prevLeads => {
                 const mergedLeads: WhatsAppLead[] = [];
@@ -960,7 +1118,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                 });
 
                 // Sort by last_message_at (descending - most recent first)
-                mergedLeads.sort((a, b) => 
+                mergedLeads.sort((a, b) =>
                   new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()
                 );
 
@@ -971,11 +1129,11 @@ const WhatsAppLeadsPage: React.FC = () => {
             console.error('Error refreshing leads:', error);
           }
         };
-        
+
         // Refresh leads list to update lock status
         refreshLeads();
       }, 1000);
-      
+
       // Reset textarea height
       setTimeout(() => {
         const textarea = textareaRef.current;
@@ -983,7 +1141,7 @@ const WhatsAppLeadsPage: React.FC = () => {
           textarea.style.height = '40px';
         }
       }, 100);
-      
+
       // Auto-scroll to bottom
       setTimeout(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -1001,7 +1159,7 @@ const WhatsAppLeadsPage: React.FC = () => {
   // Send media message (optionally with a specific file)
   const handleSendMedia = async (fileOverride?: File) => {
     const fileToSend = fileOverride || selectedFile;
-    
+
     if (!fileToSend || !selectedLead || !currentUser) {
       console.log('❌ Cannot send media - missing file, lead, or user:', { fileToSend, selectedFile, fileOverride, selectedLead, currentUser });
       return;
@@ -1050,7 +1208,7 @@ const WhatsAppLeadsPage: React.FC = () => {
 
       // Create FormData for file upload
       const formData = new FormData();
-      
+
       // Ensure we have a proper File object (not just a Blob)
       let fileForUpload: File;
       if (fileToSend instanceof File) {
@@ -1063,7 +1221,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       } else {
         throw new Error('Invalid file type');
       }
-      
+
       formData.append('file', fileForUpload);
       formData.append('leadId', selectedLead.lead_id || selectedLead.id.toString());
 
@@ -1082,8 +1240,8 @@ const WhatsAppLeadsPage: React.FC = () => {
       // Send media message
       // Determine media type: check if it's a voice message (audio/webm or audio/ogg) or regular audio
       const isVoiceMessage = fileToSend.type.includes('webm') || fileToSend.type.includes('opus') || fileToSend.type.includes('ogg');
-      const mediaType = fileToSend.type.startsWith('image/') 
-        ? 'image' 
+      const mediaType = fileToSend.type.startsWith('image/')
+        ? 'image'
         : fileToSend.type.startsWith('audio/') || isVoiceMessage
           ? 'audio'
           : 'document';
@@ -1112,7 +1270,7 @@ const WhatsAppLeadsPage: React.FC = () => {
 
       // Add message to local state
       console.log('📤 Sending media with sender:', senderName, 'from user:', currentUser);
-      
+
       const newMsg = {
         id: Date.now(),
         lead_id: selectedLead.lead_id || selectedLead.id.toString(),
@@ -1161,7 +1319,7 @@ const WhatsAppLeadsPage: React.FC = () => {
 
       // Use sender name, fallback to phone number, then default
       const leadName = lead.sender_name?.trim() || lead.phone_number || 'WhatsApp Lead';
-      
+
       // Create the new lead using the database function
       const { data, error } = await supabase.rpc('create_new_lead_v3', {
         p_lead_name: leadName,
@@ -1193,7 +1351,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       // CRITICAL: Only update by exact phone_number match to avoid updating messages from other numbers
       const { error: updateError } = await supabase
         .from('whatsapp_messages')
-        .update({ 
+        .update({
           lead_id: newLead.id,
           legacy_id: null // Clear legacy_id since this is a new lead
         })
@@ -1207,7 +1365,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       toast.success(`Lead ${newLead.lead_number} created successfully!`);
-      
+
       // Refresh the leads list to remove the converted lead
       setLeads(prevLeads => prevLeads.filter(l => l.id !== lead.id));
       setSelectedLead(null);
@@ -1272,7 +1430,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       ];
 
       // Deduplicate by lead_number
-      const uniqueLeads = allLeads.filter((lead, index, self) => 
+      const uniqueLeads = allLeads.filter((lead, index, self) =>
         index === self.findIndex(l => l.lead_number === lead.lead_number)
       );
 
@@ -1473,7 +1631,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       const newConnectionsMap = new Map<string, boolean>();
-      
+
       const messagesByPhone = new Map<string, any[]>();
       (messagesData || []).forEach((message: any) => {
         const phone = message.phone_number?.toLowerCase();
@@ -1493,7 +1651,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         }
 
         const messages = messagesByPhone.get(normalizedPhone) || [];
-        const hasConnections = messages.some((message: any) => 
+        const hasConnections = messages.some((message: any) =>
           message.lead_id || message.legacy_id || message.contact_id
         );
         newConnectionsMap.set(String(lead.id), hasConnections);
@@ -1595,7 +1753,7 @@ const WhatsAppLeadsPage: React.FC = () => {
             .order('manual_id', { ascending: false })
             .limit(1)
             .single();
-          
+
           if (maxLeadData?.manual_id) {
             const maxId = BigInt(String(maxLeadData.manual_id));
             manualId = (maxId + BigInt(1)).toString();
@@ -1701,7 +1859,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       // CRITICAL: Only update by exact phone_number match to avoid updating messages from other numbers
       const { error: updateError } = await supabase
         .from('whatsapp_messages')
-        .update({ 
+        .update({
           lead_id: insertedSubLead.id,
           legacy_id: null
         })
@@ -1712,7 +1870,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       toast.success(`Sublead ${subLeadNumber} created successfully!`);
-      
+
       // Refresh the leads list
       setLeads(prevLeads => prevLeads.filter(l => l.id !== selectedLead.id));
       setSelectedLead(null);
@@ -1779,7 +1937,7 @@ const WhatsAppLeadsPage: React.FC = () => {
             .order('id', { ascending: false })
             .limit(1)
             .single();
-          
+
           const nextId = maxIdData ? maxIdData.id + 1 : 1;
           contactResult = await supabase
             .from('leads_contact')
@@ -1831,7 +1989,7 @@ const WhatsAppLeadsPage: React.FC = () => {
             .order('id', { ascending: false })
             .limit(1)
             .single();
-          
+
           const nextRelId = maxRelIdData ? maxRelIdData.id + 1 : 1;
           relationshipResult = await supabase
             .from('lead_leadcontact')
@@ -1910,7 +2068,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       // CRITICAL: Only update by exact phone_number match to avoid updating messages from other numbers
       const { error: updateError } = await supabase
         .from('whatsapp_messages')
-        .update({ 
+        .update({
           lead_id: isLegacyLead ? null : targetLeadId,
           legacy_id: isLegacyLead ? targetLeadId : null
         })
@@ -1921,7 +2079,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       toast.success(`Contact added to lead ${targetLead.lead_number} successfully!`);
-      
+
       // Refresh the leads list
       setLeads(prevLeads => prevLeads.filter(l => l.id !== selectedLead.id));
       setSelectedLead(null);
@@ -1973,7 +2131,7 @@ const WhatsAppLeadsPage: React.FC = () => {
     // Check if the date is within the last 7 days
     const diffTime = today.getTime() - date.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    
+
     if (diffDays <= 7) {
       return date.toLocaleDateString('en-US', { weekday: 'long' });
     }
@@ -1987,17 +2145,17 @@ const WhatsAppLeadsPage: React.FC = () => {
     const now = new Date();
     const diffMs = now.getTime() - lastMessage.getTime();
     const hoursLeft = 24 - (diffMs / (1000 * 60 * 60));
-    
+
     if (hoursLeft <= 0) {
       setIsLocked(true);
       setTimeLeft('Locked');
       return;
     }
-    
+
     setIsLocked(false);
     const hours = Math.floor(hoursLeft);
     const minutes = Math.floor((hoursLeft - hours) * 60);
-    
+
     if (hours > 0) {
       setTimeLeft(`${hours}h ${minutes}m`);
     } else {
@@ -2026,6 +2184,226 @@ const WhatsAppLeadsPage: React.FC = () => {
     if (mimeType.includes('pdf')) return DocumentTextIcon;
     if (mimeType.includes('video/')) return FilmIcon;
     return DocumentTextIcon;
+  };
+
+  // Render text with links and bold formatting
+  const renderTextWithLinks = (text: string): React.ReactNode => {
+    if (!text) return text;
+
+    // Process links (URLs and emails)
+    const processLinks = (input: string, startKey: number = 0): (string | React.ReactElement)[] => {
+      const linkRegex = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|mailto:[^\s<>"']+|([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})|[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:\/[^\s<>"']*)?)/g;
+      const parts: (string | React.ReactElement)[] = [];
+      let lastIndex = 0;
+      let match;
+      let keyCounter = startKey;
+
+      linkRegex.lastIndex = 0;
+
+      while ((match = linkRegex.exec(input)) !== null) {
+        // Add text before the link
+        if (match.index > lastIndex) {
+          parts.push(input.substring(lastIndex, match.index));
+        }
+
+        // Determine if it's an email or URL
+        const matchedText = match[0];
+        let href = matchedText;
+        let displayText = matchedText;
+
+        if (matchedText.includes('@') && !matchedText.startsWith('http') && !matchedText.startsWith('mailto:')) {
+          // It's an email address
+          href = `mailto:${matchedText}`;
+          displayText = matchedText;
+        } else if (matchedText.startsWith('mailto:')) {
+          // Already has mailto: prefix
+          href = matchedText;
+          displayText = matchedText.replace(/^mailto:/, '');
+        } else if (!matchedText.startsWith('http://') && !matchedText.startsWith('https://') && !matchedText.startsWith('mailto:')) {
+          // It's a URL without protocol
+          href = `https://${matchedText}`;
+          displayText = matchedText;
+        }
+
+        // Replace long URLs with "Meeting Link" text
+        if (href.startsWith('http://') || href.startsWith('https://')) {
+          if (matchedText.length > 50 || href.includes('teams.microsoft.com') || href.includes('meetup-join') || href.includes('meeting')) {
+            displayText = 'Meeting Link';
+          }
+        }
+
+        parts.push(
+          <a
+            key={`link-${keyCounter++}`}
+            href={href}
+            target={href.startsWith('mailto:') ? undefined : '_blank'}
+            rel={href.startsWith('mailto:') ? undefined : 'noopener noreferrer'}
+            className="hover:underline break-all"
+            style={{
+              color: '#39ff14',
+              wordBreak: 'break-all',
+              overflowWrap: 'anywhere',
+              hyphens: 'auto',
+              maxWidth: '100%',
+              whiteSpace: 'normal',
+              display: 'inline',
+              fontWeight: 600,
+              lineBreak: 'anywhere'
+            }}
+          >
+            {displayText}
+          </a>
+        );
+
+        lastIndex = match.index + match[0].length;
+      }
+
+      // Add remaining text
+      if (lastIndex < input.length) {
+        parts.push(input.substring(lastIndex));
+      }
+
+      return parts;
+    };
+
+    // Process bold formatting (*text*) and links together
+    const processBoldAndLinks = (input: string, startKey: number = 0): (string | React.ReactElement)[] => {
+      const boldRegex = /\*([^*]+)\*/g;
+      const parts: (string | React.ReactElement)[] = [];
+      let lastIndex = 0;
+      let match;
+      let keyCounter = startKey;
+
+      boldRegex.lastIndex = 0;
+
+      while ((match = boldRegex.exec(input)) !== null) {
+        // Add text before the bold (process links in it)
+        if (match.index > lastIndex) {
+          const beforeText = input.substring(lastIndex, match.index);
+          const processedBefore = processLinks(beforeText, keyCounter);
+          parts.push(...processedBefore);
+          // Update key counter based on links added
+          keyCounter += processedBefore.filter(p => React.isValidElement(p)).length;
+        }
+
+        // Add the bold text (also process links inside bold text)
+        const boldContent = match[1];
+        const processedBold = processLinks(boldContent, keyCounter);
+        if (processedBold.length === 1 && typeof processedBold[0] === 'string') {
+          // No links in bold, just make it bold
+          parts.push(
+            <strong key={`bold-${keyCounter++}`} style={{ fontWeight: 900 }}>
+              {boldContent}
+            </strong>
+          );
+        } else {
+          // Has links in bold, wrap in strong
+          parts.push(
+            <strong key={`bold-${keyCounter++}`} style={{ fontWeight: 900 }}>
+              {processedBold}
+            </strong>
+          );
+          keyCounter += processedBold.filter(p => React.isValidElement(p)).length;
+        }
+
+        lastIndex = match.index + match[0].length;
+      }
+
+      // Add remaining text (process links in it)
+      if (lastIndex < input.length) {
+        const remainingText = input.substring(lastIndex);
+        parts.push(...processLinks(remainingText, keyCounter));
+      } else if (parts.length === 0) {
+        // No bold found, process links in the whole text
+        return processLinks(input, 0);
+      }
+
+      return parts;
+    };
+
+    // Start processing with bold formatting
+    const result = processBoldAndLinks(text);
+
+    // If no formatting found, return original text
+    if (result.length === 0) {
+      return text;
+    }
+
+    // If only one part and it's a string, return it directly
+    if (result.length === 1 && typeof result[0] === 'string') {
+      return result[0];
+    }
+
+    return <>{result}</>;
+  };
+
+  // Render message status icons
+  const renderMessageStatus = (message?: any, readColor?: string) => {
+    if (!message) return null;
+
+    const status = message.whatsapp_status;
+    const whatsappMessageId = message.whatsapp_message_id;
+
+    if (!status) return null;
+
+    // Special case: If status is "failed" but whatsapp_message_id exists,
+    // it means WhatsApp accepted the message, so it was actually delivered
+    // but DB status update failed. Show as "delivered" (will be auto-fixed in background).
+    // Don't show "failed" in UI if message was actually sent.
+    const effectiveStatus = (status === 'failed' && whatsappMessageId) ? 'delivered' : status;
+
+    const baseClasses = "w-7 h-7";
+
+    switch (effectiveStatus) {
+      case 'sent':
+        return (
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#ffffff' }}>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+        );
+      case 'delivered':
+        return (
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#ffffff' }}>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+        );
+      case 'read':
+        return (
+          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: readColor || '#39ff14' }}>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
+          </svg>
+        );
+      case 'failed':
+        // Only show "failed" if message was NOT actually sent (no whatsapp_message_id)
+        const errorMessage = message.error_message;
+        let errorExplanation = 'Message failed to send.';
+        if (errorMessage) {
+          errorExplanation = `Failed: ${errorMessage}`;
+        } else {
+          errorExplanation = 'Message failed to send. Possible reasons: Invalid phone number, WhatsApp Business API error, or network issue.';
+        }
+
+        return (
+          <div className="flex items-center gap-1.5 group relative" title={errorExplanation}>
+            <div className="w-5 h-5 rounded-full bg-red-500 flex items-center justify-center flex-shrink-0">
+              <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </div>
+            <span className="text-xs text-red-600 font-medium">Failed</span>
+            {/* Tooltip on hover */}
+            <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded-lg shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 max-w-xs whitespace-normal">
+              {errorExplanation}
+              <div className="absolute top-full left-1/2 transform -translate-x-1/2 -mt-1">
+                <div className="border-4 border-transparent border-t-gray-900"></div>
+              </div>
+            </div>
+          </div>
+        );
+      default:
+        return null;
+    }
   };
 
   // Helper function to process template messages for display
@@ -2060,26 +2438,26 @@ const WhatsAppLeadsPage: React.FC = () => {
             // Check if message has placeholders like {{1}}, {{2}} (not filled) vs actual text (filled)
             const hasPlaceholders = message.message && /\{\{\d+\}\}/.test(message.message);
             const hasTemplateMarkers = message.message && (message.message.includes('TEMPLATE_MARKER:') || message.message.includes('[Template:'));
-            
+
             // PRIORITY 1: If message doesn't have template markers and doesn't have placeholders, it's already filled - use it
             if (message.message && !hasTemplateMarkers && !hasPlaceholders) {
               console.log('✅ Message already filled (Leads), using as-is');
               return message; // Already filled content - use as-is
             }
-            
+
             // PRIORITY 2: If message has template markers, replace with template content
             if (hasTemplateMarkers) {
               console.log('⚠️ Message has template markers (Leads), replacing with template content');
               return { ...message, message: template.content || `Template: ${template.title}` };
             }
-            
+
             // PRIORITY 3: If message has placeholders but no markers, it means backend stored unfilled content
             // We can't fill it without the original parameters, so return as-is (user will see placeholders)
             if (hasPlaceholders) {
               console.log('⚠️ Message has placeholders but no markers (Leads), returning as-is');
               return message;
             }
-            
+
             // Fallback: return message as-is
             return message;
           }
@@ -2087,17 +2465,17 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       // First, check if the message is already properly formatted (contains actual template content)
-      const isAlreadyProperlyFormatted = templates.some(template => 
+      const isAlreadyProperlyFormatted = templates.some(template =>
         template.content && message.message === template.content
       );
-      
+
       if (isAlreadyProperlyFormatted) {
         console.log('✅ Message already properly formatted (Leads), no processing needed');
         return message;
       }
-      
+
       // Check for various template message patterns that need processing
-      const needsProcessing = 
+      const needsProcessing =
         message.message.includes('Template:') ||
         message.message.includes('[Template:') || // Database format with brackets
         message.message.includes('[template:]') ||
@@ -2108,20 +2486,20 @@ const WhatsAppLeadsPage: React.FC = () => {
 
       if (needsProcessing) {
         console.log('📋 Found template message that needs processing (Leads)...');
-        
+
         // PRIORITY 2: Fallback to name matching for backward compatibility (legacy messages without template_id)
         // Try to find the template by looking for template info in the message
         // First try bracket format, then regular format
-        const templateMatch = message.message.match(/\[Template:\s*([^\]]+)\]/) || 
-                              message.message.match(/Template:\s*(.+)/);
+        const templateMatch = message.message.match(/\[Template:\s*([^\]]+)\]/) ||
+          message.message.match(/Template:\s*(.+)/);
         if (templateMatch) {
           // Clean the template title: remove trailing spaces and brackets
           let templateTitle = templateMatch[1].trim().replace(/\]$/, '');
           console.log('🔍 Looking for template with title (Leads):', templateTitle);
           console.log('📋 Available template titles (Leads):', templates.map(t => t.title));
-          
+
           // Try case-insensitive matching on title first
-          const template = templates.find(t => 
+          const template = templates.find(t =>
             t.title.toLowerCase() === templateTitle.toLowerCase()
           );
           if (template) {
@@ -2134,7 +2512,7 @@ const WhatsAppLeadsPage: React.FC = () => {
           } else {
             console.log('❌ Template not found for title (Leads):', templateTitle);
             // Try to find by name360 field as well (case-insensitive)
-            const templateByName = templates.find(t => 
+            const templateByName = templates.find(t =>
               t.name360 && t.name360.toLowerCase() === templateTitle.toLowerCase()
             );
             if (templateByName) {
@@ -2149,7 +2527,7 @@ const WhatsAppLeadsPage: React.FC = () => {
             }
           }
         }
-        
+
         // Check for our TEMPLATE_MARKER
         const templateMarkerMatch = message.message.match(/TEMPLATE_MARKER:(.+)/);
         if (templateMarkerMatch) {
@@ -2164,7 +2542,7 @@ const WhatsAppLeadsPage: React.FC = () => {
             }
           }
         }
-        
+
         // If message is empty or "Template sent", try to find the most recent template
         if (message.message === '' || message.message === 'Template sent') {
           console.log('🔍 Empty template message (Leads), looking for recent template...');
@@ -2219,10 +2597,10 @@ const WhatsAppLeadsPage: React.FC = () => {
 
     setIsLoadingAI(true);
     setShowAISuggestions(true);
-    
+
     try {
       const requestType = newMessage.trim() ? 'improve' : 'suggest';
-      
+
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-ai-suggestions`, {
         method: 'POST',
         headers: {
@@ -2248,7 +2626,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       const result = await response.json();
-      
+
       if (result.success) {
         // Get the single suggestion and clean it
         const suggestion = result.suggestion.trim();
@@ -2387,9 +2765,8 @@ const WhatsAppLeadsPage: React.FC = () => {
                           setShowChat(true);
                         }
                       }}
-                      className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors overflow-hidden ${
-                        isSelected ? 'bg-green-50 border-l-4 border-l-green-500' : ''
-                      }`}
+                      className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors overflow-hidden ${isSelected ? 'bg-green-50 border-l-4 border-l-green-500' : ''
+                        }`}
                     >
                       <div className="flex items-start gap-3">
                         {/* Avatar */}
@@ -2426,8 +2803,8 @@ const WhatsAppLeadsPage: React.FC = () => {
                           <div className="flex items-center justify-between gap-2 mb-1">
                             <div className="flex flex-col min-w-0 flex-1">
                               <h3 className="font-semibold text-gray-900 truncate">
-                                {lead.sender_name && lead.sender_name !== lead.phone_number && !lead.sender_name.match(/^\d+$/) 
-                                  ? lead.sender_name 
+                                {lead.sender_name && lead.sender_name !== lead.phone_number && !lead.sender_name.match(/^\d+$/)
+                                  ? lead.sender_name
                                   : lead.phone_number || 'Unknown Number'}
                               </h3>
                               {lead.sender_name && lead.sender_name !== lead.phone_number && !lead.sender_name.match(/^\d+$/) && (
@@ -2447,11 +2824,11 @@ const WhatsAppLeadsPage: React.FC = () => {
                               )}
                             </div>
                           </div>
-                          
+
                           <p className="text-sm text-gray-600 truncate mb-2">
                             {getMessagePreview(lead.message)}
                           </p>
-                          
+
                         </div>
                       </div>
                     </div>
@@ -2468,45 +2845,44 @@ const WhatsAppLeadsPage: React.FC = () => {
                 {/* Mobile Chat Header */}
                 {isMobile && (
                   <div className="flex-none flex items-center gap-2 p-4 border-b border-gray-200 bg-white" style={{ zIndex: 40 }}>
-                      <button
-                        onClick={() => setShowChat(false)}
+                    <button
+                      onClick={() => setShowChat(false)}
                       className="btn btn-ghost btn-circle btn-sm flex-shrink-0"
-                      >
-                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                        </svg>
-                      </button>
+                    >
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                      </svg>
+                    </button>
                     <div className="flex items-center gap-2 flex-1 min-w-0">
                       <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
-                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) ? (
-                            <span className="text-green-600 font-semibold text-sm">
-                              {selectedLead.sender_name.charAt(0).toUpperCase()}
-                            </span>
-                          ) : (
-                            <PhoneIcon className="w-4 h-4 text-green-600" />
-                          )}
-                        </div>
+                        {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) ? (
+                          <span className="text-green-600 font-semibold text-sm">
+                            {selectedLead.sender_name.charAt(0).toUpperCase()}
+                          </span>
+                        ) : (
+                          <PhoneIcon className="w-4 h-4 text-green-600" />
+                        )}
+                      </div>
                       <div className="min-w-0 flex-1">
                         <h3 className="font-semibold text-gray-900 text-sm truncate">
-                            {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) 
-                              ? selectedLead.sender_name 
-                              : selectedLead.phone_number || 'Unknown Number'}
-                          </h3>
+                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/)
+                            ? selectedLead.sender_name
+                            : selectedLead.phone_number || 'Unknown Number'}
+                        </h3>
                         <p className="text-xs text-gray-500 truncate">
-                            {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) 
-                              ? selectedLead.phone_number 
-                              : ''}
-                          </p>
+                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/)
+                            ? selectedLead.phone_number
+                            : ''}
+                        </p>
                         <p className="text-xs text-gray-500 truncate">
-                            {selectedLead.message_count} messages
-                          </p>
-                        </div>
+                          {selectedLead.message_count} messages
+                        </p>
                       </div>
+                    </div>
                     {/* Timer/Lock Icon */}
                     {timeLeft && (
-                      <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium flex-shrink-0 ${
-                        isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
-                      }`}>
+                      <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium flex-shrink-0 ${isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                        }`}>
                         {isLocked ? (
                           <>
                             <LockClosedIcon className="w-4 h-4" />
@@ -2518,7 +2894,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                             <span>{timeLeft}</span>
                           </>
                         )}
-                    </div>
+                      </div>
                     )}
                   </div>
                 )}
@@ -2538,8 +2914,8 @@ const WhatsAppLeadsPage: React.FC = () => {
                       </div>
                       <div className="min-w-0 flex-1">
                         <h3 className="font-semibold text-gray-900 truncate">
-                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) 
-                            ? selectedLead.sender_name 
+                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/)
+                            ? selectedLead.sender_name
                             : selectedLead.phone_number || 'Unknown Number'}
                         </h3>
                         {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) && (
@@ -2555,9 +2931,8 @@ const WhatsAppLeadsPage: React.FC = () => {
                     <div className="flex items-center gap-2">
                       {/* Timer/Lock Icon */}
                       {timeLeft && (
-                        <div className={`flex items-center gap-1 px-3 py-1.5 rounded text-sm font-medium ${
-                          isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
-                        }`}>
+                        <div className={`flex items-center gap-1 px-3 py-1.5 rounded text-sm font-medium ${isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                          }`}>
                           {isLocked ? (
                             <>
                               <LockClosedIcon className="w-5 h-5" />
@@ -2669,6 +3044,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                             e.stopPropagation();
                             setShowActionDropdown(!showActionDropdown);
                           }}
+                          style={{ background: '#000000', borderColor: 'transparent' }}
                         >
                           <UserPlusIcon className="w-4 h-4 mr-2" />
                           Actions
@@ -2736,7 +3112,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                 )}
 
                 {/* Messages */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 overscroll-contain" style={isMobile ? { flex: '1 1 auto', paddingBottom: showTemplateSelector ? '240px' : '120px', WebkitOverflowScrolling: 'touch' } : {}}>
+                <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 overscroll-contain" style={isMobile ? { flex: '1 1 auto', paddingBottom: showTemplateSelector ? '240px' : '120px', WebkitOverflowScrolling: 'touch', overflowX: 'hidden', maxWidth: '100%' } : { overflowX: 'hidden', maxWidth: '100%' }}>
                   {messages.length === 0 ? (
                     <div className="text-center py-8 text-gray-500">
                       <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-4 text-gray-300" />
@@ -2746,9 +3122,9 @@ const WhatsAppLeadsPage: React.FC = () => {
                   ) : (
                     messages.map((message, index) => {
                       // Check if we need to show a date separator
-                      const showDateSeparator = index === 0 || 
+                      const showDateSeparator = index === 0 ||
                         new Date(message.sent_at).toDateString() !== new Date(messages[index - 1].sent_at).toDateString();
-                      
+
                       return (
                         <React.Fragment key={message.id || index}>
                           {/* Date Separator */}
@@ -2759,62 +3135,27 @@ const WhatsAppLeadsPage: React.FC = () => {
                               </div>
                             </div>
                           )}
-                          
+
                           <div className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'}`}>
-                        {message.direction === 'in' && (
-                          <span className="text-sm text-gray-600 mb-1 ml-2 font-medium">
-                            {message.sender_name}
-                          </span>
-                        )}
-                        {message.direction === 'out' && (
-                          <span className="text-sm text-gray-600 mb-1 mr-2 font-medium">
-                            {message.sender_first_name || message.sender_name || 'You'}
-                          </span>
-                        )}
-                        
-                        {/* Image or Emoji-only messages - render outside bubble */}
-                        {(message.message_type === 'image' || (message.message_type === 'text' && message.message && (() => {
-                          const cleanText = message.message.trim();
-                          if (cleanText.length === 0 || cleanText.length > 5) return false;
-                          // Exclude Hebrew text (Unicode range \u0590-\u05FF)
-                          if (/[\u0590-\u05FF]/.test(cleanText)) return false;
-                          // Check for emoji Unicode ranges
-                          const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]/u;
-                          return emojiRegex.test(cleanText);
-                        })())) ? (
-                          <div className={`flex flex-col ${message.direction === 'out' ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
-                            {/* Image content */}
-                            {message.message_type === 'image' && message.media_url && (
-                              <div 
-                                className="relative cursor-pointer group"
-                                onClick={() => {
-                                  if (message.media_url) {
-                                    setSelectedMedia({
-                                      url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
-                                      type: 'image',
-                                      caption: message.caption
-                                    });
-                                  }
-                                }}
-                              >
-                                <img
-                                  src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
-                                  alt="Image"
-                                  className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
-                                  onError={(e) => {
-                                    e.currentTarget.style.display = 'none';
-                                  }}
+                            {message.direction === 'in' && (
+                              <span className="text-sm text-gray-600 mb-1 ml-2 font-medium">
+                                {message.sender_name}
+                              </span>
+                            )}
+                            {message.direction === 'out' && (
+                              <div className="flex items-center gap-2 mb-1 mr-2">
+                                <span className="text-sm text-gray-600 font-medium">
+                                  {message.sender_first_name || message.sender_name || 'You'}
+                                </span>
+                                <EmployeeAvatar
+                                  employeeId={getEmployeeById(message.sender_name)?.id || null}
+                                  size="md"
                                 />
-                                <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                  <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
-                                  </svg>
-                                </div>
                               </div>
                             )}
 
-                            {/* Emoji-only content */}
-                            {message.message_type === 'text' && message.message && (() => {
+                            {/* Image or Emoji-only messages - render outside bubble */}
+                            {(message.message_type === 'image' || (message.message_type === 'text' && message.message && (() => {
                               const cleanText = message.message.trim();
                               if (cleanText.length === 0 || cleanText.length > 5) return false;
                               // Exclude Hebrew text (Unicode range \u0590-\u05FF)
@@ -2822,287 +3163,429 @@ const WhatsAppLeadsPage: React.FC = () => {
                               // Check for emoji Unicode ranges
                               const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]/u;
                               return emojiRegex.test(cleanText);
-                            })() && (
-                              <div className="text-6xl leading-tight">
-                                {message.message}
-                              </div>
-                            )}
-
-                            {/* Caption for images */}
-                            {message.message_type === 'image' && message.caption && (
-                              <p className="text-base break-words mt-1">{message.caption}</p>
-                            )}
-
-                            {/* Timestamp at bottom of image/emoji */}
-                            <div className={`flex items-center gap-1 mt-1 ${message.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
-                              <span className="text-xs text-gray-500">
-                                {new Date(message.sent_at).toLocaleTimeString([], {
-                                  hour: '2-digit',
-                                  minute: '2-digit'
-                                })}
-                              </span>
-                            </div>
-                          </div>
-                        ) : (
-                          <div
-                            className={`group max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm relative ${
-                              message.direction === 'out'
-                                ? 'bg-green-600 text-white'
-                                : 'bg-white text-gray-900 border border-gray-200'
-                            }`}
-                          >
-                          {/* Edit input or message content */}
-                          {editingMessage === message.id ? (
-                            <textarea
-                              value={editMessageText}
-                              onChange={(e) => {
-                                setEditMessageText(e.target.value);
-                                // Auto-resize the textarea
-                                e.target.style.height = 'auto';
-                                e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
-                              }}
-                              className="w-full bg-transparent border-none outline-none resize-none overflow-y-auto text-white placeholder-white/70"
-                              autoFocus
-                              style={{ 
-                                minHeight: '20px', 
-                                maxHeight: '200px', 
-                                wordWrap: 'break-word',
-                                overflowWrap: 'break-word',
-                                whiteSpace: 'pre-wrap'
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' && !e.shiftKey) {
-                                  e.preventDefault();
-                                  handleEditMessage(message.id, editMessageText);
-                                } else if (e.key === 'Escape') {
-                                  setEditingMessage(null);
-                                  setEditMessageText('');
-                                }
-                              }}
-                            />
-                          ) : (
-                            <>
-                              {/* Text message - only show if no media */}
-                              {(!message.message_type || message.message_type === 'text') && !message.media_url && !message.message?.includes('.pdf') && (
-                                <p 
-                                  className="break-words whitespace-pre-wrap text-base"
-                                  dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
-                                  style={{ textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
-                                >
-                                  {message.message}
-                                </p>
-                              )}
-                              
-                              {/* Button response */}
-                              {message.message_type === 'button_response' && (
-                                <div className="flex items-center gap-2 p-2 bg-blue-50 rounded-lg border border-blue-200">
-                                  <svg className="w-5 h-5 text-blue-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
-                                  </svg>
-                                  <p className="text-sm font-medium text-blue-900">{message.message}</p>
-                                </div>
-                              )}
-                              
-                              {/* List response */}
-                              {message.message_type === 'list_response' && (
-                                <div className="flex items-center gap-2 p-2 bg-green-50 rounded-lg border border-green-200">
-                                  <svg className="w-5 h-5 text-green-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                                  </svg>
-                                  <p className="text-sm font-medium text-green-900">{message.message}</p>
-                                </div>
-                              )}
-                            </>
-                          )}
-
-                          {/* Voice message */}
-                          {(message.message_type === 'audio' || message.voice_note) && (message.media_url || message.media_id) && (
-                            <div className="mt-2">
-                              <VoiceMessagePlayer
-                                audioUrl={(message.media_url || message.media_id || '').startsWith('http') 
-                                  ? (message.media_url || message.media_id || '') 
-                                  : buildApiUrl(`/api/whatsapp/media/${message.media_url || message.media_id}`)}
-                                className={message.direction === 'out' ? 'bg-green-50' : 'bg-gray-50'}
-                                senderName={message.sender_name || 'Unknown'}
-                                profilePictureUrl={message.profile_picture_url}
-                              />
-                              {message.caption && (
-                                <p className="text-base break-words mt-2">{message.caption}</p>
-                              )}
-                              {!message.caption && message.message && (
-                                <p className="text-base break-words mt-2">{message.message}</p>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Document message with WhatsApp-style design */}
-                          {(message.message_type === 'document' || (message.message && message.message.includes('.pdf'))) && message.media_url && (
-                            <div className="mb-2">
-                              {/* WhatsApp-style document card */}
-                              <div className="bg-white rounded-lg border border-gray-300 overflow-hidden shadow-sm">
-                                {/* Document header */}
-                                <div className="p-3 border-b border-gray-200 flex items-center gap-3 bg-gray-50">
-                                  <div className="bg-blue-100 p-3 rounded-lg">
-                                    {React.createElement(getDocumentIcon(message.media_mime_type), { className: "w-6 h-6 text-blue-600" })}
+                            })())) ? (
+                              <div className={`flex flex-col ${message.direction === 'out' ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
+                                {/* Image content */}
+                                {message.message_type === 'image' && message.media_url && (
+                                  <div
+                                    className="relative cursor-pointer group"
+                                    onClick={() => {
+                                      if (message.media_url) {
+                                        setSelectedMedia({
+                                          url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
+                                          type: 'image',
+                                          caption: message.caption
+                                        });
+                                      }
+                                    }}
+                                  >
+                                    <img
+                                      src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
+                                      alt="Image"
+                                      className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
+                                      onError={(e) => {
+                                        e.currentTarget.style.display = 'none';
+                                      }}
+                                    />
+                                    <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                      <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                                      </svg>
+                                    </div>
                                   </div>
-                                  <div className="flex-1 min-w-0">
-                                    <p className="font-medium text-sm truncate">
-                                      {message.media_filename || message.message?.match(/[\w.-]+\.pdf/) || 'Document'}
-                                    </p>
-                                    {message.media_size && (
-                                      <p className="text-xs text-gray-500">
-                                        {(message.media_size / 1024).toFixed(1)} KB
+                                )}
+
+                                {/* Emoji-only content */}
+                                {message.message_type === 'text' && message.message && (() => {
+                                  const cleanText = message.message.trim();
+                                  if (cleanText.length === 0 || cleanText.length > 5) return false;
+                                  // Exclude Hebrew text (Unicode range \u0590-\u05FF)
+                                  if (/[\u0590-\u05FF]/.test(cleanText)) return false;
+                                  // Check for emoji Unicode ranges
+                                  const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]/u;
+                                  return emojiRegex.test(cleanText);
+                                })() && (
+                                    <div className="text-6xl leading-tight">
+                                      {message.message}
+                                    </div>
+                                  )}
+
+                                {/* Caption for images */}
+                                {message.message_type === 'image' && message.caption && (
+                                  <p
+                                    className="text-base break-words mt-1"
+                                    dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                    style={{
+                                      textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
+                                      wordBreak: 'break-word',
+                                      overflowWrap: 'break-word',
+                                      overflow: 'visible',
+                                      maxWidth: '100%',
+                                      minWidth: 0,
+                                      height: 'auto',
+                                      color: message.direction === 'out' ? 'white' : undefined
+                                    }}
+                                  >
+                                    {renderTextWithLinks(message.caption)}
+                                  </p>
+                                )}
+
+                                {/* Timestamp and read receipts at bottom of image/emoji */}
+                                <div className={`flex items-center gap-1 mt-1 ${message.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
+                                  <span className={`text-xs ${message.direction === 'out' ? 'text-white' : 'text-gray-500'}`}>
+                                    {new Date(message.sent_at).toLocaleTimeString([], {
+                                      hour: '2-digit',
+                                      minute: '2-digit'
+                                    })}
+                                  </span>
+                                  {message.direction === 'out' && (
+                                    <span className="inline-block align-middle text-current">
+                                      {renderMessageStatus(message)}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <div
+                                className={`group ${message.direction === 'out' ? 'max-w-[75%] md:max-w-[55%]' : 'max-w-[75%] md:max-w-[70%]'} rounded-2xl px-4 py-1.5 shadow-sm relative ${message.direction === 'out'
+                                  ? 'text-white'
+                                  : 'bg-white text-gray-900 border border-gray-200'
+                                  }`}
+                                style={{
+                                  background: message.direction === 'out' ? 'linear-gradient(to bottom right, #047857, #0f766e)' : undefined,
+                                  wordBreak: 'break-word',
+                                  overflowWrap: 'break-word',
+                                  overflow: 'visible',
+                                  minWidth: 0,
+                                  maxWidth: '100%',
+                                  height: 'auto'
+                                }}
+                              >
+                                {/* Edit input or message content */}
+                                {editingMessage === message.id ? (
+                                  <textarea
+                                    value={editMessageText}
+                                    onChange={(e) => {
+                                      setEditMessageText(e.target.value);
+                                      // Auto-resize the textarea
+                                      e.target.style.height = 'auto';
+                                      e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
+                                    }}
+                                    className="w-full bg-transparent border-none outline-none resize-none overflow-y-auto text-white placeholder-white/70"
+                                    autoFocus
+                                    style={{
+                                      minHeight: '20px',
+                                      maxHeight: '200px',
+                                      wordWrap: 'break-word',
+                                      overflowWrap: 'break-word',
+                                      whiteSpace: 'pre-wrap'
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' && !e.shiftKey) {
+                                        e.preventDefault();
+                                        handleEditMessage(message.id, editMessageText);
+                                      } else if (e.key === 'Escape') {
+                                        setEditingMessage(null);
+                                        setEditMessageText('');
+                                      }
+                                    }}
+                                  />
+                                ) : (
+                                  <>
+                                    {/* Text message - only show if no media */}
+                                    {(!message.message_type || message.message_type === 'text') && !message.media_url && !message.message?.includes('.pdf') && (
+                                      <p
+                                        className="text-base break-words whitespace-pre-wrap"
+                                        dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                        style={{
+                                          textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
+                                          wordBreak: 'break-word',
+                                          overflowWrap: 'break-word',
+                                          hyphens: 'auto',
+                                          overflow: 'visible',
+                                          maxWidth: '100%',
+                                          minWidth: 0,
+                                          height: 'auto',
+                                          color: message.direction === 'out' ? 'white' : undefined
+                                        }}
+                                      >
+                                        {renderTextWithLinks(message.message)}
+                                      </p>
+                                    )}
+
+                                    {/* Button response */}
+                                    {message.message_type === 'button_response' && (
+                                      <div className="flex items-center gap-2 p-2 bg-blue-50 rounded-lg border border-blue-200">
+                                        <svg className="w-5 h-5 text-blue-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
+                                        </svg>
+                                        <p className="text-sm font-medium text-blue-900">{message.message}</p>
+                                      </div>
+                                    )}
+
+                                    {/* List response */}
+                                    {message.message_type === 'list_response' && (
+                                      <div className="flex items-center gap-2 p-2 bg-green-50 rounded-lg border border-green-200">
+                                        <svg className="w-5 h-5 text-green-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                                        </svg>
+                                        <p className="text-sm font-medium text-green-900">{message.message}</p>
+                                      </div>
+                                    )}
+                                  </>
+                                )}
+
+                                {/* Voice message */}
+                                {(message.message_type === 'audio' || message.voice_note) && (message.media_url || message.media_id) && (
+                                  <div className="mt-2">
+                                    <VoiceMessagePlayer
+                                      audioUrl={(message.media_url || message.media_id || '').startsWith('http')
+                                        ? (message.media_url || message.media_id || '')
+                                        : buildApiUrl(`/api/whatsapp/media/${message.media_url || message.media_id}`)}
+                                      className={message.direction === 'out' ? 'bg-green-50' : 'bg-gray-50'}
+                                      senderName={message.sender_name || 'Unknown'}
+                                      profilePictureUrl={message.profile_picture_url}
+                                      showAvatar={message.direction === 'out'}
+                                    />
+                                    {message.caption && (
+                                      <p
+                                        className="text-base break-words mt-2"
+                                        dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                        style={{
+                                          textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
+                                          wordBreak: 'break-word',
+                                          overflowWrap: 'break-word',
+                                          overflow: 'visible',
+                                          maxWidth: '100%',
+                                          minWidth: 0,
+                                          height: 'auto',
+                                          color: message.direction === 'out' ? 'white' : undefined
+                                        }}
+                                      >
+                                        {renderTextWithLinks(message.caption)}
+                                      </p>
+                                    )}
+                                    {!message.caption && message.message && (
+                                      <p
+                                        className="text-base break-words mt-2"
+                                        dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                        style={{
+                                          textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
+                                          wordBreak: 'break-word',
+                                          overflowWrap: 'break-word',
+                                          overflow: 'visible',
+                                          maxWidth: '100%',
+                                          minWidth: 0,
+                                          height: 'auto',
+                                          color: message.direction === 'out' ? 'white' : undefined
+                                        }}
+                                      >
+                                        {renderTextWithLinks(message.message)}
                                       </p>
                                     )}
                                   </div>
-                                  <button
-                                    onClick={() => handleDownloadMedia(message.media_url!, message.media_filename || message.message || 'document')}
-                                    className="btn btn-ghost btn-sm p-2 hover:bg-gray-200"
-                                    title="Download"
-                                  >
-                                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                    </svg>
-                                  </button>
-                                </div>
-                                
-                                {/* PDF Preview for PDF documents */}
-                                {(message.media_mime_type === 'application/pdf' || message.message?.includes('.pdf')) && (
-                                  <div className="p-2 bg-gray-100">
-                                    <iframe
-                                      src={`${message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}#toolbar=0&navpanes=0&scrollbar=0`}
-                                      className="w-full h-80 md:h-96 border-0 rounded"
-                                      title="PDF Preview"
-                                    />
+                                )}
+
+                                {/* Document message with WhatsApp-style design */}
+                                {(message.message_type === 'document' || (message.message && message.message.includes('.pdf'))) && message.media_url && (
+                                  <div className="mb-2">
+                                    {/* WhatsApp-style document card */}
+                                    <div className="bg-white rounded-lg border border-gray-300 overflow-hidden shadow-sm">
+                                      {/* Document header */}
+                                      <div className="p-3 border-b border-gray-200 flex items-center gap-3 bg-gray-50">
+                                        <div className="bg-blue-100 p-3 rounded-lg">
+                                          {React.createElement(getDocumentIcon(message.media_mime_type), { className: "w-6 h-6 text-blue-600" })}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                          <p className="font-medium text-sm truncate">
+                                            {message.media_filename || message.message?.match(/[\w.-]+\.pdf/) || 'Document'}
+                                          </p>
+                                          {message.media_size && (
+                                            <p className="text-xs text-gray-500">
+                                              {(message.media_size / 1024).toFixed(1)} KB
+                                            </p>
+                                          )}
+                                        </div>
+                                        <button
+                                          onClick={() => handleDownloadMedia(message.media_url!, message.media_filename || message.message || 'document')}
+                                          className="btn btn-ghost btn-sm p-2 hover:bg-gray-200"
+                                          title="Download"
+                                        >
+                                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                          </svg>
+                                        </button>
+                                      </div>
+
+                                      {/* PDF Preview for PDF documents */}
+                                      {(message.media_mime_type === 'application/pdf' || message.message?.includes('.pdf')) && (
+                                        <div className="p-2 bg-gray-100">
+                                          <iframe
+                                            src={`${message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}#toolbar=0&navpanes=0&scrollbar=0`}
+                                            className="w-full h-80 md:h-96 border-0 rounded"
+                                            title="PDF Preview"
+                                          />
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
                                 )}
-                              </div>
-                            </div>
-                          )}
 
-                          <div className="flex items-center justify-between mt-1">
-                            <div className="flex items-center gap-1 text-sm opacity-80">
-                            <span>
-                              {new Date(message.sent_at).toLocaleTimeString([], {
-                                hour: '2-digit',
-                                minute: '2-digit'
-                              })}
-                            </span>
-                              {(message as any).is_edited && (
-                                <span className="text-xs opacity-60 italic">
-                                  (edited{(message as any).edited_by ? ` by ${userCache[(message as any).edited_by] || '...'}` : ''})
-                                </span>
-                              )}
-                              {(message as any).is_deleted && (message as any).deleted_by && (
-                                <span className="text-xs opacity-60 italic text-red-600">
-                                  (deleted by {userCache[(message as any).deleted_by] || '...'})
-                                </span>
-                              )}
+                                <div className={`flex items-center gap-1 mt-1 ${message.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
+                                  <span className={`text-xs ${message.direction === 'out' ? 'text-white' : 'text-gray-500'}`}>
+                                    {new Date(message.sent_at).toLocaleTimeString([], {
+                                      hour: '2-digit',
+                                      minute: '2-digit'
+                                    })}
+                                  </span>
+                                  {message.direction === 'out' && (
+                                    <span className="inline-block align-middle text-current">
+                                      {renderMessageStatus(message)}
+                                    </span>
+                                  )}
+                                  {(message as any).is_edited && (
+                                    <span className="text-xs opacity-60 italic">
+                                      (edited{(message as any).edited_by ? ` by ${userCache[(message as any).edited_by] || '...'}` : ''})
+                                    </span>
+                                  )}
+                                  {(message as any).is_deleted && (message as any).deleted_by && (
+                                    <span className="text-xs opacity-60 italic text-red-600">
+                                      (deleted by {userCache[(message as any).deleted_by] || '...'})
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
                           </div>
-                            
-                            {/* Edit/Delete buttons removed - WhatsApp API does not support these features */}
-                        </div>
-                      </div>
-                        )}
-                      </div>
-                      </React.Fragment>
-                    );
+                        </React.Fragment>
+                      );
                     })
                   )}
                   <div ref={messagesEndRef} />
                 </div>
 
                 {/* Input Area - Sticky with glassy blur on mobile */}
-                <div 
-                  className={`flex-none border-t transition-all duration-200 ${
-                    isMobile 
-                      ? 'bg-white/80 backdrop-blur-lg supports-[backdrop-filter]:bg-white/70 border-gray-300/50' 
-                      : 'bg-white border-gray-200'
-                  }`}
-                  style={isMobile ? { zIndex: 50, position: 'sticky', bottom: 0, paddingBottom: `calc(30px + env(safe-area-inset-bottom))` } : {}}
+                <div
+                  className={`flex-none border-t transition-all duration-200 relative ${isMobile
+                    ? 'bg-white/80 backdrop-blur-lg supports-[backdrop-filter]:bg-white/70 border-gray-300/50'
+                    : 'bg-white border-gray-200'
+                    }`}
+                  style={isMobile ? { zIndex: 50, position: 'sticky', bottom: 0, paddingBottom: `calc(30px + env(safe-area-inset-bottom))` } : { overflow: 'visible' }}
                 >
-                  {/* Template Dropdown - Above input on mobile */}
+                  {/* Template Dropdown - Mobile */}
                   {showTemplateSelector && isMobile && (
                     <>
                       {/* Backdrop */}
-                      <div 
+                      <div
                         className="fixed inset-0 bg-black/50 z-[9998]"
                         onClick={() => setShowTemplateSelector(false)}
                       />
-                      <div 
-                        className="fixed inset-0 z-[9999] overflow-hidden flex flex-col pointer-events-auto"
+                      <div
+                        className="pointer-events-auto fixed inset-0 z-[9999] overflow-hidden flex flex-col"
                         onClick={(e) => e.stopPropagation()}
                       >
                         <div className="bg-white h-full flex flex-col overflow-hidden">
-                          <div className="flex items-center justify-between p-4 border-b border-gray-200 flex-shrink-0">
-                            <div className="text-lg font-semibold text-gray-900">Select Template</div>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setShowTemplateSelector(false);
-                              }}
-                              className="btn btn-ghost btn-xs z-50"
-                              aria-label="Close template selector"
-                            >
-                              <XMarkIcon className="w-5 h-5" />
-                            </button>
+                          {/* Header with gradient background */}
+                          <div className="px-5 py-4 bg-gradient-to-r from-green-500 to-emerald-600 flex-shrink-0">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <FaWhatsapp className="w-5 h-5 text-white" />
+                                <h3 className="text-base font-bold text-white">Select Template</h3>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setShowTemplateSelector(false);
+                                }}
+                                className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-1.5 z-50"
+                                aria-label="Close template selector"
+                              >
+                                <XMarkIcon className="w-4 h-4" />
+                              </button>
+                            </div>
                           </div>
-                          
+
+                          {/* Content */}
                           <div className="p-4 flex-1 flex flex-col min-h-0 overflow-hidden">
-                            <div className="mb-3 flex-shrink-0">
+                            <div className="mb-4 flex gap-2 flex-shrink-0">
                               <input
                                 type="text"
                                 placeholder="Search templates..."
                                 value={templateSearchTerm}
                                 onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                                className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-gray-50 transition-all"
+                                className="flex-1 px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
                               />
+                              <select
+                                value={selectedLanguage}
+                                onChange={(e) => setSelectedLanguage(e.target.value)}
+                                className="px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[120px]"
+                              >
+                                <option value="">All</option>
+                                {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
+                                  .sort()
+                                  .map(lang => (
+                                    <option key={lang} value={lang}>
+                                      {getLanguageDisplayName(lang)}
+                                    </option>
+                                  ))}
+                              </select>
                             </div>
-                            
+
                             <div className="space-y-3 flex-1 overflow-y-auto">
-                        {isLoadingTemplates ? (
-                          <div className="text-center text-gray-500 py-4">
-                            <div className="loading loading-spinner loading-sm"></div>
-                            <span className="ml-2">Loading...</span>
-                          </div>
-                        ) : filterTemplates(templates, templateSearchTerm).length === 0 ? (
-                          <div className="text-center text-gray-500 py-4 text-sm">
-                            {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
-                          </div>
-                        ) : (
-                          filterTemplates(templates, templateSearchTerm).map((template) => (
-                            <TemplateOptionCard
-                              key={template.id}
-                              template={template}
-                              isSelected={selectedTemplate?.id === template.id}
-                              onClick={() => {
-                                if (template.active !== 't') {
-                                  toast.error('Template pending approval');
-                                  return;
+                              {isLoadingTemplates ? (
+                                <div className="text-center text-gray-500 py-4">
+                                  <div className="loading loading-spinner loading-sm"></div>
+                                  <span className="ml-2">Loading templates...</span>
+                                </div>
+                              ) : (() => {
+                                let filtered = filterTemplates(templates, templateSearchTerm);
+                                if (selectedLanguage) {
+                                  filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
                                 }
-                                setSelectedTemplate(template);
-                                setShowTemplateSelector(false);
-                                setTemplateSearchTerm('');
-                                if (template.params === '0') {
-                                  setNewMessage(template.content || '');
-                                  // Expand textarea on mobile when template is applied
-                                  if (isMobile && textareaRef.current) {
-                                    setTimeout(() => {
+                                return filtered;
+                              })().length === 0 ? (
+                                <div className="text-center text-gray-500 py-4 text-sm">
+                                  {templateSearchTerm || selectedLanguage ? 'No templates found matching your filters.' : 'No templates available.'}
+                                </div>
+                              ) : (() => {
+                                let filtered = filterTemplates(templates, templateSearchTerm);
+                                if (selectedLanguage) {
+                                  filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
+                                }
+                                return filtered;
+                              })().map((template) => (
+                                <TemplateOptionCard
+                                  key={template.id}
+                                  template={template}
+                                  isSelected={selectedTemplate?.id === template.id}
+                                  onClick={() => {
+                                    if (template.active !== 't') {
+                                      toast.error('Template pending approval');
+                                      return;
+                                    }
+                                    setSelectedTemplate(template);
+                                    setShowTemplateSelector(false);
+                                    setTemplateSearchTerm('');
+                                    setSelectedLanguage('');
+                                    if (template.params === '0') {
+                                      setNewMessage(template.content || '');
                                       if (textareaRef.current) {
-                                        textareaRef.current.style.height = 'auto';
-                                        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
+                                        setTimeout(() => {
+                                          if (textareaRef.current) {
+                                            textareaRef.current.style.height = 'auto';
+                                            const maxHeight = isMobile ? 300 : 400;
+                                            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
+                                          }
+                                        }, 0);
                                       }
-                                    }, 0);
-                                  }
-                                } else {
-                                  setNewMessage('');
-                                }
-                              }}
-                            />
-                          ))
-                        )}
+                                    } else {
+                                      setNewMessage('');
+                                    }
+                                  }}
+                                />
+                              ))}
                             </div>
                           </div>
                         </div>
@@ -3112,66 +3595,110 @@ const WhatsAppLeadsPage: React.FC = () => {
 
                   {/* Template Dropdown - Desktop */}
                   {!isMobile && showTemplateSelector && (
-                    <div className="px-4 pt-3 pb-2">
-                      <div className="p-4 bg-white rounded-lg border border-gray-200 shadow-sm">
-                        <div className="flex items-center justify-between mb-3">
-                          <div className="text-sm font-semibold text-gray-900">Select Template</div>
-                          <button
-                            type="button"
-                            onClick={() => setShowTemplateSelector(false)}
-                            className="btn btn-ghost btn-xs"
-                          >
-                            <XMarkIcon className="w-4 h-4" />
-                          </button>
-                        </div>
-                        <div className="mb-3">
-                          <input
-                            type="text"
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
-                            placeholder="Search templates..."
-                            value={templateSearchTerm}
-                            onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                          />
-                        </div>
-                        <div className="space-y-3 max-h-60 overflow-y-auto">
-                          {isLoadingTemplates ? (
-                            <div className="flex items-center justify-center py-2">
-                              <div className="loading loading-spinner loading-sm"></div>
-                              <span className="ml-2">Loading...</span>
+                    <div
+                      className="absolute bottom-full left-0 right-0 mb-2 pointer-events-auto z-[9999]"
+                      style={{
+                        overflow: 'visible',
+                        maxHeight: 'calc(100vh - 120px)',
+                      }}
+                    >
+                      <div className="bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden min-w-[600px] max-w-[800px] flex flex-col" style={{ maxHeight: 'calc(100vh - 200px)' }}>
+                        {/* Header with gradient background */}
+                        <div className="px-6 py-5 bg-gradient-to-r from-green-500 to-emerald-600 flex-shrink-0">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <FaWhatsapp className="w-6 h-6 text-white" />
+                              <h3 className="text-lg font-bold text-white">Select Template</h3>
                             </div>
-                          ) : filterTemplates(templates, templateSearchTerm).length === 0 ? (
-                            <div className="text-center text-gray-500 py-4 text-sm">
-                              {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
-                            </div>
-                          ) : (
-                            filterTemplates(templates, templateSearchTerm).map((template) => (
+                            <button
+                              type="button"
+                              onClick={() => setShowTemplateSelector(false)}
+                              className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-2"
+                            >
+                              <XMarkIcon className="w-5 h-5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Content */}
+                        <div className="p-6 flex flex-col flex-1 min-h-0 overflow-hidden">
+                          <div className="mb-5 flex gap-3 flex-shrink-0">
+                            <input
+                              type="text"
+                              placeholder="Search templates..."
+                              value={templateSearchTerm}
+                              onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                              className="flex-1 px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
+                            />
+                            <select
+                              value={selectedLanguage}
+                              onChange={(e) => setSelectedLanguage(e.target.value)}
+                              className="px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[140px]"
+                            >
+                              <option value="">All Languages</option>
+                              {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
+                                .sort()
+                                .map(lang => (
+                                  <option key={lang} value={lang}>
+                                    {getLanguageDisplayName(lang)}
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+
+                          <div className="flex-1 overflow-y-auto space-y-3 min-h-0" style={{ paddingBottom: '8px' }}>
+                            {isLoadingTemplates ? (
+                              <div className="text-center text-gray-500 py-4">
+                                <div className="loading loading-spinner loading-sm"></div>
+                                <span className="ml-2">Loading templates...</span>
+                              </div>
+                            ) : (() => {
+                              let filtered = filterTemplates(templates, templateSearchTerm);
+                              if (selectedLanguage) {
+                                filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
+                              }
+                              return filtered;
+                            })().length === 0 ? (
+                              <div className="text-center text-gray-500 py-4 text-sm">
+                                {templateSearchTerm || selectedLanguage ? 'No templates found matching your filters.' : 'No templates available.'}
+                              </div>
+                            ) : (() => {
+                              let filtered = filterTemplates(templates, templateSearchTerm);
+                              if (selectedLanguage) {
+                                filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
+                              }
+                              return filtered;
+                            })().map((template) => (
                               <TemplateOptionCard
                                 key={template.id}
                                 template={template}
                                 isSelected={selectedTemplate?.id === template.id}
                                 onClick={() => {
                                   if (template.active !== 't') {
-                                    toast.error('Template pending approval');
+                                    toast.error('This template is pending approval and cannot be used yet. Please wait for Meta to approve it or select an active template.');
                                     return;
                                   }
                                   setSelectedTemplate(template);
                                   setShowTemplateSelector(false);
                                   setTemplateSearchTerm('');
-                                  if (template.params === '0') {
-                                    setNewMessage(template.content || '');
-                                    // Expand textarea on mobile when template is applied
-                                    if (isMobile && textareaRef.current) {
-                                      setTimeout(() => {
-                                        adjustTextareaHeight();
-                                      }, 0);
-                                    }
-                                  } else {
-                                    setNewMessage('');
+                                  setSelectedLanguage('');
+                                  // Always set template content in input field
+                                  setNewMessage(template.content || '');
+
+                                  // Expand textarea for desktop when template is inserted
+                                  if (textareaRef.current) {
+                                    setTimeout(() => {
+                                      if (textareaRef.current) {
+                                        textareaRef.current.style.height = 'auto';
+                                        const maxHeight = 400;
+                                        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
+                                      }
+                                    }, 0);
                                   }
                                 }}
                               />
-                            ))
-                          )}
+                            ))}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -3180,12 +3707,8 @@ const WhatsAppLeadsPage: React.FC = () => {
                   {/* Lock Message - Desktop only */}
                   {!isMobile && isLocked && (
                     <div className="px-4 pb-2">
-                      <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
-                        <LockClosedIcon className="w-5 h-5 text-red-600 flex-shrink-0" />
-                        <div className="text-sm text-red-700">
-                          <p className="font-medium">Messaging window expired</p>
-                          <p className="text-xs text-red-600">More than 24 hours have passed since the client's last message.</p>
-                        </div>
+                      <div className="text-xs text-red-600 text-center py-1">
+                        Messaging window expired
                       </div>
                     </div>
                   )}
@@ -3208,7 +3731,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                           <XMarkIcon className="w-4 h-4" />
                         </button>
                       </div>
-                      
+
                       <div className="space-y-2">
                         {isLoadingAI ? (
                           <div className="text-center text-gray-500 py-4">
@@ -3216,7 +3739,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                             <span className="ml-2">Getting AI suggestions...</span>
                           </div>
                         ) : (
-                          <div 
+                          <div
                             className="w-full p-4 rounded-lg border border-gray-200 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
                             onClick={() => applyAISuggestion(aiSuggestions[0])}
                           >
@@ -3227,208 +3750,129 @@ const WhatsAppLeadsPage: React.FC = () => {
                     </div>
                   )}
 
+                  {/* Voice Recorder */}
+                  {showVoiceRecorder && (
+                    <div className="w-full mb-2">
+                      <VoiceMessageRecorder
+                        onRecorded={(audioBlob) => {
+                          // Convert blob to File and set as selectedFile
+                          // Use the MIME type from the recorder (should be audio/ogg if supported)
+                          const mimeType = audioBlob.type || 'audio/webm;codecs=opus';
+                          const extension = mimeType.includes('ogg') ? 'ogg' : 'webm';
+                          const audioFile = new File([audioBlob], `voice_${Date.now()}.${extension}`, { type: mimeType });
+
+                          // Set as selectedFile so the regular send button can handle it
+                          setSelectedFile(audioFile);
+
+                          // Close the recorder UI
+                          setShowVoiceRecorder(false);
+
+                          // Automatically send the voice message
+                          handleSendMedia(audioFile);
+                        }}
+                        onCancel={() => {
+                          setShowVoiceRecorder(false);
+                        }}
+                        className="w-full"
+                      />
+                    </div>
+                  )}
+
                   {/* Input Form */}
                   <form onSubmit={handleSendMessage} className={`flex items-center gap-2 ${isMobile ? 'p-3' : 'p-4'}`}>
-                    {/* Template Icon Button - Hidden on mobile when input is focused */}
-                    {(!isMobile || !isInputFocused) && (
-                      <button
-                        type="button"
-                        onClick={() => setShowTemplateSelector(!showTemplateSelector)}
-                        className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all duration-300 ${
-                          selectedTemplate 
-                            ? 'bg-green-500 text-white' 
-                            : isMobile 
-                              ? 'bg-white/80 backdrop-blur-md border border-gray-300/50 text-gray-600 hover:bg-gray-100'
-                              : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-100'
-                        } ${isMobile && isInputFocused ? 'opacity-0 pointer-events-none w-0' : 'opacity-100'}`}
-                      >
-                        <DocumentTextIcon className="w-5 h-5" />
-                      </button>
-                    )}
-
-                    {/* Voice Recorder */}
-                    {showVoiceRecorder && (
-                      <div className="w-full mb-2">
-                        <VoiceMessageRecorder
-                          onRecorded={(audioBlob) => {
-                            // Convert blob to File and set as selectedFile
-                            // Use the MIME type from the recorder (should be audio/ogg if supported)
-                            const mimeType = audioBlob.type || 'audio/webm;codecs=opus';
-                            const extension = mimeType.includes('ogg') ? 'ogg' : 'webm';
-                            const audioFile = new File([audioBlob], `voice_${Date.now()}.${extension}`, { type: mimeType });
-                            
-                            // Set as selectedFile so the regular send button can handle it
-                            setSelectedFile(audioFile);
-                            
-                            // Close the recorder UI
-                            setShowVoiceRecorder(false);
-                            
-                            // Automatically send the voice message
-                            handleSendMedia(audioFile);
-                          }}
-                          onCancel={() => {
-                            setShowVoiceRecorder(false);
-                          }}
-                          className="w-full"
-                        />
-                      </div>
-                    )}
-
-                    {/* Mobile Dropdown Button */}
-                    {isMobile ? (
-                      <div className="relative flex-shrink-0 mobile-dropdown-container">
-                        <button
-                          type="button"
-                          onClick={() => setShowMobileDropdown(!showMobileDropdown)}
-                          className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-white/80 backdrop-blur-md border border-gray-300/50 text-gray-600 hover:bg-gray-100"
-                        >
-                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                          </svg>
-                        </button>
-                        
-                        {/* Mobile Dropdown */}
-                        {showMobileDropdown && (
-                          <div className="absolute bottom-14 left-0 z-50 bg-white/95 backdrop-blur-lg supports-[backdrop-filter]:bg-white/85 rounded-lg border border-gray-200 shadow-lg p-2 min-w-[120px]">
-                            {/* File upload option */}
-                            <label className="flex items-center gap-2 p-2 rounded hover:bg-gray-100 cursor-pointer">
-                              <PaperClipIcon className="w-4 h-4 text-gray-600" />
-                              <span className="text-sm text-gray-700">Attachment</span>
-                              <input
-                                type="file"
-                                className="hidden"
-                                accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (file) {
-                                    console.log('📁 File selected:', file);
-                                    setSelectedFile(file);
-                                  }
-                                }}
-                                disabled={uploadingMedia || isLocked}
-                              />
-                            </label>
-                            
-                            {/* Voice message option */}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setShowVoiceRecorder(!showVoiceRecorder);
-                                setShowMobileDropdown(false);
-                              }}
-                              disabled={isLocked}
-                              className="w-full flex items-center gap-2 p-2 rounded hover:bg-gray-100 text-left"
-                            >
-                              <MicrophoneIcon className="w-4 h-4 text-gray-600" />
-                              <span className="text-sm text-gray-700">Voice Message</span>
-                            </button>
-                            
-                            {/* Emoji option */}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setIsEmojiPickerOpen(!isEmojiPickerOpen);
-                                setShowMobileDropdown(false);
-                              }}
-                              disabled={isLocked}
-                              className="w-full flex items-center gap-2 p-2 rounded hover:bg-gray-100 text-left"
-                            >
-                              <FaceSmileIcon className="w-4 h-4 text-gray-600" />
-                              <span className="text-sm text-gray-700">Emoji</span>
-                            </button>
-                            
-                            {/* AI option */}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                handleAISuggestions();
-                                setShowMobileDropdown(false);
-                              }}
-                              disabled={isLoadingAI || isLocked || !selectedLead}
-                              className="w-full flex items-center gap-2 p-2 rounded hover:bg-gray-100 text-left"
-                            >
-                              {isLoadingAI ? (
-                                <div className="loading loading-spinner loading-xs"></div>
-                              ) : (
-                                <svg className="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                                </svg>
-                              )}
-                              <span className="text-sm text-gray-700">AI</span>
-                            </button>
-                          </div>
-                        )}
-                        
-                        {/* Mobile Emoji Picker */}
-                        {isEmojiPickerOpen && !isLocked && (
-                          <div className="absolute bottom-14 left-0 z-50 emoji-picker-container">
-                            <EmojiPicker
-                              onEmojiClick={handleEmojiClick}
-                              width={window.innerWidth - 40}
-                              height={400}
-                              skinTonesDisabled={false}
-                              searchDisabled={false}
-                              previewConfig={{
-                                showPreview: true,
-                                defaultEmoji: '1f60a',
-                                defaultCaption: 'Choose your emoji!'
-                              }}
-                              lazyLoadEmojis={false}
-                            />
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <>
-                        {/* Desktop File upload button */}
-                        <label 
-                          className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-white border border-gray-300 text-gray-500 hover:bg-gray-100 cursor-pointer"
-                          onClick={() => !isLocked && console.log('📁 File upload button clicked')}
-                        >
-                          <PaperClipIcon className="w-5 h-5" />
-                          <input
-                            type="file"
-                            className="hidden"
-                            accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              if (file) {
-                                console.log('📁 File selected:', file);
-                                setSelectedFile(file);
-                              }
-                            }}
-                            disabled={uploadingMedia || isLocked}
-                          />
-                        </label>
-
-                        {/* Desktop Voice Message Button */}
-                        <button
-                          type="button"
-                          onClick={() => setShowVoiceRecorder(!showVoiceRecorder)}
-                          className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-white border border-gray-300 text-red-500 hover:bg-red-50"
-                          disabled={isLocked}
-                          title="Record voice message"
-                        >
-                          <MicrophoneIcon className="w-5 h-5" />
-                        </button>
-
-                        {/* Desktop Emoji Button */}
-                        <div className="relative flex-shrink-0">
-                          <button 
-                            type="button" 
-                            onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
-                            className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-white border border-gray-300 text-gray-500 hover:bg-gray-100"
-                            disabled={isLocked}
+                    <div className="relative space-y-2 pointer-events-auto" style={{ overflow: 'visible', flex: 1, minWidth: 0 }}>
+                      <div className="flex items-center gap-2" style={{ width: '100%' }}>
+                        {/* Dropdown Button - Always visible */}
+                        <div className="relative" ref={mobileToolsRef} style={{ overflow: 'visible' }}>
+                          <button
+                            type="button"
+                            onClick={() => setShowMobileDropdown(!showMobileDropdown)}
+                            className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow flex-shrink-0"
+                            style={{ background: '#000000', borderColor: 'transparent' }}
+                            title="Message tools"
                           >
-                            <FaceSmileIcon className="w-5 h-5" />
+                            <Squares2X2Icon className="w-6 h-6" />
                           </button>
-                          
-                          {/* Emoji Picker */}
+                          {showMobileDropdown && (
+                            <div className="absolute left-0 z-[9999] bg-white border border-gray-200 rounded-xl shadow-xl w-64 divide-y divide-gray-100 pointer-events-auto" style={{ top: 'auto', bottom: 'calc(100% + 8px)' }}>
+                              <button
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setShowTemplateSelector(true);
+                                  setShowMobileDropdown(false);
+                                }}
+                                className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2"
+                              >
+                                <DocumentTextIcon className="w-4 h-4 text-green-600" />
+                                Template
+                              </button>
+                              <label className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2 cursor-pointer">
+                                <PaperClipIcon className="w-4 h-4 text-gray-600" />
+                                Attachment
+                                <input
+                                  type="file"
+                                  className="hidden"
+                                  accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    if (file) {
+                                      console.log('📁 File selected:', file);
+                                      setSelectedFile(file);
+                                    }
+                                    setShowMobileDropdown(false);
+                                  }}
+                                  disabled={uploadingMedia || isLocked}
+                                />
+                              </label>
+                              <button
+                                onClick={() => {
+                                  setShowVoiceRecorder(!showVoiceRecorder);
+                                  setShowMobileDropdown(false);
+                                }}
+                                disabled={isLocked}
+                                className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
+                              >
+                                <MicrophoneIcon className="w-4 h-4 text-gray-600" />
+                                Voice Message
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setIsEmojiPickerOpen(!isEmojiPickerOpen);
+                                  setShowMobileDropdown(false);
+                                }}
+                                disabled={isLocked}
+                                className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
+                              >
+                                <FaceSmileIcon className="w-4 h-4 text-yellow-500" />
+                                Add emojis
+                              </button>
+                              <button
+                                onClick={() => {
+                                  handleAISuggestions();
+                                  setShowMobileDropdown(false);
+                                }}
+                                disabled={isLoadingAI || isLocked || !selectedLead}
+                                className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
+                              >
+                                {isLoadingAI ? (
+                                  <div className="loading loading-spinner loading-xs"></div>
+                                ) : (
+                                  <svg className="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                                  </svg>
+                                )}
+                                AI Suggestions
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Mobile Emoji Picker */}
                           {isEmojiPickerOpen && !isLocked && (
-                            <div className="absolute bottom-14 left-0 z-50 emoji-picker-container">
+                            <div className="absolute left-0 z-[9999] pointer-events-auto" style={{ top: 'auto', bottom: 'calc(100% + 8px)' }}>
                               <EmojiPicker
                                 onEmojiClick={handleEmojiClick}
-                                width={350}
+                                width={isMobile ? window.innerWidth - 40 : 350}
                                 height={400}
                                 skinTonesDisabled={false}
                                 searchDisabled={false}
@@ -3443,115 +3887,83 @@ const WhatsAppLeadsPage: React.FC = () => {
                           )}
                         </div>
 
-                        {/* Desktop AI Suggestions Button */}
+                        <div className="flex-1" style={{ minWidth: 0 }}>
+                          <textarea
+                            ref={textareaRef}
+                            value={newMessage}
+                            onChange={handleMessageChange}
+                            onFocus={(e) => {
+                              if (isMobile) {
+                                setIsInputFocused(true);
+                                // Expand to max height when focused on mobile
+                                adjustTextareaHeight();
+                              }
+                            }}
+                            onBlur={(e) => {
+                              if (isMobile) {
+                                setIsInputFocused(false);
+                                // Reset to normal height when blurred
+                              }
+                            }}
+                            placeholder={isLocked ? "Window expired - use templates" : "Type a message..."}
+                            className="textarea w-full resize-none border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
+                            rows={1}
+                            disabled={isLocked || sending}
+                            style={{
+                              backgroundColor: selectedTemplate ? 'rgba(240, 240, 240, 0.9)' : 'rgba(255, 255, 255, 0.8)',
+                              backdropFilter: 'blur(10px)',
+                              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+                              maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '128px',
+                              cursor: selectedTemplate ? 'not-allowed' : 'text',
+                              minHeight: isMobile ? '48px' : '44px',
+                            }}
+                          />
+                        </div>
+
+                        {/* Send Button */}
                         <button
                           type="button"
-                          onClick={handleAISuggestions}
-                          disabled={isLoadingAI || isLocked || !selectedLead}
-                          className={`flex-shrink-0 px-3 py-2 rounded-full flex items-center justify-center transition-all text-sm font-medium ${
-                            isLoadingAI
-                              ? 'bg-blue-500 text-white'
-                              : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-100'
-                          } ${isLocked || !selectedLead ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
-                          title={newMessage.trim() ? "Improve message with AI" : "Get AI suggestions"}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            if (selectedFile) {
+                              handleSendMedia();
+                            } else {
+                              const syntheticEvent = {
+                                preventDefault: () => { },
+                                stopPropagation: () => { },
+                                currentTarget: e.currentTarget,
+                                target: e.target,
+                              } as React.FormEvent;
+                              handleSendMessage(syntheticEvent);
+                            }
+                          }}
+                          disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
+                          className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow disabled:opacity-50 flex-shrink-0"
+                          style={{ background: '#000000', borderColor: 'transparent' }}
+                          title={selectedFile ? 'Send media' : 'Send message'}
                         >
-                          {isLoadingAI ? (
+                          {sending || uploadingMedia ? (
                             <div className="loading loading-spinner loading-sm"></div>
                           ) : (
-                            'AI'
+                            <PaperAirplaneIcon className="w-5 h-5" />
                           )}
                         </button>
-                      </>
-                    )}
-
-                    {/* Selected file preview */}
-                    {selectedFile && (
-                      <div className="flex items-center gap-2 bg-gray-100/80 backdrop-blur-md rounded-lg px-3 py-1 border border-gray-300/50">
-                        <span className="text-xs text-gray-700">{selectedFile.name}</span>
-                        <button
-                          type="button"
-                          onClick={() => setSelectedFile(null)}
-                          className="text-red-500 hover:text-red-700"
-                        >
-                          <XMarkIcon className="w-4 h-4" />
-                        </button>
                       </div>
-                    )}
 
-                    {/* Message Input */}
-                    <textarea
-                      ref={textareaRef}
-                      value={newMessage}
-                      onChange={handleMessageChange}
-                      onFocus={(e) => {
-                        if (isMobile) {
-                          setIsInputFocused(true);
-                          // Expand to max height when focused on mobile
-                          adjustTextareaHeight();
-                        }
-                      }}
-                      onBlur={(e) => {
-                        if (isMobile) {
-                          setIsInputFocused(false);
-                          // Reset to normal height when blurred
-                          adjustTextareaHeight();
-                        }
-                      }}
-                      onKeyDown={(e) => {
-                        // Let Enter create new lines
-                      }}
-                      placeholder={isLocked ? "Window expired - use templates" : "Type a reply..."}
-                      className={`flex-1 resize-none rounded-2xl transition-all duration-300 ${
-                        isMobile 
-                          ? `bg-white/80 backdrop-blur-md border border-gray-300/50 ${isInputFocused ? 'flex-[1.2]' : ''}` 
-                          : 'textarea textarea-bordered'
-                      } ${isLocked ? 'bg-gray-100/80 cursor-not-allowed' : ''}`}
-                      disabled={sending || isLocked}
-                      rows={1}
-                      style={{ 
-                        maxHeight: isMobile && (isInputFocused || selectedTemplate || aiSuggestions.length > 0) ? '300px' : '250px', 
-                        minHeight: '40px',
-                        paddingTop: '12px', 
-                        paddingBottom: '12px', 
-                        paddingLeft: '16px', 
-                        paddingRight: '16px',
-                        direction: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr') : 'ltr',
-                        textAlign: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'right' : 'left') : 'left',
-                        fontSize: '15px',
-                        transition: 'all 0.3s ease-in-out'
-                      }}
-                    />
-
-                    {/* Send Button */}
-                    {selectedFile ? (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          handleSendMedia();
-                        }}
-                        disabled={uploadingMedia}
-                        className="flex-shrink-0 w-10 h-10 rounded-full bg-green-500 text-white flex items-center justify-center hover:bg-green-600 transition-colors disabled:opacity-50"
-                      >
-                        {uploadingMedia ? (
-                          <div className="loading loading-spinner loading-sm"></div>
-                        ) : (
-                          <PaperAirplaneIcon className="w-5 h-5" />
-                        )}
-                      </button>
-                    ) : (
-                    <button
-                      type="submit"
-                        disabled={(!newMessage.trim() && !selectedTemplate) || sending}
-                        className="flex-shrink-0 w-10 h-10 rounded-full bg-green-500 text-white flex items-center justify-center hover:bg-green-600 transition-colors disabled:opacity-50"
-                    >
-                      {sending ? (
-                        <div className="loading loading-spinner loading-sm"></div>
-                      ) : (
-                        <PaperAirplaneIcon className="w-5 h-5" />
+                      {/* Selected file preview */}
+                      {selectedFile && (
+                        <div className="flex items-center gap-2 bg-gray-100/80 backdrop-blur-md rounded-lg px-3 py-1 border border-gray-300/50">
+                          <span className="text-xs text-gray-700">{selectedFile.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedFile(null)}
+                            className="text-red-500 hover:text-red-700"
+                          >
+                            <XMarkIcon className="w-4 h-4" />
+                          </button>
+                        </div>
                       )}
-                    </button>
-                    )}
+                    </div>
                   </form>
                 </div>
               </>

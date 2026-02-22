@@ -7,13 +7,15 @@ interface VoiceMessagePlayerProps {
   className?: string;
   senderName?: string;
   profilePictureUrl?: string | null;
+  showAvatar?: boolean; // Control whether to show the avatar
 }
 
 const VoiceMessagePlayer: React.FC<VoiceMessagePlayerProps> = ({
   audioUrl,
   className = '',
   senderName = 'User',
-  profilePictureUrl = null
+  profilePictureUrl = null,
+  showAvatar = true
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -81,7 +83,9 @@ const VoiceMessagePlayer: React.FC<VoiceMessagePlayerProps> = ({
   if (hasError) {
     return (
       <div className={`flex items-center gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200 max-w-md ${className}`}>
-        <WhatsAppAvatar name={senderName} profilePictureUrl={profilePictureUrl} size="md" />
+        {showAvatar && (
+          <WhatsAppAvatar name={senderName} profilePictureUrl={profilePictureUrl} size="md" />
+        )}
         <div className="flex-shrink-0 w-10 h-10 rounded-full bg-gray-300 flex items-center justify-center">
           <PlayIcon className="w-5 h-5 text-gray-500" />
         </div>
@@ -97,7 +101,9 @@ const VoiceMessagePlayer: React.FC<VoiceMessagePlayerProps> = ({
       <audio ref={audioRef} src={audioUrl} preload="metadata" />
       
       {/* Avatar */}
-      <WhatsAppAvatar name={senderName} profilePictureUrl={profilePictureUrl} size="md" />
+      {showAvatar && (
+        <WhatsAppAvatar name={senderName} profilePictureUrl={profilePictureUrl} size="md" />
+      )}
       
       {/* Play/Pause Button */}
       <button

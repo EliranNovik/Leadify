@@ -980,7 +980,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   }, []);
 
   // Helper function to render WhatsApp-style message status
-  const renderMessageStatus = (message?: WhatsAppMessage | { whatsapp_status?: string; whatsapp_message_id?: string; error_message?: string }) => {
+  const renderMessageStatus = (message?: WhatsAppMessage | { whatsapp_status?: string; whatsapp_message_id?: string; error_message?: string }, readColor?: string) => {
     if (!message) return null;
 
     const status = message.whatsapp_status;
@@ -999,20 +999,19 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     switch (effectiveStatus) {
       case 'sent':
         return (
-          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#ffffff' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
         );
       case 'delivered':
         return (
-          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#000000' }}>
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l4 4L11 8" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l4 4L17 8" />
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#ffffff' }}>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
         );
       case 'read':
         return (
-          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#00d9ff' }}>
+          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: readColor || '#39ff14' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
@@ -2582,6 +2581,21 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     }
   }, [allMessages, showMyContactsOnly, myContactsSelectedClient, allContactsSelectedClient, setAllMessages, setMyContactsMessages, setAllContactsMessages, setMyContactsClients, setAllContactsClients]);
 
+  // Update client unread counts whenever allMessages changes
+  useEffect(() => {
+    if (showMyContactsOnly) {
+      setMyContactsClients(prev => prev.map(client => ({
+        ...client,
+        unreadCount: getUnreadCountForClient(client)
+      })));
+    } else {
+      setAllContactsClients(prev => prev.map(client => ({
+        ...client,
+        unreadCount: getUnreadCountForClient(client)
+      })));
+    }
+  }, [allMessages, showMyContactsOnly]);
+
   // Poll for new messages every 10 seconds if we have cached data
   useEffect(() => {
     const currentClients = showMyContactsOnly ? myContactsClients : allContactsClients;
@@ -3532,6 +3546,20 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 console.error('Error marking messages as read:', error);
               } else {
                 console.log(`✅ Marked ${incomingMessageIds.length} messages as read`);
+
+                // Immediately update allMessages state to reflect read status
+                setAllMessages(prev => prev.map(msg =>
+                  incomingMessageIds.includes(msg.id)
+                    ? { ...msg, is_read: true }
+                    : msg
+                ));
+
+                // Update messages state for current client
+                setMessages(prev => prev.map(msg =>
+                  incomingMessageIds.includes(msg.id)
+                    ? { ...msg, is_read: true }
+                    : msg
+                ));
               }
             } catch (error) {
               console.error('Error marking messages as read:', error);
@@ -6191,35 +6219,55 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-2 min-w-0 flex-1">
-                                  <h3 className="font-semibold text-gray-900 truncate text-base md:text-base">
+                                  <h3
+                                    className="font-semibold text-gray-900 truncate text-base md:text-base"
+                                    dir={client.name?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                    style={{ textAlign: client.name?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
+                                  >
                                     {client.name}
                                   </h3>
                                 </div>
-                                <div className="flex items-center gap-1 md:gap-2 flex-shrink-0">
+                                <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
                                   {lastMessage && (
                                     <span className="text-xs text-gray-500">
                                       {formatLastMessageTime(lastMessage.sent_at)}
                                     </span>
                                   )}
                                   {unreadCount > 0 && (
-                                    <span className="bg-green-500 text-white text-xs rounded-full px-1 md:px-2 py-1 min-w-[16px] md:min-w-[20px] text-center shadow-[0_4px_12px_rgba(34,197,94,0.35)]">
+                                    <span
+                                      className="bg-green-100 text-green-700 text-xs rounded-full px-1 md:px-2 py-1 min-w-[16px] md:min-w-[20px] text-center font-semibold"
+                                    >
                                       {unreadCount}
                                     </span>
                                   )}
                                 </div>
                               </div>
-                              <p className="text-sm md:text-sm text-gray-500 truncate">
+                              <p
+                                className="text-sm md:text-sm text-gray-500 truncate"
+                                dir={client.lead_number?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                style={{ textAlign: client.lead_number?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
+                              >
                                 {client.lead_number}
                               </p>
                               {lastMessage && (
-                                <div className="flex items-center gap-1 mt-1">
-                                  <p className="text-sm md:text-sm text-gray-600 truncate flex-1">
+                                <div
+                                  className="flex items-center gap-1 mt-1"
+                                  dir={lastMessage.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                  style={{
+                                    flexDirection: lastMessage.message?.match(/[\u0590-\u05FF]/) ? 'row-reverse' : 'row'
+                                  }}
+                                >
+                                  <p
+                                    className="text-sm md:text-sm text-gray-600 truncate flex-1"
+                                    dir={lastMessage.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                    style={{ textAlign: lastMessage.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
+                                  >
                                     {lastMessage.direction === 'out' ? `${lastMessage.sender_name}: ` : ''}
                                     {lastMessage.message}
                                   </p>
                                   {lastMessage.direction === 'out' && lastMessage.whatsapp_status && (
                                     <span className="inline-block align-middle flex-shrink-0" style={{ transform: 'scale(0.75)' }}>
-                                      {renderMessageStatus(lastMessage)}
+                                      {renderMessageStatus(lastMessage, '#047857')}
                                     </span>
                                   )}
                                 </div>
@@ -6250,8 +6298,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   onClick={() => setIsNewMessageModalOpen(true)}
                   className="flex items-center gap-3 w-full"
                 >
-                  <div className="btn btn-circle w-12 h-12 text-white border-none shadow-lg hover:shadow-xl transition-shadow flex-shrink-0" style={{ background: 'linear-gradient(to bottom right, #047857, #0f766e)' }}>
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <div className="btn btn-circle w-12 h-12 border-none shadow-lg hover:shadow-xl transition-shadow flex-shrink-0" style={{ background: '#047857' }}>
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#39ff14' }}>
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                     </svg>
                   </div>
@@ -6454,7 +6502,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                         maxWidth: '100%',
                                         minWidth: 0,
                                         height: 'auto',
-                                        fontWeight: message.caption?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
                                         color: message.direction === 'out' ? 'white' : undefined
                                       }}
                                     >
@@ -6544,7 +6591,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             maxWidth: '100%',
                                             minWidth: 0,
                                             height: 'auto',
-                                            fontWeight: message.message?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
                                             color: message.direction === 'out' ? 'white' : undefined
                                           }}
                                         >
@@ -6685,7 +6731,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             maxWidth: '100%',
                                             minWidth: 0,
                                             height: 'auto',
-                                            fontWeight: message.caption?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
                                             color: message.direction === 'out' ? 'white' : undefined
                                           }}
                                         >
@@ -6704,6 +6749,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                         className={message.direction === 'out' ? 'bg-green-50' : 'bg-gray-50'}
                                         senderName={message.sender_name || 'Unknown'}
                                         profilePictureUrl={message.profile_picture_url}
+                                        showAvatar={message.direction === 'out'}
                                       />
                                       {message.caption && (
                                         <p
@@ -6715,7 +6761,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             maxWidth: '100%',
                                             minWidth: 0,
                                             height: 'auto',
-                                            fontWeight: message.caption?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
                                             color: message.direction === 'out' ? 'white' : undefined
                                           }}
                                         >
@@ -6732,7 +6777,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             maxWidth: '100%',
                                             minWidth: 0,
                                             height: 'auto',
-                                            fontWeight: message.message?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
                                             color: message.direction === 'out' ? 'white' : undefined
                                           }}
                                         >
@@ -6783,7 +6827,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             maxWidth: '100%',
                                             minWidth: 0,
                                             height: 'auto',
-                                            fontWeight: message.caption?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
                                             color: message.direction === 'out' ? 'white' : undefined
                                           }}
                                         >
@@ -6873,7 +6916,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           onClick={() => setShowDesktopTools(prev => !prev)}
                           disabled={sending || uploadingMedia}
                           className="btn btn-circle w-12 h-12 text-white disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow"
-                          style={{ background: 'linear-gradient(to bottom right, #047857, #0f766e)', borderColor: 'transparent' }}
+                          style={{ background: '#000000', borderColor: 'transparent' }}
                           title="Message tools"
                         >
                           <Squares2X2Icon className="w-6 h-6" />
@@ -7031,7 +7074,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         }}
                         disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
                         className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow disabled:opacity-50"
-                        style={{ background: 'linear-gradient(to bottom right, #047857, #0f766e)', borderColor: 'transparent' }}
+                        style={{ background: '#000000', borderColor: 'transparent' }}
                         title={selectedFile ? 'Send media' : 'Send message'}
                       >
                         {sending || uploadingMedia ? (
@@ -7266,7 +7309,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           <button
                             onClick={() => setShowMobileDropdown(!showMobileDropdown)}
                             className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow"
-                            style={{ background: 'linear-gradient(to bottom right, #047857, #0f766e)', borderColor: 'transparent' }}
+                            style={{ background: '#000000', borderColor: 'transparent' }}
                             title="Message tools"
                           >
                             <Squares2X2Icon className="w-6 h-6" />
@@ -7412,7 +7455,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           }}
                           disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
                           className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow disabled:opacity-50"
-                          style={{ background: 'linear-gradient(to bottom right, #047857, #0f766e)', borderColor: 'transparent' }}
+                          style={{ background: '#000000', borderColor: 'transparent' }}
                           title={selectedFile ? 'Send media' : 'Send message'}
                         >
                           {sending || uploadingMedia ? (

@@ -64,7 +64,7 @@ interface SchedulerWhatsAppModalProps {
 
 const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen, onClose, client, selectedContact: propSelectedContact, onClientUpdate, hideContactSelector = false }) => {
   const navigate = useNavigate();
-  
+
   // Debug: Log when propSelectedContact changes
   useEffect(() => {
     if (isOpen) {
@@ -86,11 +86,11 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [currentUser, setCurrentUser] = useState<any>(null);
-  
+
   // Employee state for avatars
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const fixedMessageIdsRef = useRef<Set<number>>(new Set());
-  
+
   // Template state
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<WhatsAppTemplate | null>(null);
@@ -98,38 +98,38 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   const [templateSearchTerm, setTemplateSearchTerm] = useState('');
   const [selectedLanguage, setSelectedLanguage] = useState<string>('');
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
-  
+
   // AI suggestions state
   const [isLoadingAI, setIsLoadingAI] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
   const [showAISuggestions, setShowAISuggestions] = useState(false);
-  
+
   // 24-hour window state
   const [timeLeft, setTimeLeft] = useState<string>('');
   const [isLocked, setIsLocked] = useState(false);
-  
+
   // Auto-scroll state
   const [shouldAutoScroll, setShouldAutoScroll] = useState(false);
   const [isFirstLoad, setIsFirstLoad] = useState(true);
-  
+
   // State for lead contacts (all contacts associated with the client)
   const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
   const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
-  
+
   // Mobile detection
   const [isMobile, setIsMobile] = useState(false);
-  
+
   // Mobile input focus state
   const [isInputFocused, setIsInputFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  
+
   // Tools dropdown state
   const [showDesktopTools, setShowDesktopTools] = useState(false);
   const [showMobileDropdown, setShowMobileDropdown] = useState(false);
   const desktopToolsRef = useRef<HTMLDivElement>(null);
   const mobileToolsRef = useRef<HTMLDivElement>(null);
   const templateSelectorRef = useRef<HTMLDivElement>(null);
-  
+
   // Mobile detection
   useEffect(() => {
     const checkMobile = () => {
@@ -168,12 +168,12 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
-      
+
       // Don't close if clicking inside template selector
       if (templateSelectorRef.current && templateSelectorRef.current.contains(target)) {
         return;
       }
-      
+
       // Close tools dropdowns
       if (desktopToolsRef.current && !desktopToolsRef.current.contains(target)) {
         setShowDesktopTools(false);
@@ -181,7 +181,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       if (mobileToolsRef.current && !mobileToolsRef.current.contains(target)) {
         setShowMobileDropdown(false);
       }
-      
+
       // Close template selector if clicking outside
       if (showTemplateSelector && templateSelectorRef.current && !templateSelectorRef.current.contains(target)) {
         // Don't close if clicking on the template button itself
@@ -189,7 +189,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           setShowTemplateSelector(false);
         }
       }
-      
+
       // Reset input focus on mobile
       if (isMobile && isInputFocused && textareaRef.current) {
         if (!target.closest('textarea') && !target.closest('form')) {
@@ -216,13 +216,13 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             .select('id, full_name, email')
             .eq('email', user.email)
             .single();
-          
+
           if (userRow) {
             setCurrentUser(userRow);
             return;
           }
         }
-        
+
         const fallbackUser = {
           id: user.id,
           full_name: user.user_metadata?.full_name || user.user_metadata?.name || user.email,
@@ -357,7 +357,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       contactName: propSelectedContact?.contact.name,
       isOpen
     });
-    
+
     if (propSelectedContact) {
       console.log('📞 propSelectedContact set:', {
         contactId: propSelectedContact.contact.id,
@@ -384,7 +384,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   // Fetch contacts for the client (only if no propSelectedContact)
   useEffect(() => {
     if (propSelectedContact) return; // Skip if we have a prop contact
-    
+
     const fetchContactsForClient = async () => {
       if (!client) {
         setLeadContacts([]);
@@ -393,13 +393,13 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       }
 
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      const leadId = isLegacyLead 
+      const leadId = isLegacyLead
         ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
         : client.id;
 
       const contacts = await fetchLeadContacts(leadId, isLegacyLead);
       setLeadContacts(contacts);
-      
+
       // If there are contacts, select the main contact by default, or the first one
       if (contacts.length > 0) {
         const mainContact = contacts.find(c => c.isMain) || contacts[0];
@@ -428,7 +428,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         setIsLoadingTemplates(false);
       }
     };
-    
+
     if (isOpen) {
       loadTemplates();
     }
@@ -454,15 +454,15 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         }
       }
 
-      const isAlreadyProperlyFormatted = templates.some(template => 
+      const isAlreadyProperlyFormatted = templates.some(template =>
         template.content && message.message === template.content
       );
-      
+
       if (isAlreadyProperlyFormatted) {
         return message;
       }
-      
-      const needsProcessing = 
+
+      const needsProcessing =
         message.message.includes('Template:') ||
         message.message.includes('[Template:') ||
         message.message.includes('[template:]') ||
@@ -473,15 +473,15 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
       if (needsProcessing) {
         // PRIORITY 2: Fallback to name matching for backward compatibility (legacy messages without template_id)
-        const templateMatch = message.message.match(/\[Template:\s*([^\]]+)\]/) || 
-                              message.message.match(/Template:\s*(.+)/);
+        const templateMatch = message.message.match(/\[Template:\s*([^\]]+)\]/) ||
+          message.message.match(/Template:\s*(.+)/);
         if (templateMatch) {
           let templateTitle = templateMatch[1].trim().replace(/\]$/, '');
-          const template = templates.find(t => 
+          const template = templates.find(t =>
             t.title.toLowerCase() === templateTitle.toLowerCase() ||
             (t.name360 && t.name360.toLowerCase() === templateTitle.toLowerCase())
           );
-          
+
           if (template) {
             if (template.params === '0' && template.content) {
               return { ...message, message: template.content };
@@ -490,7 +490,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             }
           }
         }
-        
+
         const templateMarkerMatch = message.message.match(/TEMPLATE_MARKER:(.+)/);
         if (templateMarkerMatch) {
           const templateTitle = templateMarkerMatch[1];
@@ -503,7 +503,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             }
           }
         }
-        
+
         if (message.message === '' || message.message === 'Template sent') {
           return { ...message, message: 'Template message sent' };
         }
@@ -515,7 +515,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   // Helper function to convert URLs, email addresses, and bold formatting in text
   const renderTextWithLinks = (text: string): React.ReactNode => {
     if (!text) return text;
-    
+
     // Process links (URLs and emails)
     const processLinks = (input: string, startKey: number = 0): (string | React.ReactElement)[] => {
       const linkRegex = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|mailto:[^\s<>"']+|([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})|[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:\/[^\s<>"']*)?)/g;
@@ -523,20 +523,20 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       let lastIndex = 0;
       let match;
       let keyCounter = startKey;
-      
+
       linkRegex.lastIndex = 0;
-      
+
       while ((match = linkRegex.exec(input)) !== null) {
         // Add text before the link
         if (match.index > lastIndex) {
           parts.push(input.substring(lastIndex, match.index));
         }
-        
+
         // Determine if it's an email or URL
         const matchedText = match[0];
         let href = matchedText;
         let displayText = matchedText;
-        
+
         if (matchedText.includes('@') && !matchedText.startsWith('http') && !matchedText.startsWith('mailto:')) {
           // It's an email address
           href = `mailto:${matchedText}`;
@@ -550,14 +550,14 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           href = `https://${matchedText}`;
           displayText = matchedText;
         }
-        
+
         // Replace long URLs with "Meeting Link" text
         if (href.startsWith('http://') || href.startsWith('https://')) {
           if (matchedText.length > 50 || href.includes('teams.microsoft.com') || href.includes('meetup-join') || href.includes('meeting')) {
             displayText = 'Meeting Link';
           }
         }
-        
+
         parts.push(
           <a
             key={`link-${keyCounter++}`}
@@ -565,7 +565,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             target={href.startsWith('mailto:') ? undefined : '_blank'}
             rel={href.startsWith('mailto:') ? undefined : 'noopener noreferrer'}
             className="hover:underline break-all"
-            style={{ 
+            style={{
               color: '#39ff14',
               wordBreak: 'break-all',
               overflowWrap: 'anywhere',
@@ -580,18 +580,18 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             {displayText}
           </a>
         );
-        
+
         lastIndex = match.index + match[0].length;
       }
-      
+
       // Add remaining text
       if (lastIndex < input.length) {
         parts.push(input.substring(lastIndex));
       }
-      
+
       return parts;
     };
-    
+
     // Process bold formatting (*text*) and links together
     const processBoldAndLinks = (input: string, startKey: number = 0): (string | React.ReactElement)[] => {
       const boldRegex = /\*([^*]+)\*/g;
@@ -599,9 +599,9 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       let lastIndex = 0;
       let match;
       let keyCounter = startKey;
-      
+
       boldRegex.lastIndex = 0;
-      
+
       while ((match = boldRegex.exec(input)) !== null) {
         // Add text before the bold (process links in it)
         if (match.index > lastIndex) {
@@ -611,7 +611,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           // Update key counter based on links added
           keyCounter += processedBefore.filter(p => React.isValidElement(p)).length;
         }
-        
+
         // Add the bold text (also process links inside bold text)
         const boldContent = match[1];
         const processedBold = processLinks(boldContent, keyCounter);
@@ -631,10 +631,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           );
           keyCounter += processedBold.filter(p => React.isValidElement(p)).length;
         }
-        
+
         lastIndex = match.index + match[0].length;
       }
-      
+
       // Add remaining text (process links in it)
       if (lastIndex < input.length) {
         const remainingText = input.substring(lastIndex);
@@ -643,23 +643,23 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         // No bold found, process links in the whole text
         return processLinks(input, 0);
       }
-      
+
       return parts;
     };
-    
+
     // Start processing with bold formatting
     const result = processBoldAndLinks(text);
-    
+
     // If no formatting found, return original text
     if (result.length === 0) {
       return text;
     }
-    
+
     // If only one part and it's a string, return it directly
     if (result.length === 1 && typeof result[0] === 'string') {
       return result[0];
     }
-    
+
     return <>{result}</>;
   };
 
@@ -667,18 +667,18 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   const isEmojiOnly = (text: string): boolean => {
     const cleanText = text.trim();
     if (cleanText.length === 0) return false;
-    
+
     // Exclude Hebrew text (Unicode range \u0590-\u05FF) - it should not be treated as emoji
     const hasHebrew = /[\u0590-\u05FF]/.test(cleanText);
     if (hasHebrew) return false;
-    
+
     const hasNonAscii = /[^\x00-\x7F]/.test(cleanText);
     const isShort = cleanText.length <= 5;
-    
+
     // Emoji detection: check for emoji Unicode ranges
     const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]/u;
     const hasEmoji = emojiRegex.test(cleanText);
-    
+
     return hasEmoji && isShort && !hasHebrew;
   };
 
@@ -731,9 +731,9 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   // This means the message was sent successfully but DB status update failed
   const autoFixMessageStatus = React.useCallback(async (messagesToFix: WhatsAppMessage[]) => {
     const messagesNeedingFix = messagesToFix.filter(
-      msg => 
-        msg.whatsapp_status === 'failed' && 
-        msg.whatsapp_message_id && 
+      msg =>
+        msg.whatsapp_status === 'failed' &&
+        msg.whatsapp_message_id &&
         msg.id &&
         !fixedMessageIdsRef.current.has(msg.id) // Don't re-fix messages we've already fixed
     );
@@ -776,7 +776,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
     if (fixedIds.length > 0) {
       console.log(`✅ Auto-fixed ${fixedIds.length} message status(es) from "failed" to "delivered"`);
-      
+
       // Update local state to reflect the fix
       setMessages(prevMessages =>
         prevMessages.map(msg =>
@@ -808,20 +808,19 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     switch (effectiveStatus) {
       case 'sent':
         return (
-          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#ffffff' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
         );
       case 'delivered':
         return (
-          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#000000' }}>
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l4 4L11 8" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l4 4L17 8" />
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#ffffff' }}>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
         );
       case 'read':
         return (
-          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#00d9ff' }}>
+          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#39ff14' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
@@ -872,7 +871,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     }
     const diffTime = today.getTime() - date.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    
+
     if (diffDays <= 7) {
       return date.toLocaleDateString('en-US', { weekday: 'long' });
     }
@@ -884,17 +883,17 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     const now = new Date();
     const diffMs = now.getTime() - lastMessage.getTime();
     const hoursLeft = 24 - (diffMs / (1000 * 60 * 60));
-    
+
     if (hoursLeft <= 0) {
       setIsLocked(true);
       setTimeLeft('Locked');
       return;
     }
-    
+
     setIsLocked(false);
     const hours = Math.floor(hoursLeft);
     const minutes = Math.floor((hoursLeft - hours) * 60);
-    
+
     if (hours > 0) {
       setTimeLeft(`${hours}h ${minutes}m`);
     } else {
@@ -936,12 +935,12 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           console.log('⏳ Waiting for propSelectedContact (hideContactSelector=true)...');
           return;
         }
-        
+
         // ALWAYS prioritize propSelectedContact if it's provided (from contact selector)
         // This ensures we use the correct contact even if state hasn't updated yet
         const selectedContact = propSelectedContact?.contact || (selectedContactId ? leadContacts.find(c => c.id === selectedContactId) : null);
         const contactId = propSelectedContact?.contact.id || selectedContactId || null;
-        
+
         console.log('🔍 fetchMessages called:', {
           isOpen,
           clientId: client?.id,
@@ -956,10 +955,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           selectedContactPhone: selectedContact?.phone || selectedContact?.mobile,
           leadContactsCount: leadContacts.length
         });
-        
+
         const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
         let query = supabase.from('whatsapp_messages').select('*');
-        
+
         // If we have a selected contact (from propSelectedContact or selectedContactId), filter by contact's phone number
         // IMPORTANT: If propSelectedContact is provided, we MUST use it and not fall back to client
         if (selectedContact) {
@@ -972,19 +971,19 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             isFromProp: !!propSelectedContact,
             hideContactSelector
           });
-          
+
           if (!contactPhone) {
             console.error('❌ Selected contact has no phone number!', selectedContact);
             toast.error(`Contact ${selectedContact.name} has no phone number. Cannot load WhatsApp conversation.`);
             setMessages([]);
             return;
           }
-          
+
           if (contactPhone) {
             // Normalize phone numbers for comparison (remove spaces, dashes, etc.)
             const normalizePhone = (phone: string) => phone.replace(/\D/g, '');
             const normalizedContactPhone = normalizePhone(contactPhone);
-            
+
             // Fetch all messages for this lead, then filter by phone number
             if (isLegacyLead) {
               const legacyId = parseInt(client.id.replace('legacy_', ''));
@@ -992,9 +991,9 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             } else {
               query = query.eq('lead_id', client.id);
             }
-            
+
             const { data: allMessages, error: allError } = await query.order('sent_at', { ascending: true });
-            
+
             if (!allError && allMessages) {
               // Filter messages by:
               // 1. contact_id matches (if set)
@@ -1004,7 +1003,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 if (contactId && msg.contact_id === contactId) {
                   return true;
                 }
-                
+
                 // Second priority: phone number match (normalized)
                 if (msg.phone_number) {
                   const normalizedMsgPhone = normalizePhone(msg.phone_number);
@@ -1021,12 +1020,12 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                     }
                   }
                 }
-                
+
                 return false;
               });
-              
+
               console.log(`📱 Filtered ${filteredMessages.length} messages from ${allMessages.length} total for contact ${selectedContact.name} (phone: ${contactPhone})`);
-              
+
               const processedMessages = filteredMessages.map(processTemplateMessage);
               if (!isPolling) {
                 setMessages(processedMessages);
@@ -1035,12 +1034,12 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                   const hasChanges = processedMessages.length !== prevMessages.length ||
                     processedMessages.some((newMsg, index) => {
                       const prevMsg = prevMessages[index];
-                      return !prevMsg || 
-                             newMsg.id !== prevMsg.id || 
-                             newMsg.message !== prevMsg.message ||
-                             newMsg.whatsapp_status !== prevMsg.whatsapp_status;
+                      return !prevMsg ||
+                        newMsg.id !== prevMsg.id ||
+                        newMsg.message !== prevMsg.message ||
+                        newMsg.whatsapp_status !== prevMsg.whatsapp_status;
                     });
-                  
+
                   if (hasChanges) {
                     return processedMessages;
                   }
@@ -1053,7 +1052,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             console.warn('⚠️ Selected contact has no phone number:', selectedContact);
           }
         }
-        
+
         // Fallback: if no contact selected or contact has no phone, filter by lead_id/legacy_id only
         // This shows all messages for the lead (client's phone number)
         console.warn('⚠️ No selected contact or contact has no phone, falling back to lead messages', {
@@ -1062,10 +1061,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           selectedContactId,
           contactId
         });
-        
+
         if (isLegacyLead) {
           const legacyId = parseInt(client.id.replace('legacy_', ''));
-          
+
           // For legacy leads, fetch from leads_leadinteractions table
           const { data: interactions, error: interactionsError } = await supabase
             .from('leads_leadinteractions')
@@ -1073,7 +1072,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             .eq('lead_id', legacyId)
             .eq('kind', 'w') // 'w' for WhatsApp
             .order('cdate', { ascending: true });
-          
+
           if (interactionsError) {
             console.error('Error fetching legacy interactions:', interactionsError);
             // Fallback to whatsapp_messages if leads_leadinteractions fails
@@ -1091,12 +1090,12 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 const hasChanges = processedMessages.length !== prevMessages.length ||
                   processedMessages.some((newMsg, index) => {
                     const prevMsg = prevMessages[index];
-                    return !prevMsg || 
-                           newMsg.id !== prevMsg.id || 
-                           newMsg.message !== prevMsg.message ||
-                           newMsg.whatsapp_status !== prevMsg.whatsapp_status;
+                    return !prevMsg ||
+                      newMsg.id !== prevMsg.id ||
+                      newMsg.message !== prevMsg.message ||
+                      newMsg.whatsapp_status !== prevMsg.whatsapp_status;
                   });
-                
+
                 if (hasChanges) {
                   return processedMessages;
                 }
@@ -1105,7 +1104,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             }
             return;
           }
-          
+
           // Fetch employee display names for creator_ids
           const creatorIds = [...new Set((interactions || [])
             .map((interaction: any) => interaction.creator_id)
@@ -1113,14 +1112,14 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             .map((id: any) => Number(id))
             .filter((id: number) => !isNaN(id))
           )];
-          
+
           let employeeNameMap: Record<number, string> = {};
           if (creatorIds.length > 0) {
             const { data: employees, error: employeeError } = await supabase
               .from('tenants_employee')
               .select('id, display_name')
               .in('id', creatorIds);
-            
+
             if (!employeeError && employees) {
               employeeNameMap = employees.reduce((acc, emp) => {
                 acc[emp.id] = emp.display_name;
@@ -1128,14 +1127,14 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               }, {} as Record<number, string>);
             }
           }
-          
+
           // Transform legacy interactions to WhatsAppMessage format
           const transformedMessages: WhatsAppMessage[] = (interactions || []).map((interaction: any) => {
             // Combine date and time to create sent_at
             const dateStr = interaction.date || '';
             const timeStr = interaction.time || '';
             let sentAt = new Date().toISOString();
-            
+
             if (dateStr && timeStr) {
               try {
                 // Try to parse date and time
@@ -1158,7 +1157,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             } else if (interaction.cdate) {
               sentAt = interaction.cdate;
             }
-            
+
             // Get sender name from creator_id
             let senderName = 'Unknown';
             if (interaction.creator_id && interaction.creator_id !== '\\N' && interaction.creator_id !== 'EMPTY') {
@@ -1169,7 +1168,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 senderName = `Employee ${creatorId}`;
               }
             }
-            
+
             return {
               id: interaction.id,
               lead_id: client.id, // Keep the legacy_ prefix for consistency
@@ -1182,9 +1181,9 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               whatsapp_status: 'sent',
             };
           });
-          
+
           const processedMessages = transformedMessages.map(processTemplateMessage);
-          
+
           if (!isPolling) {
             setMessages(processedMessages);
           } else {
@@ -1192,12 +1191,12 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               const hasChanges = processedMessages.length !== prevMessages.length ||
                 processedMessages.some((newMsg, index) => {
                   const prevMsg = prevMessages[index];
-                  return !prevMsg || 
-                         newMsg.id !== prevMsg.id || 
-                         newMsg.message !== prevMsg.message ||
-                         newMsg.whatsapp_status !== prevMsg.whatsapp_status;
+                  return !prevMsg ||
+                    newMsg.id !== prevMsg.id ||
+                    newMsg.message !== prevMsg.message ||
+                    newMsg.whatsapp_status !== prevMsg.whatsapp_status;
                 });
-              
+
               if (hasChanges) {
                 return processedMessages;
               }
@@ -1208,7 +1207,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         } else {
           query = query.eq('lead_id', client.id);
         }
-        
+
         const { data, error } = await query.order('sent_at', { ascending: true });
 
         if (error) {
@@ -1217,7 +1216,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         }
 
         const processedMessages = (data || []).map(processTemplateMessage);
-        
+
         if (!isPolling) {
           setMessages(processedMessages);
         } else {
@@ -1225,41 +1224,54 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             const hasChanges = processedMessages.length !== prevMessages.length ||
               processedMessages.some((newMsg, index) => {
                 const prevMsg = prevMessages[index];
-                return !prevMsg || 
-                       newMsg.id !== prevMsg.id || 
-                       newMsg.message !== prevMsg.message ||
-                       newMsg.whatsapp_status !== prevMsg.whatsapp_status;
+                return !prevMsg ||
+                  newMsg.id !== prevMsg.id ||
+                  newMsg.message !== prevMsg.message ||
+                  newMsg.whatsapp_status !== prevMsg.whatsapp_status;
               });
-            
+
             if (hasChanges) {
               return processedMessages;
             }
             return prevMessages;
           });
         }
-        
+
         // Mark incoming messages as read
         if (currentUser && data && data.length > 0 && !isPolling) {
           const incomingMessageIds = data
             .filter(msg => msg.direction === 'in' && (!(msg as any).is_read || (msg as any).is_read === false))
             .map(msg => msg.id);
-          
+
           if (incomingMessageIds.length > 0) {
             try {
-              await supabase
+              const { error } = await supabase
                 .from('whatsapp_messages')
-                .update({ 
-                  is_read: true, 
+                .update({
+                  is_read: true,
                   read_at: new Date().toISOString(),
-                  read_by: currentUser.id 
+                  read_by: currentUser.id
                 })
                 .in('id', incomingMessageIds);
+
+              if (error) {
+                console.error('Error marking messages as read:', error);
+              } else {
+                console.log(`✅ Marked ${incomingMessageIds.length} messages as read`);
+
+                // Immediately update messages state to reflect read status
+                setMessages(prev => prev.map(msg =>
+                  incomingMessageIds.includes(msg.id)
+                    ? { ...msg, is_read: true }
+                    : msg
+                ));
+              }
             } catch (error) {
               console.error('Error marking messages as read:', error);
             }
           }
         }
-        
+
         // Auto-scroll on first load
         if (!isPolling && isFirstLoad && shouldAutoScroll) {
           setTimeout(() => {
@@ -1333,11 +1345,11 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
     if (lastIncomingMessage) {
       calculateTimeLeft(lastIncomingMessage.sent_at);
-      
+
       const interval = setInterval(() => {
         calculateTimeLeft(lastIncomingMessage.sent_at);
       }, 60000);
-      
+
       return () => clearInterval(interval);
     } else {
       // No incoming messages, but there are outgoing messages - still lock
@@ -1371,7 +1383,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           }
         }
       };
-      
+
       // Try immediately
       setTimeout(scrollToBottom, 100);
       // Try again after a short delay to ensure rendering is complete
@@ -1401,20 +1413,20 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   // Send message
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if ((!newMessage.trim() && !selectedTemplate) || !client || !currentUser) {
       return;
     }
 
     setSending(true);
-    
+
     // Get phone number from selected contact or client
     let phoneNumber: string | null = null;
     let contactId: number | null = null;
-    
+
     // Use propSelectedContact if available, otherwise use selectedContactId
     const activeContactId = propSelectedContact?.contact.id || selectedContactId;
-    
+
     if (activeContactId) {
       const selectedContact = propSelectedContact?.contact || leadContacts.find(c => c.id === activeContactId);
       if (selectedContact) {
@@ -1422,12 +1434,12 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         contactId = selectedContact.id;
       }
     }
-    
+
     // Fallback to client's phone number
     if (!phoneNumber) {
       phoneNumber = client.phone || client.mobile || null;
     }
-    
+
     if (!phoneNumber) {
       toast.error('No phone number found for this contact');
       setSending(false);
@@ -1435,7 +1447,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     }
 
     const senderName = currentUser.full_name || currentUser.email;
-    
+
     try {
       const messagePayload: any = {
         leadId: client.id,
@@ -1450,21 +1462,21 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         messagePayload.templateId = typeof selectedTemplate.id === 'string' ? parseInt(selectedTemplate.id, 10) : selectedTemplate.id;
         messagePayload.templateName = selectedTemplate.name360;
         messagePayload.templateLanguage = selectedTemplate.language || 'en_US';
-        
+
         // Debug log to verify templateId is being sent
         console.log('📤 Template ID being sent:', messagePayload.templateId, '(type:', typeof messagePayload.templateId, ')');
-        
+
         // Generate parameters based on actual param count
         const paramCount = Number(selectedTemplate.params) || 0;
         console.log(`🔍 Template "${selectedTemplate.name360}" requires ${paramCount} parameter(s)`);
-        
+
         if (paramCount > 0) {
           let templateParams: Array<{ type: string; text: string }> = [];
-          
+
           try {
             console.log('🔍 Getting template param definitions...');
             const paramDefinitions = await getTemplateParamDefinitions(selectedTemplate.id, selectedTemplate.name360);
-            
+
             // Create a client object from the client prop
             const clientForParams = client ? {
               id: client.id,
@@ -1472,7 +1484,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               lead_type: client.lead_type || 'new',
               isContact: false
             } : null;
-            
+
             if (paramDefinitions.length > 0) {
               console.log('✅ Using template-specific param definitions');
               templateParams = await generateParamsFromDefinitions(paramDefinitions, clientForParams || {}, contactId || null);
@@ -1480,10 +1492,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               console.log('⚠️ No specific param definitions, using generic generation');
               templateParams = await generateTemplateParameters(paramCount, clientForParams || {}, contactId || null);
             }
-            
+
             if (templateParams && templateParams.length > 0) {
               messagePayload.templateParameters = templateParams;
-              
+
               // Generate the filled template content for display
               let filledContent = selectedTemplate.content || '';
               templateParams.forEach((param, index) => {
@@ -1491,7 +1503,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                   filledContent = filledContent.replace(new RegExp(`\\{\\{${index + 1}\\}\\}`, 'g'), param.text);
                 }
               });
-              
+
               messagePayload.message = filledContent || 'Template sent';
               console.log(`✅ Template with ${paramCount} param(s) - auto-filled parameters:`, messagePayload.templateParameters);
               console.log(`✅ Filled template content:`, filledContent);
@@ -1545,7 +1557,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           displayMessage = `Template: ${selectedTemplate.title}`;
         }
       }
-      
+
       const newMsg: WhatsAppMessage = {
         id: Date.now(),
         lead_id: client.id,
@@ -1564,7 +1576,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       setShouldAutoScroll(true);
       setNewMessage('');
       setSelectedTemplate(null);
-      
+
       // Reset textarea height to regular size after sending
       if (textareaRef.current) {
         setTimeout(() => {
@@ -1575,19 +1587,19 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           }
         }, 0);
       }
-      
+
       // Reset mobile input focus state
       if (isMobile) {
         setIsInputFocused(false);
         textareaRef.current?.blur();
       }
-      
+
       // Stage evaluation is handled automatically by database triggers
-      
+
       if (onClientUpdate) {
         await onClientUpdate();
       }
-      
+
       toast.success('Message sent via WhatsApp!');
     } catch (error) {
       console.error('Error sending message:', error);
@@ -1600,7 +1612,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   // Send media (optionally with a specific file)
   const handleSendMedia = async (fileOverride?: File) => {
     const fileToSend = fileOverride || selectedFile;
-    
+
     if (!fileToSend || !client || !currentUser) {
       return;
     }
@@ -1639,7 +1651,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       }
 
       const formData = new FormData();
-      
+
       // Ensure we have a proper File object (not just a Blob)
       let fileForUpload: File;
       if (fileToSend instanceof File) {
@@ -1652,7 +1664,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       } else {
         throw new Error('Invalid file type');
       }
-      
+
       formData.append('file', fileForUpload);
       formData.append('leadId', client.id);
 
@@ -1669,8 +1681,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
       // Determine media type: check if it's a voice message (audio/webm or audio/ogg) or regular audio
       const isVoiceMessage = fileToSend.type.includes('webm') || fileToSend.type.includes('opus') || fileToSend.type.includes('ogg');
-      const mediaType = fileToSend.type.startsWith('image/') 
-        ? 'image' 
+      const mediaType = fileToSend.type.startsWith('image/')
+        ? 'image'
         : fileToSend.type.startsWith('audio/') || isVoiceMessage
           ? 'audio'
           : 'document';
@@ -1722,11 +1734,11 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         setSelectedFile(null);
       }
       setShowVoiceRecorder(false); // Close voice recorder if it was open
-      
+
       if (onClientUpdate) {
         await onClientUpdate();
       }
-      
+
       toast.success('Media sent via WhatsApp!');
     } catch (error) {
       console.error('Error sending media:', error);
@@ -1742,10 +1754,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
     setIsLoadingAI(true);
     setShowAISuggestions(true);
-    
+
     try {
       const requestType = newMessage.trim() ? 'improve' : 'suggest';
-      
+
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-ai-suggestions`, {
         method: 'POST',
         headers: {
@@ -1771,7 +1783,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       }
 
       const result = await response.json();
-      
+
       if (result.success) {
         const suggestion = result.suggestion.trim();
         setAiSuggestions([suggestion]);
@@ -1856,9 +1868,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                   </span>
                 </div>
                 {timeLeft && (
-                  <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${
-                    isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
-                  }`}>
+                  <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                    }`}>
                     {isLocked ? (
                       <LockClosedIcon className="w-4 h-4" />
                     ) : (
@@ -1890,9 +1901,9 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             </div>
           ) : (
             messages.map((message, index) => {
-              const showDateSeparator = index === 0 || 
+              const showDateSeparator = index === 0 ||
                 new Date(message.sent_at).toDateString() !== new Date(messages[index - 1].sent_at).toDateString();
-              
+
               return (
                 <React.Fragment key={message.id || index}>
                   {showDateSeparator && (
@@ -1902,14 +1913,14 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       </div>
                     </div>
                   )}
-                  
+
                   <div className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'}`} style={{ maxWidth: '100%', minWidth: 0 }}>
                     {message.direction === 'out' && (
                       <div className="flex items-center gap-2 mb-1 mr-2">
                         <span className="text-sm text-gray-600 font-medium">
                           {message.sender_name}
                         </span>
-                        <EmployeeAvatar 
+                        <EmployeeAvatar
                           employeeId={getEmployeeById(message.sender_name)?.id || null}
                           size="md"
                         />
@@ -1923,14 +1934,14 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                         />
                       </div>
                     )}
-                    
+
                     {/* Image or Emoji-only messages - render outside bubble */}
                     {(message.message_type === 'image' || (message.message_type === 'text' && isEmojiOnly(message.message))) ? (
                       <div className={`flex flex-col ${message.direction === 'out' ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
                         {/* Image content */}
                         {message.message_type === 'image' && message.media_url && (
                           <div className="relative">
-                            <img 
+                            <img
                               src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
                               alt="Image"
                               className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover"
@@ -1950,7 +1961,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
                         {/* Caption for images */}
                         {message.message_type === 'image' && message.caption && (
-                          <p 
+                          <p
                             className="text-base break-words mt-1"
                             style={{
                               wordBreak: 'break-word',
@@ -1959,7 +1970,6 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                               maxWidth: '100%',
                               minWidth: 0,
                               height: 'auto',
-                              fontWeight: message.caption?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
                               color: message.direction === 'out' ? 'white' : undefined
                             }}
                           >
@@ -1984,11 +1994,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       </div>
                     ) : (
                       <div
-                        className={`group ${message.direction === 'out' ? 'max-w-[85%] md:max-w-[35%] lg:max-w-[30%]' : 'max-w-[85%] md:max-w-[70%]'} rounded-2xl px-4 py-2 shadow-sm ${
-                          message.direction === 'out'
-                            ? 'text-white border border-transparent'
-                            : 'bg-white text-gray-900 border border-gray-200'
-                        }`}
+                        className={`group ${message.direction === 'out' ? 'max-w-[85%] md:max-w-[35%] lg:max-w-[30%]' : 'max-w-[85%] md:max-w-[70%]'} rounded-2xl px-4 py-2 shadow-sm ${message.direction === 'out'
+                          ? 'text-white border border-transparent'
+                          : 'bg-white text-gray-900 border border-gray-200'
+                          }`}
                         style={{
                           wordBreak: 'break-word',
                           overflowWrap: 'anywhere',
@@ -2002,126 +2011,124 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                           } : {})
                         }}
                       >
-                      {message.message_type === 'text' && (
-                        <p 
-                          className="break-words whitespace-pre-wrap text-base"
-                          dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
-                          style={{ 
-                            textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
-                            wordBreak: 'break-word',
-                            overflowWrap: 'anywhere',
-                            overflow: 'visible',
-                            maxWidth: '100%',
-                            minWidth: 0,
-                            height: 'auto',
-                            fontWeight: message.message?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
-                            color: message.direction === 'out' ? 'white' : undefined
-                          }}
-                        >
-                          {renderTextWithLinks(message.message)}
-                        </p>
-                      )}
-                      
-                      {message.message_type === 'document' && (
-                        <div className="flex items-center gap-2 mb-2">
-                          {React.createElement(getDocumentIcon(message.media_mime_type), { className: "w-6 h-6" })}
-                          <div className="flex-1">
-                            <a 
-                              href={message.media_url?.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="block hover:opacity-80 transition-opacity"
-                            >
-                              <p className="text-sm font-medium underline cursor-pointer">
-                                {message.media_filename || 'Document'}
-                              </p>
-                              {message.media_size && (
-                                <p className="text-xs opacity-70">
-                                  {(message.media_size / 1024).toFixed(1)} KB
+                        {message.message_type === 'text' && (
+                          <p
+                            className="break-words whitespace-pre-wrap text-base"
+                            dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                            style={{
+                              textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
+                              wordBreak: 'break-word',
+                              overflowWrap: 'anywhere',
+                              overflow: 'visible',
+                              maxWidth: '100%',
+                              minWidth: 0,
+                              height: 'auto',
+                              color: message.direction === 'out' ? 'white' : undefined
+                            }}
+                          >
+                            {renderTextWithLinks(message.message)}
+                          </p>
+                        )}
+
+                        {message.message_type === 'document' && (
+                          <div className="flex items-center gap-2 mb-2">
+                            {React.createElement(getDocumentIcon(message.media_mime_type), { className: "w-6 h-6" })}
+                            <div className="flex-1">
+                              <a
+                                href={message.media_url?.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="block hover:opacity-80 transition-opacity"
+                              >
+                                <p className="text-sm font-medium underline cursor-pointer">
+                                  {message.media_filename || 'Document'}
                                 </p>
-                              )}
-                            </a>
+                                {message.media_size && (
+                                  <p className="text-xs opacity-70">
+                                    {(message.media_size / 1024).toFixed(1)} KB
+                                  </p>
+                                )}
+                              </a>
+                            </div>
+                          </div>
+                        )}
+
+                        {message.message_type === 'video' && message.media_url && (
+                          <video
+                            controls
+                            className="max-w-full md:max-w-[700px] max-h-[300px] md:max-h-[600px] object-cover rounded-lg mb-2 shadow-sm"
+                          >
+                            <source src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)} />
+                            Your browser does not support the video tag.
+                          </video>
+                        )}
+
+                        {/* Voice message */}
+                        {(message.message_type === 'audio' || message.voice_note) && (message.media_url || message.media_id) && (
+                          <div className="mt-2">
+                            <VoiceMessagePlayer
+                              audioUrl={(message.media_url || message.media_id || '').startsWith('http')
+                                ? (message.media_url || message.media_id || '')
+                                : buildApiUrl(`/api/whatsapp/media/${message.media_url || message.media_id}`)}
+                              className={message.direction === 'out' ? 'bg-green-50' : 'bg-gray-50'}
+                              senderName={message.sender_name || 'Unknown'}
+                              profilePictureUrl={message.profile_picture_url}
+                              showAvatar={message.direction === 'out'}
+                            />
+                            {message.caption && (
+                              <p
+                                className="text-base break-words mt-2"
+                                style={{
+                                  wordBreak: 'break-word',
+                                  overflowWrap: 'break-word',
+                                  overflow: 'visible',
+                                  maxWidth: '100%',
+                                  minWidth: 0,
+                                  height: 'auto',
+                                  color: message.direction === 'out' ? 'white' : undefined
+                                }}
+                              >
+                                {renderTextWithLinks(message.caption)}
+                              </p>
+                            )}
+                            {!message.caption && message.message && (
+                              <p
+                                className="text-base break-words mt-2"
+                                style={{
+                                  wordBreak: 'break-word',
+                                  overflowWrap: 'break-word',
+                                  overflow: 'visible',
+                                  maxWidth: '100%',
+                                  minWidth: 0,
+                                  height: 'auto',
+                                  color: message.direction === 'out' ? 'white' : undefined
+                                }}
+                              >
+                                {renderTextWithLinks(message.message)}
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Message status and time */}
+                        <div className="flex items-center justify-between mt-1">
+                          <div className="flex items-center gap-1 text-sm opacity-80">
+                            <span>
+                              {new Date(message.sent_at).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </span>
+                            {message.direction === 'out' && (
+                              <span className="inline-block align-middle text-current">
+                                {renderMessageStatus(message)}
+                              </span>
+                            )}
                           </div>
                         </div>
-                      )}
-                      
-                      {message.message_type === 'video' && message.media_url && (
-                        <video 
-                          controls
-                          className="max-w-full md:max-w-[700px] max-h-[300px] md:max-h-[600px] object-cover rounded-lg mb-2 shadow-sm"
-                        >
-                          <source src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)} />
-                          Your browser does not support the video tag.
-                        </video>
-                      )}
-                      
-                      {/* Voice message */}
-                      {(message.message_type === 'audio' || message.voice_note) && (message.media_url || message.media_id) && (
-                        <div className="mt-2">
-                          <VoiceMessagePlayer
-                            audioUrl={(message.media_url || message.media_id || '').startsWith('http') 
-                              ? (message.media_url || message.media_id || '') 
-                              : buildApiUrl(`/api/whatsapp/media/${message.media_url || message.media_id}`)}
-                            className={message.direction === 'out' ? 'bg-green-50' : 'bg-gray-50'}
-                            senderName={message.sender_name || 'Unknown'}
-                            profilePictureUrl={message.profile_picture_url}
-                          />
-                          {message.caption && (
-                            <p 
-                              className="text-base break-words mt-2"
-                              style={{
-                                wordBreak: 'break-word',
-                                overflowWrap: 'break-word',
-                                overflow: 'visible',
-                                maxWidth: '100%',
-                                minWidth: 0,
-                                height: 'auto',
-                                fontWeight: message.caption?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
-                                color: message.direction === 'out' ? 'white' : undefined
-                              }}
-                            >
-                              {renderTextWithLinks(message.caption)}
-                            </p>
-                          )}
-                          {!message.caption && message.message && (
-                            <p 
-                              className="text-base break-words mt-2"
-                              style={{
-                                wordBreak: 'break-word',
-                                overflowWrap: 'break-word',
-                                overflow: 'visible',
-                                maxWidth: '100%',
-                                minWidth: 0,
-                                height: 'auto',
-                                fontWeight: message.message?.match(/[\u0590-\u05FF]/) ? 600 : undefined,
-                                color: message.direction === 'out' ? 'white' : undefined
-                              }}
-                            >
-                              {renderTextWithLinks(message.message)}
-                            </p>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Message status and time */}
-                      <div className="flex items-center justify-between mt-1">
-                        <div className="flex items-center gap-1 text-sm opacity-80">
-                          <span>
-                            {new Date(message.sent_at).toLocaleTimeString([], {
-                              hour: '2-digit',
-                              minute: '2-digit'
-                            })}
-                          </span>
-                          {message.direction === 'out' && (
-                            <span className="inline-block align-middle text-current">
-                              {renderMessageStatus(message)}
-                            </span>
-                          )}
-                        </div>
                       </div>
-                    </div>
-                      )}
-                    </div>
+                    )}
+                  </div>
                 </React.Fragment>
               );
             })
@@ -2150,7 +2157,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                     <XMarkIcon className="w-4 h-4" />
                   </button>
                 </div>
-                
+
                 <div className="space-y-2">
                   {isLoadingAI ? (
                     <div className="text-center text-gray-500 py-4">
@@ -2158,7 +2165,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       <span className="ml-2">Getting AI suggestions...</span>
                     </div>
                   ) : (
-                    <div 
+                    <div
                       className="w-full p-4 rounded-lg border border-gray-200 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
                       onClick={() => applyAISuggestion(aiSuggestions[0])}
                     >
@@ -2169,7 +2176,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               </div>
             </div>
           )}
-          
+
           {/* Lock Message - Above input field */}
           {isLocked && (
             <div className="mb-2 pointer-events-auto">
@@ -2204,12 +2211,12 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           {showTemplateSelector && isMobile && (
             <>
               {/* Backdrop */}
-              <div 
+              <div
                 className="fixed inset-0 bg-black/50 z-[9998]"
                 onClick={() => setShowTemplateSelector(false)}
               />
-              <div 
-                ref={templateSelectorRef} 
+              <div
+                ref={templateSelectorRef}
                 className="pointer-events-auto fixed inset-0 z-[9999] overflow-hidden flex flex-col"
                 onClick={(e) => e.stopPropagation()}
               >
@@ -2235,7 +2242,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       </button>
                     </div>
                   </div>
-                  
+
                   {/* Content */}
                   <div className="p-4 flex-1 flex flex-col min-h-0 overflow-hidden">
                     <div className="mb-4 flex gap-2 flex-shrink-0">
@@ -2261,7 +2268,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                           ))}
                       </select>
                     </div>
-                    
+
                     <div className="space-y-3 flex-1 overflow-y-auto">
                       {isLoadingTemplates ? (
                         <div className="text-center text-gray-500 py-4">
@@ -2324,10 +2331,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
           {/* Template Dropdown - Desktop */}
           {showTemplateSelector && !isMobile && (
-            <div 
-              ref={templateSelectorRef} 
-              className="pointer-events-auto mb-2 relative z-40" 
-              style={{ 
+            <div
+              ref={templateSelectorRef}
+              className="pointer-events-auto mb-2 relative z-40"
+              style={{
                 overflow: 'visible',
                 maxHeight: 'calc(100vh - 120px)', // Account for header and input area
                 transform: 'translateY(0)',
@@ -2352,7 +2359,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                     </button>
                   </div>
                 </div>
-                
+
                 {/* Content */}
                 <div className="p-6 flex flex-col flex-1 min-h-0 overflow-hidden">
                   <div className="mb-5 flex gap-3 flex-shrink-0">
@@ -2378,7 +2385,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                         ))}
                     </select>
                   </div>
-                  
+
                   <div className="flex-1 overflow-y-auto space-y-3 min-h-0" style={{ paddingBottom: '8px' }}>
                     {isLoadingTemplates ? (
                       <div className="text-center text-gray-500 py-4">
@@ -2499,7 +2506,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               >
                 <Squares2X2Icon className="w-6 h-6" />
               </button>
-              
+
               {/* Tools Dropdown Menu */}
               {showDesktopTools && (
                 <div className="absolute bottom-full left-0 mb-2 z-50 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[180px]">
@@ -2569,7 +2576,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 </div>
               )}
             </div>
-            
+
             <div className="relative">
               {/* Emoji Picker */}
               {isEmojiPickerOpen && (
@@ -2590,7 +2597,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 </div>
               )}
             </div>
-            
+
             <div className="flex-1">
               <textarea
                 ref={textareaRef}
@@ -2606,23 +2613,23 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                   // Let Enter create new lines
                 }}
                 placeholder={
-                  isLocked 
-                    ? (messages.length === 0 
-                        ? "No messages yet - use templates to start conversation"
-                        : "Window expired - use templates")
-                    : selectedFile 
-                      ? "Add a caption..." 
-                      : selectedTemplate 
-                        ? selectedTemplate.params === '1' 
-                          ? `Parameter for: ${selectedTemplate.title}` 
+                  isLocked
+                    ? (messages.length === 0
+                      ? "No messages yet - use templates to start conversation"
+                      : "Window expired - use templates")
+                    : selectedFile
+                      ? "Add a caption..."
+                      : selectedTemplate
+                        ? selectedTemplate.params === '1'
+                          ? `Parameter for: ${selectedTemplate.title}`
                           : `Template: ${selectedTemplate.title}`
                         : "Type a message..."
                 }
                 className="textarea w-full resize-none border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
                 rows={1}
                 disabled={sending || uploadingMedia || isLocked}
-                style={{ 
-                  backgroundColor: 'rgba(255, 255, 255, 0.8)', 
+                style={{
+                  backgroundColor: 'rgba(255, 255, 255, 0.8)',
                   backdropFilter: 'blur(10px)',
                   boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
                   maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '128px',
@@ -2631,7 +2638,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 }}
               />
             </div>
-            
+
             <button
               type="button"
               onClick={(e) => {
@@ -2640,8 +2647,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                   handleSendMedia();
                 } else {
                   const syntheticEvent = {
-                    preventDefault: () => {},
-                    stopPropagation: () => {},
+                    preventDefault: () => { },
+                    stopPropagation: () => { },
                     currentTarget: e.currentTarget,
                     target: e.target,
                   } as React.FormEvent;
