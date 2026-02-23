@@ -22,9 +22,9 @@ const CollectionDueReport = () => {
   const [filters, setFilters] = usePersistedFilters('reports_collectionDue_filters', {
     fromDate: todayStr,
     toDate: todayStr,
-    category: '',
-    order: '',
-    department: '',
+    category: [], // Changed to array for multi-select
+    order: [], // Changed to array for multi-select
+    department: [], // Changed to array for multi-select
     employee: '',
     employeeType: 'actual_employee_due', // 'case_handler' (Case Handler - who clicked sent to finance) or 'actual_employee_due' (Actual Employee Due - actual handler saved in lead)
   }, {
@@ -43,6 +43,9 @@ const CollectionDueReport = () => {
   const [searchPerformed, setSearchPerformed] = usePersistedFilters('reports_collectionDue_performed', false, {
     storage: 'sessionStorage',
   });
+  const [showOrderDropdown, setShowOrderDropdown] = useState(false);
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
+  const [showDepartmentDropdown, setShowDepartmentDropdown] = useState(false);
   const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
   const [allEmployees, setAllEmployees] = useState<any[]>([]); // Store all employees with photo_url for image display
   const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
@@ -138,6 +141,60 @@ const CollectionDueReport = () => {
 
   const handleFilterChange = (field: string, value: any) => {
     setFilters(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleOrderToggle = (orderValue: string) => {
+    setFilters(prev => {
+      const currentOrders = Array.isArray(prev.order) ? prev.order : [];
+      const newOrders = currentOrders.includes(orderValue)
+        ? currentOrders.filter(o => o !== orderValue)
+        : [...currentOrders, orderValue];
+      return { ...prev, order: newOrders };
+    });
+  };
+
+  const handleSelectAllOrders = () => {
+    setFilters(prev => ({ ...prev, order: ['1', '5', '9', '90', '99'] }));
+  };
+
+  const handleClearAllOrders = () => {
+    setFilters(prev => ({ ...prev, order: [] }));
+  };
+
+  const handleCategoryToggle = (categoryId: string) => {
+    setFilters(prev => {
+      const currentCategories = Array.isArray(prev.category) ? prev.category : [];
+      const newCategories = currentCategories.includes(categoryId)
+        ? currentCategories.filter(c => c !== categoryId)
+        : [...currentCategories, categoryId];
+      return { ...prev, category: newCategories };
+    });
+  };
+
+  const handleSelectAllCategories = () => {
+    setFilters(prev => ({ ...prev, category: categories.map(cat => cat.id) }));
+  };
+
+  const handleClearAllCategories = () => {
+    setFilters(prev => ({ ...prev, category: [] }));
+  };
+
+  const handleDepartmentToggle = (departmentId: string) => {
+    setFilters(prev => {
+      const currentDepartments = Array.isArray(prev.department) ? prev.department : [];
+      const newDepartments = currentDepartments.includes(departmentId)
+        ? currentDepartments.filter(d => d !== departmentId)
+        : [...currentDepartments, departmentId];
+      return { ...prev, department: newDepartments };
+    });
+  };
+
+  const handleSelectAllDepartments = () => {
+    setFilters(prev => ({ ...prev, department: departments.map(dept => dept.id) }));
+  };
+
+  const handleClearAllDepartments = () => {
+    setFilters(prev => ({ ...prev, department: [] }));
   };
 
   // Helper function to get employee by ID or name (for image lookup)
@@ -2112,28 +2169,42 @@ const CollectionDueReport = () => {
       // Filter payments by order and category if filters are selected
       let filteredPayments = payments;
 
-      // Apply order filter
-      if (filters.order && filters.order !== '') {
+      // Apply order filter (multi-select)
+      if (filters.order && Array.isArray(filters.order) && filters.order.length > 0) {
         filteredPayments = filteredPayments.filter(payment => {
-          // Compare normalized order codes
-          return payment.orderCode === filters.order;
+          // Check if payment's order code is in the selected orders array
+          return filters.order.includes(payment.orderCode);
         });
-        console.log(`✅ Collection Due Report - Payments filtered by order ${filters.order}:`, filteredPayments.length, 'out of', payments.length);
+        console.log(`✅ Collection Due Report - Payments filtered by orders [${filters.order.join(', ')}]:`, filteredPayments.length, 'out of', payments.length);
       }
 
-      // Apply category filter (by main category)
-      if (filters.category && filters.category !== '') {
+      // Apply category filter (multi-select by main category)
+      if (filters.category && Array.isArray(filters.category) && filters.category.length > 0) {
         const beforeCategoryFilter = filteredPayments.length;
         filteredPayments = filteredPayments.filter(payment => {
-          // Compare main category ID (convert both to string for comparison)
+          // Check if payment's main category ID is in the selected categories array
           return payment.mainCategoryId !== null &&
             payment.mainCategoryId !== undefined &&
-            String(payment.mainCategoryId) === String(filters.category);
+            filters.category.includes(String(payment.mainCategoryId));
         });
-        console.log(`✅ Collection Due Report - Payments filtered by main category ${filters.category}:`, filteredPayments.length, 'out of', beforeCategoryFilter);
+        console.log(`✅ Collection Due Report - Payments filtered by main categories [${filters.category.join(', ')}]:`, filteredPayments.length, 'out of', beforeCategoryFilter);
       }
 
-      if (!filters.order && !filters.category) {
+      // Apply department filter (multi-select)
+      if (filters.department && Array.isArray(filters.department) && filters.department.length > 0) {
+        const beforeDepartmentFilter = filteredPayments.length;
+        filteredPayments = filteredPayments.filter(payment => {
+          // Check if payment's department ID is in the selected departments array
+          return payment.departmentId !== null &&
+            payment.departmentId !== undefined &&
+            filters.department.includes(String(payment.departmentId));
+        });
+        console.log(`✅ Collection Due Report - Payments filtered by departments [${filters.department.join(', ')}]:`, filteredPayments.length, 'out of', beforeDepartmentFilter);
+      }
+
+      if ((!filters.order || (Array.isArray(filters.order) && filters.order.length === 0)) && 
+          (!filters.category || (Array.isArray(filters.category) && filters.category.length === 0)) &&
+          (!filters.department || (Array.isArray(filters.department) && filters.department.length === 0))) {
         console.log('✅ Collection Due Report - Payments (filtered only by ready_to_pay and due_date):', filteredPayments.length);
       }
 
@@ -2461,6 +2532,10 @@ const CollectionDueReport = () => {
       // Cases count now represents the actual number of payment rows (not unique leads)
       // Payments without category (departmentName is '—') should be combined into "General" department
       const departmentMap = new Map<string, { departmentName: string; cases: number; applicantsLeads: Set<string>; applicants: number; total: number }>();
+      // Store payment row IDs per department - this ensures the count matches exactly what the drawer will show
+      const departmentPaymentRowIds = new Map<string, Set<string>>();
+      // Store payment row values (in NIS) by payment row ID for accurate total calculation
+      const departmentPaymentRowValues = new Map<string, number>();
       filteredPayments.forEach(payment => {
         // Get department from lead's category -> main category -> department
         // This is already extracted in payment.departmentId and payment.departmentName
@@ -2480,7 +2555,40 @@ const CollectionDueReport = () => {
           });
         }
         const entry = departmentMap.get(key)!;
+        
+        // IMPORTANT: Only count payment rows that have due_date within the date filter range
+        // This ensures the count matches exactly what the drawer will show
+        if (!payment.dueDate) {
+          return; // Skip payment rows without due_date
+        }
+
+        // Verify due_date is within date filter range (if date filters are applied)
+        if (filters.fromDate || filters.toDate) {
+          const paymentDueDate = new Date(payment.dueDate);
+
+          if (filters.fromDate) {
+            const fromDate = new Date(`${filters.fromDate}T00:00:00`);
+            if (paymentDueDate < fromDate) {
+              return; // Skip payment rows outside date range
+            }
+          }
+
+          if (filters.toDate) {
+            const toDate = new Date(`${filters.toDate}T23:59:59`);
+            if (paymentDueDate > toDate) {
+              return; // Skip payment rows outside date range
+            }
+          }
+        }
+
+        // Payment row passes all filters - count it and store its ID
         entry.cases++; // Count each payment row
+
+        // Store payment row ID for this department (to match drawer display)
+        if (!departmentPaymentRowIds.has(key)) {
+          departmentPaymentRowIds.set(key, new Set());
+        }
+
         // Convert value to NIS before adding to total
         // Normalize currency: convert symbols to codes for convertToNIS
         let currencyForConversion = payment.currency || 'NIS';
@@ -2489,6 +2597,17 @@ const CollectionDueReport = () => {
         else if (currencyForConversion === '$') currencyForConversion = 'USD';
         else if (currencyForConversion === '£') currencyForConversion = 'GBP';
         const valueInNIS = convertToNIS(payment.value, currencyForConversion);
+
+        // Store payment row identifier using the actual payment database ID
+        if (payment.id) {
+          const paymentRowId = payment.leadType === 'new'
+            ? `new-${payment.id}`
+            : `legacy-${payment.id}`;
+          departmentPaymentRowIds.get(key)!.add(paymentRowId);
+          // Store the value for this payment row ID so we can recalculate totals accurately
+          departmentPaymentRowValues.set(paymentRowId, valueInNIS);
+        }
+
         entry.total += valueInNIS; // Use value converted to NIS
 
         // Add applicants count only once per lead
@@ -2523,12 +2642,24 @@ const CollectionDueReport = () => {
 
       const departmentDataArray = Array.from(departmentMap.values()).map(entry => {
         const leadIds = departmentLeadIdsMap.get(entry.departmentName) || new Set();
+        // Get the actual count of payment rows that will be shown in drawer (based on stored IDs)
+        const paymentRowIdsForDepartment = departmentPaymentRowIds.get(entry.departmentName) || new Set();
+        const actualCount = paymentRowIdsForDepartment.size;
+
+        // Recalculate total based only on payment rows that will be shown in drawer
+        let recalculatedTotal = 0;
+        paymentRowIdsForDepartment.forEach(paymentRowId => {
+          const value = departmentPaymentRowValues.get(paymentRowId) || 0;
+          recalculatedTotal += value;
+        });
+
         return {
           department: entry.departmentName,
-          cases: entry.cases, // Now represents actual payment row count
+          cases: actualCount, // Use actual count from stored payment row IDs - this matches drawer exactly
           applicants: entry.applicants,
-          total: entry.total,
+          total: recalculatedTotal > 0 ? recalculatedTotal : entry.total, // Use recalculated total based on stored payment row IDs
           leadIds: Array.from(leadIds), // Store leadIds for drawer
+          paymentRowIds: Array.from(paymentRowIdsForDepartment), // Store payment row IDs for drawer filtering
         };
       }).sort((a, b) => b.total - a.total);
 
@@ -3187,6 +3318,27 @@ const CollectionDueReport = () => {
     setDrawerLeads([]);
   };
 
+  // Close dropdowns when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (showOrderDropdown && !target.closest('.dropdown')) {
+        setShowOrderDropdown(false);
+      }
+      if (showCategoryDropdown && !target.closest('.dropdown')) {
+        setShowCategoryDropdown(false);
+      }
+      if (showDepartmentDropdown && !target.closest('.dropdown')) {
+        setShowDepartmentDropdown(false);
+      }
+    };
+
+    if (showOrderDropdown || showCategoryDropdown || showDepartmentDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [showOrderDropdown, showCategoryDropdown, showDepartmentDropdown]);
+
   return (
     <div className="p-4 md:p-8 space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-4">
@@ -3288,44 +3440,228 @@ const CollectionDueReport = () => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Category:</span></label>
-            <select
-              className="select select-bordered"
-              value={filters.category}
-              onChange={e => handleFilterChange('category', e.target.value)}
-            >
-              <option value="">ALL</option>
-              {categories.map(cat => (
-                <option key={cat.id} value={cat.id}>{cat.name}</option>
-              ))}
-            </select>
+            <div className="dropdown dropdown-bottom w-full">
+              <button
+                type="button"
+                className="btn btn-outline w-full justify-between"
+                onClick={() => setShowCategoryDropdown(!showCategoryDropdown)}
+              >
+                <span>
+                  {Array.isArray(filters.category) && filters.category.length > 0
+                    ? `${filters.category.length} selected`
+                    : 'ALL'}
+                </span>
+                <svg
+                  className={`w-4 h-4 transition-transform ${showCategoryDropdown ? 'rotate-180' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              {showCategoryDropdown && (
+                <ul className="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-full z-[1] border border-gray-200 mt-1 overflow-x-hidden">
+                  <li>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost w-full justify-start"
+                      onClick={handleSelectAllCategories}
+                    >
+                      Select All
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost w-full justify-start"
+                      onClick={handleClearAllCategories}
+                    >
+                      Clear All
+                    </button>
+                  </li>
+                  <li className="divider my-1"></li>
+                  {categories.map(cat => {
+                    const isSelected = Array.isArray(filters.category) && filters.category.includes(cat.id);
+                    return (
+                      <li key={cat.id}>
+                        <button
+                          type="button"
+                          className="w-full text-left"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleCategoryToggle(cat.id);
+                          }}
+                        >
+                          <label className="label cursor-pointer justify-start gap-2 py-2 hover:bg-gray-100 rounded w-full">
+                            <input
+                              type="checkbox"
+                              className="checkbox checkbox-sm pointer-events-none"
+                              checked={isSelected}
+                              readOnly
+                            />
+                            <span className="label-text flex-1 break-words">{cat.name}</span>
+                          </label>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Order:</span></label>
-            <select
-              className="select select-bordered"
-              value={filters.order}
-              onChange={e => handleFilterChange('order', e.target.value)}
-            >
-              <option value="">ALL</option>
-              <option value="1">First Payment</option>
-              <option value="5">Intermediate Payment</option>
-              <option value="9">Final Payment</option>
-              <option value="90">Single Payment</option>
-              <option value="99">Expense (no VAT)</option>
-            </select>
+            <div className="dropdown dropdown-bottom w-full">
+              <button
+                type="button"
+                className="btn btn-outline w-full justify-between"
+                onClick={() => setShowOrderDropdown(!showOrderDropdown)}
+              >
+                <span>
+                  {Array.isArray(filters.order) && filters.order.length > 0
+                    ? `${filters.order.length} selected`
+                    : 'ALL'}
+                </span>
+                <svg
+                  className={`w-4 h-4 transition-transform ${showOrderDropdown ? 'rotate-180' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              {showOrderDropdown && (
+                <ul className="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-full z-[1] border border-gray-200 mt-1">
+                  <li>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost w-full justify-start"
+                      onClick={handleSelectAllOrders}
+                    >
+                      Select All
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost w-full justify-start"
+                      onClick={handleClearAllOrders}
+                    >
+                      Clear All
+                    </button>
+                  </li>
+                  <li className="divider my-1"></li>
+                  {[
+                    { value: '1', label: 'First Payment' },
+                    { value: '5', label: 'Intermediate Payment' },
+                    { value: '9', label: 'Final Payment' },
+                    { value: '90', label: 'Single Payment' },
+                    { value: '99', label: 'Expense (no VAT)' },
+                  ].map(option => {
+                    const isSelected = Array.isArray(filters.order) && filters.order.includes(option.value);
+                    return (
+                      <li key={option.value}>
+                        <button
+                          type="button"
+                          className="w-full text-left"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleOrderToggle(option.value);
+                          }}
+                        >
+                          <label className="label cursor-pointer justify-start gap-2 py-2 hover:bg-gray-100 rounded w-full">
+                            <input
+                              type="checkbox"
+                              className="checkbox checkbox-sm pointer-events-none"
+                              checked={isSelected}
+                              readOnly
+                            />
+                            <span className="label-text flex-1">{option.label}</span>
+                          </label>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Department:</span></label>
-            <select
-              className="select select-bordered"
-              value={filters.department}
-              onChange={e => handleFilterChange('department', e.target.value)}
-            >
-              <option value="">ALL</option>
-              {departments.map(dept => (
-                <option key={dept.id} value={dept.id}>{dept.name}</option>
-              ))}
-            </select>
+            <div className="dropdown dropdown-bottom w-full">
+              <button
+                type="button"
+                className="btn btn-outline w-full justify-between"
+                onClick={() => setShowDepartmentDropdown(!showDepartmentDropdown)}
+              >
+                <span>
+                  {Array.isArray(filters.department) && filters.department.length > 0
+                    ? `${filters.department.length} selected`
+                    : 'ALL'}
+                </span>
+                <svg
+                  className={`w-4 h-4 transition-transform ${showDepartmentDropdown ? 'rotate-180' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              {showDepartmentDropdown && (
+                <ul className="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-full z-[1] border border-gray-200 mt-1 overflow-x-hidden">
+                  <li>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost w-full justify-start"
+                      onClick={handleSelectAllDepartments}
+                    >
+                      Select All
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost w-full justify-start"
+                      onClick={handleClearAllDepartments}
+                    >
+                      Clear All
+                    </button>
+                  </li>
+                  <li className="divider my-1"></li>
+                  {departments.map(dept => {
+                    const isSelected = Array.isArray(filters.department) && filters.department.includes(dept.id);
+                    return (
+                      <li key={dept.id}>
+                        <button
+                          type="button"
+                          className="w-full text-left"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleDepartmentToggle(dept.id);
+                          }}
+                        >
+                          <label className="label cursor-pointer justify-start gap-2 py-2 hover:bg-gray-100 rounded w-full">
+                            <input
+                              type="checkbox"
+                              className="checkbox checkbox-sm pointer-events-none"
+                              checked={isSelected}
+                              readOnly
+                            />
+                            <span className="label-text flex-1 break-words">{dept.name}</span>
+                          </label>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">By employee:</span></label>
@@ -3471,7 +3807,7 @@ const CollectionDueReport = () => {
                             {formatCurrency(row.total)}
                             <InformationCircleIcon
                               className="w-4 h-4 inline-block ml-2 text-gray-400 hover:text-primary cursor-pointer transition-colors"
-                              onClick={() => handleOpenDrawer(row.leadIds || [], `${row.department} - Leads`)}
+                              onClick={() => handleOpenDrawer(row.leadIds || [], `${row.department} - Leads`, null, row.paymentRowIds || [])}
                               title="View leads"
                             />
                           </td>

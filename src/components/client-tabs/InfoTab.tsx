@@ -154,6 +154,15 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     return anchor || '';
   };
 
+  const getFileId = () => {
+    // For legacy leads, use state if available, otherwise try client data
+    if (isLegacy) {
+      return legacyFileId || getFieldValue(client, 'file_id') || '';
+    }
+    // For new leads, use client data
+    return getFieldValue(client, 'file_id') || '';
+  };
+
   const getFacts = () => {
     // For legacy leads, use 'description' field instead of 'facts'
     const facts = isLegacy ? getFieldValue(client, 'description') : getFieldValue(client, 'facts');
@@ -200,6 +209,33 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // State for eligibility status and section eligibility (for legacy leads)
   const [eligibilityStatus, setEligibilityStatus] = useState<string>('');
   const [sectionEligibility, setSectionEligibility] = useState<string>('');
+  const [legacyFileId, setLegacyFileId] = useState<string>('');
+
+  // Function to fetch file_id for legacy leads
+  const fetchLegacyFileId = async () => {
+    if (!isLegacy || !client?.id) return;
+
+    try {
+      const legacyId = client.id.toString().replace('legacy_', '');
+      const { data, error } = await supabase
+        .from('leads_lead')
+        .select('file_id')
+        .eq('id', legacyId)
+        .single();
+
+      if (error) {
+        console.error('Error fetching legacy file_id:', error);
+        return;
+      }
+
+      if (data) {
+        setLegacyFileId(data.file_id || '');
+        console.log('✅ InfoTab - Legacy file_id loaded:', data.file_id);
+      }
+    } catch (error) {
+      console.error('Error in fetchLegacyFileId:', error);
+    }
+  };
 
   // Function to fetch eligibility data for legacy leads
   const fetchLegacyEligibilityData = async () => {
@@ -251,11 +287,12 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
-  // Fetch eligibility data for legacy leads on mount
+  // Fetch eligibility data and file_id for legacy leads on mount
   useEffect(() => {
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
     if (isLegacyLead) {
       fetchLegacyEligibilityData();
+      fetchLegacyFileId();
     } else {
       // For new leads, use client data
       setEligibilityStatus(getFieldValue(client, 'eligibility_status') || '');
@@ -302,12 +339,15 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [isAddingFollowup, setIsAddingFollowup] = useState(false);
   const [isEditingFollowup, setIsEditingFollowup] = useState(false);
   const [followupDate, setFollowupDate] = useState('');
+  const [isEditingFileId, setIsEditingFileId] = useState(false);
+  const [editedFileId, setEditedFileId] = useState('');
 
   const [specialNotes, setSpecialNotes] = useState(getSpecialNotes());
   const [generalNotes, setGeneralNotes] = useState(getGeneralNotes());
   const [tags, setTags] = useState(getTags());
   const [anchor, setAnchor] = useState(getAnchor());
   const [factsOfCase, setFactsOfCase] = useState(getFacts());
+  const [fileId, setFileId] = useState(getFileId());
 
   const [editedSpecialNotes, setEditedSpecialNotes] = useState(specialNotes.join('\n'));
   const [editedGeneralNotes, setEditedGeneralNotes] = useState(generalNotes);
@@ -470,6 +510,12 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     const newProbability = getProbability();
     setProbability(newProbability);
   }, [client?.probability, client?.id]);
+
+  // Update file ID when client changes
+  useEffect(() => {
+    const newFileId = getFileId();
+    setFileId(newFileId);
+  }, [client?.file_id, client?.id, legacyFileId]);
 
   // Update eligible status when client changes
   // Only update if we're not currently toggling (to prevent race condition)
@@ -910,8 +956,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       {/* Main Info Grid */}
       <div className="space-y-12">
-        {/* Row 1: Case Probability, Follow-up Status, Eligibility Status */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 gap-y-12">
+        {/* Row 1: Case Probability, Follow-up Status, Eligibility Status, File ID */}
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 gap-y-12">
           {/* Case Probability */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="pl-6 pt-2 pb-2 w-2/5">
@@ -1073,6 +1119,105 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   </span>
                 </div>
               </div>
+            </div>
+          </div>
+
+          {/* File ID */}
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+            <div className="pl-6 pt-2 pb-2 w-2/5">
+              <div className="flex items-center justify-between">
+                <h4 className="text-lg font-semibold text-black">File ID</h4>
+                <EditButtons
+                  isEditing={isEditingFileId}
+                  onEdit={() => {
+                    setIsEditingFileId(true);
+                    setEditedFileId(fileId);
+                  }}
+                  onSave={async () => {
+                    try {
+                      const userName = currentUserName;
+                      const tableName = isLegacy ? 'leads_lead' : 'leads';
+
+                      if (isLegacy) {
+                        // For legacy leads, convert ID to integer
+                        const legacyIdStr = client.id.toString().replace('legacy_', '');
+                        const legacyId = parseInt(legacyIdStr, 10);
+
+                        if (isNaN(legacyId)) {
+                          console.error('Invalid legacy ID:', legacyIdStr);
+                          throw new Error('Invalid legacy ID');
+                        }
+
+                        const { data, error } = await supabase
+                          .from(tableName)
+                          .update({
+                            file_id: editedFileId.trim() || null,
+                          })
+                          .eq('id', legacyId)
+                          .select('file_id')
+                          .single();
+
+                        if (error) throw error;
+
+                        const savedFileId = editedFileId.trim();
+                        setFileId(savedFileId);
+                        setLegacyFileId(savedFileId); // Update legacy state
+                        setIsEditingFileId(false);
+                      } else {
+                        // For new leads, use UUID directly
+                        const { data, error } = await supabase
+                          .from(tableName)
+                          .update({
+                            file_id: editedFileId.trim() || null,
+                          })
+                          .eq('id', client.id)
+                          .select('file_id')
+                          .single();
+
+                        if (error) throw error;
+
+                        setFileId(editedFileId.trim());
+                        setIsEditingFileId(false);
+                      }
+
+                      // Refresh client data in parent component
+                      if (onClientUpdate) {
+                        await onClientUpdate();
+                      }
+                    } catch (error) {
+                      console.error('Error updating file ID:', error);
+                      alert('Failed to update file ID');
+                    }
+                  }}
+                  onCancel={() => setIsEditingFileId(false)}
+                  editButtonClassName="btn btn-ghost btn-sm"
+                  editIconClassName="w-5 h-5 text-black"
+                />
+              </div>
+              <div className="border-b border-gray-200 mt-2"></div>
+            </div>
+            <div className="p-6">
+              {isEditingFileId ? (
+                <div className="space-y-3">
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    value={editedFileId}
+                    onChange={(e) => setEditedFileId(e.target.value)}
+                    placeholder="Enter file ID..."
+                  />
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="min-h-[40px] flex items-center">
+                    {fileId ? (
+                      <p className="text-gray-900 font-medium">{fileId}</p>
+                    ) : (
+                      <span className="text-gray-500">No file ID added</span>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
