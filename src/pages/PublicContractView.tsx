@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import SignaturePad from 'react-signature-canvas';
@@ -11,9 +11,17 @@ import { Color } from '@tiptap/extension-color';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
-// @ts-ignore - html2pdf.js doesn't have TypeScript definitions
-import html2pdf from 'html2pdf.js';
 import { PrinterIcon, ArrowDownTrayIcon, ShareIcon } from '@heroicons/react/24/outline';
+
+// Lazy load html2pdf only when needed (for PDF download)
+let html2pdf: any = null;
+const loadHtml2Pdf = async () => {
+  if (!html2pdf) {
+    // @ts-ignore - html2pdf.js doesn't have TypeScript definitions
+    html2pdf = (await import('html2pdf.js')).default;
+  }
+  return html2pdf;
+};
 
 // Editor extensions for HTML to TipTap JSON conversion
 const editorExtensionsForConversion = [
@@ -26,11 +34,24 @@ const editorExtensionsForConversion = [
   FontSize,
 ];
 
-// Helper function to validate and normalize TipTap content
+// Cache for normalized content to avoid reprocessing (using Map for object keys)
+const normalizeCache = new Map<string | object, any>();
+
+// Helper function to validate and normalize TipTap content (with caching)
 function normalizeTiptapContent(content: any): any {
   if (!content) {
     return { type: 'doc', content: [] };
   }
+
+  // Create cache key - use string for strings, object reference for objects
+  const cacheKey = typeof content === 'string' ? content : content;
+  
+  // Check cache first (only for objects, strings are fast to process)
+  if (typeof content === 'object' && normalizeCache.has(cacheKey)) {
+    return normalizeCache.get(cacheKey);
+  }
+
+  let result: any;
 
   // If content is a string, try to parse it as JSON
   if (typeof content === 'string') {
@@ -40,10 +61,14 @@ function normalizeTiptapContent(content: any): any {
     } catch (e) {
       // Try to convert HTML string to TipTap JSON
       try {
-        return generateJSON(content, editorExtensionsForConversion);
+        result = generateJSON(content, editorExtensionsForConversion);
+        normalizeCache.set(cacheKey, result);
+        return result;
       } catch (conversionError) {
         console.error('Failed to convert HTML string to TipTap JSON:', conversionError);
-        return { type: 'doc', content: [] };
+        result = { type: 'doc', content: [] };
+        normalizeCache.set(cacheKey, result);
+        return result;
       }
     }
   }
@@ -54,42 +79,52 @@ function normalizeTiptapContent(content: any): any {
 
     if (htmlContent && typeof htmlContent === 'string') {
       try {
-        return generateJSON(htmlContent, editorExtensionsForConversion);
+        result = generateJSON(htmlContent, editorExtensionsForConversion);
+        normalizeCache.set(cacheKey, result);
+        return result;
       } catch (conversionError) {
         console.error('Failed to convert HTML to TipTap JSON:', conversionError);
-        return { type: 'doc', content: [] };
+        result = { type: 'doc', content: [] };
+        normalizeCache.set(cacheKey, result);
+        return result;
       }
     } else {
-      return { type: 'doc', content: [] };
+      result = { type: 'doc', content: [] };
+      normalizeCache.set(cacheKey, result);
+      return result;
     }
   }
 
   // Check if content is a valid TipTap JSON structure
   if (content && typeof content === 'object' && content.type === 'doc') {
     if (Array.isArray(content.content)) {
-      return content;
+      result = content;
     } else {
-      return { type: 'doc', content: content.content || [] };
+      result = { type: 'doc', content: content.content || [] };
     }
+    normalizeCache.set(cacheKey, result);
+    return result;
   }
 
   // If content is an object but not a valid TipTap doc, try to wrap it
   if (content && typeof content === 'object') {
     if (Array.isArray(content)) {
-      return { type: 'doc', content: content };
+      result = { type: 'doc', content: content };
+    } else if (content.type && content.content !== undefined) {
+      result = { type: 'doc', content: [content] };
+    } else if (content.content && Array.isArray(content.content)) {
+      result = { type: 'doc', content: content.content };
+    } else {
+      result = { type: 'doc', content: [] };
     }
-
-    if (content.type && content.content !== undefined) {
-      return { type: 'doc', content: [content] };
-    }
-
-    if (content.content && Array.isArray(content.content)) {
-      return { type: 'doc', content: content.content };
-    }
+    normalizeCache.set(cacheKey, result);
+    return result;
   }
 
   // Fallback: return empty doc
-  return { type: 'doc', content: [] };
+  result = { type: 'doc', content: [] };
+  normalizeCache.set(cacheKey, result);
+  return result;
 }
 
 // Function to preprocess template placeholders
@@ -294,161 +329,199 @@ const PublicContractView: React.FC = () => {
     if (!contractId || !token) return;
     setLoading(true);
     (async () => {
-      // Fetch contract by id and public_token
-      const { data: contractData, error: contractError } = await supabase
-        .from('contracts')
-        .select(`*, contract_templates ( id, name, content )`)
-        .eq('id', contractId)
-        .eq('public_token', token)
-        .single();
-      if (contractError || !contractData) {
-        setError('Invalid or expired contract link.');
-        setLoading(false);
-        return;
-      }
-      setContract(contractData);
-      setCustomPricing(contractData.custom_pricing);
+      try {
+        // STEP 1: Fetch contract and template in parallel (critical path)
+        const contractPromise = supabase
+          .from('contracts')
+          .select(`*, contract_templates ( id, name, content )`)
+          .eq('id', contractId)
+          .eq('public_token', token)
+          .single();
 
-      // Fetch template - handle both new templates (contract_templates) and legacy templates (misc_contracttemplate)
-      let templateData = contractData.contract_templates;
+        const [contractResult] = await Promise.all([contractPromise]);
+        const { data: contractData, error: contractError } = contractResult;
 
-      // If no template from join, check if we need to fetch from misc_contracttemplate (legacy)
-      if (!templateData) {
-        // First check if template_id is set and try fetching as legacy template
-        if (contractData.template_id) {
-          const isLegacyTemplate = !isNaN(Number(contractData.template_id)) || contractData.template_id.toString().startsWith('legacy_');
+        if (contractError || !contractData) {
+          setError('Invalid or expired contract link.');
+          setLoading(false);
+          return;
+        }
 
-          if (isLegacyTemplate) {
-            const templateId = contractData.template_id.toString().replace('legacy_', '');
-            const { data: legacyTemplate, error: legacyTemplateError } = await supabase
-              .from('misc_contracttemplate')
-              .select('*')
-              .eq('id', templateId)
-              .single();
+        // Set contract and pricing immediately (allows early rendering)
+        setContract(contractData);
+        setCustomPricing(contractData.custom_pricing);
 
-            if (!legacyTemplateError && legacyTemplate) {
-              templateData = legacyTemplate;
+        // Load saved client inputs if contract was previously started
+        if (contractData.client_inputs) {
+          setClientFields(contractData.client_inputs);
+        }
+
+        // STEP 2: Fetch template - handle both new templates (contract_templates) and legacy templates (misc_contracttemplate)
+        let templateData = contractData.contract_templates;
+        let templatePromise: Promise<any> | null = null;
+
+        // If no template from join, check if we need to fetch from misc_contracttemplate (legacy)
+        if (!templateData) {
+          // First check if template_id is set and try fetching as legacy template
+          if (contractData.template_id) {
+            const isLegacyTemplate = !isNaN(Number(contractData.template_id)) || contractData.template_id.toString().startsWith('legacy_');
+
+            if (isLegacyTemplate) {
+              const templateId = contractData.template_id.toString().replace('legacy_', '');
+              templatePromise = supabase
+                .from('misc_contracttemplate')
+                .select('*')
+                .eq('id', templateId)
+                .single();
             }
           }
+          // If template_id is NULL, check for legacy_template_id in custom_pricing
+          else if (contractData.custom_pricing?.legacy_template_id) {
+            const legacyTemplateId = contractData.custom_pricing.legacy_template_id;
+            templatePromise = supabase
+              .from('misc_contracttemplate')
+              .select('*')
+              .eq('id', legacyTemplateId)
+              .single();
+          }
         }
-        // If template_id is NULL, check for legacy_template_id in custom_pricing
-        else if (contractData.custom_pricing?.legacy_template_id) {
-          const legacyTemplateId = contractData.custom_pricing.legacy_template_id;
-          const { data: legacyTemplate, error: legacyTemplateError } = await supabase
-            .from('misc_contracttemplate')
-            .select('*')
-            .eq('id', legacyTemplateId)
-            .single();
 
+        // Fetch template if needed
+        if (templatePromise) {
+          const { data: legacyTemplate, error: legacyTemplateError } = await templatePromise;
           if (!legacyTemplateError && legacyTemplate) {
             templateData = legacyTemplate;
           }
         }
-      }
 
-      // Process template to add text and signature placeholders
-      if (templateData) {
-        // First normalize to ensure valid TipTap JSON (handles HTML/delta format)
-        let normalizedContent = normalizeTiptapContent(templateData.content);
+        // STEP 3: Start fetching client data in parallel (non-blocking)
+        let clientDataPromise: Promise<any> | null = null;
+        if (contractData.legacy_id) {
+          // Legacy lead - fetch from leads_lead table
+          clientDataPromise = supabase
+            .from('leads_lead')
+            .select('id, lead_number, manual_id, master_id, name, email, phone, mobile')
+            .eq('id', contractData.legacy_id)
+            .single();
+        } else if (contractData.client_id) {
+          // New lead - fetch from leads table
+          clientDataPromise = supabase
+            .from('leads')
+            .select('id, lead_number, name, email, phone, mobile')
+            .eq('id', contractData.client_id)
+            .single();
+        }
 
-        // Then preprocess placeholders
-        const processedContent = normalizedContent && normalizedContent.type === 'doc' ?
-          preprocessTemplatePlaceholders(normalizedContent) :
-          normalizedContent;
+        // STEP 4: Process template (required for rendering, but keep it fast)
+        if (templateData) {
+          try {
+            // First normalize to ensure valid TipTap JSON (handles HTML/delta format)
+            let normalizedContent = normalizeTiptapContent(templateData.content);
 
-        const processedTemplate = {
-          ...templateData,
-          content: processedContent
-        };
-        setTemplate(processedTemplate);
-      } else {
-        setError('Template not found for this contract.');
-        setLoading(false);
-        return;
-      }
-      // Fetch client info and lead number
-      // Check if this is a legacy lead (has legacy_id) or new lead (has client_id)
-      if (contractData.legacy_id) {
-        // Legacy lead - fetch from leads_lead table using legacy_id from contracts table
-        const { data: legacyLeadData } = await supabase
-          .from('leads_lead')
-          .select('id, lead_number, manual_id, master_id, name, email, phone, mobile')
-          .eq('id', contractData.legacy_id)
-          .single();
+            // Then preprocess placeholders
+            const processedContent = normalizedContent && normalizedContent.type === 'doc' ?
+              preprocessTemplatePlaceholders(normalizedContent) :
+              normalizedContent;
 
-        if (legacyLeadData) {
-          setClient({
-            id: legacyLeadData.id,
-            name: legacyLeadData.name,
-            email: legacyLeadData.email,
-            phone: legacyLeadData.phone,
-            mobile: legacyLeadData.mobile
-          });
-
-          // Format lead number: handle subleads (master_id/suffix) or master leads
-          let formattedLeadNumber: string;
-          const masterId = legacyLeadData.master_id;
-
-          if (masterId && String(masterId).trim() !== '') {
-            // It's a sub-lead - calculate suffix from all subleads with same master_id
-            const { data: allSubLeads } = await supabase
-              .from('leads_lead')
-              .select('id')
-              .eq('master_id', masterId)
-              .not('master_id', 'is', null)
-              .order('id', { ascending: true });
-
-            if (allSubLeads && allSubLeads.length > 0) {
-              const suffix = allSubLeads.findIndex(subLead => subLead.id === legacyLeadData.id) + 2;
-              formattedLeadNumber = `${masterId}/${suffix}`;
-            } else {
-              // Fallback if subleads not found
-              formattedLeadNumber = `${masterId}/?`;
-            }
-          } else {
-            // It's a master lead - use lead_number, then manual_id, then id
-            formattedLeadNumber = legacyLeadData.lead_number
-              ? String(legacyLeadData.lead_number)
-              : (legacyLeadData.manual_id
-                ? String(legacyLeadData.manual_id)
-                : String(legacyLeadData.id));
+            const processedTemplate = {
+              ...templateData,
+              content: processedContent
+            };
+            setTemplate(processedTemplate);
+          } catch (err) {
+            console.error('Error processing template:', err);
+            // Fallback to raw template if processing fails
+            setTemplate(templateData);
           }
-
-          setLeadNumber(formattedLeadNumber);
+        } else {
+          setError('Template not found for this contract.');
+          setLoading(false);
+          return;
         }
-      } else if (contractData.client_id) {
-        // New lead - fetch from leads table
-        const { data: leadData } = await supabase
-          .from('leads')
-          .select('id, lead_number, name, email, phone, mobile')
-          .eq('id', contractData.client_id)
-          .single();
 
-        if (leadData) {
-          setClient(leadData);
-          // Format lead number: use lead_number with L prefix if it doesn't have it
-          const formattedLeadNumber = leadData.lead_number
-            ? (leadData.lead_number.startsWith('L') ? leadData.lead_number : `L${leadData.lead_number}`)
-            : null;
-          setLeadNumber(formattedLeadNumber);
+        // STEP 5: Process client data (non-blocking - can happen after initial render)
+        if (clientDataPromise) {
+          clientDataPromise.then(async (clientResult) => {
+            const { data: clientData } = clientResult;
+
+            if (clientData) {
+              if (contractData.legacy_id) {
+                // Legacy lead processing
+                setClient({
+                  id: clientData.id,
+                  name: clientData.name,
+                  email: clientData.email,
+                  phone: clientData.phone,
+                  mobile: clientData.mobile
+                });
+
+                // Format lead number: handle subleads (master_id/suffix) or master leads
+                let formattedLeadNumber: string;
+                const masterId = clientData.master_id;
+
+                if (masterId && String(masterId).trim() !== '') {
+                  // It's a sub-lead - calculate suffix from all subleads with same master_id
+                  // Defer this query as it's not critical for initial render
+                  setTimeout(async () => {
+                    const { data: allSubLeads } = await supabase
+                      .from('leads_lead')
+                      .select('id')
+                      .eq('master_id', masterId)
+                      .not('master_id', 'is', null)
+                      .order('id', { ascending: true });
+
+                    if (allSubLeads && allSubLeads.length > 0) {
+                      const suffix = allSubLeads.findIndex(subLead => subLead.id === clientData.id) + 2;
+                      setLeadNumber(`${masterId}/${suffix}`);
+                    } else {
+                      setLeadNumber(`${masterId}/?`);
+                    }
+                  }, 100);
+                } else {
+                  // It's a master lead - use lead_number, then manual_id, then id
+                  formattedLeadNumber = clientData.lead_number
+                    ? String(clientData.lead_number)
+                    : (clientData.manual_id
+                      ? String(clientData.manual_id)
+                      : String(clientData.id));
+                  setLeadNumber(formattedLeadNumber);
+                }
+              } else {
+                // New lead processing
+                setClient(clientData);
+                // Format lead number: use lead_number with L prefix if it doesn't have it
+                const formattedLeadNumber = clientData.lead_number
+                  ? (clientData.lead_number.startsWith('L') ? clientData.lead_number : `L${clientData.lead_number}`)
+                  : null;
+                setLeadNumber(formattedLeadNumber);
+              }
+            }
+          }).catch(err => {
+            console.error('Error fetching client data:', err);
+            // Don't block rendering if client fetch fails
+          });
+        } else {
+          // No client data to fetch, we're done
         }
-      }
 
-      // Load saved client inputs if contract was previously started
-      if (contractData.client_inputs) {
-        setClientFields(contractData.client_inputs);
+        // Mark loading as complete - content can now render
+        setLoading(false);
+      } catch (err) {
+        console.error('Error loading contract:', err);
+        setError('Failed to load contract. Please try again.');
+        setLoading(false);
       }
-
-      setLoading(false);
     })();
   }, [contractId, token]);
 
 
-  // Track applicant fields for UI purposes only
+  // Track applicant fields for UI purposes only (defer to avoid blocking initial render)
   useEffect(() => {
     if (!template?.content || contract?.status === 'signed') return;
 
-    const contentStr = JSON.stringify(template.content);
+    // Defer applicant field detection to avoid blocking initial render
+    const detectApplicantFields = () => {
+      const contentStr = JSON.stringify(template.content);
 
     // Helper function to recursively extract text content from template structure
     const extractTextFromContent = (content: any, depth = 0): string => {
@@ -579,6 +652,14 @@ const PublicContractView: React.FC = () => {
 
       return hasChanges ? merged : prev;
     });
+    };
+
+    // Defer applicant field detection to avoid blocking initial render
+    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+      (window as any).requestIdleCallback(detectApplicantFields, { timeout: 500 });
+    } else {
+      setTimeout(detectApplicantFields, 100);
+    }
   }, [template, contract?.status]);
 
   // Add a handler for submitting the contract (signing)
@@ -772,6 +853,8 @@ const PublicContractView: React.FC = () => {
     const filename = `contract-${clientName.replace(/[^a-z0-9]/gi, '-').toLowerCase()}-${contract.id}.pdf`;
 
     try {
+      // Lazy load html2pdf only when needed
+      const html2pdfLib = await loadHtml2Pdf();
       // Clone and pre-process the element to convert all colors to RGB
       const elementToPrint = contractContentRef.current.cloneNode(true) as HTMLElement;
       elementToPrint.id = 'contract-print-area-pdf';
@@ -838,7 +921,7 @@ const PublicContractView: React.FC = () => {
 
         // Wait a bit more for styles to apply
         setTimeout(() => {
-          html2pdf(elementToPrint, {
+          html2pdfLib(elementToPrint, {
             margin: [10, 10, 10, 10],
             filename: filename,
             image: { type: 'jpeg', quality: 0.98 },
@@ -1139,8 +1222,8 @@ const PublicContractView: React.FC = () => {
               parts.push(
                 <span
                   key={id}
-                  className="inline-flex items-center gap-2 relative"
-                  style={{ verticalAlign: 'middle' }}
+                  className="inline-flex items-center gap-2 relative flex-wrap"
+                  style={{ verticalAlign: 'middle', maxWidth: '100%' }}
                   data-field-id={id}
                   data-field-type="date"
                 >
@@ -1152,6 +1235,7 @@ const PublicContractView: React.FC = () => {
                     data-input-type="date"
                     style={{
                       minWidth: 180,
+                      maxWidth: 'calc(100% - 1rem)',
                       display: 'inline-block',
                       verticalAlign: 'middle',
                       color: '#111827',
@@ -1159,8 +1243,9 @@ const PublicContractView: React.FC = () => {
                     }}
                   />
                   {contract?.status !== 'signed' && (
-                    <span className="badge badge-warning badge-sm text-xs whitespace-nowrap">
-                      Fill before submitting
+                    <span className="badge badge-warning badge-sm text-xs whitespace-nowrap max-w-full overflow-hidden text-ellipsis">
+                      <span className="hidden sm:inline">Fill before submitting</span>
+                      <span className="sm:hidden">Fill</span>
                     </span>
                   )}
                 </span>
@@ -1272,8 +1357,8 @@ const PublicContractView: React.FC = () => {
                 parts.push(
                   <span
                     key={id}
-                    className="inline-flex items-center gap-2 relative"
-                    style={{ verticalAlign: 'middle' }}
+                    className="inline-flex items-center gap-2 relative flex-wrap"
+                    style={{ verticalAlign: 'middle', maxWidth: '100%' }}
                     data-field-id={id}
                     data-field-type="date"
                   >
@@ -1285,6 +1370,7 @@ const PublicContractView: React.FC = () => {
                       data-input-type="date"
                       style={{
                         minWidth: 180,
+                        maxWidth: 'calc(100% - 1rem)',
                         display: 'inline-block',
                         verticalAlign: 'middle',
                         color: '#111827',
@@ -1292,8 +1378,9 @@ const PublicContractView: React.FC = () => {
                       }}
                     />
                     {contract?.status !== 'signed' && (
-                      <span className="badge badge-warning badge-sm text-xs whitespace-nowrap">
-                        Fill before submitting
+                      <span className="badge badge-warning badge-sm text-xs whitespace-nowrap max-w-full overflow-hidden text-ellipsis">
+                        <span className="hidden sm:inline">Fill before submitting</span>
+                        <span className="sm:hidden">Fill</span>
                       </span>
                     )}
                   </span>
@@ -1409,7 +1496,7 @@ const PublicContractView: React.FC = () => {
               <span
                 key={id}
                 className="inline-block relative field-wrapper group"
-                style={{ verticalAlign: 'middle', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                style={{ verticalAlign: 'middle', display: 'inline-flex', alignItems: 'center', gap: '4px', maxWidth: '100%' }}
                 data-field-id={id}
                 data-is-applicant={isApplicantField ? 'true' : 'false'}
               >
@@ -1419,7 +1506,7 @@ const PublicContractView: React.FC = () => {
                   value={clientFields[id] || ''}
                   onChange={e => handleClientFieldChange(id, e.target.value)}
                   disabled={contract?.status === 'signed'}
-                  style={{ minWidth: 150, display: 'inline-block', verticalAlign: 'middle' }}
+                  style={{ minWidth: 150, maxWidth: 'calc(100% - 1rem)', display: 'inline-block', verticalAlign: 'middle' }}
                 />
               </span>
             );
@@ -1429,16 +1516,16 @@ const PublicContractView: React.FC = () => {
             parts.push(
               <span
                 key={id}
-                className="inline-flex items-center gap-4 relative field-wrapper"
-                style={{ display: 'inline-flex', minWidth: 220, minHeight: 100, verticalAlign: 'middle' }}
+                className="inline-flex items-center gap-4 relative field-wrapper flex-wrap"
+                style={{ display: 'inline-flex', minWidth: 220, minHeight: 100, verticalAlign: 'middle', maxWidth: '100%' }}
                 data-field-id={id}
               >
                 <span
-                  className="border-2 rounded-lg bg-gray-50 p-3 border-gray-300"
-                  style={{ display: 'inline-block' }}
+                  className="border-2 rounded-lg bg-gray-50 p-3 border-gray-300 flex-shrink-0"
+                  style={{ display: 'inline-block', maxWidth: '100%' }}
                 >
                   {contract?.status === 'signed' && clientSignature ? (
-                    <img src={clientSignature} alt="Signature" style={{ width: 200, height: 80, display: 'block', borderRadius: 8, background: 'transparent' }} />
+                    <img src={clientSignature} alt="Signature" style={{ width: '100%', maxWidth: 200, height: 80, display: 'block', borderRadius: 8, background: 'transparent' }} />
                   ) : (
                     <SignaturePad
                       ref={(ref) => {
@@ -1452,7 +1539,9 @@ const PublicContractView: React.FC = () => {
                         style: {
                           display: 'block',
                           borderRadius: 8,
-                          background: 'transparent'
+                          background: 'transparent',
+                          maxWidth: '100%',
+                          width: '100%'
                         }
                       }}
                       onEnd={() => {
@@ -1470,22 +1559,23 @@ const PublicContractView: React.FC = () => {
                   </div>
                 </span>
                 {/* Stamp image */}
-                <div className="flex-shrink-0">
+                <div className="flex-shrink-0 max-w-full">
                   <img
                     src="/חתימה מסמכים (5).png"
                     alt="Stamp"
                     style={{
                       width: 'auto',
                       height: 150,
-                      maxWidth: 250,
+                      maxWidth: '100%',
                       display: 'block',
                       objectFit: 'contain'
                     }}
                   />
                 </div>
                 {contract?.status !== 'signed' && (
-                  <span className="badge badge-warning badge-sm text-xs whitespace-nowrap">
-                    Fill before submitting
+                  <span className="badge badge-warning badge-sm text-xs whitespace-nowrap max-w-full overflow-hidden text-ellipsis">
+                    <span className="hidden sm:inline">Fill before submitting</span>
+                    <span className="sm:hidden">Fill</span>
                   </span>
                 )}
               </span>
@@ -1816,19 +1906,20 @@ const PublicContractView: React.FC = () => {
           )}
         </div>
 
-        <div ref={contractContentRef} id="contract-print-area" className="prose prose-sm md:prose-base max-w-none">
-          {thankYou ? (
-            <>
-              <div className="alert alert-success text-sm md:text-lg font-semibold mb-4 md:mb-6">Thank you! Your contract was signed and submitted. You will be notified soon.</div>
-              {(() => {
-                return renderTiptapContent(contract.custom_content || template.content, '', signaturePads, undefined, undefined, { text: 0, signature: 0, date: 0 });
-              })()}
-            </>
-          ) : (
-            (() => {
-              return renderTiptapContent(contract.custom_content || template.content, '', signaturePads, undefined, undefined, { text: 0, signature: 0, date: 0 });
-            })()
-          )}
+        <div ref={contractContentRef} id="contract-print-area" className="prose prose-sm md:prose-base max-w-none overflow-x-hidden">
+          {(() => {
+            const contentToRender = contract?.custom_content || template?.content;
+            if (!contentToRender) return null;
+            
+            return thankYou ? (
+              <>
+                <div className="alert alert-success text-sm md:text-lg font-semibold mb-4 md:mb-6">Thank you! Your contract was signed and submitted. You will be notified soon.</div>
+                {renderTiptapContent(contentToRender, '', signaturePads, undefined, undefined, { text: 0, signature: 0, date: 0 })}
+              </>
+            ) : (
+              renderTiptapContent(contentToRender, '', signaturePads, undefined, undefined, { text: 0, signature: 0, date: 0 })
+            );
+          })()}
         </div>
 
         {/* Submit Contract Button (only if not signed) */}

@@ -2966,12 +2966,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         paymentToSave: paymentToSave,
       });
 
-      // Set the edit payment data and includeVat state
+      // Set the edit payment data and includeVat state (for other parts of the code that might use it)
       setEditPaymentData(paymentToSave);
       setEditPaymentIncludeVat(includeVat);
 
-      // Call the existing save handler
-      await handleSaveEditPayment();
+      // Call the existing save handler with the payment data directly
+      await handleSaveEditPayment(paymentToSave, includeVat);
 
       // Close modal after save
       setEditingPaymentInModal(null);
@@ -2982,13 +2982,27 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
   };
 
-  const handleSaveEditPayment = async () => {
+  const handleSaveEditPayment = async (paymentDataOverride?: any, includeVatOverride?: boolean) => {
     setIsSavingPaymentRow(true);
     try {
       const currentUserName = await getCurrentUserName();
 
+      // Use override data if provided (from modal), otherwise use state
+      const paymentDataToUse = paymentDataOverride || editPaymentData;
+      const includeVatToUse = includeVatOverride !== undefined ? includeVatOverride : editPaymentIncludeVat;
+
+      // Validate that we have the required data
+      if (!paymentDataToUse || !paymentDataToUse.id) {
+        console.error('Payment data is missing or invalid:', {
+          paymentDataOverride,
+          editPaymentData,
+          paymentDataToUse
+        });
+        throw new Error('Payment data is missing or invalid. Cannot save payment.');
+      }
+
       // Check if this is a legacy payment
-      const isLegacyPayment = editPaymentData.isLegacy;
+      const isLegacyPayment = paymentDataToUse.isLegacy;
 
       // Get the original payment data to compare changes
       let originalPayment;
@@ -2997,12 +3011,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         const { data: legacyPayment, error: legacyError } = await supabase
           .from('finances_paymentplanrow')
           .select('*')
-          .eq('id', editPaymentData.id)
+          .eq('id', paymentDataToUse.id)
           .single();
         if (legacyError) {
           console.error('Error fetching legacy payment:', legacyError);
-          console.error('Payment ID:', editPaymentData.id);
-          console.error('Payment data:', editPaymentData);
+          console.error('Payment ID:', paymentDataToUse.id);
+          console.error('Payment data:', paymentDataToUse);
+          throw legacyError;
         }
         originalPayment = legacyPayment;
       } else {
@@ -3010,23 +3025,24 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         const { data: newPayment, error: newError } = await supabase
           .from('payment_plans')
           .select('*')
-          .eq('id', editPaymentData.id)
+          .eq('id', paymentDataToUse.id)
           .single();
         if (newError) {
           console.error('Error fetching new payment:', newError);
-          console.error('Payment ID:', editPaymentData.id);
-          console.error('Payment data:', editPaymentData);
+          console.error('Payment ID:', paymentDataToUse.id);
+          console.error('Payment data:', paymentDataToUse);
+          throw newError;
         }
         originalPayment = newPayment;
       }
 
       if (!originalPayment) {
         console.error('Original payment not found. Payment data:', {
-          id: editPaymentData.id,
+          id: paymentDataToUse.id,
           isLegacy: isLegacyPayment,
-          editPaymentData: editPaymentData
+          paymentDataToUse: paymentDataToUse
         });
-        throw new Error(`Original payment not found. Payment ID: ${editPaymentData.id}, Is Legacy: ${isLegacyPayment}`);
+        throw new Error(`Original payment not found. Payment ID: ${paymentDataToUse.id}, Is Legacy: ${isLegacyPayment}`);
       }
 
       // Original payment and edit payment data available for comparison
@@ -3048,18 +3064,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       // Convert both original and edit values to numbers for proper comparison
       // Handle different field names for legacy vs new payments
       const originalDuePercent = parseDuePercent(isLegacyPayment ? originalPayment.due_percent : originalPayment.due_percent);
-      const editDuePercent = parseDuePercent(editPaymentData.duePercent);
+      const editDuePercent = parseDuePercent(paymentDataToUse.duePercent);
       const originalValue = Number(originalPayment.value);
-      const editValue = Number(editPaymentData.value);
+      const editValue = Number(paymentDataToUse.value);
       const originalValueVat = Number(isLegacyPayment ? originalPayment.vat_value : originalPayment.value_vat);
-      const editValueVat = Number(editPaymentData.valueVat);
+      const editValueVat = Number(paymentDataToUse.valueVat);
 
       if (originalDuePercent !== editDuePercent) {
         changes.push({
-          payment_plan_id: editPaymentData.id,
+          payment_plan_id: paymentDataToUse.id,
           field_name: 'due_percent',
           old_value: originalPayment.due_percent?.toString() || '',
-          new_value: editPaymentData.duePercent?.toString() || '',
+          new_value: paymentDataToUse.duePercent?.toString() || '',
           changed_by: currentUserName,
           changed_at: new Date().toISOString(),
         });
@@ -3067,12 +3083,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
       const originalDueDate = isLegacyPayment ? originalPayment?.date : originalPayment?.due_date;
 
-      if (originalDueDate !== editPaymentData.dueDate) {
+      if (originalDueDate !== paymentDataToUse.dueDate) {
         changes.push({
-          payment_plan_id: editPaymentData.id,
+          payment_plan_id: paymentDataToUse.id,
           field_name: isLegacyPayment ? 'date' : 'due_date',
           old_value: originalDueDate || '',
-          new_value: editPaymentData.dueDate || '',
+          new_value: paymentDataToUse.dueDate || '',
           changed_by: currentUserName,
           changed_at: new Date().toISOString(),
         });
@@ -3080,10 +3096,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
       if (originalValue !== editValue) {
         changes.push({
-          payment_plan_id: editPaymentData.id,
+          payment_plan_id: paymentDataToUse.id,
           field_name: 'value',
           old_value: originalPayment.value?.toString() || '',
-          new_value: editPaymentData.value?.toString() || '',
+          new_value: paymentDataToUse.value?.toString() || '',
           changed_by: currentUserName,
           changed_at: new Date().toISOString()
         });
@@ -3091,21 +3107,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
       if (originalValueVat !== editValueVat) {
         changes.push({
-          payment_plan_id: editPaymentData.id,
+          payment_plan_id: paymentDataToUse.id,
           field_name: isLegacyPayment ? 'vat_value' : 'value_vat',
           old_value: (isLegacyPayment ? originalPayment.vat_value : originalPayment.value_vat)?.toString() || '',
-          new_value: editPaymentData.valueVat?.toString() || '',
+          new_value: paymentDataToUse.valueVat?.toString() || '',
           changed_by: currentUserName,
           changed_at: new Date().toISOString()
         });
       }
 
-      if (originalPayment.client_name !== editPaymentData.client) {
+      if (originalPayment.client_name !== paymentDataToUse.client) {
         changes.push({
-          payment_plan_id: editPaymentData.id,
+          payment_plan_id: paymentDataToUse.id,
           field_name: 'client_name',
           old_value: originalPayment.client_name || '',
-          new_value: editPaymentData.client || '',
+          new_value: paymentDataToUse.client || '',
           changed_by: currentUserName,
           changed_at: new Date().toISOString()
         });
@@ -3136,40 +3152,89 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           }
         };
         const originalOrderText = getOrderText(originalPayment.order);
-        const editOrderNumber = editPaymentData.order ? getOrderNumber(editPaymentData.order) : null;
+        const editOrderNumber = paymentDataToUse.order ? getOrderNumber(paymentDataToUse.order) : null;
         if (originalPayment.order !== editOrderNumber) {
           changes.push({
-            payment_plan_id: editPaymentData.id,
+            payment_plan_id: paymentDataToUse.id,
             field_name: 'order',
             old_value: originalOrderText || '',
-            new_value: editPaymentData.order || '',
+            new_value: paymentDataToUse.order || '',
             changed_by: currentUserName,
             changed_at: new Date().toISOString()
           });
         }
       } else {
         // For new payments, order is stored as a string
-        if (originalPayment.payment_order !== editPaymentData.order) {
+        if (originalPayment.payment_order !== paymentDataToUse.order) {
           changes.push({
-            payment_plan_id: editPaymentData.id,
+            payment_plan_id: paymentDataToUse.id,
             field_name: 'payment_order',
             old_value: originalPayment.payment_order || '',
-            new_value: editPaymentData.order || '',
+            new_value: paymentDataToUse.order || '',
             changed_by: currentUserName,
             changed_at: new Date().toISOString()
           });
         }
       }
 
-      if (originalPayment.notes !== editPaymentData.notes) {
+      if (originalPayment.notes !== paymentDataToUse.notes) {
         changes.push({
-          payment_plan_id: editPaymentData.id,
+          payment_plan_id: paymentDataToUse.id,
           field_name: 'notes',
           old_value: originalPayment.notes || '',
-          new_value: editPaymentData.notes || '',
+          new_value: paymentDataToUse.notes || '',
           changed_by: currentUserName,
           changed_at: new Date().toISOString()
         });
+      }
+
+      // Check currency changes
+      if (isLegacyPayment) {
+        // For legacy payments, compare currency_id
+        const getCurrencyId = (currency: string): number => {
+          switch (currency) {
+            case '₪': return 1;
+            case '€': return 2;
+            case '$': return 3;
+            case '£': return 4;
+            default: return 1;
+          }
+        };
+        const originalCurrencyId = originalPayment.currency_id || 1;
+        const editCurrencyId = paymentDataToUse.currency ? getCurrencyId(paymentDataToUse.currency) : originalCurrencyId;
+        if (originalCurrencyId !== editCurrencyId) {
+          const getCurrencyName = (currencyId: number): string => {
+            switch (currencyId) {
+              case 1: return '₪';
+              case 2: return '€';
+              case 3: return '$';
+              case 4: return '£';
+              default: return '₪';
+            }
+          };
+          changes.push({
+            payment_plan_id: paymentDataToUse.id,
+            field_name: 'currency_id',
+            old_value: getCurrencyName(originalCurrencyId),
+            new_value: getCurrencyName(editCurrencyId),
+            changed_by: currentUserName,
+            changed_at: new Date().toISOString()
+          });
+        }
+      } else {
+        // For new payments, compare currency string
+        const originalCurrency = originalPayment.currency || '₪';
+        const editCurrency = paymentDataToUse.currency || originalCurrency;
+        if (originalCurrency !== editCurrency) {
+          changes.push({
+            payment_plan_id: paymentDataToUse.id,
+            field_name: 'currency',
+            old_value: originalCurrency || '',
+            new_value: editCurrency || '',
+            changed_by: currentUserName,
+            changed_at: new Date().toISOString()
+          });
+        }
       }
 
       // Total changes detected and logged
@@ -3178,7 +3243,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       let error;
       if (isLegacyPayment) {
         // For legacy payments, update finances_paymentplanrow table
-        const dueDateValue = editPaymentData.dueDate || null;
+        const dueDateValue = paymentDataToUse.dueDate || null;
 
         // Map payment order strings to numeric values for legacy payments
         const getOrderNumber = (orderString: string): number => {
@@ -3192,10 +3257,22 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           }
         };
 
-        const orderValue = editPaymentData.order ? getOrderNumber(editPaymentData.order) : null;
+        const orderValue = paymentDataToUse.order ? getOrderNumber(paymentDataToUse.order) : null;
 
         // Parse due_percent to remove % sign if present
-        const duePercentValue = parseDuePercent(editPaymentData.duePercent);
+        const duePercentValue = parseDuePercent(paymentDataToUse.duePercent);
+
+        // Convert currency string to currency_id for legacy payments
+        let currencyId = originalPayment.currency_id; // Keep original if not changed
+        if (paymentDataToUse.currency) {
+          switch (paymentDataToUse.currency) {
+            case '₪': currencyId = 1; break;
+            case '€': currencyId = 2; break;
+            case '$': currencyId = 3; break;
+            case '£': currencyId = 4; break;
+            default: currencyId = originalPayment.currency_id || 1; break;
+          }
+        }
 
         const { error: legacyError } = await supabase
           .from('finances_paymentplanrow')
@@ -3203,45 +3280,47 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             due_percent: duePercentValue,
             date: dueDateValue,
             // Removed due_date: dueDateValue - do not update due_date when editing payment plan
-            value: editPaymentData.value,
-            vat_value: editPaymentData.valueVat,
+            value: paymentDataToUse.value,
+            vat_value: paymentDataToUse.valueVat,
             order: orderValue,
-            notes: editPaymentData.notes,
+            currency_id: currencyId,
+            notes: paymentDataToUse.notes,
           })
-          .eq('id', editPaymentData.id);
+          .eq('id', paymentDataToUse.id);
         error = legacyError;
       } else {
         // For new payments, update payment_plans table
         // Parse due_percent to remove % sign if present
-        const duePercentValue = parseDuePercent(editPaymentData.duePercent);
+        const duePercentValue = parseDuePercent(paymentDataToUse.duePercent);
 
         // Calculate VAT based on checkbox state at save time
         // If checkbox is unchecked, VAT must be 0
         // If checkbox is checked, calculate 18% of the value
-        const vatValue = !editPaymentIncludeVat
+        const vatValue = !includeVatToUse
           ? 0
-          : Math.round(Number(editPaymentData.value || 0) * 0.18 * 100) / 100;
+          : Math.round(Number(paymentDataToUse.value || 0) * 0.18 * 100) / 100;
 
         console.log('💾 Saving payment - VAT calculation:', {
-          editPaymentIncludeVat,
-          checkboxChecked: editPaymentIncludeVat,
-          editPaymentDataValue: editPaymentData.value,
+          includeVatToUse,
+          checkboxChecked: includeVatToUse,
+          paymentDataToUseValue: paymentDataToUse.value,
           calculatedVatValue: vatValue,
-          editPaymentDataValueVat: editPaymentData.valueVat
+          paymentDataToUseValueVat: paymentDataToUse.valueVat
         });
 
         const { error: newError } = await supabase
           .from('payment_plans')
           .update({
             due_percent: duePercentValue,
-            due_date: editPaymentData.dueDate || null, // Set to null if empty
-            value: editPaymentData.value,
+            due_date: paymentDataToUse.dueDate || null, // Set to null if empty
+            value: paymentDataToUse.value,
             value_vat: vatValue, // Save VAT: 0 if checkbox unchecked, otherwise use value from state
-            client_name: editPaymentData.client,
-            payment_order: editPaymentData.order,
-            notes: editPaymentData.notes,
+            currency: paymentDataToUse.currency || originalPayment.currency || '₪', // Update currency if provided
+            client_name: paymentDataToUse.client,
+            payment_order: paymentDataToUse.order,
+            notes: paymentDataToUse.notes,
           })
-          .eq('id', editPaymentData.id);
+          .eq('id', paymentDataToUse.id);
         error = newError;
       }
       if (error) throw error;
@@ -5297,8 +5376,55 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                           </div>
                           <div className="text-right mr-4">
                             <div className="text-lg font-bold text-gray-900">
-                              {/* Use the currency of the first payment for this contact */}
-                              {getCurrencySymbol(payments[0]?.currency)}{payments.reduce((sum, p) => sum + p.value + p.valueVat, 0).toLocaleString()}
+                              {/* Calculate total for this contact's payments (amount + VAT) - same format as top total */}
+                              {(() => {
+                                // Filter payments for this contact from financePlan (same as top total calculation)
+                                const contactPayments = financePlan.payments.filter(p => p.client === contactName);
+                                
+                                // Group payments by currency for this contact (same logic as top total)
+                                const contactPaymentsByCurrency = contactPayments.reduce((acc: { [currency: string]: { value: number; valueVat: number } }, p) => {
+                                  const currency = p.currency || '₪';
+                                  if (!acc[currency]) {
+                                    acc[currency] = { value: 0, valueVat: 0 };
+                                  }
+                                  // Use the same calculation as top total
+                                  acc[currency].value += Number(p.value || 0);
+                                  acc[currency].valueVat += Number(p.valueVat || 0);
+                                  return acc;
+                                }, {});
+
+                                // Display totals grouped by currency (same format as top total)
+                                const currencyEntries = Object.entries(contactPaymentsByCurrency);
+                                if (currencyEntries.length === 1) {
+                                  // Single currency - show as amount + VAT (same as top total)
+                                  const [currency, totals] = currencyEntries[0];
+                                  const totalValue = totals.value;
+                                  const totalVat = totals.valueVat;
+                                  return (
+                                    <>
+                                      {getCurrencySymbol(currency)}{totalValue.toLocaleString()}
+                                      <span className="text-gray-600"> + {getCurrencySymbol(currency)}{totalVat.toLocaleString()}</span>
+                                    </>
+                                  );
+                                } else {
+                                  // Multiple currencies - show each with amount + VAT format
+                                  return (
+                                    <>
+                                      {currencyEntries.map(([currency, totals], idx) => {
+                                        const totalValue = totals.value;
+                                        const totalVat = totals.valueVat;
+                                        return (
+                                          <span key={currency}>
+                                            {getCurrencySymbol(currency)}{totalValue.toLocaleString()}
+                                            <span className="text-gray-600"> + {getCurrencySymbol(currency)}{totalVat.toLocaleString()}</span>
+                                            {idx < currencyEntries.length - 1 ? ' | ' : ''}
+                                          </span>
+                                        );
+                                      })}
+                                    </>
+                                  );
+                                }
+                              })()}
                             </div>
                             <div className="text-xs text-gray-500">Total for {contactName}</div>
                           </div>

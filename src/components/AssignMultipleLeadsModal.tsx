@@ -16,6 +16,10 @@ interface Handler {
   department?: string;
   newCasesCount?: number;
   activeCasesCount?: number;
+  firstPaymentDue?: number;
+  intermediatePaymentDue?: number;
+  finalPaymentDueGermany?: number;
+  finalPaymentDueAustria?: number;
 }
 
 interface Employee {
@@ -97,6 +101,13 @@ const AssignMultipleLeadsModal: React.FC<AssignMultipleLeadsModalProps> = ({
       .join('')
       .toUpperCase()
       .slice(0, 2);
+  };
+
+  // Helper function to format currency
+  const formatCurrency = (value: number, currency: string = 'NIS') => {
+    if (value === 0) return '₪0';
+    const currencySymbol = currency === 'EUR' ? '€' : currency === 'USD' ? '$' : currency === 'GBP' ? '£' : '₪';
+    return `${currencySymbol}${value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
   };
 
   // Employee Avatar Component
@@ -289,7 +300,7 @@ const AssignMultipleLeadsModal: React.FC<AssignMultipleLeadsModalProps> = ({
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-lg shadow-xl w-full max-w-2xl mx-4 max-h-[98vh] flex flex-col"
+        className="bg-white rounded-lg shadow-xl w-full max-w-[1400px] mx-4 max-h-[98vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Modal Header */}
@@ -387,12 +398,36 @@ const AssignMultipleLeadsModal: React.FC<AssignMultipleLeadsModalProps> = ({
                             <p className="text-sm text-gray-500">{handler.department}</p>
                           )}
                         </div>
-                        <div className="flex-shrink-0 flex items-center gap-3">
-                          <div className="text-right">
+                        <div className="flex-shrink-0 flex items-center gap-4">
+                          <div className="text-center min-w-[100px]">
+                            <p className="text-xs text-gray-500">First Payment</p>
+                            <p className="text-sm font-semibold text-gray-900">
+                              {formatCurrency(handler.firstPaymentDue || 0, 'NIS')}
+                            </p>
+                          </div>
+                          <div className="text-center min-w-[120px]">
+                            <p className="text-xs text-gray-500">Intermediate Payment</p>
+                            <p className="text-sm font-semibold text-gray-900">
+                              {formatCurrency(handler.intermediatePaymentDue || 0, 'NIS')}
+                            </p>
+                          </div>
+                          <div className="text-center min-w-[140px]">
+                            <p className="text-xs text-gray-500">Final (Germany)</p>
+                            <p className="text-sm font-semibold text-gray-900">
+                              {formatCurrency(handler.finalPaymentDueGermany || 0, 'NIS')}
+                            </p>
+                          </div>
+                          <div className="text-center min-w-[140px]">
+                            <p className="text-xs text-gray-500">Final (Austria)</p>
+                            <p className="text-sm font-semibold text-gray-900">
+                              {formatCurrency(handler.finalPaymentDueAustria || 0, 'NIS')}
+                            </p>
+                          </div>
+                          <div className="text-center min-w-[80px]">
                             <p className="text-xs text-gray-500">New Cases</p>
                             <p className="text-sm font-semibold text-gray-900">{handler.newCasesCount ?? 0}</p>
                           </div>
-                          <div className="text-right">
+                          <div className="text-center min-w-[90px]">
                             <p className="text-xs text-gray-500">Active Cases</p>
                             <p className="text-sm font-semibold" style={{ color: 'rgb(25, 49, 31)' }}>
                               {handler.activeCasesCount ?? 0}
@@ -539,11 +574,35 @@ const AssignMultipleLeadsModal: React.FC<AssignMultipleLeadsModalProps> = ({
                                               )}
                                             </div>
                                             <div className="flex-shrink-0 flex items-center gap-3">
-                                              <div className="text-right">
+                                              <div className="text-center min-w-[80px]">
+                                                <p className="text-xs text-gray-500">First Payment</p>
+                                                <p className="text-sm font-semibold text-gray-900">
+                                                  {formatCurrency(handler.firstPaymentDue || 0, 'NIS')}
+                                                </p>
+                                              </div>
+                                              <div className="text-center min-w-[100px]">
+                                                <p className="text-xs text-gray-500">Intermediate</p>
+                                                <p className="text-sm font-semibold text-gray-900">
+                                                  {formatCurrency(handler.intermediatePaymentDue || 0, 'NIS')}
+                                                </p>
+                                              </div>
+                                              <div className="text-center min-w-[110px]">
+                                                <p className="text-xs text-gray-500">Final (Germany)</p>
+                                                <p className="text-sm font-semibold text-gray-900">
+                                                  {formatCurrency(handler.finalPaymentDueGermany || 0, 'NIS')}
+                                                </p>
+                                              </div>
+                                              <div className="text-center min-w-[110px]">
+                                                <p className="text-xs text-gray-500">Final (Austria)</p>
+                                                <p className="text-sm font-semibold text-gray-900">
+                                                  {formatCurrency(handler.finalPaymentDueAustria || 0, 'NIS')}
+                                                </p>
+                                              </div>
+                                              <div className="text-center min-w-[60px]">
                                                 <p className="text-xs text-gray-500">New</p>
                                                 <p className="text-sm font-semibold text-gray-900">{handler.newCasesCount ?? 0}</p>
                                               </div>
-                                              <div className="text-right">
+                                              <div className="text-center min-w-[70px]">
                                                 <p className="text-xs text-gray-500">Active</p>
                                                 <p className="text-sm font-semibold" style={{ color: 'rgb(25, 49, 31)' }}>
                                                   {handler.activeCasesCount ?? 0}

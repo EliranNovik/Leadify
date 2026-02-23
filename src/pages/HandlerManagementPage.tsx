@@ -18,6 +18,10 @@ interface Handler {
   inProcessCount?: number;
   applicationsSentCount?: number;
   dueAmount?: number;
+  firstPaymentDue?: number;
+  intermediatePaymentDue?: number;
+  finalPaymentDueGermany?: number;
+  finalPaymentDueAustria?: number;
 }
 
 interface UnassignedLead {
@@ -33,6 +37,7 @@ interface UnassignedLead {
   currency?: string;
   isLegacy: boolean;
   applicantsCount?: number;
+  signed_date?: string;
 }
 
 interface NextPayment {
@@ -197,8 +202,48 @@ const HandlerManagementPage: React.FC = () => {
     return isNaN(parsed) ? null : parsed;
   };
 
+  // Helper function to normalize order code (same as CollectionDueReportPage)
+  const normalizeOrderCode = (order: string | number | null | undefined): string => {
+    if (order === null || order === undefined) return '';
+    const raw = order.toString().trim();
+    if (!raw) return '';
+    if (!Number.isNaN(Number(raw))) {
+      return raw;
+    }
+    switch (raw.toLowerCase()) {
+      case 'first payment':
+        return '1';
+      case 'intermediate payment':
+        return '5';
+      case 'final payment':
+        return '9';
+      case 'single payment':
+        return '90';
+      case 'expense (no vat)':
+        return '99';
+      default:
+        return raw;
+    }
+  };
+
   const fetchHandlers = async () => {
     try {
+      // First, fetch main category IDs for Germany and Austria
+      const { data: germanyCategory, error: germanyError } = await supabase
+        .from('misc_maincategory')
+        .select('id, name')
+        .eq('name', 'Germany')
+        .maybeSingle();
+
+      const { data: austriaCategory, error: austriaError } = await supabase
+        .from('misc_maincategory')
+        .select('id, name')
+        .eq('name', 'Austria')
+        .maybeSingle();
+
+      const germanyMainCategoryId = germanyCategory?.id ? Number(germanyCategory.id) : null;
+      const austriaMainCategoryId = austriaCategory?.id ? Number(austriaCategory.id) : null;
+
       // Fetch all staff employees from users table with tenants_employee join
       // Fetch departments separately to avoid nested join issues
       const { data: allEmployeesData, error: handlersError } = await supabase
@@ -472,13 +517,261 @@ const HandlerManagementPage: React.FC = () => {
             console.error(`Error calculating due amount for handler ${handlerId}:`, error);
           }
 
+          // Calculate payment amounts by order and category (last 30 days)
+          let firstPaymentDue = 0;
+          let intermediatePaymentDue = 0;
+          let finalPaymentDueGermany = 0;
+          let finalPaymentDueAustria = 0;
+
+          try {
+            // Calculate date range for last 30 days (same as dueAmount calculation)
+            const today = new Date();
+            const thirtyDaysAgo = new Date(today);
+            thirtyDaysAgo.setDate(today.getDate() - 30);
+            const fromDate = thirtyDaysAgo.toISOString().split('T')[0];
+            const toDate = today.toISOString().split('T')[0];
+            const fromDateTime = `${fromDate}T00:00:00`;
+            const toDateTime = `${toDate}T23:59:59`;
+
+            const handlerNewLeadIds = (newLeads || []).map(l => l.id).filter(Boolean);
+            const handlerLegacyLeadIds = (legacyLeads || []).map(l => l.id).filter(Boolean);
+
+            // Fetch new leads metadata separately (same as CollectionDueReportPage)
+            let newLeadsMap = new Map();
+            if (handlerNewLeadIds.length > 0) {
+              const { data: newLeadsData, error: newLeadsError } = await supabase
+                .from('leads')
+                .select(`
+                  id,
+                  category_id,
+                  misc_category!category_id(
+                    id,
+                    name,
+                    parent_id,
+                    misc_maincategory!parent_id(
+                      id,
+                      name
+                    )
+                  )
+                `)
+                .in('id', handlerNewLeadIds);
+
+              if (!newLeadsError && newLeadsData) {
+                newLeadsData.forEach(lead => {
+                  newLeadsMap.set(lead.id, lead);
+                });
+              }
+            }
+
+            // Fetch legacy leads metadata separately (same as CollectionDueReportPage)
+            let legacyLeadsMap = new Map();
+            if (handlerLegacyLeadIds.length > 0) {
+              const { data: legacyLeadsData, error: legacyLeadsError } = await supabase
+                .from('leads_lead')
+                .select(`
+                  id,
+                  category_id,
+                  misc_category!category_id(
+                    id,
+                    name,
+                    parent_id,
+                    misc_maincategory!parent_id(
+                      id,
+                      name
+                    )
+                  )
+                `)
+                .in('id', handlerLegacyLeadIds);
+
+              if (!legacyLeadsError && legacyLeadsData) {
+                legacyLeadsData.forEach(lead => {
+                  const key = lead.id?.toString() || String(lead.id);
+                  legacyLeadsMap.set(key, lead);
+                  if (typeof lead.id === 'number') {
+                    legacyLeadsMap.set(lead.id, lead);
+                  }
+                });
+              }
+            }
+
+            // Fetch new payments for this handler's leads (last 30 days)
+            const { data: allNewPayments } = await supabase
+              .from('payment_plans')
+              .select(`
+                id,
+                lead_id,
+                value,
+                currency,
+                payment_order,
+                due_date,
+                ready_to_pay,
+                cancel_date
+              `)
+              .eq('ready_to_pay', true)
+              .not('due_date', 'is', null)
+              .is('cancel_date', null)
+              .gte('due_date', fromDateTime)
+              .lte('due_date', toDateTime);
+
+            const handlerNewPayments = (allNewPayments || []).filter(p =>
+              handlerNewLeadIds.includes(p.lead_id)
+            );
+
+            // Process new payments (same as CollectionDueReportPage)
+            handlerNewPayments.forEach(payment => {
+              const lead = newLeadsMap.get(payment.lead_id);
+              if (!lead) return;
+
+              const value = Number(payment.value || 0);
+              let currencyForConversion = payment.currency || 'NIS';
+              if (currencyForConversion === '₪') currencyForConversion = 'NIS';
+              else if (currencyForConversion === '€') currencyForConversion = 'EUR';
+              else if (currencyForConversion === '$') currencyForConversion = 'USD';
+              else if (currencyForConversion === '£') currencyForConversion = 'GBP';
+              const valueInNIS = convertToNIS(value, currencyForConversion);
+
+              // Use normalizeOrderCode to properly match orders (same as CollectionDueReportPage)
+              const orderCode = normalizeOrderCode(payment.payment_order);
+
+              // Get main category ID from lead (same as CollectionDueReportPage)
+              let mainCategoryId: string | number | null = null;
+              if (lead.misc_category) {
+                const categoryRecord = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
+                if (categoryRecord?.misc_maincategory) {
+                  const mainCategory = Array.isArray(categoryRecord.misc_maincategory)
+                    ? categoryRecord.misc_maincategory[0]
+                    : categoryRecord.misc_maincategory;
+                  mainCategoryId = mainCategory?.id || null;
+                } else if (categoryRecord?.parent_id) {
+                  // Fallback: use parent_id if misc_maincategory join is not available
+                  mainCategoryId = categoryRecord.parent_id;
+                }
+              }
+
+              // Match by normalized order code (same as CollectionDueReportPage)
+              if (orderCode === '1') {
+                firstPaymentDue += valueInNIS;
+              } else if (orderCode === '5') {
+                intermediatePaymentDue += valueInNIS;
+              } else if (orderCode === '9') {
+                // Compare by main category ID (same as CollectionDueReportPage)
+                if (mainCategoryId !== null && mainCategoryId !== undefined) {
+                  const mainCategoryIdNum = typeof mainCategoryId === 'number' ? mainCategoryId : Number(mainCategoryId);
+                  if (!isNaN(mainCategoryIdNum)) {
+                    if (germanyMainCategoryId !== null && mainCategoryIdNum === germanyMainCategoryId) {
+                      finalPaymentDueGermany += valueInNIS;
+                    } else if (austriaMainCategoryId !== null && mainCategoryIdNum === austriaMainCategoryId) {
+                      finalPaymentDueAustria += valueInNIS;
+                    }
+                  }
+                }
+              }
+            });
+
+            // Fetch legacy payments (last 30 days)
+            if (handlerLegacyLeadIds.length > 0) {
+              const { data: allLegacyPayments } = await supabase
+                .from('finances_paymentplanrow')
+                .select(`
+                  id,
+                  lead_id,
+                  value,
+                  value_base,
+                  currency_id,
+                  order,
+                  due_date,
+                  cancel_date,
+                  accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
+                `)
+                .not('due_date', 'is', null)
+                .is('cancel_date', null)
+                .gte('due_date', fromDateTime)
+                .lte('due_date', toDateTime)
+                .in('lead_id', handlerLegacyLeadIds);
+
+              // Process legacy payments (same as CollectionDueReportPage)
+              (allLegacyPayments || []).forEach(payment => {
+                // Try both string and number keys for lead_id lookup
+                const leadIdKey = payment.lead_id?.toString() || String(payment.lead_id);
+                const leadIdNum = typeof payment.lead_id === 'number' ? payment.lead_id : Number(payment.lead_id);
+                const lead = legacyLeadsMap.get(leadIdKey) || legacyLeadsMap.get(leadIdNum);
+                if (!lead) return;
+
+                const value = Number(payment.value || payment.value_base || 0);
+                const accountingCurrency: any = payment.accounting_currencies
+                  ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies)
+                  : null;
+
+                let currencyForConversion = 'NIS';
+                if (accountingCurrency?.name) {
+                  currencyForConversion = accountingCurrency.name;
+                } else if (accountingCurrency?.iso_code) {
+                  currencyForConversion = accountingCurrency.iso_code;
+                } else if (payment.currency_id) {
+                  switch (payment.currency_id) {
+                    case 1: currencyForConversion = 'NIS'; break;
+                    case 2: currencyForConversion = 'EUR'; break;
+                    case 3: currencyForConversion = 'USD'; break;
+                    case 4: currencyForConversion = 'GBP'; break;
+                    default: currencyForConversion = 'NIS'; break;
+                  }
+                }
+
+                const valueInNIS = convertToNIS(value, currencyForConversion);
+
+                // Use normalizeOrderCode to properly match orders (same as CollectionDueReportPage)
+                const orderCode = normalizeOrderCode(payment.order);
+
+                // Get main category ID from lead (same as CollectionDueReportPage)
+                let mainCategoryId: string | number | null = null;
+                if (lead.misc_category) {
+                  const categoryRecord = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
+                  if (categoryRecord?.misc_maincategory) {
+                    const mainCategory = Array.isArray(categoryRecord.misc_maincategory)
+                      ? categoryRecord.misc_maincategory[0]
+                      : categoryRecord.misc_maincategory;
+                    mainCategoryId = mainCategory?.id || null;
+                  } else if (categoryRecord?.parent_id) {
+                    // Fallback: use parent_id if misc_maincategory join is not available
+                    mainCategoryId = categoryRecord.parent_id;
+                  }
+                }
+
+                // Match by normalized order code (same as CollectionDueReportPage)
+                if (orderCode === '1') {
+                  firstPaymentDue += valueInNIS;
+                } else if (orderCode === '5') {
+                  intermediatePaymentDue += valueInNIS;
+                } else if (orderCode === '9') {
+                  // Compare by main category ID (same as CollectionDueReportPage)
+                  if (mainCategoryId !== null && mainCategoryId !== undefined) {
+                    const mainCategoryIdNum = typeof mainCategoryId === 'number' ? mainCategoryId : Number(mainCategoryId);
+                    if (!isNaN(mainCategoryIdNum)) {
+                      if (germanyMainCategoryId !== null && mainCategoryIdNum === germanyMainCategoryId) {
+                        finalPaymentDueGermany += valueInNIS;
+                      } else if (austriaMainCategoryId !== null && mainCategoryIdNum === austriaMainCategoryId) {
+                        finalPaymentDueAustria += valueInNIS;
+                      }
+                    }
+                  }
+                }
+              });
+            }
+          } catch (error) {
+            console.error(`Error calculating payment amounts by order for handler ${handlerId}:`, error);
+          }
+
           return {
             ...handler,
             newCasesCount,
             activeCasesCount,
             inProcessCount,
             applicationsSentCount,
-            dueAmount
+            dueAmount,
+            firstPaymentDue,
+            intermediatePaymentDue,
+            finalPaymentDueGermany,
+            finalPaymentDueAustria
           };
         })
       );
@@ -783,24 +1076,83 @@ const HandlerManagementPage: React.FC = () => {
         }
       }
 
-      // Map applicants count to each lead
+      // Fetch signed dates from leads_leadstage (stage 60 = Client signed agreement)
+      const newLeadsSignedDatesMap = new Map<string | number, string>();
+      if (newLeadIds.length > 0) {
+        const { data: newSignedStages, error: newSignedStagesError } = await supabase
+          .from('leads_leadstage')
+          .select('newlead_id, date, cdate')
+          .eq('stage', 60)
+          .in('newlead_id', newLeadIds);
+
+        if (!newSignedStagesError && newSignedStages) {
+          newSignedStages.forEach(stage => {
+            if (stage.newlead_id) {
+              // Use date field, fallback to cdate
+              const signedDate = stage.date || stage.cdate;
+              if (signedDate) {
+                // Keep the latest date if multiple records exist
+                const existingDate = newLeadsSignedDatesMap.get(stage.newlead_id);
+                if (!existingDate || (signedDate && new Date(signedDate) > new Date(existingDate))) {
+                  newLeadsSignedDatesMap.set(stage.newlead_id, signedDate);
+                }
+              }
+            }
+          });
+        }
+      }
+
+      // Fetch signed dates for legacy leads
+      const legacyLeadsSignedDatesMap = new Map<number, string>();
+      if (legacyLeadIds.length > 0) {
+        const { data: legacySignedStages, error: legacySignedStagesError } = await supabase
+          .from('leads_leadstage')
+          .select('lead_id, date, cdate')
+          .eq('stage', 60)
+          .in('lead_id', legacyLeadIds);
+
+        if (!legacySignedStagesError && legacySignedStages) {
+          legacySignedStages.forEach(stage => {
+            if (stage.lead_id) {
+              const leadId = typeof stage.lead_id === 'number' ? stage.lead_id : parseInt(String(stage.lead_id));
+              if (!isNaN(leadId)) {
+                // Use date field, fallback to cdate
+                const signedDate = stage.date || stage.cdate;
+                if (signedDate) {
+                  // Keep the latest date if multiple records exist
+                  const existingDate = legacyLeadsSignedDatesMap.get(leadId);
+                  if (!existingDate || (signedDate && new Date(signedDate) > new Date(existingDate))) {
+                    legacyLeadsSignedDatesMap.set(leadId, signedDate);
+                  }
+                }
+              }
+            }
+          });
+        }
+      }
+
+      // Map applicants count and signed dates to each lead
       const leadsWithApplicants = unassigned.map(lead => {
         let applicantsCount = 0;
+        let signedDate: string | undefined;
 
         if (!lead.isLegacy) {
           applicantsCount = newLeadsContactsMap.get(lead.id) || 0;
+          signedDate = newLeadsSignedDatesMap.get(lead.id);
         } else {
           const legacyId = typeof lead.id === 'string' && lead.id.startsWith('legacy_')
             ? parseInt(lead.id.replace('legacy_', ''))
             : (typeof lead.id === 'number' ? lead.id : parseInt(String(lead.id)));
           if (!isNaN(legacyId)) {
             applicantsCount = legacyLeadsContactsMap.get(legacyId) || 0;
+            signedDate = legacyLeadsSignedDatesMap.get(legacyId);
           }
         }
 
         return {
           ...lead,
-          applicantsCount
+          applicantsCount,
+          signed_date: signedDate
         };
       });
 
@@ -1996,6 +2348,7 @@ const HandlerManagementPage: React.FC = () => {
                   <th>Category</th>
                   <th>Topic</th>
                   <th>Stage</th>
+                  <th>Signed</th>
                   <th>Total Applicants</th>
                   <th>Total</th>
                   <th>Assign Handler</th>
@@ -2060,6 +2413,7 @@ const HandlerManagementPage: React.FC = () => {
                     <td>{lead.category || 'No Category'}</td>
                     <td>{lead.topic || 'N/A'}</td>
                     <td>{lead.stage_name || lead.stage}</td>
+                    <td>{lead.signed_date ? formatDate(lead.signed_date) : 'N/A'}</td>
                     <td>{lead.applicantsCount ?? 0}</td>
                     <td>{formatCurrency(lead.total || 0, lead.currency)}</td>
                     <td>
@@ -2156,7 +2510,7 @@ const HandlerManagementPage: React.FC = () => {
       {/* Assign Handler Modal */}
       {showAssignModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] flex flex-col">
+          <div className="bg-white rounded-lg shadow-xl max-w-[1400px] w-full mx-4 max-h-[80vh] flex flex-col">
             <div className="p-6 border-b border-gray-200">
               <h3 className="text-xl font-bold text-gray-900">Assign Handler</h3>
               <p className="text-sm text-gray-600 mt-1">Search and select an employee to assign</p>
@@ -2183,11 +2537,47 @@ const HandlerManagementPage: React.FC = () => {
                       className="w-full flex items-center gap-3 p-3 rounded-lg hover:bg-gray-100 transition-colors text-left border border-gray-200"
                     >
                       <EmployeeAvatar employeeId={handler.id} size="md" />
-                      <div className="flex-1">
+                      <div className="flex-1 min-w-[150px]">
                         <p className="font-semibold text-gray-900">{handler.display_name}</p>
                         {handler.department && (
                           <p className="text-sm text-gray-500">{handler.department}</p>
                         )}
+                      </div>
+                      <div className="flex-shrink-0 flex items-center gap-4">
+                        <div className="text-center min-w-[100px]">
+                          <p className="text-xs text-gray-500">First Payment</p>
+                          <p className="text-sm font-semibold text-gray-900">
+                            {formatCurrency(handler.firstPaymentDue || 0, 'NIS')}
+                          </p>
+                        </div>
+                        <div className="text-center min-w-[120px]">
+                          <p className="text-xs text-gray-500">Intermediate Payment</p>
+                          <p className="text-sm font-semibold text-gray-900">
+                            {formatCurrency(handler.intermediatePaymentDue || 0, 'NIS')}
+                          </p>
+                        </div>
+                        <div className="text-center min-w-[140px]">
+                          <p className="text-xs text-gray-500">Final (Germany)</p>
+                          <p className="text-sm font-semibold text-gray-900">
+                            {formatCurrency(handler.finalPaymentDueGermany || 0, 'NIS')}
+                          </p>
+                        </div>
+                        <div className="text-center min-w-[140px]">
+                          <p className="text-xs text-gray-500">Final (Austria)</p>
+                          <p className="text-sm font-semibold text-gray-900">
+                            {formatCurrency(handler.finalPaymentDueAustria || 0, 'NIS')}
+                          </p>
+                        </div>
+                        <div className="text-center min-w-[80px]">
+                          <p className="text-xs text-gray-500">New Cases</p>
+                          <p className="text-sm font-semibold text-gray-900">{handler.newCasesCount ?? 0}</p>
+                        </div>
+                        <div className="text-center min-w-[90px]">
+                          <p className="text-xs text-gray-500">Active Cases</p>
+                          <p className="text-sm font-semibold" style={{ color: 'rgb(25, 49, 31)' }}>
+                            {handler.activeCasesCount ?? 0}
+                          </p>
+                        </div>
                       </div>
                     </button>
                   ))
@@ -2242,138 +2632,169 @@ const HandlerManagementPage: React.FC = () => {
 
       {/* Floating Assign Selected Leads Box */}
       {showSelectedLeadsAssignBox && selectedLeads.size > 0 && (
-        <div className="fixed top-20 right-4 bg-white rounded-lg shadow-2xl border border-gray-200 z-50 w-96 max-h-[80vh] flex flex-col">
-          <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-            <div>
-              <h3 className="text-lg font-bold text-gray-900">Assign Selected Leads</h3>
-              <p className="text-sm text-gray-600 mt-1">{selectedLeads.size} lead{selectedLeads.size !== 1 ? 's' : ''} selected</p>
+        <>
+          {/* Background Overlay */}
+          <div
+            className="fixed inset-0 bg-black bg-opacity-50 z-40"
+            onClick={() => {
+              setShowSelectedLeadsAssignBox(false);
+              setSelectedLeadsHandlerSearch('');
+              setIsSelectionMode(false);
+              setSelectedLeads(new Set());
+            }}
+          />
+          {/* Modal */}
+          <div className="fixed top-20 right-4 bg-white rounded-lg shadow-2xl border border-gray-200 z-50 w-[1200px] max-h-[80vh] flex flex-col">
+            <div className="p-4 border-b border-gray-200 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900">Assign Selected Leads</h3>
+                <p className="text-sm text-gray-600 mt-1">{selectedLeads.size} lead{selectedLeads.size !== 1 ? 's' : ''} selected</p>
+              </div>
+              <button
+                onClick={() => {
+                  setShowSelectedLeadsAssignBox(false);
+                  setSelectedLeadsHandlerSearch('');
+                  setIsSelectionMode(false);
+                  setSelectedLeads(new Set());
+                }}
+                className="btn btn-sm btn-circle btn-ghost"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
             </div>
-            <button
-              onClick={() => {
-                setShowSelectedLeadsAssignBox(false);
-                setSelectedLeadsHandlerSearch('');
-                setIsSelectionMode(false);
-                setSelectedLeads(new Set());
-              }}
-              className="btn btn-sm btn-circle btn-ghost"
-            >
-              <XMarkIcon className="w-5 h-5" />
-            </button>
-          </div>
-          <div className="p-4 flex-1 overflow-y-auto">
-            <div className="mb-4">
-              <input
-                type="text"
-                placeholder="Search employee..."
-                className="input input-bordered w-full"
-                value={selectedLeadsHandlerSearch}
-                onChange={(e) => setSelectedLeadsHandlerSearch(e.target.value)}
-                autoFocus
-              />
-            </div>
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {handlers.filter(handler =>
-                handler.display_name.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase()) ||
-                handler.department?.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase())
-              ).length === 0 ? (
-                <p className="text-center text-gray-500 py-8">No employees found</p>
-              ) : (
-                handlers
-                  .filter(handler =>
-                    handler.display_name.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase()) ||
-                    handler.department?.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase())
-                  )
-                  .map(handler => (
-                    <button
-                      key={handler.id}
-                      className="w-full p-3 hover:bg-gray-50 rounded-lg border border-gray-200 flex items-center gap-3 text-left"
-                      onClick={async () => {
-                        if (assigningSelectedLeads) return;
+            <div className="p-4 flex-1 overflow-y-auto">
+              <div className="mb-4">
+                <input
+                  type="text"
+                  placeholder="Search employee..."
+                  className="input input-bordered w-full"
+                  value={selectedLeadsHandlerSearch}
+                  onChange={(e) => setSelectedLeadsHandlerSearch(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {handlers.filter(handler =>
+                  handler.display_name.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase()) ||
+                  handler.department?.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase())
+                ).length === 0 ? (
+                  <p className="text-center text-gray-500 py-8">No employees found</p>
+                ) : (
+                  handlers
+                    .filter(handler =>
+                      handler.display_name.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase()) ||
+                      handler.department?.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase())
+                    )
+                    .map(handler => (
+                      <button
+                        key={handler.id}
+                        className="w-full p-3 hover:bg-gray-50 rounded-lg border border-gray-200 flex items-center gap-3 text-left"
+                        onClick={async () => {
+                          if (assigningSelectedLeads) return;
 
-                        setAssigningSelectedLeads(true);
-                        try {
-                          const selectedLeadsArray = Array.from(selectedLeads);
-                          let successCount = 0;
-                          let errorCount = 0;
+                          setAssigningSelectedLeads(true);
+                          try {
+                            const selectedLeadsArray = Array.from(selectedLeads);
+                            let successCount = 0;
+                            let errorCount = 0;
 
-                          for (const leadId of selectedLeadsArray) {
-                            try {
-                              const lead = unassignedLeads.find(l => l.id === leadId);
-                              if (!lead) {
+                            for (const leadId of selectedLeadsArray) {
+                              try {
+                                const lead = unassignedLeads.find(l => l.id === leadId);
+                                if (!lead) {
+                                  errorCount++;
+                                  continue;
+                                }
+
+                                await assignHandler(leadId, handler.id);
+                                successCount++;
+                              } catch (error) {
+                                console.error('Error assigning lead:', error);
                                 errorCount++;
-                                continue;
                               }
-
-                              await assignHandler(leadId, handler.id);
-                              successCount++;
-                            } catch (error) {
-                              console.error('Error assigning lead:', error);
-                              errorCount++;
                             }
+
+                            if (errorCount === 0) {
+                              toast.success(`Successfully assigned ${successCount} lead(s) to ${handler.display_name}`);
+                            } else {
+                              toast.success(`Assigned ${successCount} lead(s), ${errorCount} failed`);
+                            }
+
+                            // Clear selection and close box
+                            setSelectedLeads(new Set());
+                            setShowSelectedLeadsAssignBox(false);
+                            setSelectedLeadsHandlerSearch('');
+                            setIsSelectionMode(false);
+
+                            // Refresh data
+                            await fetchData();
+                          } catch (error: any) {
+                            console.error('Error assigning leads:', error);
+                            toast.error('Failed to assign leads');
+                          } finally {
+                            setAssigningSelectedLeads(false);
                           }
-
-                          if (errorCount === 0) {
-                            toast.success(`Successfully assigned ${successCount} lead(s) to ${handler.display_name}`);
-                          } else {
-                            toast.success(`Assigned ${successCount} lead(s), ${errorCount} failed`);
-                          }
-
-                          // Clear selection and close box
-                          setSelectedLeads(new Set());
-                          setShowSelectedLeadsAssignBox(false);
-                          setSelectedLeadsHandlerSearch('');
-                          setIsSelectionMode(false);
-
-                          // Refresh data
-                          await fetchData();
-                        } catch (error: any) {
-                          console.error('Error assigning leads:', error);
-                          toast.error('Failed to assign leads');
-                        } finally {
-                          setAssigningSelectedLeads(false);
-                        }
-                      }}
-                      disabled={assigningSelectedLeads}
-                    >
-                      <EmployeeAvatar employeeId={handler.id} size="md" />
-                      <div className="flex-1">
-                        <p className="font-medium text-gray-900">{handler.display_name}</p>
-                        {handler.department && (
-                          <p className="text-sm text-gray-500">{handler.department}</p>
-                        )}
-                      </div>
-                      <div className="flex-shrink-0 flex items-center gap-3">
-                        <div className="text-right">
-                          <p className="text-xs text-gray-500">Due</p>
-                          <p className="text-sm font-semibold text-gray-900">
-                            {formatCurrency(handler.dueAmount || 0, 'NIS')}
-                          </p>
+                        }}
+                        disabled={assigningSelectedLeads}
+                      >
+                        <EmployeeAvatar employeeId={handler.id} size="md" />
+                        <div className="flex-1 min-w-[150px]">
+                          <p className="font-medium text-gray-900">{handler.display_name}</p>
+                          {handler.department && (
+                            <p className="text-sm text-gray-500">{handler.department}</p>
+                          )}
                         </div>
-                        <div className="text-right">
-                          <p className="text-xs text-gray-500">New Cases</p>
-                          <p className="text-sm font-semibold text-gray-900">{handler.newCasesCount ?? 0}</p>
+                        <div className="flex-shrink-0 flex items-center gap-4">
+                          <div className="text-center min-w-[100px]">
+                            <p className="text-xs text-gray-500">First Payment</p>
+                            <p className="text-sm font-semibold text-gray-900">
+                              {formatCurrency(handler.firstPaymentDue || 0, 'NIS')}
+                            </p>
+                          </div>
+                          <div className="text-center min-w-[120px]">
+                            <p className="text-xs text-gray-500">Intermediate Payment</p>
+                            <p className="text-sm font-semibold text-gray-900">
+                              {formatCurrency(handler.intermediatePaymentDue || 0, 'NIS')}
+                            </p>
+                          </div>
+                          <div className="text-center min-w-[140px]">
+                            <p className="text-xs text-gray-500">Final (Germany)</p>
+                            <p className="text-sm font-semibold text-gray-900">
+                              {formatCurrency(handler.finalPaymentDueGermany || 0, 'NIS')}
+                            </p>
+                          </div>
+                          <div className="text-center min-w-[140px]">
+                            <p className="text-xs text-gray-500">Final (Austria)</p>
+                            <p className="text-sm font-semibold text-gray-900">
+                              {formatCurrency(handler.finalPaymentDueAustria || 0, 'NIS')}
+                            </p>
+                          </div>
+                          <div className="text-center min-w-[80px]">
+                            <p className="text-xs text-gray-500">New Cases</p>
+                            <p className="text-sm font-semibold text-gray-900">{handler.newCasesCount ?? 0}</p>
+                          </div>
+                          <div className="text-center min-w-[90px]">
+                            <p className="text-xs text-gray-500">Active Cases</p>
+                            <p className="text-sm font-semibold" style={{ color: 'rgb(25, 49, 31)' }}>
+                              {handler.activeCasesCount ?? 0}
+                            </p>
+                          </div>
                         </div>
-                        <div className="text-right">
-                          <p className="text-xs text-gray-500">Active Cases</p>
-                          <p className="text-sm font-semibold" style={{ color: 'rgb(25, 49, 31)' }}>
-                            {handler.activeCasesCount ?? 0}
-                          </p>
-                        </div>
-                      </div>
-                    </button>
-                  ))
-              )}
-            </div>
-          </div>
-          {assigningSelectedLeads && (
-            <div className="p-4 border-t border-gray-200 bg-gray-50">
-              <div className="flex items-center justify-center gap-2 text-gray-600">
-                <span className="loading loading-spinner loading-sm"></span>
-                <span className="text-sm">Assigning leads...</span>
+                      </button>
+                    ))
+                )}
               </div>
             </div>
-          )}
-        </div>
+            {assigningSelectedLeads && (
+              <div className="p-4 border-t border-gray-200 bg-gray-50">
+                <div className="flex items-center justify-center gap-2 text-gray-600">
+                  <span className="loading loading-spinner loading-sm"></span>
+                  <span className="text-sm">Assigning leads...</span>
+                </div>
+              </div>
+            )}
+          </div>
+        </>
       )}
     </div>
   );

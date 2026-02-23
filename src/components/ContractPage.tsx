@@ -4206,18 +4206,12 @@ const ContractPage: React.FC = () => {
             </p>
           );
         } else {
-          // No saved alignment - auto-detect RTL
-          const paragraphText = content.content?.map((n: any) => n.text || '').join('') || '';
-          const isRTLParagraph = isRTL(paragraphText);
+          // No saved alignment - respect default direction (don't auto-detect to avoid mixed directions)
+          // In view mode, we should show content as saved, not auto-detect
           return (
             <p
               key={keyPrefix}
               className="mb-3"
-              dir={isRTLParagraph ? 'rtl' : 'ltr'}
-              style={{
-                textAlign: isRTLParagraph ? 'right' : 'left',
-                direction: isRTLParagraph ? 'rtl' : 'ltr'
-              }}
             >
               {hasContent ? paragraphContent : <br />}
             </p>
@@ -4242,30 +4236,23 @@ const ContractPage: React.FC = () => {
             renderTiptapContent(content.content, keyPrefix + '-h', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)
           );
         } else {
-          // No saved alignment - auto-detect RTL
-          const headingText = content.content?.map((n: any) => n.text || '').join('') || '';
-          const isRTLHeading = isRTL(headingText);
+          // No saved alignment - respect default direction (don't auto-detect to avoid mixed directions)
+          // In view mode, we should show content as saved, not auto-detect
           return React.createElement(
             HeadingTag,
             {
-              key: keyPrefix,
-              dir: isRTLHeading ? 'rtl' : 'ltr',
-              style: {
-                textAlign: isRTLHeading ? 'right' : 'left',
-                direction: isRTLHeading ? 'rtl' : 'ltr'
-              }
+              key: keyPrefix
             },
             renderTiptapContent(content.content, keyPrefix + '-h', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)
           );
         }
       case 'bulletList':
-        const bulletListText = JSON.stringify(content.content);
-        const isRTLBulletList = isRTL(bulletListText);
+        // Check for saved alignment first
+        const savedBulletListAlign = content.attrs?.textAlign;
         return (
           <ul
             key={keyPrefix}
-            dir={isRTLBulletList ? 'rtl' : 'ltr'}
-            style={{ textAlign: isRTLBulletList ? 'right' : 'left' }}
+            style={savedBulletListAlign ? { textAlign: savedBulletListAlign } : {}}
           >
             {renderTiptapContent(content.content, keyPrefix + '-ul', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)}
           </ul>
@@ -4300,13 +4287,12 @@ const ContractPage: React.FC = () => {
           </li>
         );
       case 'blockquote':
-        const blockquoteText = JSON.stringify(content.content);
-        const isRTLBlockquote = isRTL(blockquoteText);
+        // Check for saved alignment first
+        const savedBlockquoteAlign = content.attrs?.textAlign;
         return (
           <blockquote
             key={keyPrefix}
-            dir={isRTLBlockquote ? 'rtl' : 'ltr'}
-            style={{ textAlign: isRTLBlockquote ? 'right' : 'left' }}
+            style={savedBlockquoteAlign ? { textAlign: savedBlockquoteAlign } : {}}
           >
             {renderTiptapContent(content.content, keyPrefix + '-bq', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)}
           </blockquote>
@@ -4922,16 +4908,9 @@ const ContractPage: React.FC = () => {
             // Use the saved alignment from admin
             styleProps = { style: { textAlign: savedSignedAlign } };
           } else {
-            // No saved alignment - auto-detect RTL
-            const signedParagraphText = content.content?.map((n: any) => n.text || '').join('') || '';
-            const isRTLSignedParagraph = isRTL(signedParagraphText);
-            styleProps = {
-              dir: isRTLSignedParagraph ? 'rtl' as const : 'ltr' as const,
-              style: {
-                textAlign: isRTLSignedParagraph ? 'right' as const : 'left' as const,
-                direction: isRTLSignedParagraph ? 'rtl' as const : 'ltr' as const
-              }
-            };
+            // No saved alignment - respect default direction (don't auto-detect to avoid mixed directions)
+            // In view mode, we should show content as saved, not auto-detect
+            styleProps = {};
           }
 
           if (hasInputFields) {
@@ -4961,65 +4940,61 @@ const ContractPage: React.FC = () => {
             renderSignedContractContent(content.content, keyPrefix + '-h')
           );
         } else {
-          // No saved alignment - auto-detect RTL
-          const signedHeadingText = content.content?.map((n: any) => n.text || '').join('') || '';
-          const isRTLSignedHeading = isRTL(signedHeadingText);
+          // No saved alignment - respect default direction (don't auto-detect to avoid mixed directions)
+          // In view mode, we should show content as saved, not auto-detect
           return React.createElement(
             HeadingTag,
             {
-              key: keyPrefix,
-              dir: isRTLSignedHeading ? 'rtl' : 'ltr',
-              style: {
-                textAlign: isRTLSignedHeading ? 'right' : 'left',
-                direction: isRTLSignedHeading ? 'rtl' : 'ltr'
-              }
+              key: keyPrefix
             },
             renderSignedContractContent(content.content, keyPrefix + '-h')
           );
         }
       case 'bulletList':
-        const signedBulletListText = JSON.stringify(content.content);
-        const isRTLSignedBulletList = isRTL(signedBulletListText);
+        // Check for saved alignment first
+        const savedSignedBulletListAlign = content.attrs?.textAlign;
         return (
           <ul
             key={keyPrefix}
-            dir={isRTLSignedBulletList ? 'rtl' : 'ltr'}
-            style={{ textAlign: isRTLSignedBulletList ? 'right' : 'left' }}
+            style={savedSignedBulletListAlign ? { textAlign: savedSignedBulletListAlign } : {}}
           >
             {renderSignedContractContent(content.content, keyPrefix + '-ul')}
           </ul>
         );
       case 'orderedList':
         const signedOrderedListText = JSON.stringify(content.content);
-        const isRTLSignedOrderedList = isRTL(signedOrderedListText);
+        // Check for saved alignment first
+        const savedSignedOrderedListAlign = content.attrs?.textAlign;
         return (
           <ol
             key={keyPrefix}
-            dir={isRTLSignedOrderedList ? 'rtl' : 'ltr'}
-            style={{ textAlign: isRTLSignedOrderedList ? 'right' : 'left' }}
+            style={savedSignedOrderedListAlign ? { textAlign: savedSignedOrderedListAlign } : {}}
           >
             {renderSignedContractContent(content.content, keyPrefix + '-ol')}
           </ol>
         );
       case 'listItem':
-        const signedListItemText = content.content?.map((n: any) => {
-          if (n.type === 'paragraph' && n.content) {
-            return n.content.map((c: any) => c.text || '').join('');
-          }
-          return '';
-        }).join('') || '';
-        const isRTLSignedListItem = isRTL(signedListItemText);
+        // Check for saved alignment first
+        const savedSignedListItemAlign = content.attrs?.textAlign;
         return (
           <li
             key={keyPrefix}
-            dir={isRTLSignedListItem ? 'rtl' : 'ltr'}
-            style={{ textAlign: isRTLSignedListItem ? 'right' : 'left' }}
+            style={savedSignedListItemAlign ? { textAlign: savedSignedListItemAlign } : {}}
           >
             {renderSignedContractContent(content.content, keyPrefix + '-li')}
           </li>
         );
       case 'blockquote':
-        return <blockquote key={keyPrefix}>{renderSignedContractContent(content.content, keyPrefix + '-bq')}</blockquote>;
+        // Check for saved alignment first
+        const savedSignedBlockquoteAlign = content.attrs?.textAlign;
+        return (
+          <blockquote
+            key={keyPrefix}
+            style={savedSignedBlockquoteAlign ? { textAlign: savedSignedBlockquoteAlign } : {}}
+          >
+            {renderSignedContractContent(content.content, keyPrefix + '-bq')}
+          </blockquote>
+        );
       case 'horizontalRule':
         return <hr key={keyPrefix} />;
       case 'hardBreak':
@@ -5254,7 +5229,7 @@ const ContractPage: React.FC = () => {
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
                 {status === 'signed' && (
-                  <span className="badge badge-success badge-sm sm:badge-md">Signed</span>
+                  <span className="badge badge-success badge-md sm:badge-md">Signed</span>
                 )}
                 {status === 'draft' && (
                   <>
@@ -5270,36 +5245,36 @@ const ContractPage: React.FC = () => {
                         // Use window.location.href to force full page navigation
                         window.location.href = targetUrl;
                       }}
-                      className="btn btn-ghost btn-xs sm:btn-sm p-1 sm:p-2"
+                      className="btn btn-ghost btn-sm sm:btn-sm p-2 sm:p-2"
                       title="Back to client"
                     >
-                      <ArrowLeftIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                      <ArrowLeftIcon className="w-5 h-5 sm:w-5 sm:h-5" />
                     </button>
-                    <span className="badge badge-sm sm:badge-md bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">Draft</span>
+                    <span className="badge badge-md sm:badge-md bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">Draft</span>
                   </>
                 )}
                 <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
                   <div className="flex items-center gap-1.5">
-                    <UserIcon className="w-4 h-4 sm:w-5 sm:h-5 text-gray-600" />
-                    <span className="text-xs sm:text-lg font-bold text-gray-900">{client?.name || 'Client'}</span>
+                    <UserIcon className="w-5 h-5 sm:w-5 sm:h-5 text-gray-600" />
+                    <span className="text-sm sm:text-lg font-bold text-gray-900">{client?.name || 'Client'}</span>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <ClipboardDocumentIcon className="w-4 h-4 sm:w-5 sm:h-5 text-gray-600" />
-                    <span className="text-xs sm:text-lg font-bold text-gray-900">Lead #{renderLeadNumber()}</span>
+                    <ClipboardDocumentIcon className="w-5 h-5 sm:w-5 sm:h-5 text-gray-600" />
+                    <span className="text-sm sm:text-lg font-bold text-gray-900">Lead #{renderLeadNumber()}</span>
                   </div>
                   {(() => {
                     const displayCategory = getCategoryDisplayName(client?.category_id, client?.category);
                     return displayCategory ? (
-                      <div className="flex items-center gap-1.5 hidden sm:flex">
-                        <TagIcon className="w-4 h-4 sm:w-5 sm:h-5 text-gray-600" />
-                        <span className="text-xs sm:text-lg font-bold text-gray-900">{displayCategory}</span>
+                      <div className="flex items-center gap-1.5">
+                        <TagIcon className="w-5 h-5 sm:w-5 sm:h-5 text-gray-600" />
+                        <span className="text-sm sm:text-lg font-bold text-gray-900">{displayCategory}</span>
                       </div>
                     ) : null;
                   })()}
                   {client?.topic && (
                     <div className="flex items-center gap-1.5">
-                      <DocumentTextIcon className="w-4 h-4 sm:w-5 sm:h-5 text-gray-600" />
-                      <span className="text-xs sm:text-lg font-bold text-gray-900">{client.topic}</span>
+                      <DocumentTextIcon className="w-5 h-5 sm:w-5 sm:h-5 text-gray-600" />
+                      <span className="text-sm sm:text-lg font-bold text-gray-900">{client.topic}</span>
                     </div>
                   )}
                 </div>
@@ -5324,6 +5299,21 @@ const ContractPage: React.FC = () => {
                     <button className={`btn btn-sm ${editor.isActive('italic') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { editor.chain().focus().toggleItalic().run(); setTimeout(() => editor.commands.focus(), 10); }} title="Italic"><i className="text-base italic">I</i></button>
                     <button className={`btn btn-sm ${editor.isActive('underline') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { editor.chain().focus().toggleUnderline().run(); setTimeout(() => editor.commands.focus(), 10); }} title="Underline"><u className="text-base underline">U</u></button>
                     <button className={`btn btn-sm ${editor.isActive('strike') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { editor.chain().focus().toggleStrike().run(); setTimeout(() => editor.commands.focus(), 10); }} title="Strikethrough"><s className="text-base line-through">S</s></button>
+                    {/* Text Alignment Buttons */}
+                    <button
+                      className={`btn btn-sm ${editor.isActive({ textAlign: 'left' }) ? 'btn-primary' : 'btn-ghost'}`}
+                      onClick={() => { editor.chain().focus().setTextAlign('left').run(); setTimeout(() => editor.commands.focus(), 10); }}
+                      title="Align Left"
+                    >
+                      <span className="text-base">⬅</span>
+                    </button>
+                    <button
+                      className={`btn btn-sm ${editor.isActive({ textAlign: 'right' }) ? 'btn-primary' : 'btn-ghost'}`}
+                      onClick={() => { editor.chain().focus().setTextAlign('right').run(); setTimeout(() => editor.commands.focus(), 10); }}
+                      title="Align Right"
+                    >
+                      <span className="text-base">➡</span>
+                    </button>
 
 
                     {/* Font Family Dropdown */}
@@ -5444,7 +5434,13 @@ const ContractPage: React.FC = () => {
                 </>
               ) : status === 'signed' ? (
                 // For signed contracts, show the filled-in content using custom rendering
-                <div key={`signed-${renderKey}-${customPricing?.final_amount}-${customPricing?.applicant_count}`}>
+                // Wrap in ProseMirror class to match edit mode styling
+                <div
+                  className="ProseMirror"
+                  contentEditable="false"
+                  key={`signed-${renderKey}-${customPricing?.final_amount}-${customPricing?.applicant_count}`}
+                  style={{ padding: '1.5rem', minHeight: '100%' }}
+                >
                   {contract.custom_content ? (
                     (() => {
                       console.log('🔍 Signed contract.custom_content:', contract.custom_content);
@@ -5460,7 +5456,13 @@ const ContractPage: React.FC = () => {
               ) : (
                 // For non-signed contracts, use renderTiptapContent to show placeholders as input fields
                 // Key includes pricing tiers hash to force re-render when any tier price changes
-                <div key={`readonly-${renderKey}-${template?.id || 'no-template'}-${contract?.template_id || contract?.custom_pricing?.legacy_template_id || 'no-id'}-${customPricing?.final_amount || 0}-${customPricing?.applicant_count || 0}-${customPricing?.pricing_tiers ? Object.values(customPricing.pricing_tiers).join('-') : ''}`}>
+                // Wrap in ProseMirror class to match edit mode styling
+                <div
+                  className="ProseMirror"
+                  contentEditable="false"
+                  key={`readonly-${renderKey}-${template?.id || 'no-template'}-${contract?.template_id || contract?.custom_pricing?.legacy_template_id || 'no-id'}-${customPricing?.final_amount || 0}-${customPricing?.applicant_count || 0}-${customPricing?.pricing_tiers ? Object.values(customPricing.pricing_tiers).join('-') : ''}`}
+                  style={{ padding: '1.5rem', minHeight: '100%' }}
+                >
                   {(() => {
                     // Get content from contract.custom_content (saved content) or template content
                     let contentToRender = contract?.custom_content || template?.content;
@@ -5499,7 +5501,7 @@ const ContractPage: React.FC = () => {
                 <div className="flex flex-col h-full relative">
                   <div className="flex flex-col gap-3">
                     {/* Button to open Contract Details & Pricing Modal */}
-                    <div className="flex items-center gap-2">
+                    {/* <div className="flex items-center gap-2">
                       <button
                         onClick={() => setShowDetailsAndPricingModal(true)}
                         className="btn btn-circle btn-primary"
@@ -5508,79 +5510,67 @@ const ContractPage: React.FC = () => {
                         <Cog6ToothIcon className="w-6 h-6" />
                       </button>
                       <span className="text-sm text-black font-medium">Pricing</span>
-                    </div>
+                    </div> */}
 
                     {/* Share button */}
-                    <div className="flex items-center gap-2">
-                      <button
-                        className="btn btn-circle btn-primary"
-                        onClick={handleShareContractLink}
-                        title="Copy public contract link"
-                        style={{ backgroundColor: '#4218CC' }}
-                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#3414A3'}
-                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#4218CC'}
-                      >
-                        <ShareIcon className="w-6 h-6" />
-                      </button>
-                      <span className="text-sm text-black font-medium">Share</span>
-                    </div>
+                    <button
+                      className="btn btn-circle btn-ghost"
+                      onClick={handleShareContractLink}
+                      title="Copy public contract link"
+                    >
+                      <ShareIcon className="w-6 h-6 text-black" />
+                    </button>
 
                     {!editing && status === 'draft' && (
-                      <div className="flex items-center gap-2">
-                        <button
-                          className="btn btn-circle btn-outline"
-                          onClick={() => {
-                            setEditing(true);
-                            // Focus editor after entering edit mode
-                            setTimeout(() => {
-                              if (editor) {
-                                editor.commands.focus();
-                              }
-                            }, 100);
-                          }}
-                        >
-                          <PencilIcon className="w-6 h-6" />
-                        </button>
-                        <span className="text-sm text-black font-medium">Edit</span>
-                      </div>
+                      <button
+                        className="btn btn-circle btn-ghost"
+                        onClick={() => {
+                          setEditing(true);
+                          // Focus editor after entering edit mode
+                          setTimeout(() => {
+                            if (editor) {
+                              editor.commands.focus();
+                            }
+                          }, 100);
+                        }}
+                        title="Edit"
+                      >
+                        <PencilIcon className="w-6 h-6 text-black" />
+                      </button>
                     )}
 
                     {editing && (
                       <>
-                        <div className="flex items-center gap-2">
-                          <button
-                            className="btn btn-circle btn-primary"
-                            onClick={handleSaveEdit}
-                          >
-                            <CheckIcon className="w-6 h-6" />
-                          </button>
-                          <span className="text-sm text-black font-medium">Save</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button
-                            className="btn btn-circle bg-white border border-gray-300 hover:bg-gray-50"
-                            onClick={async () => {
-                              setEditing(false);
-                              // Reload contract content to discard changes without full page reload
-                              if (contract?.id && editor) {
-                                const { data: contractData } = await supabase
-                                  .from('contracts')
-                                  .select('*, contract_templates(*)')
-                                  .eq('id', contract.id)
-                                  .single();
-                                if (contractData) {
-                                  // Update contract state - this will trigger the useEffect to reprocess content
-                                  setContract(contractData);
-                                  // Force content reprocessing by incrementing renderKey
-                                  setRenderKey(prev => prev + 1);
-                                }
+                        <button
+                          className="btn btn-circle btn-success"
+                          onClick={handleSaveEdit}
+                          title="Save"
+                        >
+                          <CheckIcon className="w-6 h-6" />
+                        </button>
+                        <button
+                          className="btn btn-circle btn-error"
+                          onClick={async () => {
+                            setEditing(false);
+                            // Reload contract content to discard changes without full page reload
+                            if (contract?.id && editor) {
+                              const { data: contractData } = await supabase
+                                .from('contracts')
+                                .select('*, contract_templates(*)')
+                                .eq('id', contract.id)
+                                .single();
+                              if (contractData) {
+                                // Update contract state - this will trigger the useEffect to reprocess content
+                                setContract(contractData);
+                                // Force content reprocessing by incrementing renderKey
+                                setRenderKey(prev => prev + 1);
                               }
-                            }}
-                          >
-                            <XMarkIcon className="w-6 h-6" />
-                          </button>
-                          <span className="text-sm text-black font-medium">Cancel</span>
-                        </div>
+                            }
+                          }}
+                          title="Cancel"
+                        >
+                          <XMarkIcon className="w-6 h-6" />
+                        </button>
                       </>
                     )}
                   </div>
@@ -5752,12 +5742,10 @@ const ContractPage: React.FC = () => {
                         </div>
                       );
                     })()}
-                  </div>
 
-                  {/* Call and Email Icons - At the bottom, aligned with bottom bar */}
-                  <div className="absolute w-full pt-6 space-y-3 flex-shrink-0" style={{ bottom: '80px' }}>
-                    {/* Call Icon */}
-                    <div className="flex items-center gap-2">
+                    {/* Call and Email Icons - Directly under value badge */}
+                    <div className="flex items-center gap-2 pt-2">
+                      {/* Call Icon */}
                       <button
                         onClick={async () => {
                           if (!client) return;
@@ -5779,16 +5767,13 @@ const ContractPage: React.FC = () => {
                             setLoadingContacts(false);
                           }
                         }}
-                        className="btn btn-circle btn-primary"
+                        className="btn btn-circle btn-ghost"
                         title="Call"
                       >
-                        <PhoneIcon className="w-6 h-6" />
+                        <PhoneIcon className="w-6 h-6 text-black" />
                       </button>
-                      <span className="text-sm text-black font-medium">Call</span>
-                    </div>
 
-                    {/* Email Icon */}
-                    <div className="flex items-center gap-2">
+                      {/* Email Icon */}
                       <button
                         onClick={async () => {
                           if (!client) return;
@@ -5810,12 +5795,11 @@ const ContractPage: React.FC = () => {
                             setLoadingContacts(false);
                           }
                         }}
-                        className="btn btn-circle btn-primary"
+                        className="btn btn-circle btn-ghost"
                         title="Email"
                       >
-                        <EnvelopeIcon className="w-6 h-6" />
+                        <EnvelopeIcon className="w-6 h-6 text-black" />
                       </button>
-                      <span className="text-sm text-black font-medium">Email</span>
                     </div>
                   </div>
                 </div>
@@ -6329,35 +6313,39 @@ const ContractPage: React.FC = () => {
 
       {/* Fixed Bottom Bar with Created Date, Template Name, Change Template Button, and Action Buttons */}
       {contract?.created_at && (
-        <div className="fixed bottom-0 left-0 right-0 z-40 print-hide">
-          <div className="backdrop-blur-md bg-white/95 rounded-t-2xl sm:rounded-2xl shadow-lg border-t sm:border border-white/20 px-2 sm:px-4 py-2 sm:py-3 w-full sm:w-fit sm:max-w-full sm:mx-auto sm:mb-4">
-            <div className="flex items-center justify-between gap-2 sm:gap-4 flex-wrap">
-              {/* Mobile: Action buttons row */}
-              <div className="flex items-center justify-around gap-1 flex-1 sm:hidden">
+        <div className="fixed bottom-0 left-0 right-0 z-40 print-hide flex justify-center pb-4 sm:pb-0">
+          {/* Mobile: Modern glassy oval container */}
+          <div className="sm:hidden w-[calc(100%-32px)] max-w-md">
+            <div
+              className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/20 dark:border-gray-700/20 px-4 py-3"
+              style={{
+                borderRadius: '9999px',
+              }}
+            >
+              <div className="flex items-center justify-around gap-1">
                 {!showDetailsAndPricingModal && (
                   <>
                     {/* Button to open Contract Details & Pricing Modal */}
-                    <button
+                    {/* <button
                       onClick={() => setShowDetailsAndPricingModal(true)}
                       className="btn btn-circle btn-primary w-12 h-12"
                       title="Contract Details & Pricing"
                     >
                       <Cog6ToothIcon className="w-6 h-6" />
-                    </button>
+                    </button> */}
 
                     {/* Share button - Mobile uses native share */}
                     <button
-                      className="btn btn-circle btn-primary w-12 h-12"
+                      className="btn btn-circle btn-ghost w-12 h-12"
                       onClick={handleMobileShare}
                       title="Share contract link"
-                      style={{ backgroundColor: '#4218CC' }}
                     >
-                      <ShareIcon className="w-6 h-6" />
+                      <ShareIcon className="w-6 h-6 text-black" />
                     </button>
 
                     {!editing && status === 'draft' && (
                       <button
-                        className="btn btn-circle btn-primary w-12 h-12"
+                        className="btn btn-circle btn-ghost w-12 h-12"
                         onClick={() => {
                           setEditing(true);
                           // Focus editor after entering edit mode
@@ -6369,21 +6357,21 @@ const ContractPage: React.FC = () => {
                         }}
                         title="Edit"
                       >
-                        <PencilIcon className="w-6 h-6" />
+                        <PencilIcon className="w-6 h-6 text-black" />
                       </button>
                     )}
 
                     {editing && (
                       <>
                         <button
-                          className="btn btn-circle btn-primary w-12 h-12"
+                          className="btn btn-circle btn-success w-12 h-12"
                           onClick={handleSaveEdit}
                           title="Save"
                         >
                           <CheckIcon className="w-6 h-6" />
                         </button>
                         <button
-                          className="btn btn-circle bg-white border border-gray-300 w-12 h-12 hover:bg-gray-50"
+                          className="btn btn-circle btn-error w-12 h-12"
                           onClick={async () => {
                             setEditing(false);
                             // Reload contract content to discard changes without full page reload
@@ -6418,10 +6406,10 @@ const ContractPage: React.FC = () => {
                           e.stopPropagation();
                           setShowChangeTemplateModal(true);
                         }}
-                        className="btn btn-circle btn-primary w-12 h-12"
+                        className="btn btn-circle btn-ghost w-12 h-12"
                         title="Change Template"
                       >
-                        <ClipboardDocumentIcon className="w-6 h-6" />
+                        <ClipboardDocumentIcon className="w-6 h-6 text-black" />
                       </button>
                     )}
 
@@ -6436,34 +6424,41 @@ const ContractPage: React.FC = () => {
                   </>
                 )}
               </div>
+            </div>
+          </div>
 
-              {/* Desktop: Created Date, Change Template Button, Delete Button */}
-              <div className="hidden sm:flex items-center gap-4 flex-wrap">
-                <div className="flex items-center gap-2">
-                  <CalendarIcon className="w-4 h-4 text-gray-500" />
-                  <p className="text-xs sm:text-sm text-gray-600">
-                    {new Date(contract.created_at).toLocaleDateString()}
-                  </p>
-                </div>
-                {status === 'draft' && (
+          {/* Desktop: Keep original styling */}
+          <div className="hidden sm:block">
+            <div className="backdrop-blur-md bg-white/95 rounded-2xl shadow-lg border border-white/20 px-4 py-3">
+              <div className="flex items-center justify-between gap-4 flex-wrap">
+                {/* Desktop: Created Date, Change Template Button, Delete Button */}
+                <div className="flex items-center gap-4 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <CalendarIcon className="w-4 h-4 text-gray-500" />
+                    <p className="text-xs sm:text-sm text-gray-600">
+                      {new Date(contract.created_at).toLocaleDateString()}
+                    </p>
+                  </div>
+                  {status === 'draft' && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowChangeTemplateModal(true);
+                      }}
+                      className="btn btn-circle btn-ghost"
+                      title="Change Template"
+                    >
+                      <ClipboardDocumentIcon className="w-5 h-5 text-black" />
+                    </button>
+                  )}
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowChangeTemplateModal(true);
-                    }}
-                    className="btn btn-outline btn-xs sm:btn-sm btn-primary"
+                    onClick={handleDeleteContract}
+                    className="btn btn-circle btn-error"
+                    title="Delete Contract"
                   >
-                    Change Template
+                    <TrashIcon className="w-5 h-5" />
                   </button>
-                )}
-                <button
-                  onClick={handleDeleteContract}
-                  className="btn btn-outline btn-xs sm:btn-sm btn-error"
-                  title="Delete Contract"
-                >
-                  <TrashIcon className="w-4 h-4 sm:w-5 sm:h-5 mr-1" />
-                  Delete
-                </button>
+                </div>
               </div>
             </div>
           </div>
