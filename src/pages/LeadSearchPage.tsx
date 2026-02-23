@@ -4331,8 +4331,11 @@ const LeadSearchPage: React.FC = () => {
     const anyLead = lead as any;
 
     // Legacy lead highlighting: status 10 = Not active
+    // Check if status exists (not null/undefined) and equals 10 (as number or string)
     const isLegacyInactive =
-      anyLead.lead_type === 'legacy' && anyLead.status && Number(anyLead.status) === 10;
+      anyLead.lead_type === 'legacy' && 
+      anyLead.status != null && 
+      (Number(anyLead.status) === 10 || anyLead.status === '10');
 
     // New lead highlighting: unactivated_at IS NOT NULL = Not active
     const isNewInactive =

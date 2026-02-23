@@ -30,6 +30,7 @@ import {
     ArchiveBoxIcon,
     Cog6ToothIcon,
     EllipsisHorizontalIcon,
+    Bars3Icon,
     DocumentTextIcon,
     LinkIcon,
 } from '@heroicons/react/24/outline';
@@ -771,6 +772,93 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                 {/* Top Row: Identity & Status */}
                 <div className="flex flex-col gap-4 mb-8">
+                    {/* Stage Badge and Actions Dropdown - Mobile: Above client name (Mobile only) */}
+                    <div className="flex md:hidden items-center justify-between gap-3 mb-2 w-full">
+                        <div className="flex items-center gap-3">
+                            {/* Stage Badge */}
+                            <div className="flex items-center gap-2">
+                                {renderStageBadge('desktop')}
+                            </div>
+
+                            {/* Duplicate Contact Button - Yellow */}
+                            {duplicateContacts && duplicateContacts.length > 0 && (
+                                <button
+                                    onClick={() => setIsDuplicateModalOpen(true)}
+                                    className="btn btn-circle btn-warning btn-sm"
+                                    title={duplicateContacts.length === 1
+                                        ? `Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`
+                                        : `${duplicateContacts.length} Duplicate Contacts`}
+                                >
+                                    <DocumentDuplicateIcon className="w-5 h-5" />
+                                </button>
+                            )}
+                        </div>
+
+                        {/* Actions Dropdown - Right side */}
+                        <div className="dropdown dropdown-end">
+                            <label tabIndex={0} className="btn btn-ghost btn-square">
+                                <Cog6ToothIcon className="w-6 h-6" />
+                            </label>
+                            <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2">
+                                {/* Stage Specific Actions */}
+                                {dropdownItems && (
+                                    <>
+                                        {dropdownItems}
+                                        <div className="divider my-1"></div>
+                                    </>
+                                )}
+
+                                {/* Activation/Spam Toggle */}
+                                {(() => {
+                                    const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                                    const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
+                                    return isUnactivated ? (
+                                        <li><a className="text-green-600 font-medium" onClick={handleActivation}><CheckCircleIcon className="w-4 h-4" /> Activate Case</a></li>
+                                    ) : (
+                                        <li><a className="text-red-600 font-medium" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-4 h-4" /> Deactivate / Spam</a></li>
+                                    );
+                                })()}
+
+                                {/* Highlights Toggle */}
+                                <li>
+                                    <a onClick={async () => {
+                                        if (!selectedClient?.id) return;
+                                        const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                        const leadId = isLegacyLead ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id) : selectedClient.id;
+                                        const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+
+                                        if (isInHighlightsState) {
+                                            await removeFromHighlights(leadId, isLegacyLead);
+                                        } else {
+                                            await addToHighlights(leadId, leadNumber, isLegacyLead);
+                                        }
+                                        (document.activeElement as HTMLElement | null)?.blur();
+                                    }}>
+                                        {isInHighlightsState ? (
+                                            <><StarIcon className="w-4 h-4 fill-current text-purple-600" /> Remove from Highlights</>
+                                        ) : (
+                                            <><StarIcon className="w-4 h-4" /> Add to Highlights</>
+                                        )}
+                                    </a>
+                                </li>
+
+                                <div className="divider my-1"></div>
+
+                                {/* Edit / Sub-Lead */}
+                                <li><a onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-4 h-4" /> Edit Details</a></li>
+                                <li><a onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-4 h-4" /> Create Sub-Lead</a></li>
+
+                                {/* Delete (Superuser only) */}
+                                {isSuperuser && (
+                                    <>
+                                        <div className="divider my-1"></div>
+                                        <li><a className="text-red-600 hover:bg-red-50" onClick={() => { setShowDeleteModal(true); (document.activeElement as HTMLElement)?.blur(); }}><TrashIcon className="w-4 h-4" /> Delete Lead</a></li>
+                                    </>
+                                )}
+                            </ul>
+                        </div>
+                    </div>
+
                     {/* First row: Client name and info */}
                     <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                         <div className="flex items-center gap-4">
@@ -845,19 +933,19 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             <PencilIcon className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" />
                                         </span>
                                     </div>
-                                    {/* Topic */}
+                                    {/* Topic - Desktop only */}
                                     {selectedClient.topic && (
                                         <>
-                                            <span className="text-gray-400">•</span>
-                                            <span className="text-sm text-gray-500 dark:text-gray-400 flex items-center gap-1">
+                                            <span className="hidden md:inline text-gray-400">•</span>
+                                            <span className="hidden md:flex text-sm text-gray-500 dark:text-gray-400 items-center gap-1">
                                                 <DocumentTextIcon className="w-4 h-4" />
                                                 {selectedClient.topic}
                                             </span>
                                         </>
                                     )}
-                                    {/* Source */}
-                                    <span className="text-gray-400">•</span>
-                                    <span className="text-sm text-gray-500 dark:text-gray-400 flex items-center gap-1">
+                                    {/* Source - Desktop only */}
+                                    <span className="hidden md:inline text-gray-400">•</span>
+                                    <span className="hidden md:flex text-sm text-gray-500 dark:text-gray-400 items-center gap-1">
                                         <LinkIcon className="w-4 h-4" />
                                         {selectedClient ? getSourceDisplayName(selectedClient.source_id, selectedClient.source) || '---' : '---'}
                                     </span>
@@ -904,7 +992,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             {/* Actions Dropdown */}
                             <div className="dropdown dropdown-end">
                                 <label tabIndex={0} className="btn btn-ghost btn-square">
-                                    <EllipsisHorizontalIcon className="w-6 h-6" />
+                                    <Cog6ToothIcon className="w-6 h-6" />
                                 </label>
                                 <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2">
                                     {/* Stage Specific Actions */}
@@ -967,28 +1055,30 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         </div>
                     </div>
 
-                    {/* Second row: Email, Phone, Source (horizontally) and Total Value (centered) */}
-                    <div className="flex flex-row items-start md:items-center justify-between gap-4">
-                        {/* Email, Phone - Stack vertically on mobile, horizontally on desktop */}
-                        <div className="flex flex-col md:flex-row md:items-center gap-4 md:gap-6 flex-1">
-                            <div className="flex items-center gap-2 group">
-                                <div className="w-10 h-10 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center text-black">
-                                    <EnvelopeIcon className="w-5 h-5" />
+                    {/* Second row: Email, Phone, Source, Topic (vertically on mobile) and Total Value (right side) */}
+                    <div className="flex flex-row items-start md:items-center justify-between gap-4 mt-4 md:mt-0">
+                        {/* Email, Phone, Source, Topic - Stacked vertically on mobile, horizontal on desktop */}
+                        <div className="flex flex-col md:flex-row md:items-center gap-3 md:gap-6 flex-1 md:mr-8">
+                            {/* Email */}
+                            <div className="flex items-center gap-2 md:gap-2 group">
+                                <div className="w-8 h-8 md:w-10 md:h-10 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center text-black flex-shrink-0">
+                                    <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5" />
                                 </div>
-                                <div className="flex flex-col">
-                                    <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold">Email</p>
-                                    <p className="text-base font-medium text-gray-900 dark:text-gray-100 truncate" title={displayEmail || ''}>
+                                <div className="flex flex-col min-w-0">
+                                    <p className="text-xs md:text-xs text-gray-400 uppercase tracking-wide font-semibold">Email</p>
+                                    <p className="text-sm md:text-base font-medium text-gray-900 dark:text-gray-100 truncate max-w-[200px] md:max-w-none" title={displayEmail || ''}>
                                         {displayEmail ? <a href={`mailto:${displayEmail}`} className="hover:text-indigo-600 transition-colors">{displayEmail}</a> : '---'}
                                     </p>
                                 </div>
                             </div>
-                            <div className="flex items-center gap-2 group">
-                                <div className="w-10 h-10 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center text-black">
-                                    <PhoneIcon className="w-5 h-5" />
+                            {/* Phone */}
+                            <div className="flex items-center gap-2 md:gap-2 group">
+                                <div className="w-8 h-8 md:w-10 md:h-10 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center text-black flex-shrink-0">
+                                    <PhoneIcon className="w-4 h-4 md:w-5 md:h-5" />
                                 </div>
-                                <div className="flex flex-col">
-                                    <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold">Phone</p>
-                                    <p className="text-base font-medium text-gray-900 dark:text-gray-100">
+                                <div className="flex flex-col min-w-0">
+                                    <p className="text-xs md:text-xs text-gray-400 uppercase tracking-wide font-semibold">Phone</p>
+                                    <p className="text-sm md:text-base font-medium text-gray-900 dark:text-gray-100">
                                         {displayPhone ? (
                                             <button
                                                 onClick={() => {
@@ -1014,6 +1104,32 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 {formatPhoneNumberDisplay(displayPhone)}
                                             </button>
                                         ) : '---'}
+                                    </p>
+                                </div>
+                            </div>
+                            {/* Topic - Mobile only */}
+                            {selectedClient.topic && (
+                                <div className="flex md:hidden items-center gap-2 group">
+                                    <div className="w-8 h-8 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center text-black flex-shrink-0">
+                                        <DocumentTextIcon className="w-4 h-4 text-gray-500" />
+                                    </div>
+                                    <div className="flex flex-col min-w-0">
+                                        <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold">Topic</p>
+                                        <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate max-w-[200px]">
+                                            {selectedClient.topic}
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+                            {/* Source - Mobile only */}
+                            <div className="flex md:hidden items-center gap-2 group">
+                                <div className="w-8 h-8 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center text-black flex-shrink-0">
+                                    <LinkIcon className="w-4 h-4 text-gray-500" />
+                                </div>
+                                <div className="flex flex-col min-w-0">
+                                    <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold">Source</p>
+                                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate max-w-[200px]">
+                                        {selectedClient ? getSourceDisplayName(selectedClient.source_id, selectedClient.source) || '---' : '---'}
                                     </p>
                                 </div>
                             </div>
@@ -1141,93 +1257,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         })()}
                     </div>
 
-                    {/* Stage Badge and Actions Dropdown - Mobile: Below phone */}
-                    <div className="flex md:hidden items-center justify-between gap-3 mt-2">
-                        <div className="flex items-center gap-3">
-                            {/* Stage Badge */}
-                            <div className="flex items-center gap-2">
-                                {renderStageBadge('desktop')}
-                            </div>
-
-                            {/* Duplicate Contact Button - Yellow */}
-                            {duplicateContacts && duplicateContacts.length > 0 && (
-                                <button
-                                    onClick={() => setIsDuplicateModalOpen(true)}
-                                    className="btn btn-circle btn-warning btn-sm"
-                                    title={duplicateContacts.length === 1
-                                        ? `Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`
-                                        : `${duplicateContacts.length} Duplicate Contacts`}
-                                >
-                                    <DocumentDuplicateIcon className="w-5 h-5" />
-                                </button>
-                            )}
-
-                            {/* Actions Dropdown */}
-                            <div className="dropdown dropdown-end">
-                                <label tabIndex={0} className="btn btn-ghost btn-square">
-                                    <EllipsisHorizontalIcon className="w-6 h-6" />
-                                </label>
-                                <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2">
-                                    {/* Stage Specific Actions */}
-                                    {dropdownItems && (
-                                        <>
-                                            {dropdownItems}
-                                            <div className="divider my-1"></div>
-                                        </>
-                                    )}
-
-                                    {/* Activation/Spam Toggle */}
-                                    {(() => {
-                                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                                        const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
-                                        return isUnactivated ? (
-                                            <li><a className="text-green-600 font-medium" onClick={handleActivation}><CheckCircleIcon className="w-4 h-4" /> Activate Case</a></li>
-                                        ) : (
-                                            <li><a className="text-red-600 font-medium" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-4 h-4" /> Deactivate / Spam</a></li>
-                                        );
-                                    })()}
-
-                                    {/* Highlights Toggle */}
-                                    <li>
-                                        <a onClick={async () => {
-                                            if (!selectedClient?.id) return;
-                                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                            const leadId = isLegacyLead ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id) : selectedClient.id;
-                                            const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-
-                                            if (isInHighlightsState) {
-                                                await removeFromHighlights(leadId, isLegacyLead);
-                                            } else {
-                                                await addToHighlights(leadId, leadNumber, isLegacyLead);
-                                            }
-                                            (document.activeElement as HTMLElement | null)?.blur();
-                                        }}>
-                                            {isInHighlightsState ? (
-                                                <><StarIcon className="w-4 h-4 fill-current text-purple-600" /> Remove from Highlights</>
-                                            ) : (
-                                                <><StarIcon className="w-4 h-4" /> Add to Highlights</>
-                                            )}
-                                        </a>
-                                    </li>
-
-                                    <div className="divider my-1"></div>
-
-                                    {/* Edit / Sub-Lead */}
-                                    <li><a onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-4 h-4" /> Edit Details</a></li>
-                                    <li><a onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-4 h-4" /> Create Sub-Lead</a></li>
-
-                                    {/* Delete (Superuser only) */}
-                                    {isSuperuser && (
-                                        <>
-                                            <div className="divider my-1"></div>
-                                            <li><a className="text-red-600 hover:bg-red-50" onClick={() => { setShowDeleteModal(true); (document.activeElement as HTMLElement)?.blur(); }}><TrashIcon className="w-4 h-4" /> Delete Lead</a></li>
-                                        </>
-                                    )}
-                                </ul>
-                            </div>
-                        </div>
-
-                        {/* Total Value - Mobile: Right side of buttons row */}
+                    {/* Total Value - Mobile: Centered under stage badge (moved from below) */}
+                    <div className="flex md:hidden flex-col items-center">
                         {(() => {
                             const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
 
@@ -1322,9 +1353,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             const applicantsCount = (selectedClient as any)?.no_of_applicants || selectedClient?.number_of_applicants_meeting || null;
 
                             return (
-                                <div className="cursor-pointer group relative text-right" onClick={() => setIsBalanceModalOpen(true)}>
+                                <div className="cursor-pointer group relative flex flex-col items-center py-4" onClick={() => setIsBalanceModalOpen(true)}>
                                     <div className="space-y-2">
-                                        <div className="flex items-center gap-2 justify-end">
+                                        <div className="flex items-center gap-2 justify-center">
                                             <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold">Total Value</p>
                                             {applicantsCount && Number(applicantsCount) > 0 && (
                                                 <span className="badge badge-sm badge-ghost font-medium text-xs px-2 py-0.5 border-gray-200 text-gray-600">
@@ -1333,7 +1364,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 </span>
                                             )}
                                         </div>
-                                        <div className="flex items-end gap-2 justify-end">
+                                        <div className="flex items-end gap-2 justify-center">
                                             <p className="text-3xl font-bold text-gray-900 dark:text-white leading-none tracking-tight">
                                                 {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
                                             </p>
@@ -1371,7 +1402,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             <div className="flex flex-col items-center gap-2.5">
                                 <div className="bg-red-100 text-red-800 rounded-lg px-4 py-3 border border-red-300">
                                     <div className="whitespace-nowrap text-base">
-                                        Case unactivated
+                                        Case inactive
                                         {unactivationReason && (
                                             <span className="ml-2 text-sm font-normal">
                                                 ({unactivationReason})
@@ -1451,9 +1482,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 {areStagesEquivalent(currentStageName, 'Handler Set') && (
                                     <button
                                         onClick={handleStartCase}
-                                        className="btn btn-primary rounded-full px-6 shadow-lg shadow-indigo-100 hover:shadow-indigo-200 text-white gap-2 text-base transition-all hover:scale-105"
+                                        className="btn btn-primary btn-sm rounded-full px-4 shadow-lg shadow-indigo-100 hover:shadow-indigo-200 text-white gap-1.5 text-sm transition-all hover:scale-105"
                                     >
-                                        <PlayIcon className="w-5 h-5" />
+                                        <PlayIcon className="w-4 h-4" />
                                         Start Case
                                     </button>
                                 )}
@@ -1463,16 +1494,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     <>
                                         <button
                                             onClick={() => updateLeadStage('Application submitted')}
-                                            className="btn btn-success text-white rounded-full px-5 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 transition-all hover:scale-105"
+                                            className="btn btn-success btn-sm text-white rounded-full px-3 shadow-lg shadow-green-100 hover:shadow-green-200 gap-1.5 text-sm transition-all hover:scale-105"
                                         >
-                                            <DocumentCheckIcon className="w-5 h-5" />
+                                            <DocumentCheckIcon className="w-4 h-4" />
                                             Application Submitted
                                         </button>
                                         <button
                                             onClick={() => updateLeadStage('Case Closed')}
-                                            className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                            className="btn btn-neutral btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
                                         >
-                                            <CheckCircleIcon className="w-5 h-5" />
+                                            <CheckCircleIcon className="w-4 h-4" />
                                             Close Case
                                         </button>
                                     </>
@@ -1482,9 +1513,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 {areStagesEquivalent(currentStageName, 'Application submitted') && (
                                     <button
                                         onClick={() => updateLeadStage('Case Closed')}
-                                        className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                        className="btn btn-neutral btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
                                     >
-                                        <CheckCircleIcon className="w-5 h-5" />
+                                        <CheckCircleIcon className="w-4 h-4" />
                                         Close Case
                                     </button>
                                 )}
@@ -1493,9 +1524,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 {areStagesEquivalent(currentStageName, 'payment_request_sent') && handlePaymentReceivedNewClient && (
                                     <button
                                         onClick={handlePaymentReceivedNewClient}
-                                        className="btn btn-success text-white rounded-full px-5 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 transition-all hover:scale-105"
+                                        className="btn btn-success btn-sm text-white rounded-full px-3 shadow-lg shadow-green-100 hover:shadow-green-200 gap-1.5 text-sm transition-all hover:scale-105"
                                     >
-                                        <CheckCircleIcon className="w-5 h-5" />
+                                        <CheckCircleIcon className="w-4 h-4" />
                                         Payment Received - new Client !!!
                                     </button>
                                 )}
@@ -1506,18 +1537,18 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {setShowRescheduleDrawer && (
                                             <button
                                                 onClick={() => setShowRescheduleDrawer(true)}
-                                                className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                className="btn btn-outline btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
                                             >
-                                                <ArrowPathIcon className="w-5 h-5" />
+                                                <ArrowPathIcon className="w-4 h-4" />
                                                 Meeting ReScheduling
                                             </button>
                                         )}
                                         {handleStageUpdate && (
                                             <button
                                                 onClick={() => handleStageUpdate('Meeting Ended')}
-                                                className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                className="btn btn-neutral btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
                                             >
-                                                <CheckCircleIcon className="w-5 h-5" />
+                                                <CheckCircleIcon className="w-4 h-4" />
                                                 Meeting Ended
                                             </button>
                                         )}
@@ -1537,18 +1568,18 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 scheduleMenuLabel && (
                                                     <button
                                                         onClick={handleScheduleMenuClick}
-                                                        className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                        className="btn btn-primary btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
                                                     >
-                                                        <CalendarDaysIcon className="w-5 h-5" />
+                                                        <CalendarDaysIcon className="w-4 h-4" />
                                                         {scheduleMenuLabel}
                                                     </button>
                                                 )}
                                             {setShowRescheduleDrawer && (
                                                 <button
                                                     onClick={() => setShowRescheduleDrawer(true)}
-                                                    className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                    className="btn btn-outline btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
                                                 >
-                                                    <ArrowPathIcon className="w-5 h-5" />
+                                                    <ArrowPathIcon className="w-4 h-4" />
                                                     Meeting ReScheduling
                                                 </button>
                                             )}
@@ -1558,9 +1589,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 (!(areStagesEquivalent(currentStageName, 'Meeting rescheduling') || (isStageNumeric && stageNumeric === 21)) || hasScheduledMeetings) && (
                                                     <button
                                                         onClick={() => handleStageUpdate('Meeting Ended')}
-                                                        className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                        className="btn btn-neutral btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
                                                     >
-                                                        <CheckCircleIcon className="w-5 h-5" />
+                                                        <CheckCircleIcon className="w-4 h-4" />
                                                         Meeting Ended
                                                     </button>
                                                 )}
@@ -1571,9 +1602,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 {areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') && openSendOfferModal && (
                                     <button
                                         onClick={openSendOfferModal}
-                                        className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                        className="btn btn-primary btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
                                     >
-                                        <DocumentCheckIcon className="w-5 h-5" />
+                                        <DocumentCheckIcon className="w-4 h-4" />
                                         Send Price Offer
                                     </button>
                                 )}
@@ -1584,18 +1615,18 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {handleScheduleMenuClick && scheduleMenuLabel && (
                                             <button
                                                 onClick={handleScheduleMenuClick}
-                                                className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                className="btn btn-primary btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
                                             >
-                                                <CalendarDaysIcon className="w-5 h-5" />
+                                                <CalendarDaysIcon className="w-4 h-4" />
                                                 {scheduleMenuLabel}
                                             </button>
                                         )}
                                         {handleStageUpdate && (
                                             <button
                                                 onClick={() => handleStageUpdate('Communication Started')}
-                                                className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                className="btn btn-outline btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
                                             >
-                                                <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                                                <ChatBubbleLeftRightIcon className="w-4 h-4" />
                                                 {isStageNumeric && stageNumeric === 15 ? 'Scheduling Notes' : 'Communication Started'}
                                             </button>
                                         )}
@@ -1608,36 +1639,36 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {handleScheduleMenuClick && scheduleMenuLabel && (
                                             <button
                                                 onClick={handleScheduleMenuClick}
-                                                className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                className="btn btn-primary btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
                                             >
-                                                <CalendarDaysIcon className="w-5 h-5" />
+                                                <CalendarDaysIcon className="w-4 h-4" />
                                                 {scheduleMenuLabel}
                                             </button>
                                         )}
                                         {handleOpenSignedDrawer && (
                                             <button
                                                 onClick={handleOpenSignedDrawer}
-                                                className="btn btn-success text-white rounded-full px-5 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 transition-all hover:scale-105"
+                                                className="btn btn-success btn-sm text-white rounded-full px-3 shadow-lg shadow-green-100 hover:shadow-green-200 gap-1.5 text-sm transition-all hover:scale-105"
                                             >
-                                                <HandThumbUpIcon className="w-5 h-5" />
+                                                <HandThumbUpIcon className="w-4 h-4" />
                                                 Client signed
                                             </button>
                                         )}
                                         {handleOpenDeclinedDrawer && (
                                             <button
                                                 onClick={handleOpenDeclinedDrawer}
-                                                className="btn btn-error text-white rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                className="btn btn-error btn-sm text-white rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
                                             >
-                                                <HandThumbDownIcon className="w-5 h-5" />
+                                                <HandThumbDownIcon className="w-4 h-4" />
                                                 Client declined
                                             </button>
                                         )}
                                         {openSendOfferModal && (
                                             <button
                                                 onClick={openSendOfferModal}
-                                                className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                className="btn btn-outline btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
                                             >
-                                                <PencilSquareIcon className="w-5 h-5" />
+                                                <PencilSquareIcon className="w-4 h-4" />
                                                 Revised price offer
                                             </button>
                                         )}
@@ -1650,9 +1681,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     areStagesEquivalent(currentStageName, 'client_signed')) && (
                                         <button
                                             onClick={() => updateLeadStage('payment_request_sent')}
-                                            className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                            className="btn btn-primary btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
                                         >
-                                            <CurrencyDollarIcon className="w-5 h-5" />
+                                            <CurrencyDollarIcon className="w-4 h-4" />
                                             Payment request sent
                                         </button>
                                     )}
@@ -1680,18 +1711,18 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             {handleScheduleMenuClick && scheduleMenuLabel && (
                                                 <button
                                                     onClick={handleScheduleMenuClick}
-                                                    className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                    className="btn btn-primary btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
                                                 >
-                                                    <CalendarDaysIcon className="w-5 h-5" />
+                                                    <CalendarDaysIcon className="w-4 h-4" />
                                                     {scheduleMenuLabel}
                                                 </button>
                                             )}
                                             {handleStageUpdate && (
                                                 <button
                                                     onClick={() => handleStageUpdate('Communication Started')}
-                                                    className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                    className="btn btn-outline btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
                                                 >
-                                                    <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                                                    <ChatBubbleLeftRightIcon className="w-4 h-4" />
                                                     Communication Started
                                                 </button>
                                             )}

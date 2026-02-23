@@ -13377,7 +13377,7 @@ const Clients: React.FC<ClientsProps> = ({
                     animation: 'fadeInScale 0.3s ease-in-out'
                   }}
                 >
-                  <div className="relative">
+                  <div className="relative inline-flex items-center justify-center">
                     {(() => {
                       const activeTabData = tabs.find(tab => tab.id === activeTab);
                       const ActiveIcon = activeTabData?.icon || InformationCircleIcon;
@@ -13388,8 +13388,8 @@ const Clients: React.FC<ClientsProps> = ({
                       if (activeTabData?.id === 'interactions' && activeTabData?.badge) {
                         return (
                           <div
-                            className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center bg-white/20 text-white"
-                            style={{ animation: 'fadeInScale 0.4s ease-in-out 0.2s both' }}
+                            className="absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap bg-white/20 text-white"
+                            style={{ animation: 'fadeInScale 0.4s ease-in-out 0.2s both', minWidth: '1.25rem' }}
                           >
                             {activeTabData.badge}
                           </div>
@@ -13404,7 +13404,7 @@ const Clients: React.FC<ClientsProps> = ({
                 <div className="flex items-center gap-2 transition-all duration-300 ease-in-out">
                   <div
                     ref={desktopTabsRef}
-                    className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/20 dark:border-gray-700/20 px-4 py-3 overflow-x-auto scrollbar-hide transition-all duration-300 ease-in-out"
+                    className="bg-white/10 dark:bg-gray-800/10 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/15 dark:border-gray-700/15 px-4 py-3 overflow-x-auto scrollbar-hide transition-all duration-300 ease-in-out"
                     style={{
                       borderRadius: '9999px',
                       maxWidth: '95vw',
@@ -13427,13 +13427,13 @@ const Clients: React.FC<ClientsProps> = ({
                             setActiveTab(tab.id);
                           }}
                         >
-                          <div className="relative">
+                          <div className="relative inline-flex items-center justify-center">
                             <tab.icon className={`w-5 h-5 flex-shrink-0 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
                             {tab.id === 'interactions' && tab.badge && (
-                              <div className={`absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center ${activeTab === tab.id
+                              <div className={`absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap ${activeTab === tab.id
                                 ? 'bg-white/20 text-white'
                                 : 'bg-purple-100 text-purple-700'
-                                }`}>
+                                }`} style={{ minWidth: '1.25rem' }}>
                                 {tab.badge}
                               </div>
                             )}
@@ -13629,13 +13629,13 @@ const Clients: React.FC<ClientsProps> = ({
                         }`}
                       onClick={() => setActiveTab(tab.id)}
                     >
-                      <div className="relative">
+                      <div className="relative inline-flex items-center justify-center">
                         <tab.icon className={`w-5 h-5 mb-1 ${isActive ? 'text-white' : 'text-gray-500'}`} />
                         {tab.id === 'interactions' && tab.badge && (
-                          <div className={`absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center ${isActive
+                          <div className={`absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap ${isActive
                             ? 'bg-white/20 text-white'
                             : 'bg-purple-100 text-purple-700'
-                            }`}>
+                            }`} style={{ minWidth: '1.25rem' }}>
                             {tab.badge}
                           </div>
                         )}
@@ -16239,9 +16239,10 @@ const Clients: React.FC<ClientsProps> = ({
 
           {/* Mobile Tabs Navigation - Bottom of page, horizontal oval box, horizontally scrollable */}
           {/* Hide when edit drawer, balance modal, schedule meeting panel, reschedule drawer, or update drawer is open */}
-          <div className={`md:hidden fixed bottom-0 left-0 right-0 z-50 pb-safe ${showEditLeadDrawer || isBalanceModalOpen || showScheduleMeetingPanel || showRescheduleDrawer || showUpdateDrawer ? 'hidden' : ''}`}>
+          {/* z-40 to stay below sidebar (z-50) */}
+          <div className={`md:hidden fixed bottom-0 left-0 right-0 z-40 pb-safe ${showEditLeadDrawer || isBalanceModalOpen || showScheduleMeetingPanel || showRescheduleDrawer || showUpdateDrawer ? 'hidden' : ''}`}>
             <div className="flex justify-center px-4 pb-4">
-              <div className="bg-white dark:bg-gray-800 rounded-full shadow-2xl border-2 border-gray-200 dark:border-gray-700 px-3 py-3 overflow-x-auto scrollbar-hide" style={{ borderRadius: '9999px', maxWidth: '95vw' }}>
+              <div className="bg-white/10 dark:bg-gray-800/10 backdrop-blur-md rounded-full shadow-2xl border-2 border-gray-200/20 dark:border-gray-700/20 px-3 py-3 overflow-x-auto scrollbar-hide" style={{ borderRadius: '9999px', maxWidth: '95vw' }}>
                 <div className="flex items-center gap-2" style={{ scrollBehavior: 'smooth' }}>
                   {tabs.map((tab) => (
                     <button
@@ -16252,13 +16253,13 @@ const Clients: React.FC<ClientsProps> = ({
                         }`}
                       onClick={() => setActiveTab(tab.id)}
                     >
-                      <div className="relative">
+                      <div className="relative inline-flex items-center justify-center">
                         <tab.icon className={`w-5 h-5 flex-shrink-0 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
                         {tab.id === 'interactions' && tab.badge && (
-                          <div className={`absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center ${activeTab === tab.id
+                          <div className={`absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap ${activeTab === tab.id
                             ? 'bg-white/20 text-white'
                             : 'bg-purple-100 text-purple-700'
-                            }`}>
+                            }`} style={{ minWidth: '1.25rem' }}>
                             {tab.badge}
                           </div>
                         )}

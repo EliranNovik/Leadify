@@ -401,10 +401,12 @@ async function findContactsForLeadSearch(
       }
     }
   } else if (legacyExactId != null && !Number.isNaN(legacyExactId) && (leadIntent.master == null || leadIntent.suffix == null)) {
-    // For 1-5 digit queries, also search by lead_number prefix (not just exact ID)
-    // This allows "11" to find "1123" and "11234" to find "112345"
+    // For 1-5 digit queries, search by lead_number prefix (not just exact ID)
+    // For 6 digit queries, search by lead_number exact match
+    // This allows "11" to find "1123" and "11234" to find "112345", and "183221" to find "183221"
     const searchDigits = leadIntent.digits || stripLeadPrefix(leadIntent.raw);
     const isPrefixQuery = searchDigits.length >= 1 && searchDigits.length <= 5;
+    const isSixDigitQuery = searchDigits.length === 6 && /^\d+$/.test(searchDigits);
 
     if (isPrefixQuery) {
       // Search by lead_number prefix for 1-5 digit queries
@@ -421,6 +423,22 @@ async function findContactsForLeadSearch(
 
       if (prefixData && prefixData.length) {
         legacyLeads.push(...prefixData);
+      }
+    } else if (isSixDigitQuery) {
+      // For 6-digit queries, search by lead_number exact match (not prefix)
+      // This ensures "183221" finds "183221" but not "1832210"
+      const { data: exactLeadNumberData } = await withTimeout(
+        supabase
+          .from("leads_lead")
+          .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, lead_number")
+          .or(`lead_number.eq.${searchDigits},lead_number.eq.L${searchDigits},lead_number.eq.C${searchDigits}`)
+          .limit(20),
+        opts.timeoutMs,
+        "legacy 6-digit lead_number search timeout",
+      ).catch(() => ({ data: [] as any[] }));
+
+      if (exactLeadNumberData && exactLeadNumberData.length) {
+        legacyLeads.push(...exactLeadNumberData);
       }
     }
 
