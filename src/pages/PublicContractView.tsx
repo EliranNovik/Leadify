@@ -11,7 +11,8 @@ import { Color } from '@tiptap/extension-color';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
-import { PrinterIcon, ArrowDownTrayIcon, ShareIcon } from '@heroicons/react/24/outline';
+import { PrinterIcon, ArrowDownTrayIcon, ShareIcon, PhoneIcon, ArrowDownIcon } from '@heroicons/react/24/outline';
+import { FaWhatsapp, FaEnvelope } from 'react-icons/fa';
 
 // Lazy load html2pdf only when needed (for PDF download)
 let html2pdf: any = null;
@@ -45,7 +46,7 @@ function normalizeTiptapContent(content: any): any {
 
   // Create cache key - use string for strings, object reference for objects
   const cacheKey = typeof content === 'string' ? content : content;
-  
+
   // Check cache first (only for objects, strings are fast to process)
   if (typeof content === 'object' && normalizeCache.has(cacheKey)) {
     return normalizeCache.get(cacheKey);
@@ -325,6 +326,52 @@ const PublicContractView: React.FC = () => {
     setClientFields(prev => ({ ...prev, signature: dataUrl }));
   };
 
+  // Update meta tags for link preview
+  useEffect(() => {
+    if (!contract || !client) return;
+
+    const clientName = contract?.contact_name || client?.name || 'Client';
+    const contractTitle = `Contract for ${clientName} - Decker Pex Levi Law Offices`;
+    const contractDescription = `Please review and sign your legal contract. This is a secure document from Decker Pex Levi Law Office.`;
+    const contractUrl = window.location.href;
+    const siteUrl = 'https://rainmakerqueen.org';
+
+    // Update or create meta tags
+    const updateMetaTag = (property: string, content: string, isProperty = true) => {
+      const attribute = isProperty ? 'property' : 'name';
+      let meta = document.querySelector(`meta[${attribute}="${property}"]`);
+      if (!meta) {
+        meta = document.createElement('meta');
+        meta.setAttribute(attribute, property);
+        document.head.appendChild(meta);
+      }
+      meta.setAttribute('content', content);
+    };
+
+    // Open Graph tags
+    updateMetaTag('og:title', contractTitle);
+    updateMetaTag('og:description', contractDescription);
+    updateMetaTag('og:url', contractUrl);
+    updateMetaTag('og:type', 'website');
+    updateMetaTag('og:site_name', 'De Law Office');
+    updateMetaTag('og:image', `${siteUrl}/RMQ_LOGO.png`);
+
+    // Twitter Card tags
+    updateMetaTag('twitter:card', 'summary', false);
+    updateMetaTag('twitter:title', contractTitle, false);
+    updateMetaTag('twitter:description', contractDescription, false);
+    updateMetaTag('twitter:image', `${siteUrl}/RMQ_LOGO.png`, false);
+
+    // Standard meta tags
+    updateMetaTag('description', contractDescription, false);
+    document.title = contractTitle;
+
+    // Cleanup function
+    return () => {
+      // Optionally remove meta tags on unmount, but usually we want to keep them
+    };
+  }, [contract, client]);
+
   useEffect(() => {
     if (!contractId || !token) return;
     setLoading(true);
@@ -523,135 +570,135 @@ const PublicContractView: React.FC = () => {
     const detectApplicantFields = () => {
       const contentStr = JSON.stringify(template.content);
 
-    // Helper function to recursively extract text content from template structure
-    const extractTextFromContent = (content: any, depth = 0): string => {
-      if (typeof content === 'string') return content;
-      if (Array.isArray(content)) {
-        return content.map(item => extractTextFromContent(item, depth + 1)).join(' ');
-      }
-      if (content && typeof content === 'object') {
-        if (content.text) return content.text;
-        if (content.content) return extractTextFromContent(content.content, depth + 1);
-      }
-      return '';
-    };
+      // Helper function to recursively extract text content from template structure
+      const extractTextFromContent = (content: any, depth = 0): string => {
+        if (typeof content === 'string') return content;
+        if (Array.isArray(content)) {
+          return content.map(item => extractTextFromContent(item, depth + 1)).join(' ');
+        }
+        if (content && typeof content === 'object') {
+          if (content.text) return content.text;
+          if (content.content) return extractTextFromContent(content.content, depth + 1);
+        }
+        return '';
+      };
 
-    // Helper function to find all text field positions with their surrounding context
-    const findTextFieldsWithContext = (content: any, path: string[] = []): Array<{ id: string; context: string; position: number }> => {
-      const results: Array<{ id: string; context: string; position: number }> = [];
+      // Helper function to find all text field positions with their surrounding context
+      const findTextFieldsWithContext = (content: any, path: string[] = []): Array<{ id: string; context: string; position: number }> => {
+        const results: Array<{ id: string; context: string; position: number }> = [];
 
-      if (Array.isArray(content)) {
-        content.forEach((item, idx) => {
-          results.push(...findTextFieldsWithContext(item, [...path, String(idx)]));
-        });
-      } else if (content && typeof content === 'object') {
-        // Extract all text from this node and its siblings
-        const nodeText = extractTextFromContent(content);
-
-        // Look for text field placeholders
-        const fieldMatches = nodeText.match(/\{\{text:([^}]+)\}\}/g);
-        if (fieldMatches) {
-          fieldMatches.forEach(match => {
-            const id = match.match(/\{\{text:([^}]+)\}\}/)?.[1];
-            if (id) {
-              // Get context from surrounding text in this node
-              results.push({
-                id,
-                context: nodeText.toLowerCase(),
-                position: results.length
-              });
-            }
+        if (Array.isArray(content)) {
+          content.forEach((item, idx) => {
+            results.push(...findTextFieldsWithContext(item, [...path, String(idx)]));
           });
+        } else if (content && typeof content === 'object') {
+          // Extract all text from this node and its siblings
+          const nodeText = extractTextFromContent(content);
+
+          // Look for text field placeholders
+          const fieldMatches = nodeText.match(/\{\{text:([^}]+)\}\}/g);
+          if (fieldMatches) {
+            fieldMatches.forEach(match => {
+              const id = match.match(/\{\{text:([^}]+)\}\}/)?.[1];
+              if (id) {
+                // Get context from surrounding text in this node
+                results.push({
+                  id,
+                  context: nodeText.toLowerCase(),
+                  position: results.length
+                });
+              }
+            });
+          }
+
+          // Recursively check children
+          if (content.content) {
+            results.push(...findTextFieldsWithContext(content.content, [...path, 'content']));
+          }
         }
 
-        // Recursively check children
-        if (content.content) {
-          results.push(...findTextFieldsWithContext(content.content, [...path, 'content']));
-        }
-      }
+        return results;
+      };
 
-      return results;
-    };
-
-    // Get all date field IDs (for applicant field detection)
-    const dateFieldIds = new Set<string>();
-    const dateMatches = contentStr.match(/\{\{date:([^}]+)\}\}/g) || [];
-    dateMatches.forEach(match => {
-      const id = match.match(/\{\{date:([^}]+)\}\}/)?.[1];
-      if (id) {
-        dateFieldIds.add(id);
-      }
-    });
-
-    // Find text matches for applicant field detection
-    const textMatches = contentStr.match(/\{\{text:([^}]+)\}\}/g) || [];
-
-    // Identify applicant fields for UI purposes
-    const applicantFields: Array<{ id: string; position: number; context: string }> = [];
-    const fieldContexts = findTextFieldsWithContext(template?.content || {});
-
-    textMatches.forEach(match => {
-      const id = match.match(/\{\{text:([^}]+)\}\}/)?.[1];
-      if (!id) return;
-
-      // Skip if this is a date field
-      if (dateFieldIds.has(id)) {
-        return;
-      }
-
-      // Check if this field is an applicant name field by ID
-      const idLower = id.toLowerCase();
-      let isApplicantField = idLower.startsWith('text:applicant') || idLower.startsWith('applicant');
-
-      // Find the position and context of this placeholder
-      const placeholderPattern = `{{text:${id}}}`;
-      let placeholderIndex = contentStr.indexOf(placeholderPattern);
-      let context = '';
-
-      // Get context from the fieldContexts we found
-      const fieldContext = fieldContexts.find(fc => fc.id === id);
-      if (fieldContext) {
-        context = fieldContext.context;
-      }
-
-      // Also check surrounding context in the JSON string
-      if (placeholderIndex !== -1) {
-        // Check 500 characters before and after for "applicant" mentions
-        const contextStart = Math.max(0, placeholderIndex - 500);
-        const contextEnd = Math.min(contentStr.length, placeholderIndex + placeholderPattern.length + 500);
-        const jsonContext = contentStr.substring(contextStart, contextEnd).toLowerCase();
-        context = context || jsonContext;
-      }
-
-      if (isApplicantField) {
-        applicantFields.push({ id, position: placeholderIndex !== -1 ? placeholderIndex : 999999, context });
-      }
-    });
-
-    // Sort applicant fields by position in the content
-    applicantFields.sort((a, b) => a.position - b.position);
-    const sortedApplicantIds = applicantFields.map(f => f.id);
-    setApplicantFieldIds(sortedApplicantIds);
-
-    // Initialize activeApplicantFields with detected fields if not already set
-    setActiveApplicantFields(prev => {
-      if (sortedApplicantIds.length === 0) return prev;
-
-      if (prev.length === 0 && sortedApplicantIds.length > 0) {
-        return [...sortedApplicantIds];
-      }
-
-      const merged = [...prev];
-      let hasChanges = false;
-      sortedApplicantIds.forEach(id => {
-        if (!merged.includes(id)) {
-          merged.push(id);
-          hasChanges = true;
+      // Get all date field IDs (for applicant field detection)
+      const dateFieldIds = new Set<string>();
+      const dateMatches = contentStr.match(/\{\{date:([^}]+)\}\}/g) || [];
+      dateMatches.forEach(match => {
+        const id = match.match(/\{\{date:([^}]+)\}\}/)?.[1];
+        if (id) {
+          dateFieldIds.add(id);
         }
       });
 
-      return hasChanges ? merged : prev;
-    });
+      // Find text matches for applicant field detection
+      const textMatches = contentStr.match(/\{\{text:([^}]+)\}\}/g) || [];
+
+      // Identify applicant fields for UI purposes
+      const applicantFields: Array<{ id: string; position: number; context: string }> = [];
+      const fieldContexts = findTextFieldsWithContext(template?.content || {});
+
+      textMatches.forEach(match => {
+        const id = match.match(/\{\{text:([^}]+)\}\}/)?.[1];
+        if (!id) return;
+
+        // Skip if this is a date field
+        if (dateFieldIds.has(id)) {
+          return;
+        }
+
+        // Check if this field is an applicant name field by ID
+        const idLower = id.toLowerCase();
+        let isApplicantField = idLower.startsWith('text:applicant') || idLower.startsWith('applicant');
+
+        // Find the position and context of this placeholder
+        const placeholderPattern = `{{text:${id}}}`;
+        let placeholderIndex = contentStr.indexOf(placeholderPattern);
+        let context = '';
+
+        // Get context from the fieldContexts we found
+        const fieldContext = fieldContexts.find(fc => fc.id === id);
+        if (fieldContext) {
+          context = fieldContext.context;
+        }
+
+        // Also check surrounding context in the JSON string
+        if (placeholderIndex !== -1) {
+          // Check 500 characters before and after for "applicant" mentions
+          const contextStart = Math.max(0, placeholderIndex - 500);
+          const contextEnd = Math.min(contentStr.length, placeholderIndex + placeholderPattern.length + 500);
+          const jsonContext = contentStr.substring(contextStart, contextEnd).toLowerCase();
+          context = context || jsonContext;
+        }
+
+        if (isApplicantField) {
+          applicantFields.push({ id, position: placeholderIndex !== -1 ? placeholderIndex : 999999, context });
+        }
+      });
+
+      // Sort applicant fields by position in the content
+      applicantFields.sort((a, b) => a.position - b.position);
+      const sortedApplicantIds = applicantFields.map(f => f.id);
+      setApplicantFieldIds(sortedApplicantIds);
+
+      // Initialize activeApplicantFields with detected fields if not already set
+      setActiveApplicantFields(prev => {
+        if (sortedApplicantIds.length === 0) return prev;
+
+        if (prev.length === 0 && sortedApplicantIds.length > 0) {
+          return [...sortedApplicantIds];
+        }
+
+        const merged = [...prev];
+        let hasChanges = false;
+        sortedApplicantIds.forEach(id => {
+          if (!merged.includes(id)) {
+            merged.push(id);
+            hasChanges = true;
+          }
+        });
+
+        return hasChanges ? merged : prev;
+      });
     };
 
     // Defer applicant field detection to avoid blocking initial render
@@ -809,19 +856,36 @@ const PublicContractView: React.FC = () => {
     window.print();
   };
 
+  // Scroll to date field handler
+  const scrollToDateField = () => {
+    const dateField = document.querySelector('[data-field-type="date"]');
+    if (dateField) {
+      dateField.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Focus the input if it exists
+      const input = dateField.querySelector('input[type="date"]');
+      if (input) {
+        setTimeout(() => {
+          (input as HTMLInputElement).focus();
+        }, 500);
+      }
+    }
+  };
+
   // Share contract handler (uses Web Share API on mobile and desktop when available)
   const handleShareContract = async () => {
     if (!contract) return;
 
     const contractUrl = window.location.href;
-    const contractTitle = `Contract for ${contract?.contact_name || client?.name || 'Client'}`;
+    const clientName = contract?.contact_name || client?.name || 'Client';
+    const contractTitle = `Contract for ${clientName} - Decker Pex Levi Law Offices`;
+    const shareText = `You have been invited to review and sign a legal contract from Decker Pex Levi Law Office. This is a secure link - please review the contract and sign if you agree to the terms.`;
 
     // Try Web Share API first (works on mobile and some desktop browsers)
     if (navigator.share) {
       try {
         await navigator.share({
           title: contractTitle,
-          text: `Please review this contract: ${contractTitle}`,
+          text: shareText,
           url: contractUrl,
         });
         return; // Successfully shared
@@ -1125,6 +1189,12 @@ const PublicContractView: React.FC = () => {
       if (text && /\{\{(text|date|signature)(:[^}]+)?\}\}/.test(text)) {
         // Ensure placeholderIndex is defined
         if (!placeholderIndex) placeholderIndex = { text: 0, signature: 0, date: 0 };
+
+        // Check if this text contains both date and signature fields for side-by-side layout
+        const textLower = text.toLowerCase();
+        const hasBothFields = textLower.includes('date:') && textLower.includes('signature:') &&
+          text.includes('{{date') && text.includes('{{signature');
+
         const parts = [];
         let lastIndex = 0;
         // IMPORTANT: Match date fields FIRST, then signature, then text to prevent confusion
@@ -1133,12 +1203,13 @@ const PublicContractView: React.FC = () => {
         // Counter for applicant field instances - ensures each gets a unique ID
         let applicantInstanceCounter = 0;
 
+        // Track text before date and signature fields to wrap them with their labels
+        let textBeforeDate = '';
+        let textBeforeSignature = '';
+
         while ((match = regex.exec(text)) !== null) {
-          if (match.index > lastIndex) {
-            const normalText = text.slice(lastIndex, match.index);
-            parts.push(normalText);
-          }
           const placeholder = match[1];
+          const textBeforePlaceholder = match.index > lastIndex ? text.slice(lastIndex, match.index) : '';
 
           // Use specific regex patterns to ensure correct matching
           const dateMatch = placeholder.match(/^{{date(:[^}]+)?}}$/);
@@ -1198,7 +1269,7 @@ const PublicContractView: React.FC = () => {
 
             // For signed contracts, show date as formatted text instead of input
             if (contract?.status === 'signed') {
-              parts.push(
+              const dateField = (
                 <span
                   key={id}
                   className="filled-date"
@@ -1218,38 +1289,62 @@ const PublicContractView: React.FC = () => {
                   {displayDate || dateValue || '_____________'}
                 </span>
               );
+
+              // Wrap with label text if both fields are present
+              if (hasBothFields) {
+                parts.push(
+                  <div key={`date-wrapper-${id}`} className="md:flex md:flex-col md:mr-8" style={{ display: 'block' }}>
+                    {textBeforePlaceholder}
+                    {dateField}
+                  </div>
+                );
+              } else {
+                parts.push(textBeforePlaceholder);
+                parts.push(dateField);
+              }
             } else {
-              parts.push(
-                <span
+              const dateField = (
+                <div
                   key={id}
-                  className="inline-flex items-center gap-2 relative flex-wrap"
-                  style={{ verticalAlign: 'middle', maxWidth: '100%' }}
+                  className="flex flex-col gap-2 sm:inline-flex sm:items-center sm:gap-2 relative flex-wrap"
+                  style={{ maxWidth: '100%' }}
                   data-field-id={id}
                   data-field-type="date"
                 >
                   <input
                     type="date"
-                    className="input input-bordered input-lg mx-2 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
+                    className="input input-bordered input-lg sm:mx-2 bg-white border-2 focus:border-blue-500 focus:shadow-lg w-full sm:w-auto"
                     value={formattedDate}
                     onChange={e => handleClientFieldChange(id, e.target.value)}
                     data-input-type="date"
                     style={{
-                      minWidth: 180,
-                      maxWidth: 'calc(100% - 1rem)',
-                      display: 'inline-block',
-                      verticalAlign: 'middle',
+                      minWidth: '180px',
+                      maxWidth: '100%',
                       color: '#111827',
                       cursor: 'text'
                     }}
                   />
                   {contract?.status !== 'signed' && (
                     <span className="badge badge-warning badge-sm text-xs whitespace-nowrap max-w-full overflow-hidden text-ellipsis">
-                      <span className="hidden sm:inline">Fill before submitting</span>
-                      <span className="sm:hidden">Fill</span>
+                      <span className="hidden sm:inline">Please add date</span>
+                      <span className="sm:hidden">Please add date</span>
                     </span>
                   )}
-                </span>
+                </div>
               );
+
+              // Wrap with label text if both fields are present
+              if (hasBothFields) {
+                parts.push(
+                  <div key={`date-wrapper-${id}`} className="md:flex md:flex-col md:mr-8" style={{ display: 'block' }}>
+                    {textBeforePlaceholder}
+                    {dateField}
+                  </div>
+                );
+              } else {
+                parts.push(textBeforePlaceholder);
+                parts.push(dateField);
+              }
             }
           } else if (textMatch) {
             // Extract the base ID from the placeholder
@@ -1354,36 +1449,38 @@ const PublicContractView: React.FC = () => {
                   </span>
                 );
               } else {
+                // Check if this paragraph contains both date and signature for side-by-side layout
+                const textLower = text.toLowerCase();
+                const hasBothFields = textLower.includes('date:') && textLower.includes('signature:');
+
                 parts.push(
-                  <span
+                  <div
                     key={id}
-                    className="inline-flex items-center gap-2 relative flex-wrap"
-                    style={{ verticalAlign: 'middle', maxWidth: '100%' }}
+                    className={`flex flex-col gap-2 ${hasBothFields ? 'md:flex-row md:items-center' : 'sm:inline-flex sm:items-center'} sm:gap-2 relative flex-wrap`}
+                    style={{ maxWidth: '100%', display: hasBothFields ? 'flex' : undefined }}
                     data-field-id={id}
                     data-field-type="date"
                   >
                     <input
                       type="date"
-                      className="input input-bordered input-lg mx-2 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
+                      className="input input-bordered input-lg sm:mx-2 bg-white border-2 focus:border-blue-500 focus:shadow-lg w-full sm:w-auto"
                       value={formattedDate}
                       onChange={e => handleClientFieldChange(id, e.target.value)}
                       data-input-type="date"
                       style={{
-                        minWidth: 180,
-                        maxWidth: 'calc(100% - 1rem)',
-                        display: 'inline-block',
-                        verticalAlign: 'middle',
+                        minWidth: '180px',
+                        maxWidth: '100%',
                         color: '#111827',
                         cursor: 'text'
                       }}
                     />
                     {contract?.status !== 'signed' && (
                       <span className="badge badge-warning badge-sm text-xs whitespace-nowrap max-w-full overflow-hidden text-ellipsis">
-                        <span className="hidden sm:inline">Fill before submitting</span>
-                        <span className="sm:hidden">Fill</span>
+                        <span className="hidden sm:inline">Please add date</span>
+                        <span className="sm:hidden">Please add date</span>
                       </span>
                     )}
-                  </span>
+                  </div>
                 );
               }
               lastIndex = match.index + match[1].length;
@@ -1513,81 +1610,149 @@ const PublicContractView: React.FC = () => {
           } else if (sigMatch) {
             const id = sigMatch[1] ? sigMatch[1].substring(1) : `signature-${++placeholderIndex.signature}`;
 
-            parts.push(
+            const signatureField = (
               <span
                 key={id}
-                className="inline-flex items-center gap-4 relative field-wrapper flex-wrap"
+                className="inline-flex items-start gap-2 md:gap-4 relative field-wrapper flex-wrap"
                 style={{ display: 'inline-flex', minWidth: 220, minHeight: 100, verticalAlign: 'middle', maxWidth: '100%' }}
                 data-field-id={id}
               >
-                <span
-                  className="border-2 rounded-lg bg-gray-50 p-3 border-gray-300 flex-shrink-0"
-                  style={{ display: 'inline-block', maxWidth: '100%' }}
-                >
-                  {contract?.status === 'signed' && clientSignature ? (
-                    <img src={clientSignature} alt="Signature" style={{ width: '100%', maxWidth: 200, height: 80, display: 'block', borderRadius: 8, background: 'transparent' }} />
-                  ) : (
-                    <SignaturePad
-                      ref={(ref) => {
-                        if (ref && signaturePads) signaturePads[id] = ref;
-                      }}
-                      penColor="#4c6fff"
-                      backgroundColor="transparent"
-                      canvasProps={{
-                        width: 200,
-                        height: 80,
-                        style: {
-                          display: 'block',
-                          borderRadius: 8,
-                          background: 'transparent',
-                          maxWidth: '100%',
-                          width: '100%'
-                        }
-                      }}
-                      onEnd={() => {
-                        if (signaturePads && signaturePads[id]) {
-                          const dataUrl = signaturePads[id].toDataURL();
-                          setClientSignature(dataUrl);
-                          // Save to clientFields with the correct ID
-                          setClientFields(prev => ({ ...prev, [id]: dataUrl }));
-                        }
-                      }}
-                    />
+                <div className="flex flex-col items-start gap-2">
+                  <span
+                    className="border-2 rounded-lg bg-gray-50 p-3 border-gray-300 flex-shrink-0"
+                    style={{ display: 'inline-block', maxWidth: '100%' }}
+                  >
+                    {contract?.status === 'signed' && clientSignature ? (
+                      <img src={clientSignature} alt="Signature" style={{ width: '100%', maxWidth: 200, height: 80, display: 'block', borderRadius: 8, background: 'transparent' }} />
+                    ) : (
+                      <SignaturePad
+                        ref={(ref) => {
+                          if (ref && signaturePads) signaturePads[id] = ref;
+                        }}
+                        penColor="#4c6fff"
+                        backgroundColor="transparent"
+                        canvasProps={{
+                          width: 200,
+                          height: 80,
+                          style: {
+                            display: 'block',
+                            borderRadius: 8,
+                            background: 'transparent',
+                            maxWidth: '100%',
+                            width: '100%'
+                          }
+                        }}
+                        onEnd={() => {
+                          if (signaturePads && signaturePads[id]) {
+                            const dataUrl = signaturePads[id].toDataURL();
+                            setClientSignature(dataUrl);
+                            // Save to clientFields with the correct ID
+                            setClientFields(prev => ({ ...prev, [id]: dataUrl }));
+                          }
+                        }}
+                      />
+                    )}
+                    <div className="text-xs text-gray-500 text-center mt-2 font-medium">
+                      Sign here
+                    </div>
+                  </span>
+                  {contract?.status !== 'signed' && (
+                    <span className="badge badge-warning badge-sm text-xs whitespace-nowrap max-w-full overflow-hidden text-ellipsis">
+                      <span className="hidden sm:inline">Please sign first</span>
+                      <span className="sm:hidden">Please sign first</span>
+                    </span>
                   )}
-                  <div className="text-xs text-gray-500 text-center mt-2 font-medium">
-                    Sign here
-                  </div>
-                </span>
-                {/* Stamp image */}
-                <div className="flex-shrink-0 max-w-full">
+                </div>
+                {/* Stamp image - smaller on mobile, next to signature pad */}
+                <div className="flex-shrink-0 max-w-full flex items-center">
                   <img
                     src="/חתימה מסמכים (5).png"
                     alt="Stamp"
+                    className="h-24 md:h-40 w-auto object-contain"
                     style={{
-                      width: 'auto',
-                      height: 150,
-                      maxWidth: '100%',
                       display: 'block',
                       objectFit: 'contain'
                     }}
                   />
                 </div>
-                {contract?.status !== 'signed' && (
-                  <span className="badge badge-warning badge-sm text-xs whitespace-nowrap max-w-full overflow-hidden text-ellipsis">
-                    <span className="hidden sm:inline">Fill before submitting</span>
-                    <span className="sm:hidden">Fill</span>
-                  </span>
-                )}
               </span>
             );
+
+            // Wrap with label text if both fields are present
+            if (hasBothFields) {
+              parts.push(
+                <div key={`signature-wrapper-${id}`} className="md:flex md:flex-col" style={{ display: 'block' }}>
+                  {textBeforePlaceholder}
+                  {signatureField}
+                </div>
+              );
+            } else {
+              parts.push(textBeforePlaceholder);
+              parts.push(signatureField);
+            }
           } else if (placeholder === '\n') {
             parts.push(<br key={keyPrefix + '-br-' + match.index} />);
+            lastIndex = match.index + match[1].length;
+            continue;
+          } else {
+            // For text fields, push the text before and continue normally
+            if (textBeforePlaceholder) {
+              parts.push(textBeforePlaceholder);
+            }
           }
           lastIndex = match.index + match[1].length;
         }
         if (lastIndex < text.length) {
           parts.push(text.slice(lastIndex));
         }
+
+        // If both fields are present, reorganize parts into two flex items for side-by-side layout
+        if (hasBothFields && parts.length > 0) {
+          const dateWrapperIndex = parts.findIndex((part: any) =>
+            React.isValidElement(part) && part.key && typeof part.key === 'string' && part.key.includes('date-wrapper')
+          );
+          const signatureWrapperIndex = parts.findIndex((part: any) =>
+            React.isValidElement(part) && part.key && typeof part.key === 'string' && part.key.includes('signature-wrapper')
+          );
+
+          if (dateWrapperIndex !== -1 && signatureWrapperIndex !== -1) {
+            // Collect all content before date wrapper
+            const beforeDate = parts.slice(0, dateWrapperIndex);
+            // Get date wrapper
+            const dateWrapper = parts[dateWrapperIndex];
+            // Collect content between date and signature
+            const betweenFields = parts.slice(dateWrapperIndex + 1, signatureWrapperIndex);
+            // Get signature wrapper
+            const signatureWrapper = parts[signatureWrapperIndex];
+            // Collect content after signature
+            const afterSignature = parts.slice(signatureWrapperIndex + 1);
+
+            // Combine text nodes and wrap everything properly
+            const dateSection = (
+              <div key="date-section" className="md:flex md:flex-col md:mr-8" style={{ display: 'block' }}>
+                {beforeDate.length > 0 ? beforeDate.map((part: any, idx: number) =>
+                  React.isValidElement(part) ? part : <React.Fragment key={`date-before-${idx}`}>{part}</React.Fragment>
+                ) : null}
+                {dateWrapper}
+                {betweenFields.length > 0 ? betweenFields.map((part: any, idx: number) =>
+                  React.isValidElement(part) ? part : <React.Fragment key={`date-between-${idx}`}>{part}</React.Fragment>
+                ) : null}
+              </div>
+            );
+
+            const signatureSection = (
+              <div key="signature-section" className="md:flex md:flex-col" style={{ display: 'block' }}>
+                {signatureWrapper}
+                {afterSignature.length > 0 ? afterSignature.map((part: any, idx: number) =>
+                  React.isValidElement(part) ? part : <React.Fragment key={`signature-after-${idx}`}>{part}</React.Fragment>
+                ) : null}
+              </div>
+            );
+
+            return [dateSection, signatureSection];
+          }
+        }
+
         return parts;
       }
 
@@ -1702,6 +1867,12 @@ const PublicContractView: React.FC = () => {
         const hasInputFields = React.isValidElement(paragraphContent) ||
           (Array.isArray(paragraphContent) && paragraphContent.some(item => React.isValidElement(item)));
 
+        // Check if paragraph contains both date and signature fields (for desktop side-by-side layout)
+        const paragraphTextLower = paragraphText.toLowerCase();
+        const hasDateField = paragraphTextLower.includes('date:') && paragraphText.includes('{{date');
+        const hasSignatureField = paragraphTextLower.includes('signature:') && paragraphText.includes('{{signature');
+        const hasBothFields = hasDateField && hasSignatureField;
+
         // Extract text to determine direction
         const textContent = extractTextContent(content.content);
         const direction = isRTLParagraph || isRTL(textContent) ? 'rtl' : 'ltr';
@@ -1712,9 +1883,11 @@ const PublicContractView: React.FC = () => {
           return (
             <div
               key={keyPrefix}
-              className="mb-2 md:mb-3 text-sm md:text-base"
+              className={`mb-2 md:mb-3 text-sm md:text-base ${hasBothFields ? 'md:flex md:flex-row md:items-start md:gap-8' : ''}`}
               dir={direction}
-              style={{ textAlign }}
+              style={{
+                textAlign: hasBothFields ? 'left' : textAlign
+              }}
             >
               {paragraphContent || <br />}
             </div>
@@ -1835,8 +2008,16 @@ const PublicContractView: React.FC = () => {
   if (loading) return (
     <div className="min-h-screen flex items-center justify-center bg-white">
       <div className="text-center">
-        <div className="loading loading-spinner loading-lg text-primary"></div>
-        <p className="mt-4 text-gray-600 text-sm md:text-base">Loading contract...</p>
+        <div className="flex flex-col items-center gap-6">
+          <div className="bg-black p-0.5 md:p-1 rounded-lg shadow-2xl animate-sway">
+            <img
+              src="/RMQ_LOGO.png"
+              alt="Decker Pex Levi Law Offices"
+              className="w-64 h-64 md:w-80 md:h-80 object-contain"
+            />
+          </div>
+          <div className="loading loading-spinner loading-lg text-primary"></div>
+        </div>
       </div>
     </div>
   );
@@ -1850,40 +2031,67 @@ const PublicContractView: React.FC = () => {
   if (!contract || !template) return null;
 
   return (
-    <div className="min-h-screen bg-white flex items-center justify-center px-2 py-8">
-      <div className="w-full max-w-3xl bg-white rounded-lg shadow-lg border border-gray-200 p-4 md:p-8 relative">
-        {/* Share button in top right corner */}
-        <button
-          className="btn btn-circle btn-primary btn-sm absolute top-4 right-4 print-hide"
-          onClick={handleShareContract}
-          title="Share contract"
-          style={{ backgroundColor: '#4218CC' }}
-          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#3414A3'}
-          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#4218CC'}
-        >
-          <ShareIcon className="w-5 h-5" />
-        </button>
+    <div className="min-h-screen bg-white">
+      {/* Fixed Header - Glassy Blurred Oval */}
+      <header className="fixed top-4 left-1/2 -translate-x-1/2 z-50 print-hide w-[95%] md:w-[80%] max-w-4xl">
+        <div className="bg-white/20 backdrop-blur-md rounded-full border border-white/30 shadow-lg">
+          <div className="flex items-center justify-between px-4 py-2 md:px-8 md:py-3">
+            {/* Logo - Left */}
+            <div className="flex-shrink-0">
+              <img
+                src="/DPL-LOGO1.png"
+                alt="DPL Logo"
+                className="h-8 md:h-16 w-auto object-contain"
+              />
+            </div>
 
-        {/* Show signed message at the top if contract is signed */}
-        {contract.status === 'signed' && !thankYou && (
-          <div className="alert alert-success mb-4 md:mb-6 text-sm md:text-base">
-            This contract has been signed and is now read-only.
+            {/* Company Name and Contact Name - Center */}
+            <div className="flex-1 flex flex-col justify-center items-center min-w-0 px-2">
+              <p className="text-xs md:text-sm font-medium text-gray-600 drop-shadow-sm text-center">
+                Decker Pex Levi Law Offices
+              </p>
+              <h1 className="text-sm md:text-lg font-semibold text-gray-800 drop-shadow-sm text-center">
+                {contract?.contact_name || client?.name || 'Client'}
+              </h1>
+            </div>
+
+            {/* Case Number - Right */}
+            <div className="flex-shrink-0 flex items-center">
+              {leadNumber && (
+                <span className="text-xs md:text-sm font-mono font-semibold text-black drop-shadow-sm">
+                  #{leadNumber}
+                </span>
+              )}
+            </div>
           </div>
-        )}
+        </div>
+      </header>
 
-        {/* Print and Share buttons for signed contracts */}
-        {contract.status === 'signed' && (
-          <div className="flex justify-center gap-2 mb-4 print-hide">
-            <button
-              className="btn btn-outline btn-xs sm:btn-sm gap-1 sm:gap-2"
-              onClick={handlePrint}
-              title="Print contract"
-            >
-              <PrinterIcon className="w-4 h-4" />
-              <span className="hidden sm:inline">Print</span>
-            </button>
-            {/* PDF button commented out */}
-            {/* <button
+      {/* Main Content with top padding to account for fixed header */}
+      <div className="pt-32 md:pt-36 px-2 py-4 md:flex md:items-center md:justify-center md:py-8 pb-20 md:pb-8">
+        <div className="w-full max-w-6xl md:bg-white md:rounded-lg md:shadow-lg md:border md:border-gray-200 p-4 md:p-8 relative">
+          {/* Share button in top right corner - removed since we have it in floating buttons on desktop */}
+
+          {/* Show signed message at the top if contract is signed */}
+          {contract.status === 'signed' && !thankYou && (
+            <div className="alert alert-success mb-4 md:mb-6 text-sm md:text-base">
+              This contract has been signed and is now read-only.
+            </div>
+          )}
+
+          {/* Print and Share buttons for signed contracts */}
+          {contract.status === 'signed' && (
+            <div className="flex justify-center gap-2 mb-4 print-hide">
+              <button
+                className="btn btn-outline btn-xs sm:btn-sm gap-1 sm:gap-2"
+                onClick={handlePrint}
+                title="Print contract"
+              >
+                <PrinterIcon className="w-4 h-4" />
+                <span className="hidden sm:inline">Print</span>
+              </button>
+              {/* PDF button commented out */}
+              {/* <button
               className="btn btn-outline btn-sm gap-2"
               onClick={handleDownloadPDF}
               disabled={pdfLoading}
@@ -1892,48 +2100,151 @@ const PublicContractView: React.FC = () => {
               <ArrowDownTrayIcon className="w-5 h-5" />
               {pdfLoading ? 'Generating...' : 'Download PDF'}
             </button> */}
-          </div>
-        )}
+            </div>
+          )}
 
-        <div className="mb-4 md:mb-6 text-center">
-          <h1 className="text-xl md:text-2xl font-bold">
-            Contract for {contract?.contact_name || client?.name || 'Client'}
-          </h1>
-          {leadNumber && (
-            <p className="text-sm md:text-base text-gray-600 mt-2">
-              Case: <span className="font-mono font-semibold text-blue-600">#{leadNumber}</span>
-            </p>
+
+          <div ref={contractContentRef} id="contract-print-area" className="prose prose-sm md:prose-base max-w-none overflow-x-hidden">
+            {(() => {
+              const contentToRender = contract?.custom_content || template?.content;
+              if (!contentToRender) return null;
+
+              return thankYou ? (
+                <>
+                  <div className="alert alert-success text-sm md:text-lg font-semibold mb-4 md:mb-6">Thank you! Your contract was signed and submitted. You will be notified soon.</div>
+                  {renderTiptapContent(contentToRender, '', signaturePads, undefined, undefined, { text: 0, signature: 0, date: 0 })}
+                </>
+              ) : (
+                renderTiptapContent(contentToRender, '', signaturePads, undefined, undefined, { text: 0, signature: 0, date: 0 })
+              );
+            })()}
+          </div>
+
+          {/* Submit Contract Button (only if not signed) */}
+          {contract.status !== 'signed' && !thankYou && (
+            <div className="mt-8">
+              <button
+                className="btn btn-lg w-full print-hide bg-green-800 text-white border-none hover:bg-green-900"
+                onClick={handleSubmitContract}
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? 'Submitting...' : 'Submit Contract'}
+              </button>
+            </div>
           )}
         </div>
+      </div>
 
-        <div ref={contractContentRef} id="contract-print-area" className="prose prose-sm md:prose-base max-w-none overflow-x-hidden">
-          {(() => {
-            const contentToRender = contract?.custom_content || template?.content;
-            if (!contentToRender) return null;
-            
-            return thankYou ? (
-              <>
-                <div className="alert alert-success text-sm md:text-lg font-semibold mb-4 md:mb-6">Thank you! Your contract was signed and submitted. You will be notified soon.</div>
-                {renderTiptapContent(contentToRender, '', signaturePads, undefined, undefined, { text: 0, signature: 0, date: 0 })}
-              </>
-            ) : (
-              renderTiptapContent(contentToRender, '', signaturePads, undefined, undefined, { text: 0, signature: 0, date: 0 })
-            );
-          })()}
+      {/* Footer */}
+      <footer className="bg-white border-t border-gray-200 mt-16 md:mt-24 print-hide">
+        <div className="max-w-5xl mx-auto px-4 py-16 md:py-20 md:px-8">
+          <div className="flex flex-col items-center justify-center gap-8">
+            {/* Company Info & Addresses */}
+            <div className="text-center space-y-3">
+              <div className="flex items-center justify-center gap-3">
+                <img src="/DPL-LOGO1.png" alt="DPL Logo" className="h-12 w-auto object-contain" />
+                <p className="font-bold text-xl text-gray-900">Decker, Pex, Levi Law Offices</p>
+              </div>
+              <div className="text-gray-500 text-sm flex flex-col md:flex-row items-center justify-center gap-1 md:gap-3">
+                <p>Yad Harutzim 10, Jerusalem, Israel</p>
+                <span className="hidden md:inline text-gray-400">•</span>
+                <p>Menachem Begin Rd. 150, Tel Aviv, Israel</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-12 pt-8 border-t border-gray-100 text-center text-xs text-gray-400">
+            RMQ 2.0 - Copyright © {new Date().getFullYear()} - All right reserved
+          </div>
+        </div>
+      </footer>
+
+      {/* Floating Contact Buttons (Right Side Center) - Desktop Only */}
+      <div className="hidden md:flex fixed right-4 md:right-6 top-1/2 -translate-y-1/2 flex-col items-end gap-3 md:gap-4 z-50 print-hide">
+        {/* Professional Text */}
+        <div className="bg-white/90 backdrop-blur-sm rounded-lg px-4 py-3 shadow-lg border border-gray-200 max-w-[200px] mb-2">
+          <p className="text-sm font-medium text-gray-700 leading-relaxed text-right">
+            Need assistance? Contact us anytime with your questions.
+          </p>
         </div>
 
-        {/* Submit Contract Button (only if not signed) */}
-        {contract.status !== 'signed' && !thankYou && (
-          <div className="mt-8">
+        <button
+          onClick={handleShareContract}
+          className="btn btn-circle btn-md md:btn-lg bg-indigo-600 text-white border-none hover:bg-indigo-700 shadow-lg hover:scale-110 transition-transform"
+          title="Share contract"
+        >
+          <ShareIcon className="w-5 h-5 md:w-8 md:h-8" />
+        </button>
+        <a
+          href="https://wa.me/972552780162"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="btn btn-circle btn-md md:btn-lg bg-green-500 text-white border-none hover:bg-green-600 shadow-lg hover:scale-110 transition-transform"
+          title="Chat on WhatsApp"
+        >
+          <FaWhatsapp className="w-5 h-5 md:w-8 md:h-8" />
+        </a>
+        <a
+          href="mailto:office@lawoffice.org.il"
+          className="btn btn-circle btn-md md:btn-lg bg-blue-600 text-white border-none hover:bg-blue-700 shadow-lg hover:scale-110 transition-transform"
+          title="Send Email"
+        >
+          <FaEnvelope className="w-5 h-5 md:w-8 md:h-8" />
+        </a>
+        <a
+          href="tel:+972503489649"
+          className="btn btn-circle btn-md md:btn-lg bg-purple-600 text-white border-none hover:bg-purple-700 shadow-lg hover:scale-110 transition-transform"
+          title="Call Office"
+        >
+          <PhoneIcon className="w-5 h-5 md:w-8 md:h-8" />
+        </a>
+      </div>
+
+      {/* Scroll to Date Button - Mobile: Bottom Right, Centered Vertically | Desktop: Top Right, Next to Header */}
+      <button
+        onClick={scrollToDateField}
+        className="fixed right-4 bottom-1/2 -translate-y-1/2 md:bottom-auto md:top-4 md:right-6 md:translate-y-0 z-40 print-hide btn btn-circle btn-md md:btn-lg bg-green-800 text-white border-none hover:bg-green-900 shadow-lg hover:scale-110 transition-transform"
+        title="Scroll to date field"
+      >
+        <ArrowDownIcon className="w-6 h-6 md:w-8 md:h-8" />
+      </button>
+
+      {/* Mobile Bottom Oval Box with Contact Buttons */}
+      <div className="md:hidden fixed bottom-4 left-1/2 -translate-x-1/2 z-50 print-hide">
+        <div className="bg-white/20 backdrop-blur-md rounded-full border border-white/30 shadow-lg">
+          <div className="flex items-center justify-center gap-3 md:gap-4 px-4 md:px-6 py-2.5 md:py-3">
             <button
-              className="btn btn-success btn-lg w-full print-hide"
-              onClick={handleSubmitContract}
-              disabled={isSubmitting}
+              onClick={handleShareContract}
+              className="btn btn-ghost btn-circle text-black hover:bg-white/20"
+              title="Share contract"
             >
-              {isSubmitting ? 'Submitting...' : 'Submit Contract'}
+              <ShareIcon className="w-6 h-6" />
             </button>
+            <a
+              href="https://wa.me/972552780162"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-ghost btn-circle text-black hover:bg-white/20"
+              title="Chat on WhatsApp"
+            >
+              <FaWhatsapp className="w-6 h-6" />
+            </a>
+            <a
+              href="mailto:office@lawoffice.org.il"
+              className="btn btn-ghost btn-circle text-black hover:bg-white/20"
+              title="Send Email"
+            >
+              <FaEnvelope className="w-6 h-6" />
+            </a>
+            <a
+              href="tel:+972503489649"
+              className="btn btn-ghost btn-circle text-black hover:bg-white/20"
+              title="Call Office"
+            >
+              <PhoneIcon className="w-6 h-6" />
+            </a>
           </div>
-        )}
+        </div>
       </div>
 
       {/* Print-specific CSS */}
@@ -2070,12 +2381,28 @@ const PublicContractView: React.FC = () => {
           }
         }
         
+        @keyframes sway {
+          0%, 100% {
+            transform: rotate(0deg);
+          }
+          25% {
+            transform: rotate(3deg);
+          }
+          75% {
+            transform: rotate(-3deg);
+          }
+        }
+        
         .animate-fade-in {
           animation: fade-in 0.3s ease-out;
         }
         
         .field-highlight-pulse {
           animation: field-highlight-pulse 2s ease-out;
+        }
+        
+        .animate-sway {
+          animation: sway 3s ease-in-out infinite;
         }
         
         .field-wrapper {

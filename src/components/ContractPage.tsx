@@ -4381,7 +4381,7 @@ const ContractPage: React.FC = () => {
     // Always use production domain for public contract links
     const publicUrl = `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
     await navigator.clipboard.writeText(publicUrl);
-    alert('Link copied!');
+    alert('Contract link copied to clipboard!');
   };
 
   const handleMobileShare = async () => {
@@ -4397,17 +4397,21 @@ const ContractPage: React.FC = () => {
       }
       const publicUrl = `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
 
+      const clientName = contract?.contact_name || client?.name || 'Client';
+      const contractTitle = `Contract for ${clientName} - Rainmaker Queen Law Office`;
+      const shareText = `You have been invited to review and sign a legal contract from Rainmaker Queen Law Office. This is a secure link - please review the contract and sign if you agree to the terms.`;
+
       try {
         await navigator.share({
-          title: 'Contract Link',
-          text: 'Check out this contract',
+          title: contractTitle,
+          text: shareText,
           url: publicUrl,
         });
       } catch (err: any) {
         // User cancelled or error occurred, fallback to clipboard
         if (err.name !== 'AbortError') {
           await navigator.clipboard.writeText(publicUrl);
-          alert('Link copied!');
+          alert('Contract link copied to clipboard!');
         }
       }
     } else {

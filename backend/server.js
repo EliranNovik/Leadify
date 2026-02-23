@@ -34,7 +34,7 @@ const io = new Server(server, {
       process.env.FRONTEND_URL || "http://localhost:5173",
       "https://leadify-crm.onrender.com",
       "https://rainmakerqueen.org",
-      "http://localhost:5173", 
+      "http://localhost:5173",
     ],
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["*"],
@@ -58,7 +58,7 @@ io.on("connection", (socket) => {
     activeUsers.set(socket.id, userId);
     socket.userId = userId;
     console.log(`👤 User ${userId} joined with socket ${socket.id}`);
-    
+
     // Emit user_online event to all clients (including the connecting user)
     io.emit("user_online", String(userId));
     console.log(`🟢 Emitted user_online for user ${userId}`);
@@ -69,10 +69,10 @@ io.on("connection", (socket) => {
     socket.join(`conversation-${conversationId}`);
     const currentUserId = activeUsers.get(socket.id) || socket.id;
     console.log(`🏠 User ${currentUserId} joined conversation ${conversationId}`);
-    
-    io.to(socket.id).emit('room_joined', { 
-      conversationId, 
-      roomSize: io.sockets.adapter.rooms.get(`conversation-${conversationId}`)?.size || 0 
+
+    io.to(socket.id).emit('room_joined', {
+      conversationId,
+      roomSize: io.sockets.adapter.rooms.get(`conversation-${conversationId}`)?.size || 0
     });
   });
 
@@ -85,7 +85,7 @@ io.on("connection", (socket) => {
   // Send message
   socket.on("send_message", async ({ conversation_id, sender_id, content, message_type, sent_at, attachment_url, attachment_name, attachment_type, attachment_size }) => {
     console.log(`📨 Received message from ${sender_id} for conversation ${conversation_id}: ${content} (Type: ${message_type})`);
-    
+
     const messageData = {
       conversation_id,
       sender_id,
@@ -97,17 +97,17 @@ io.on("connection", (socket) => {
       attachment_type,
       attachment_size,
     };
-    
+
     // Broadcast message to all participants in the conversation room
     const roomName = `conversation-${conversation_id}`;
     const roomSize = io.sockets.adapter.rooms.get(roomName)?.size || 0;
-    
+
     // If the sender is the only one in the room, ensure they receive their own message
     if (roomSize === 0) {
       socket.join(roomName);
       console.log(`User ${sender_id} explicitly joined conversation ${conversation_id} for message broadcast.`);
     }
-    
+
     io.to(roomName).emit('new_message', messageData);
     console.log(`📨 Broadcasting message to conversation ${conversation_id} (${roomSize} participants): ${content}`);
 
@@ -132,7 +132,7 @@ io.on("connection", (socket) => {
   socket.on("typing", (data) => {
     const { conversation_id, user_id, user_name, is_typing } = data;
     console.log(`⌨️ User ${user_name} (${user_id}) is ${is_typing ? 'typing' : 'stopped typing'} in conversation ${conversation_id}`);
-    
+
     // Broadcast typing status to all participants in the conversation room (except the sender)
     const roomName = `conversation-${conversation_id}`;
     socket.to(roomName).emit('typing', {
@@ -150,7 +150,7 @@ io.on("connection", (socket) => {
       console.error('❌ Invalid request_online_status data:', data);
       return;
     }
-    
+
     const onlineUserIds = new Set();
     activeUsers.forEach((userId) => {
       const userIdStr = String(userId);
@@ -158,11 +158,11 @@ io.on("connection", (socket) => {
         onlineUserIds.add(userIdStr);
       }
     });
-    
+
     console.log(`📊 Received online status request for ${user_ids.length} users`);
     console.log(`📊 Currently active users: ${Array.from(activeUsers.values())}`);
     console.log(`📊 Sending online status response: ${onlineUserIds.size} users online`);
-    
+
     socket.emit("online_status_response", {
       online_users: Array.from(onlineUserIds)
     });
@@ -173,7 +173,7 @@ io.on("connection", (socket) => {
     if (userId) {
       activeUsers.delete(socket.id);
       console.log(`👋 User ${userId} disconnected - Reason: ${reason}`);
-      
+
       // Emit user_offline event to all clients
       io.emit("user_offline", String(userId));
       console.log(`🔴 Emitted user_offline for user ${userId}`);
@@ -187,10 +187,30 @@ io.on("connection", (socket) => {
   });
 });
 
-// Middleware
+// Middleware - Security headers
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
-  contentSecurityPolicy: false
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://*.supabase.co"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:", "https:", "blob:"],
+      connectSrc: ["'self'", "https://*.supabase.co", "wss://*.supabase.co"],
+      frameSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      upgradeInsecureRequests: [],
+    },
+  },
+  xFrameOptions: { action: 'sameorigin' },
+  xContentTypeOptions: true,
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true
+  }
 }));
 
 // CORS configuration
@@ -206,7 +226,7 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-  
+
   if (req.method === 'OPTIONS') {
     res.sendStatus(200);
   } else {
@@ -238,28 +258,28 @@ app.get('/api/call-recording/:callId', async (req, res) => {
   try {
     const { callId } = req.params;
     const { tenant } = req.query;
-    
+
     console.log('🎵 Proxying call recording request for call ID:', callId, 'tenant:', tenant);
-    
+
     // Get 1com API configuration
     const onecomApiKey = process.env.ONECOM_API_KEY;
     const onecomTenant = tenant || process.env.ONECOM_TENANT || 'decker';
-    
+
     if (!onecomApiKey) {
       console.error('🎵 1com API key not configured');
       return res.status(500).json({ error: 'API key not configured' });
     }
-    
-        // Try both API parameters as per documentation
-        // Documentation shows: info=recording
-        // But some examples use: info=playrecording
-        // Let's try the documented version first
-        const onecomUrl = `https://pbx6webserver.1com.co.il/pbx/proxyapi.php?key=${onecomApiKey}&reqtype=INFO&info=recording&id=${callId}&tenant=${onecomTenant}`;
-        const onecomUrlPlay = `https://pbx6webserver.1com.co.il/pbx/proxyapi.php?key=${onecomApiKey}&reqtype=INFO&info=playrecording&id=${callId}&tenant=${onecomTenant}`;
-    
+
+    // Try both API parameters as per documentation
+    // Documentation shows: info=recording
+    // But some examples use: info=playrecording
+    // Let's try the documented version first
+    const onecomUrl = `https://pbx6webserver.1com.co.il/pbx/proxyapi.php?key=${onecomApiKey}&reqtype=INFO&info=recording&id=${callId}&tenant=${onecomTenant}`;
+    const onecomUrlPlay = `https://pbx6webserver.1com.co.il/pbx/proxyapi.php?key=${onecomApiKey}&reqtype=INFO&info=playrecording&id=${callId}&tenant=${onecomTenant}`;
+
     console.log('🎵 Constructed 1com URL (recording):', onecomUrl.replace(onecomApiKey, '***'));
     console.log('🎵 Constructed 1com URL (playrecording):', onecomUrlPlay.replace(onecomApiKey, '***'));
-    
+
     // Make request to 1com API - try both parameters
     console.log('🎵 Making request to 1com API with info=recording...');
     let response = await fetch(onecomUrl, {
@@ -269,10 +289,10 @@ app.get('/api/call-recording/:callId', async (req, res) => {
         'Accept': 'audio/*,*/*'
       }
     });
-    
+
     console.log('🎵 1com API response status (recording):', response.status);
     console.log('🎵 1com API response headers (recording):', Object.fromEntries(response.headers.entries()));
-    
+
     // If the first request returns HTML (error), try the alternative parameter
     const contentType = response.headers.get('content-type') || '';
     if (response.ok && contentType.includes('text/html')) {
@@ -287,58 +307,58 @@ app.get('/api/call-recording/:callId', async (req, res) => {
       console.log('🎵 1com API response status (playrecording):', response.status);
       console.log('🎵 1com API response headers (playrecording):', Object.fromEntries(response.headers.entries()));
     }
-    
+
     if (!response.ok) {
       console.error('🎵 Recording request failed:', response.status, response.statusText);
       const errorText = await response.text();
       console.error('🎵 Error response:', errorText);
       return res.status(response.status).json({ error: 'Recording not available' });
     }
-    
-        // Get content type (already retrieved above)
-        const finalContentType = response.headers.get('content-type') || 'audio/mpeg';
-        console.log('🎵 Final content type:', finalContentType);
-        
-        // Get the response data as buffer
-        const responseBuffer = await response.arrayBuffer();
-        console.log('🎵 Response size:', responseBuffer.byteLength, 'bytes');
-        
-        // Check if the response is HTML (error page) instead of audio
-        if (finalContentType.includes('text/html')) {
-          console.error('🎵 1com API returned HTML instead of audio. This usually means:');
-          console.error('🎵 1. The recording does not exist or has been archived');
-          console.error('🎵 2. The API key does not have permission to access recordings');
-          console.error('🎵 3. The recording ID is invalid or from an older period');
-          console.error('🎵 4. The recording might be from 2024 and no longer accessible');
-          
-          // Try to get the HTML content to see what error message 1com returned
-          const htmlContent = Buffer.from(responseBuffer).toString('utf-8');
-          console.error('🎵 1com HTML response:', htmlContent.substring(0, 500));
-          
-          // Check if it's a 2024 recording (pbx24-*)
-          const isOldRecording = callId.startsWith('pbx24-');
-          
-          return res.status(404).json({ 
-            error: 'Recording not available',
-            details: isOldRecording 
-              ? 'This recording appears to be from 2024 and may no longer be accessible. 1com typically archives older recordings.'
-              : 'The recording could not be found or accessed. This may be due to insufficient permissions or the recording not existing.',
-            contentType: finalContentType,
-            isOldRecording: isOldRecording
-          });
-        }
-        
-        // Set appropriate headers for audio
-        res.set({
-          'Content-Type': finalContentType,
-          'Content-Length': responseBuffer.byteLength.toString(),
-          'Accept-Ranges': 'bytes',
-          'Cache-Control': 'public, max-age=3600'
-        });
-        
-        // Send the audio data
-        res.send(Buffer.from(responseBuffer));
-    
+
+    // Get content type (already retrieved above)
+    const finalContentType = response.headers.get('content-type') || 'audio/mpeg';
+    console.log('🎵 Final content type:', finalContentType);
+
+    // Get the response data as buffer
+    const responseBuffer = await response.arrayBuffer();
+    console.log('🎵 Response size:', responseBuffer.byteLength, 'bytes');
+
+    // Check if the response is HTML (error page) instead of audio
+    if (finalContentType.includes('text/html')) {
+      console.error('🎵 1com API returned HTML instead of audio. This usually means:');
+      console.error('🎵 1. The recording does not exist or has been archived');
+      console.error('🎵 2. The API key does not have permission to access recordings');
+      console.error('🎵 3. The recording ID is invalid or from an older period');
+      console.error('🎵 4. The recording might be from 2024 and no longer accessible');
+
+      // Try to get the HTML content to see what error message 1com returned
+      const htmlContent = Buffer.from(responseBuffer).toString('utf-8');
+      console.error('🎵 1com HTML response:', htmlContent.substring(0, 500));
+
+      // Check if it's a 2024 recording (pbx24-*)
+      const isOldRecording = callId.startsWith('pbx24-');
+
+      return res.status(404).json({
+        error: 'Recording not available',
+        details: isOldRecording
+          ? 'This recording appears to be from 2024 and may no longer be accessible. 1com typically archives older recordings.'
+          : 'The recording could not be found or accessed. This may be due to insufficient permissions or the recording not existing.',
+        contentType: finalContentType,
+        isOldRecording: isOldRecording
+      });
+    }
+
+    // Set appropriate headers for audio
+    res.set({
+      'Content-Type': finalContentType,
+      'Content-Length': responseBuffer.byteLength.toString(),
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'public, max-age=3600'
+    });
+
+    // Send the audio data
+    res.send(Buffer.from(responseBuffer));
+
   } catch (error) {
     console.error('🎵 Recording proxy error:', error);
     res.status(500).json({ error: 'Failed to fetch recording' });
@@ -346,7 +366,7 @@ app.get('/api/call-recording/:callId', async (req, res) => {
 });
 
 // Configure multer for file uploads
-const upload = multer({ 
+const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 16 * 1024 * 1024 } // 16MB limit
 });
