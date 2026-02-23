@@ -4398,8 +4398,8 @@ const ContractPage: React.FC = () => {
       const publicUrl = `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
 
       const clientName = contract?.contact_name || client?.name || 'Client';
-      const contractTitle = `Contract for ${clientName} - Rainmaker Queen Law Office`;
-      const shareText = `You have been invited to review and sign a legal contract from Rainmaker Queen Law Office. This is a secure link - please review the contract and sign if you agree to the terms.`;
+      const contractTitle = `Contract for ${clientName} - Decker Pex Levi Law Offices`;
+      const shareText = `You have been invited to review and sign a legal contract from Decker Pex Levi Law Offices. This is a secure link - please review the contract and sign if you agree to the terms.`;
 
       try {
         await navigator.share({

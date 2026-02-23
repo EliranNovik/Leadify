@@ -29,7 +29,9 @@ interface EmployeeProfile {
 }
 
 const BusinessCardPage: React.FC = () => {
-    const { employeeId } = useParams<{ employeeId: string }>();
+    const { employeeId: employeeIdParam } = useParams<{ employeeId: string }>();
+    // Handle URL encoding and extract employeeId from pathname as fallback
+    const [employeeId, setEmployeeId] = useState<string | undefined>(employeeIdParam);
     const [loading, setLoading] = useState(true);
     const [profile, setProfile] = useState<EmployeeProfile | null>(null);
     const [isVisible, setIsVisible] = useState(false);
@@ -44,9 +46,26 @@ const BusinessCardPage: React.FC = () => {
         return () => clearTimeout(timer);
     }, []);
 
+    // Extract employeeId from URL pathname as fallback (for mobile routing issues)
+    useEffect(() => {
+        if (!employeeIdParam) {
+            // Try to extract from pathname as fallback
+            const pathname = window.location.pathname;
+            const match = pathname.match(/\/business-card\/([^\/]+)/);
+            if (match && match[1]) {
+                const extractedId = decodeURIComponent(match[1]);
+                setEmployeeId(extractedId);
+            }
+        } else {
+            setEmployeeId(employeeIdParam);
+        }
+    }, [employeeIdParam]);
+
     useEffect(() => {
         if (employeeId) {
             fetchProfile();
+        } else {
+            setLoading(false);
         }
     }, [employeeId]);
 
@@ -54,7 +73,24 @@ const BusinessCardPage: React.FC = () => {
         try {
             setLoading(true);
 
-            const { data: employeeData, error: employeeError } = await supabase
+            // Validate employeeId
+            if (!employeeId) {
+                console.error('BusinessCardPage: employeeId is undefined');
+                setLoading(false);
+                return;
+            }
+
+            const parsedId = parseInt(employeeId, 10);
+            if (isNaN(parsedId) || parsedId <= 0) {
+                console.error('BusinessCardPage: Invalid employeeId:', employeeId);
+                setLoading(false);
+                return;
+            }
+
+            console.log('BusinessCardPage: Fetching profile for employeeId:', parsedId);
+
+            // Try simple query first (works better with RLS policies)
+            let { data: employeeData, error: employeeError } = await supabase
                 .from('tenants_employee')
                 .select(`
                     id,
@@ -67,50 +103,104 @@ const BusinessCardPage: React.FC = () => {
                     bonuses_role,
                     official_name,
                     linkedin_url,
-                    department_id,
-                    tenant_departement!department_id (
-                        name
-                    )
+                    department_id
                 `)
-                .eq('id', parseInt(employeeId || '0'))
-                .single();
+                .eq('id', parsedId)
+                .maybeSingle();
 
-            if (employeeError) throw employeeError;
+            // If simple query has error (not just no data), try with join
+            if (employeeError && employeeError.code !== 'PGRST116') {
+                console.warn('BusinessCardPage: Simple query error, trying with join:', employeeError);
 
-            if (employeeData) {
-                const emp = employeeData as any;
-
-                // Fetch email from users table
-                let email = null;
-                const { data: userData } = await supabase
-                    .from('users')
-                    .select('email')
-                    .eq('employee_id', emp.id)
+                const { data: joinData, error: joinError } = await supabase
+                    .from('tenants_employee')
+                    .select(`
+                        id,
+                        display_name,
+                        photo_url,
+                        chat_background_image_url,
+                        mobile,
+                        phone,
+                        phone_ext,
+                        bonuses_role,
+                        official_name,
+                        linkedin_url,
+                        department_id,
+                        tenant_departement!department_id (
+                            name
+                        )
+                    `)
+                    .eq('id', parsedId)
                     .maybeSingle();
 
-                if (userData) {
-                    email = userData.email;
+                if (joinError && joinError.code !== 'PGRST116') {
+                    console.error('BusinessCardPage: Both queries failed. Simple error:', employeeError, 'Join error:', joinError);
+                    // Don't throw, just set loading to false and let it show "Profile Not Found"
+                    setLoading(false);
+                    return;
                 }
 
-                const profileData = {
-                    id: emp.id,
-                    display_name: emp.display_name,
-                    photo_url: emp.photo_url,
-                    chat_background_image_url: emp.chat_background_image_url,
-                    mobile: emp.mobile || '',
-                    phone: emp.phone || '',
-                    phone_ext: emp.phone_ext || '',
-                    email: email,
-                    department_name: emp.tenant_departement?.name || 'General',
-                    bonuses_role: emp.bonuses_role || 'Employee',
-                    official_name: emp.official_name || emp.display_name,
-                    linkedin_url: emp.linkedin_url || null,
-                };
-
-                setProfile(profileData);
+                if (joinData) {
+                    employeeData = joinData;
+                }
             }
+
+            if (!employeeData) {
+                console.error('BusinessCardPage: No employee found with id:', parsedId);
+                setLoading(false);
+                return;
+            }
+
+            const emp = employeeData as any;
+
+            // Fetch department name separately if join didn't work
+            let departmentName = 'General';
+            if (emp.tenant_departement?.name) {
+                departmentName = emp.tenant_departement.name;
+            } else if (emp.department_id) {
+                const { data: deptData } = await supabase
+                    .from('tenant_departement')
+                    .select('name')
+                    .eq('id', emp.department_id)
+                    .maybeSingle();
+                if (deptData?.name) {
+                    departmentName = deptData.name;
+                }
+            }
+
+            // Fetch email from users table
+            let email = null;
+            const { data: userData, error: userError } = await supabase
+                .from('users')
+                .select('email')
+                .eq('employee_id', emp.id)
+                .maybeSingle();
+
+            if (userError) {
+                console.warn('BusinessCardPage: Error fetching user email:', userError);
+            } else if (userData) {
+                email = userData.email;
+            }
+
+            const profileData = {
+                id: emp.id,
+                display_name: emp.display_name,
+                photo_url: emp.photo_url,
+                chat_background_image_url: emp.chat_background_image_url,
+                mobile: emp.mobile || '',
+                phone: emp.phone || '',
+                phone_ext: emp.phone_ext || '',
+                email: email,
+                department_name: departmentName,
+                bonuses_role: emp.bonuses_role || 'Employee',
+                official_name: emp.official_name || emp.display_name,
+                linkedin_url: emp.linkedin_url || null,
+            };
+
+            console.log('BusinessCardPage: Profile loaded successfully:', profileData.display_name);
+            setProfile(profileData);
         } catch (error) {
-            console.error('Error fetching profile:', error);
+            console.error('BusinessCardPage: Error fetching profile:', error);
         } finally {
             setLoading(false);
         }
@@ -272,9 +362,9 @@ const BusinessCardPage: React.FC = () => {
                                     {profile.official_name}
                                 </h1>
 
-                                {/* Role and Department */}
+                                {/* Department */}
                                 <p className="text-base md:text-2xl text-white/95 mb-3 md:mb-4 drop-shadow-lg font-medium px-2">
-                                    {getRoleDisplay(profile.bonuses_role)} • {profile.department_name} Department
+                                    {profile.department_name} Department
                                 </p>
 
                                 {/* Company Name */}

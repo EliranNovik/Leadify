@@ -11,8 +11,8 @@ import { Color } from '@tiptap/extension-color';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
-import { PrinterIcon, ArrowDownTrayIcon, ShareIcon, PhoneIcon, ArrowDownIcon } from '@heroicons/react/24/outline';
-import { FaWhatsapp, FaEnvelope } from 'react-icons/fa';
+import { PrinterIcon, ArrowDownTrayIcon, ShareIcon, PhoneIcon, ArrowDownIcon, EnvelopeIcon, DevicePhoneMobileIcon, ArrowsRightLeftIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { FaWhatsapp, FaEnvelope, FaLinkedin } from 'react-icons/fa';
 
 // Lazy load html2pdf only when needed (for PDF download)
 let html2pdf: any = null;
@@ -238,6 +238,21 @@ const PublicContractView: React.FC = () => {
   const [activeApplicantFields, setActiveApplicantFields] = useState<string[]>([]); // Fields that are currently visible (can be added/removed)
   const [dynamicApplicantFieldCounter, setDynamicApplicantFieldCounter] = useState(0); // Counter for generating new field IDs
   const [leadNumber, setLeadNumber] = useState<string | null>(null);
+  const [closerEmployee, setCloserEmployee] = useState<any>(null);
+  const [showCloserModal, setShowCloserModal] = useState(false);
+  const [isCardVisible, setIsCardVisible] = useState(false);
+
+  // Trigger card visibility animation when modal opens
+  useEffect(() => {
+    if (showCloserModal) {
+      const timer = setTimeout(() => {
+        setIsCardVisible(true);
+      }, 50);
+      return () => clearTimeout(timer);
+    } else {
+      setIsCardVisible(false);
+    }
+  }, [showCloserModal]);
 
   // Ref for contract content area (for PDF generation)
   const contractContentRef = useRef<HTMLDivElement>(null);
@@ -332,7 +347,7 @@ const PublicContractView: React.FC = () => {
 
     const clientName = contract?.contact_name || client?.name || 'Client';
     const contractTitle = `Contract for ${clientName} - Decker Pex Levi Law Offices`;
-    const contractDescription = `Please review and sign your legal contract. This is a secure document from Decker Pex Levi Law Office.`;
+    const contractDescription = `Please review and sign your legal contract. This is a secure document from Decker Pex Levi Law Offices.`;
     const contractUrl = window.location.href;
     const siteUrl = 'https://rainmakerqueen.org';
 
@@ -353,7 +368,7 @@ const PublicContractView: React.FC = () => {
     updateMetaTag('og:description', contractDescription);
     updateMetaTag('og:url', contractUrl);
     updateMetaTag('og:type', 'website');
-    updateMetaTag('og:site_name', 'De Law Office');
+    updateMetaTag('og:site_name', 'Decker Pex Levi Law Offices');
     updateMetaTag('og:image', `${siteUrl}/RMQ_LOGO.png`);
 
     // Twitter Card tags
@@ -542,6 +557,9 @@ const PublicContractView: React.FC = () => {
                   : null;
                 setLeadNumber(formattedLeadNumber);
               }
+
+              // Fetch closer employee
+              fetchCloserEmployee(clientData, contractData.legacy_id ? 'legacy' : 'new');
             }
           }).catch(err => {
             console.error('Error fetching client data:', err);
@@ -871,6 +889,138 @@ const PublicContractView: React.FC = () => {
     }
   };
 
+  // Fetch closer employee
+  const fetchCloserEmployee = async (clientData: any, leadType: 'legacy' | 'new') => {
+    try {
+      let closerId: number | null = null;
+      let closerDisplayName: string | null = null;
+
+      if (leadType === 'legacy') {
+        // For legacy leads, fetch closer_id from leads_lead
+        const { data: legacyLeadData } = await supabase
+          .from('leads_lead')
+          .select('closer_id')
+          .eq('id', clientData.id)
+          .single();
+
+        if (legacyLeadData?.closer_id) {
+          closerId = legacyLeadData.closer_id;
+        }
+      } else {
+        // For new leads, fetch closer from leads table (it's a display name string)
+        const { data: newLeadData } = await supabase
+          .from('leads')
+          .select('closer')
+          .eq('id', clientData.id)
+          .single();
+
+        if (newLeadData?.closer && newLeadData.closer.trim() !== '' && newLeadData.closer !== '---') {
+          closerDisplayName = newLeadData.closer.trim();
+        }
+      }
+
+      // Fetch employee data
+      if (closerId) {
+        const { data: employeeData, error: employeeError } = await supabase
+          .from('tenants_employee')
+          .select(`
+            id,
+            display_name,
+            photo_url,
+            chat_background_image_url,
+            mobile,
+            phone,
+            phone_ext,
+            bonuses_role,
+            official_name,
+            linkedin_url,
+            department_id,
+            tenant_departement!department_id (
+              name
+            )
+          `)
+          .eq('id', closerId)
+          .single();
+
+        if (!employeeError && employeeData) {
+          // Fetch email from users table
+          const { data: userData } = await supabase
+            .from('users')
+            .select('email')
+            .eq('employee_id', employeeData.id)
+            .maybeSingle();
+
+          const profileData = {
+            id: employeeData.id,
+            display_name: employeeData.display_name,
+            photo_url: employeeData.photo_url,
+            chat_background_image_url: employeeData.chat_background_image_url,
+            mobile: employeeData.mobile || '',
+            phone: employeeData.phone || '',
+            phone_ext: employeeData.phone_ext || '',
+            email: userData?.email || null,
+            department_name: (employeeData as any).tenant_departement?.name || 'General',
+            bonuses_role: employeeData.bonuses_role || 'Employee',
+            official_name: employeeData.official_name || employeeData.display_name,
+            linkedin_url: employeeData.linkedin_url || null,
+          };
+
+          setCloserEmployee(profileData);
+        }
+      } else if (closerDisplayName) {
+        // Find employee by display name
+        const { data: employeeData, error: employeeError } = await supabase
+          .from('tenants_employee')
+          .select(`
+            id,
+            display_name,
+            photo_url,
+            chat_background_image_url,
+            mobile,
+            phone,
+            phone_ext,
+            bonuses_role,
+            official_name,
+            linkedin_url,
+            department_id,
+            tenant_departement!department_id (
+              name
+            )
+          `)
+          .eq('display_name', closerDisplayName)
+          .single();
+
+        if (!employeeError && employeeData) {
+          // Fetch email from users table
+          const { data: userData } = await supabase
+            .from('users')
+            .select('email')
+            .eq('employee_id', employeeData.id)
+            .maybeSingle();
+
+          const profileData = {
+            id: employeeData.id,
+            display_name: employeeData.display_name,
+            photo_url: employeeData.photo_url,
+            chat_background_image_url: employeeData.chat_background_image_url,
+            mobile: employeeData.mobile || '',
+            phone: employeeData.phone || '',
+            phone_ext: employeeData.phone_ext || '',
+            email: userData?.email || null,
+            department_name: (employeeData as any).tenant_departement?.name || 'General',
+            bonuses_role: employeeData.bonuses_role || 'Employee',
+            official_name: employeeData.official_name || employeeData.display_name,
+            linkedin_url: employeeData.linkedin_url || null,
+          };
+
+          setCloserEmployee(profileData);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching closer employee:', error);
+    }
+  };
+
   // Share contract handler (uses Web Share API on mobile and desktop when available)
   const handleShareContract = async () => {
     if (!contract) return;
@@ -878,7 +1028,7 @@ const PublicContractView: React.FC = () => {
     const contractUrl = window.location.href;
     const clientName = contract?.contact_name || client?.name || 'Client';
     const contractTitle = `Contract for ${clientName} - Decker Pex Levi Law Offices`;
-    const shareText = `You have been invited to review and sign a legal contract from Decker Pex Levi Law Office. This is a secure link - please review the contract and sign if you agree to the terms.`;
+    const shareText = `You have been invited to review and sign a legal contract from Decker Pex Levi Law Offices. This is a secure link - please review the contract and sign if you agree to the terms.`;
 
     // Try Web Share API first (works on mobile and some desktop browsers)
     if (navigator.share) {
@@ -2068,7 +2218,7 @@ const PublicContractView: React.FC = () => {
       </header>
 
       {/* Main Content with top padding to account for fixed header */}
-      <div className="pt-32 md:pt-36 px-2 py-4 md:flex md:items-center md:justify-center md:py-8 pb-20 md:pb-8">
+      <div className="pt-32 md:pt-36 px-2 py-4 md:flex md:items-center md:justify-center md:py-8 pb-32 md:pb-8">
         <div className="w-full max-w-6xl md:bg-white md:rounded-lg md:shadow-lg md:border md:border-gray-200 p-4 md:p-8 relative">
           {/* Share button in top right corner - removed since we have it in floating buttons on desktop */}
 
@@ -2136,11 +2286,11 @@ const PublicContractView: React.FC = () => {
       </div>
 
       {/* Footer */}
-      <footer className="bg-white border-t border-gray-200 mt-16 md:mt-24 print-hide">
-        <div className="max-w-5xl mx-auto px-4 py-16 md:py-20 md:px-8">
-          <div className="flex flex-col items-center justify-center gap-8">
+      <footer className="bg-white border-t border-gray-200 mt-8 md:mt-24 print-hide">
+        <div className="max-w-5xl mx-auto px-4 py-8 md:py-20 md:px-8">
+          <div className="flex flex-col items-center justify-center gap-4 md:gap-8">
             {/* Company Info & Addresses */}
-            <div className="text-center space-y-3">
+            <div className="text-center space-y-2 md:space-y-3">
               <div className="flex items-center justify-center gap-3">
                 <img src="/DPL-LOGO1.png" alt="DPL Logo" className="h-12 w-auto object-contain" />
                 <p className="font-bold text-xl text-gray-900">Decker, Pex, Levi Law Offices</p>
@@ -2153,7 +2303,7 @@ const PublicContractView: React.FC = () => {
             </div>
           </div>
 
-          <div className="mt-12 pt-8 border-t border-gray-100 text-center text-xs text-gray-400">
+          <div className="mt-6 md:mt-12 pt-4 md:pt-8 border-t border-gray-100 text-center text-xs text-gray-400">
             RMQ 2.0 - Copyright © {new Date().getFullYear()} - All right reserved
           </div>
         </div>
@@ -2161,6 +2311,26 @@ const PublicContractView: React.FC = () => {
 
       {/* Floating Contact Buttons (Right Side Center) - Desktop Only */}
       <div className="hidden md:flex fixed right-4 md:right-6 top-1/2 -translate-y-1/2 flex-col items-end gap-3 md:gap-4 z-50 print-hide">
+        {/* Closer Employee Button */}
+        {closerEmployee && (
+          <div className="flex items-center gap-3">
+            <span className="text-sm md:text-base font-medium text-gray-700 whitespace-nowrap">
+              {closerEmployee.official_name}
+            </span>
+            <button
+              onClick={() => setShowCloserModal(true)}
+              className="btn btn-circle btn-md md:btn-lg bg-white border-2 border-gray-300 hover:border-gray-400 shadow-lg hover:scale-110 transition-transform overflow-hidden p-0"
+              title={`View ${closerEmployee.official_name}'s business card`}
+            >
+              <img
+                src={closerEmployee.photo_url || 'https://ui-avatars.com/api/?background=random'}
+                alt={closerEmployee.official_name}
+                className="w-full h-full object-cover"
+              />
+            </button>
+          </div>
+        )}
+
         {/* Professional Text */}
         <div className="bg-white/90 backdrop-blur-sm rounded-lg px-4 py-3 shadow-lg border border-gray-200 max-w-[200px] mb-2">
           <p className="text-sm font-medium text-gray-700 leading-relaxed text-right">
@@ -2168,13 +2338,6 @@ const PublicContractView: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={handleShareContract}
-          className="btn btn-circle btn-md md:btn-lg bg-indigo-600 text-white border-none hover:bg-indigo-700 shadow-lg hover:scale-110 transition-transform"
-          title="Share contract"
-        >
-          <ShareIcon className="w-5 h-5 md:w-8 md:h-8" />
-        </button>
         <a
           href="https://wa.me/972552780162"
           target="_blank"
@@ -2192,7 +2355,7 @@ const PublicContractView: React.FC = () => {
           <FaEnvelope className="w-5 h-5 md:w-8 md:h-8" />
         </a>
         <a
-          href="tel:+972503489649"
+          href="tel:+972737895444"
           className="btn btn-circle btn-md md:btn-lg bg-purple-600 text-white border-none hover:bg-purple-700 shadow-lg hover:scale-110 transition-transform"
           title="Call Office"
         >
@@ -2201,18 +2364,43 @@ const PublicContractView: React.FC = () => {
       </div>
 
       {/* Scroll to Date Button - Mobile: Bottom Right, Centered Vertically | Desktop: Top Right, Next to Header */}
-      <button
-        onClick={scrollToDateField}
-        className="fixed right-4 bottom-1/2 -translate-y-1/2 md:bottom-auto md:top-4 md:right-6 md:translate-y-0 z-40 print-hide btn btn-circle btn-md md:btn-lg bg-green-800 text-white border-none hover:bg-green-900 shadow-lg hover:scale-110 transition-transform"
-        title="Scroll to date field"
-      >
-        <ArrowDownIcon className="w-6 h-6 md:w-8 md:h-8" />
-      </button>
+      <div className="fixed right-4 bottom-1/2 -translate-y-1/2 md:bottom-auto md:top-4 md:right-6 md:translate-y-0 z-40 print-hide flex flex-col gap-3 md:gap-4">
+        <button
+          onClick={scrollToDateField}
+          className="btn btn-circle btn-md md:btn-lg bg-green-800 text-white border-none hover:bg-green-900 shadow-lg hover:scale-110 transition-transform"
+          title="Scroll to date field"
+        >
+          <ArrowDownIcon className="w-6 h-6 md:w-8 md:h-8" />
+        </button>
+
+        {/* Share Button - Desktop Only, Below Arrow Button */}
+        <button
+          onClick={handleShareContract}
+          className="hidden md:flex btn btn-circle btn-md md:btn-lg bg-indigo-600 text-white border-none hover:bg-indigo-700 shadow-lg hover:scale-110 transition-transform"
+          title="Share contract"
+        >
+          <ShareIcon className="w-5 h-5 md:w-8 md:h-8" />
+        </button>
+      </div>
 
       {/* Mobile Bottom Oval Box with Contact Buttons */}
       <div className="md:hidden fixed bottom-4 left-1/2 -translate-x-1/2 z-50 print-hide">
         <div className="bg-white/20 backdrop-blur-md rounded-full border border-white/30 shadow-lg">
           <div className="flex items-center justify-center gap-3 md:gap-4 px-4 md:px-6 py-2.5 md:py-3">
+            {/* Closer Employee Button - Mobile */}
+            {closerEmployee && (
+              <button
+                onClick={() => setShowCloserModal(true)}
+                className="btn btn-ghost btn-circle text-black hover:bg-white/20 overflow-hidden p-0"
+                title={`View ${closerEmployee.official_name}'s business card`}
+              >
+                <img
+                  src={closerEmployee.photo_url || 'https://ui-avatars.com/api/?background=random'}
+                  alt={closerEmployee.official_name}
+                  className="w-8 h-8 rounded-full object-cover"
+                />
+              </button>
+            )}
             <button
               onClick={handleShareContract}
               className="btn btn-ghost btn-circle text-black hover:bg-white/20"
@@ -2510,6 +2698,154 @@ const PublicContractView: React.FC = () => {
           font-weight: 600;
         }
       `}</style>
+
+      {/* Business Card Modal */}
+      {showCloserModal && closerEmployee && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm print-hide"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowCloserModal(false);
+            }
+          }}
+        >
+          <div className="relative w-full max-w-[95vw] md:max-w-6xl max-h-[90vh] overflow-hidden bg-transparent rounded-2xl shadow-2xl">
+            {/* Close Button */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowCloserModal(false);
+              }}
+              className="absolute top-4 right-4 z-[110] btn btn-circle btn-sm bg-black/60 text-white border-none hover:bg-black/80 backdrop-blur-md"
+            >
+              <XMarkIcon className="w-5 h-5" />
+            </button>
+
+            {/* Business Card Content */}
+            <div
+              className="relative w-full min-h-[400px] md:min-h-[630px] transition-all duration-700 ease-out overflow-hidden rounded-2xl"
+              style={{
+                perspective: '1000px',
+                animation: isCardVisible ? 'cardTilt 3s ease-in-out' : 'none',
+                opacity: isCardVisible ? 1 : 0,
+                transform: isCardVisible ? 'scale(1)' : 'scale(0.95)',
+              }}
+            >
+              <style>{`
+                @keyframes cardTilt {
+                  0% {
+                    transform: perspective(1000px) rotateX(0deg) rotateY(0deg);
+                  }
+                  25% {
+                    transform: perspective(1000px) rotateX(0deg) rotateY(-2deg);
+                  }
+                  50% {
+                    transform: perspective(1000px) rotateX(0deg) rotateY(2deg);
+                  }
+                  75% {
+                    transform: perspective(1000px) rotateX(0deg) rotateY(-1deg);
+                  }
+                  100% {
+                    transform: perspective(1000px) rotateX(0deg) rotateY(0deg);
+                  }
+                }
+              `}</style>
+              {/* Background Image with Overlay */}
+              <div
+                className="absolute inset-0 bg-cover bg-center"
+                style={{
+                  backgroundImage: `url(${closerEmployee.chat_background_image_url || 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?ixlib=rb-4.0.3&auto=format&fit=crop&w=2070&q=80'})`,
+                }}
+              >
+                <div className="absolute inset-0 bg-gradient-to-br from-black/60 via-black/50 to-black/60"></div>
+              </div>
+
+              {/* Logo - Top Left */}
+              <div className="absolute top-4 left-4 md:top-6 md:left-6 z-10">
+                <img
+                  src="/DPLOGO1.png"
+                  alt="DPL Logo"
+                  className="h-8 md:h-14 drop-shadow-2xl"
+                />
+              </div>
+
+              {/* Centered Content Container */}
+              <div className="relative z-10 h-full flex items-center justify-center px-4 py-6 md:py-8 md:px-16 md:py-12 min-h-[400px] md:min-h-[630px]">
+                <div className="text-center text-white max-w-3xl w-full -mt-8 md:-mt-12">
+                  {/* Profile Image - Centered above name */}
+                  <div className="flex justify-center md:justify-center mb-4 md:mb-6 ml-4 md:ml-0">
+                    <div className="w-24 h-24 md:w-40 md:h-40 rounded-full shadow-2xl overflow-hidden">
+                      <img
+                        src={closerEmployee.photo_url || 'https://ui-avatars.com/api/?background=random'}
+                        alt={closerEmployee.official_name}
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Name */}
+                  <h1 className="text-3xl md:text-6xl font-bold mb-2 md:mb-3 drop-shadow-2xl tracking-tight px-2">
+                    {closerEmployee.official_name}
+                  </h1>
+
+                  {/* Department */}
+                  <p className="text-base md:text-2xl text-white/95 mb-3 md:mb-4 drop-shadow-lg font-medium px-2">
+                    {closerEmployee.department_name} Department
+                  </p>
+
+                  {/* Company Name */}
+                  <p className="text-sm md:text-xl text-white/90 mb-4 md:mb-8 drop-shadow-md font-semibold px-2">
+                    Decker, Pex, Levi Law Offices
+                  </p>
+
+                  {/* Contact Information */}
+                  <div className="flex flex-col md:flex-row items-center justify-center gap-3 md:gap-6 mt-4 md:mt-8 px-2">
+                    {closerEmployee.email && (
+                      <a
+                        href={`mailto:${closerEmployee.email}`}
+                        className="flex items-center gap-2 md:gap-3 bg-white/10 backdrop-blur-md px-3 py-2 md:px-5 md:py-2.5 rounded-full border border-white/20 shadow-lg hover:bg-white/20 transition-all cursor-pointer w-full md:w-auto justify-center"
+                      >
+                        <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 text-white flex-shrink-0" />
+                        <span className="text-xs md:text-base font-medium break-all">{closerEmployee.email}</span>
+                      </a>
+                    )}
+                    {closerEmployee.mobile && (
+                      <a
+                        href={`tel:${closerEmployee.mobile}`}
+                        className="flex items-center gap-2 md:gap-3 bg-white/10 backdrop-blur-md px-3 py-2 md:px-5 md:py-2.5 rounded-full border border-white/20 shadow-lg hover:bg-white/20 transition-all cursor-pointer w-full md:w-auto justify-center"
+                      >
+                        <DevicePhoneMobileIcon className="w-4 h-4 md:w-5 md:h-5 text-white flex-shrink-0" />
+                        <span className="text-xs md:text-base font-medium">{closerEmployee.mobile}</span>
+                      </a>
+                    )}
+                    {closerEmployee.phone && (
+                      <a
+                        href={`tel:${closerEmployee.phone}`}
+                        className="flex items-center gap-2 md:gap-3 bg-white/10 backdrop-blur-md px-3 py-2 md:px-5 md:py-2.5 rounded-full border border-white/20 shadow-lg hover:bg-white/20 transition-all cursor-pointer w-full md:w-auto justify-center"
+                      >
+                        <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 text-white flex-shrink-0" />
+                        <span className="text-xs md:text-base font-medium">
+                          {closerEmployee.phone}
+                          {closerEmployee.phone_ext && <span className="ml-2 text-white/80">Ext: {closerEmployee.phone_ext}</span>}
+                        </span>
+                      </a>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Addresses - Bottom */}
+              <div className="hidden md:block absolute bottom-6 left-0 right-0 z-10">
+                <div className="flex flex-row items-center justify-center gap-6 text-white/90 text-sm drop-shadow-md">
+                  <span>Yad Harutzim 10, Jerusalem, Israel</span>
+                  <span className="text-white/60">•</span>
+                  <span>Menachem Begin Rd. 150, Tel Aviv, Israel</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
