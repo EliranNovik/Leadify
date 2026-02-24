@@ -10214,6 +10214,8 @@ const Clients: React.FC<ClientsProps> = ({
   // Add state for sub-leads
   const [subLeads, setSubLeads] = useState<any[]>([]);
   const [isMasterLead, setIsMasterLead] = useState(false);
+  // State for master's sub-leads count when viewing a sub-lead
+  const [masterSubLeadsCount, setMasterSubLeadsCount] = useState<number>(0);
 
   // After extracting fullLeadNumber
   // Check if this is a sub-lead by looking at the lead_number in the database
@@ -10796,6 +10798,145 @@ const Clients: React.FC<ClientsProps> = ({
       setNextDuePayment(null);
     }
   }, []);
+
+  // Fetch master's sub-leads count when viewing a sub-lead
+  useEffect(() => {
+    const fetchMasterSubLeadsCount = async () => {
+      if (!isSubLead || !masterLeadNumber || !selectedClient) {
+        console.log('🔍 fetchMasterSubLeadsCount - Early return:', { isSubLead, masterLeadNumber, hasSelectedClient: !!selectedClient });
+        setMasterSubLeadsCount(0);
+        return;
+      }
+
+      console.log('🔍 fetchMasterSubLeadsCount - Starting fetch:', {
+        isSubLead,
+        masterLeadNumber,
+        selectedClientId: selectedClient?.id,
+        selectedClientMasterId: selectedClient?.master_id,
+        leadType: selectedClient?.lead_type
+      });
+
+      try {
+        const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+        let count = 0;
+
+        if (isLegacyLead) {
+          // For legacy leads, count sub-leads in leads_lead table
+          const masterId = parseInt(masterLeadNumber.replace(/^C/, ''), 10);
+          if (!isNaN(masterId)) {
+            const { count: subLeadsCount, error } = await supabase
+              .from('leads_lead')
+              .select('id', { count: 'exact', head: true })
+              .eq('master_id', masterId)
+              .not('master_id', 'is', null);
+            
+            if (error) {
+              console.error('Error counting legacy sub-leads:', error);
+            } else {
+              count = subLeadsCount || 0;
+              console.log('🔍 Master sub-leads count (legacy):', { masterId, count });
+            }
+          }
+        } else {
+          // For new leads, count sub-leads in leads table
+          // Use master_id directly from selectedClient (most reliable approach)
+          if (selectedClient?.master_id) {
+            const masterId = selectedClient.master_id.toString();
+            // Check if it's a UUID (new lead) or numeric ID (legacy)
+            if (masterId && !masterId.startsWith('legacy_')) {
+              // Directly count sub-leads using master_id
+              const { count: subLeadsCount, error } = await supabase
+                .from('leads')
+                .select('id', { count: 'exact', head: true })
+                .eq('master_id', masterId);
+              
+              if (error) {
+                console.error('Error counting new sub-leads:', error);
+              } else {
+                count = subLeadsCount || 0;
+                console.log('🔍 Master sub-leads count (new, using master_id):', { 
+                  masterId, 
+                  masterLeadNumber, 
+                  count,
+                  selectedClientId: selectedClient?.id
+                });
+              }
+            } else {
+              console.warn('🔍 Master ID is legacy or invalid:', masterId);
+            }
+          } else {
+            // Fallback: Try to find master by lead_number
+            console.log('🔍 No master_id found, trying to find master by lead_number:', masterLeadNumber);
+            let masterLead: any = null;
+            
+            // Try lead_number exact match
+            const { data: masterByLeadNumber } = await supabase
+              .from('leads')
+              .select('id')
+              .eq('lead_number', masterLeadNumber)
+              .maybeSingle();
+            
+            if (masterByLeadNumber) {
+              masterLead = masterByLeadNumber;
+            } else {
+              // Try lead_number with /1 suffix
+              const { data: masterByLeadNumberWithSuffix } = await supabase
+                .from('leads')
+                .select('id')
+                .eq('lead_number', `${masterLeadNumber}/1`)
+                .maybeSingle();
+              
+              if (masterByLeadNumberWithSuffix) {
+                masterLead = masterByLeadNumberWithSuffix;
+              } else {
+                // Try manual_id
+                const { data: masterByManualId } = await supabase
+                  .from('leads')
+                  .select('id')
+                  .eq('manual_id', masterLeadNumber)
+                  .maybeSingle();
+                
+                if (masterByManualId) {
+                  masterLead = masterByManualId;
+                }
+              }
+            }
+
+            if (masterLead?.id) {
+              const { count: subLeadsCount, error } = await supabase
+                .from('leads')
+                .select('id', { count: 'exact', head: true })
+                .eq('master_id', masterLead.id);
+              
+              if (error) {
+                console.error('Error counting new sub-leads (fallback):', error);
+              } else {
+                count = subLeadsCount || 0;
+                console.log('🔍 Master sub-leads count (new, fallback):', { 
+                  masterLeadId: masterLead.id, 
+                  masterLeadNumber, 
+                  count
+                });
+              }
+            } else {
+              console.warn('🔍 Could not find master lead for:', { 
+                masterLeadNumber, 
+                selectedClientMasterId: selectedClient?.master_id,
+                selectedClientId: selectedClient?.id
+              });
+            }
+          }
+        }
+
+        setMasterSubLeadsCount(count);
+      } catch (error) {
+        console.error('Error fetching master sub-leads count:', error);
+        setMasterSubLeadsCount(0);
+      }
+    };
+
+    fetchMasterSubLeadsCount();
+  }, [isSubLead, masterLeadNumber, selectedClient?.id, selectedClient?.lead_type, selectedClient?.master_id]);
 
   // Fetch sub-leads when client changes
   useEffect(() => {
@@ -11707,23 +11848,6 @@ const Clients: React.FC<ClientsProps> = ({
       return;
     }
 
-    const masterBaseNumber = (() => {
-      if (selectedClient.lead_number && String(selectedClient.lead_number).trim() !== '') {
-        const trimmed = String(selectedClient.lead_number).trim();
-        return trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
-      }
-      if (selectedClient.master_id && String(selectedClient.master_id).trim() !== '') {
-        const trimmed = String(selectedClient.master_id).trim();
-        return trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
-      }
-      return '';
-    })();
-
-    if (!masterBaseNumber) {
-      toast.error('Unable to determine master lead number for sub-lead creation.');
-      return;
-    }
-
     setIsSavingSubLead(true);
     try {
       // Check if the parent is a legacy lead
@@ -11731,6 +11855,10 @@ const Clients: React.FC<ClientsProps> = ({
 
       // Get parent legacy lead's actual ID if it's a legacy lead
       let parentLegacyId: number | null = null;
+      let parentMasterId: number | null = null;
+      let parentMasterIdForNew: string | number | null = null; // For new leads, store the master lead's ID
+      let masterBaseNumber = '';
+
       if (isLegacyParent) {
         const legacyIdStr = selectedClient.id.toString().replace('legacy_', '');
         parentLegacyId = parseInt(legacyIdStr, 10);
@@ -11739,6 +11867,240 @@ const Clients: React.FC<ClientsProps> = ({
           setIsSavingSubLead(false);
           return;
         }
+
+        // Fetch the parent lead's data to check if it's a sublead (has a master_id)
+        const { data: parentLeadData, error: parentLeadError } = await supabase
+          .from('leads_lead')
+          .select('master_id, manual_id')
+          .eq('id', parentLegacyId)
+          .maybeSingle();
+
+        if (parentLeadError) {
+          console.error('Error fetching parent lead data:', parentLeadError);
+          toast.error('Failed to verify parent lead status.');
+          setIsSavingSubLead(false);
+          return;
+        }
+
+        // If parent has a master_id, it's a sublead - use the master_id as the parent instead
+        if (parentLeadData?.master_id && String(parentLeadData.master_id).trim() !== '') {
+          // Parent is a sub-lead - use its master_id as the parent
+          parentMasterId = Number(parentLeadData.master_id);
+          
+          // Fetch the master lead's data to get its manual_id for masterBaseNumber
+          const { data: masterLeadData, error: masterLeadError } = await supabase
+            .from('leads_lead')
+            .select('manual_id')
+            .eq('id', parentMasterId)
+            .maybeSingle();
+
+          if (masterLeadError) {
+            console.error('Error fetching master lead data:', masterLeadError);
+            toast.error('Failed to fetch master lead information.');
+            setIsSavingSubLead(false);
+            return;
+          }
+
+          // Calculate masterBaseNumber from the master lead's manual_id
+          // For legacy leads, if manual_id is not available, use the master lead's ID (which IS the lead number)
+          if (masterLeadData?.manual_id) {
+            const masterManualId = String(masterLeadData.manual_id).trim();
+            masterBaseNumber = masterManualId.includes('/') ? masterManualId.split('/')[0] : masterManualId;
+          } else {
+            // Fallback: For legacy leads, the ID field IS the lead number
+            masterBaseNumber = String(parentMasterId);
+          }
+        } else {
+          // Parent is a master lead or standalone lead (no master_id) - use parent's ID as master_id
+          parentMasterId = parentLegacyId;
+          
+          // Calculate masterBaseNumber from parent's manual_id
+          if (parentLeadData?.manual_id) {
+            const parentManualId = String(parentLeadData.manual_id).trim();
+            masterBaseNumber = parentManualId.includes('/') ? parentManualId.split('/')[0] : parentManualId;
+          } else {
+            // Fallback to using the ID as the base number
+            masterBaseNumber = String(parentLegacyId);
+          }
+        }
+      } else {
+        // For new leads, check if parent is a sublead
+        const { data: parentLeadData, error: parentLeadError } = await supabase
+          .from('leads')
+          .select('master_id, lead_number, manual_id')
+          .eq('id', selectedClient.id)
+          .maybeSingle();
+
+        if (parentLeadError) {
+          console.error('Error fetching parent lead data:', parentLeadError);
+          toast.error('Failed to verify parent lead status.');
+          setIsSavingSubLead(false);
+          return;
+        }
+
+        // If parent has a master_id, it's a sublead - use the master_id as the parent instead
+        if (parentLeadData?.master_id && String(parentLeadData.master_id).trim() !== '') {
+          // Parent is a sub-lead - use the master_id as the parent
+          parentMasterIdForNew = parentLeadData.master_id;
+          
+          // Check if master_id is a UUID format (for new leads, id is UUID)
+          const masterIdStr = String(parentLeadData.master_id).trim();
+          const isUuidFormat = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(masterIdStr);
+          
+          let masterLeadData: any = null;
+          let masterLeadError: any = null;
+
+          if (isUuidFormat) {
+            // master_id is a UUID - query by id
+            const result = await supabase
+              .from('leads')
+              .select('id, lead_number, manual_id')
+              .eq('id', masterIdStr)
+              .maybeSingle();
+            masterLeadData = result.data;
+            masterLeadError = result.error;
+          } else {
+            // master_id is numeric - try multiple strategies to find the master lead
+            let result: any = { data: null, error: null };
+            
+            // Strategy 1: Try by manual_id (exact match)
+            result = await supabase
+              .from('leads')
+              .select('id, lead_number, manual_id')
+              .eq('manual_id', masterIdStr)
+              .maybeSingle();
+            
+            if (result.error || !result.data) {
+              // Strategy 2: Try by lead_number (exact match)
+              result = await supabase
+                .from('leads')
+                .select('id, lead_number, manual_id')
+                .eq('lead_number', masterIdStr)
+                .maybeSingle();
+            }
+            
+            if (result.error || !result.data) {
+              // Strategy 3: Try by lead_number base (without /X suffix)
+              const numericId = masterIdStr.replace(/\/\d+$/, ''); // Remove /X suffix if present
+              if (numericId !== masterIdStr) {
+                result = await supabase
+                  .from('leads')
+                  .select('id, lead_number, manual_id')
+                  .eq('lead_number', numericId)
+                  .maybeSingle();
+              }
+            }
+            
+            if (result.error || !result.data) {
+              // Strategy 4: Try by manual_id that starts with the numeric value
+              result = await supabase
+                .from('leads')
+                .select('id, lead_number, manual_id')
+                .like('manual_id', `${masterIdStr}%`)
+                .maybeSingle();
+            }
+            
+            if (result.error || !result.data) {
+              // Strategy 5: Try by lead_number that starts with the numeric value
+              result = await supabase
+                .from('leads')
+                .select('id, lead_number, manual_id')
+                .like('lead_number', `${masterIdStr}%`)
+                .maybeSingle();
+            }
+            
+            masterLeadData = result.data;
+            masterLeadError = result.error;
+            
+            // If still not found, log for debugging
+            if (!masterLeadData && !masterLeadError) {
+              console.warn('Master lead not found with numeric master_id:', {
+                masterIdStr,
+                parentLeadId: selectedClient.id,
+                parentLeadNumber: selectedClient.lead_number
+              });
+            }
+          }
+          
+          // Update parentMasterIdForNew to use the actual UUID id of the master lead
+          if (masterLeadData?.id) {
+            parentMasterIdForNew = masterLeadData.id;
+          }
+
+          if (masterLeadError) {
+            console.error('Error fetching master lead data:', masterLeadError);
+            toast.error('Failed to fetch master lead information.');
+            setIsSavingSubLead(false);
+            return;
+          }
+
+          if (!masterLeadData) {
+            // Fallback: If master lead not found, infer base number from parent's lead_number
+            // The parent is a sub-lead, so its lead_number should have the format "BASE/X"
+            if (parentLeadData?.lead_number) {
+              const parentLeadNumber = String(parentLeadData.lead_number).trim();
+              const baseFromParent = parentLeadNumber.includes('/') 
+                ? parentLeadNumber.split('/')[0] 
+                : parentLeadNumber;
+              masterBaseNumber = baseFromParent;
+              console.warn('Master lead not found, using base number from parent lead_number:', {
+                parentLeadNumber,
+                inferredBase: masterBaseNumber,
+                masterIdStr
+              });
+            } else if (parentLeadData?.manual_id) {
+              const parentManualId = String(parentLeadData.manual_id).trim();
+              const baseFromParent = parentManualId.includes('/') 
+                ? parentManualId.split('/')[0] 
+                : parentManualId;
+              masterBaseNumber = baseFromParent;
+              console.warn('Master lead not found, using base number from parent manual_id:', {
+                parentManualId,
+                inferredBase: masterBaseNumber,
+                masterIdStr
+              });
+            } else {
+              toast.error('Master lead not found and unable to determine base number from parent.');
+              setIsSavingSubLead(false);
+              return;
+            }
+          } else {
+            // Calculate masterBaseNumber from the master lead's lead_number or manual_id
+            if (masterLeadData?.lead_number) {
+              const masterLeadNumber = String(masterLeadData.lead_number).trim();
+              masterBaseNumber = masterLeadNumber.includes('/') ? masterLeadNumber.split('/')[0] : masterLeadNumber;
+            } else if (masterLeadData?.manual_id) {
+              const masterManualId = String(masterLeadData.manual_id).trim();
+              masterBaseNumber = masterManualId.includes('/') ? masterManualId.split('/')[0] : masterManualId;
+            } else {
+              toast.error('Master lead does not have a lead_number or manual_id.');
+              setIsSavingSubLead(false);
+              return;
+            }
+          }
+        } else {
+          // Parent is a master lead or standalone lead - calculate masterBaseNumber from parent's data
+          if (parentLeadData?.lead_number) {
+            const parentLeadNumber = String(parentLeadData.lead_number).trim();
+            masterBaseNumber = parentLeadNumber.includes('/') ? parentLeadNumber.split('/')[0] : parentLeadNumber;
+          } else if (parentLeadData?.manual_id) {
+            const parentManualId = String(parentLeadData.manual_id).trim();
+            masterBaseNumber = parentManualId.includes('/') ? parentManualId.split('/')[0] : parentManualId;
+          } else if (selectedClient.lead_number) {
+            const trimmed = String(selectedClient.lead_number).trim();
+            masterBaseNumber = trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
+          } else {
+            toast.error('Unable to determine master lead number for sub-lead creation.');
+            setIsSavingSubLead(false);
+            return;
+          }
+        }
+      }
+
+      if (!masterBaseNumber) {
+        toast.error('Unable to determine master lead number for sub-lead creation.');
+        setIsSavingSubLead(false);
+        return;
       }
 
       const manualId = await getNextAvailableManualId();
@@ -11747,9 +12109,9 @@ const Clients: React.FC<ClientsProps> = ({
       const manualIdString = manualId.toString(); // Used for new leads and navigation
       const manualIdForLegacy = isLegacyParent ? Number(manualId) : manualId.toString();
 
-      // Ensure parentLegacyId is properly set and numeric
-      if (isLegacyParent && (!parentLegacyId || isNaN(parentLegacyId))) {
-        toast.error('Invalid parent legacy lead ID.');
+      // Ensure parentMasterId is properly set and numeric for legacy leads
+      if (isLegacyParent && (!parentMasterId || isNaN(parentMasterId))) {
+        toast.error('Invalid parent master lead ID.');
         setIsSavingSubLead(false);
         return;
       }
@@ -11758,11 +12120,11 @@ const Clients: React.FC<ClientsProps> = ({
       // For new leads, use the standard suffix calculation
       let nextSuffix: number;
       if (isLegacyParent) {
-        // Count existing sub-leads with the same master_id
+        // Count existing sub-leads with the same master_id (using parentMasterId, not parentLegacyId)
         const { data: existingSubLeads, error: countError } = await supabase
           .from('leads_lead')
           .select('id')
-          .eq('master_id', parentLegacyId)
+          .eq('master_id', parentMasterId)
           .not('master_id', 'is', null);
 
         if (countError) {
@@ -11779,9 +12141,11 @@ const Clients: React.FC<ClientsProps> = ({
 
       const subLeadNumber = `${masterBaseNumber}/${nextSuffix}`;
 
-      // For legacy leads, master_id should be the parent's actual ID (numeric), not extracted digits
-      // For new leads, use extracted digits or base number
-      const masterIdValue = isLegacyParent ? parentLegacyId : (extractDigits(masterBaseNumber) ?? masterBaseNumber);
+      // For legacy leads, master_id should be the parent's master_id (which is the parent's ID if it's a master lead)
+      // For new leads, if parent was a sub-lead, use the master lead's ID; otherwise use extracted digits or base number
+      const masterIdValue = isLegacyParent 
+        ? parentMasterId 
+        : (parentMasterIdForNew !== null ? parentMasterIdForNew : (extractDigits(masterBaseNumber) ?? masterBaseNumber));
 
       // For sub-leads, use form's category_id first (user may have changed it), then fall back to master lead
       let categoryIdValue: number | null = null;
@@ -12013,6 +12377,50 @@ const Clients: React.FC<ClientsProps> = ({
         // Use the maximum of both, then add 1
         const nextId = Math.max(maxLegacyId, maxLeadsNumber) + 1;
 
+        // Fetch master lead's source_id and language_id for legacy leads
+        let masterSourceId: number | null = null;
+        let masterLanguageId: number | null = null;
+        
+        // Fetch master lead data to get source_id and language_id
+        const { data: masterLeadDataForLegacy, error: masterLeadErrorForLegacy } = await supabase
+          .from('leads_lead')
+          .select('source_id, language_id')
+          .eq('id', parentMasterId)
+          .maybeSingle();
+
+        if (masterLeadErrorForLegacy) {
+          console.error('Error fetching master lead source_id and language_id:', masterLeadErrorForLegacy);
+          // Continue with null values if fetch fails
+        } else if (masterLeadDataForLegacy) {
+          masterSourceId = masterLeadDataForLegacy.source_id || null;
+          masterLanguageId = masterLeadDataForLegacy.language_id || null;
+        }
+
+        // For language_id: Use user's selection if they chose one in the drawer, otherwise use master lead's language_id
+        let finalLanguageId: number | null = masterLanguageId;
+        
+        if (subLeadForm.language && subLeadForm.language.trim() !== '') {
+          // User selected a language in the drawer - convert language name to language_id
+          const { data: languageData, error: languageError } = await supabase
+            .from('misc_language')
+            .select('id')
+            .eq('name', subLeadForm.language.trim())
+            .maybeSingle();
+
+          if (languageError) {
+            console.error('Error fetching language_id for selected language:', languageError);
+            // Fall back to master lead's language_id
+          } else if (languageData?.id) {
+            finalLanguageId = languageData.id;
+          } else {
+            console.warn('Language not found in misc_language table:', subLeadForm.language);
+            // Fall back to master lead's language_id
+          }
+        }
+
+        // For source_id: Always use master lead's source_id
+        const finalSourceId = masterSourceId;
+
         newLeadData = {
           id: nextId, // Manually set the ID (this IS the lead number for legacy leads)
           manual_id: Number(manualIdForLegacy), // Must be numeric (bigint) for leads_lead
@@ -12025,8 +12433,8 @@ const Clients: React.FC<ClientsProps> = ({
           category_id: categoryIdValue,
           topic: subLeadForm.topic || null,
           special_notes: subLeadForm.special_notes || null,
-          source_id: null, // Legacy leads use source_id, not source
-          language_id: null, // Legacy leads use language_id, not language
+          source_id: finalSourceId, // Always use master lead's source_id
+          language_id: finalLanguageId, // Use user's selection if provided, otherwise master lead's language_id
           description: subLeadForm.facts || null, // Legacy leads use 'description' instead of 'facts'
           // Legacy leads don't have 'tags' column
           stage: targetStageId,
@@ -12100,16 +12508,29 @@ const Clients: React.FC<ClientsProps> = ({
       // Create the first contact in leads_contact and lead_leadcontact tables
       if (insertedLead?.id) {
         const insertedLeadId = insertedLead.id;
-        // Get the next available contact ID
-        const { data: maxContactId } = await supabase
-          .from('leads_contact')
-          .select('id')
-          .order('id', { ascending: false })
-          .limit(1)
-          .single();
-
-        const newContactId = maxContactId ? maxContactId.id + 1 : 1;
         const currentDate = new Date().toISOString().split('T')[0];
+
+        // Check if a contact was already created by the database trigger
+        // The trigger automatically creates a contact when a new lead is inserted
+        let existingContactId: number | null = null;
+        let existingRelationshipId: number | null = null;
+        let finalContactId: number | undefined = undefined;
+        
+        if (!isLegacyParent) {
+          // For new leads, check if trigger already created a contact
+          const { data: existingRelationship } = await supabase
+            .from('lead_leadcontact')
+            .select('id, contact_id')
+            .eq('newlead_id', insertedLeadId)
+          .limit(1)
+            .maybeSingle();
+          
+          if (existingRelationship?.contact_id) {
+            existingContactId = existingRelationship.contact_id;
+            existingRelationshipId = existingRelationship.id;
+            console.log('🔍 Found existing contact created by trigger:', existingContactId);
+          }
+        }
 
         // Determine contact details based on which step we came from
         let contactName: string;
@@ -12198,9 +12619,55 @@ const Clients: React.FC<ClientsProps> = ({
           }
         }
 
-        // Insert the first contact
+        // Check if a contact was already created by the database trigger
+        // The trigger automatically creates a contact when a new lead is inserted
+        let finalRelationshipId: number | null = null;
+        
+        if (existingContactId) {
+          // Update the existing contact created by the trigger with complete information
+          console.log('🔍 Updating existing trigger-created contact with complete data:', existingContactId);
+          finalContactId = existingContactId;
+          finalRelationshipId = existingRelationshipId;
+          
+          const updateData: Record<string, any> = {
+            name: contactName,
+            mobile: contactMobile,
+            phone: contactPhone,
+            email: contactEmail,
+            country_id: contactCountryId,
+            udate: currentDate
+          };
+          
+          const { error: updateError } = await supabase
+            .from('leads_contact')
+            .update(updateData)
+            .eq('id', existingContactId);
+          
+          if (updateError) {
+            console.error('Error updating existing contact:', updateError);
+            // Fall through to create new contact if update fails
+            existingContactId = null;
+          } else {
+            console.log('✅ Successfully updated existing contact with complete data');
+          }
+          
+          // Ensure the existing relationship is marked as main
+          if (finalRelationshipId) {
+            const { error: updateMainError } = await supabase
+              .from('lead_leadcontact')
+              .update({ main: 'true' })
+              .eq('id', finalRelationshipId);
+            
+            if (updateMainError) {
+              console.error('Error updating relationship to main:', updateMainError);
+            }
+          }
+        } else {
+          // No existing contact found, create a new one
+          console.log('🔍 Creating new contact (no trigger-created contact found)');
+          
+          // Insert the first contact - let the database sequence handle the ID
         const contactInsertData: Record<string, any> = {
-          id: newContactId,
           name: contactName,
           mobile: contactMobile,
           phone: contactPhone,
@@ -12215,28 +12682,103 @@ const Clients: React.FC<ClientsProps> = ({
           contactInsertData.newlead_id = insertedLeadId;
         }
 
-        const { error: contactError } = await supabase
+          // Insert and get the created contact ID back
+          const { data: insertedContact, error: contactError } = await supabase
           .from('leads_contact')
-          .insert([contactInsertData]);
-
-        if (contactError) {
-          console.error('Error creating contact:', contactError);
-          // Continue even if contact creation fails
-        } else {
-          // Get the next available relationship ID
-          const { data: maxRelationshipId } = await supabase
-            .from('lead_leadcontact')
+            .insert([contactInsertData])
             .select('id')
-            .order('id', { ascending: false })
-            .limit(1)
             .single();
 
-          const newRelationshipId = maxRelationshipId ? maxRelationshipId.id + 1 : 1;
+        if (contactError) {
+            // If duplicate key error, the trigger probably created the contact
+            // Try to find it and use it instead
+            if (contactError.code === '23505') {
+              console.log('🔍 Duplicate key error - trigger may have created contact, searching for it...');
+              
+              if (!isLegacyParent) {
+                // Try to find the contact created by the trigger
+                const { data: triggerContact } = await supabase
+                  .from('lead_leadcontact')
+                  .select('contact_id, id')
+                  .eq('newlead_id', insertedLeadId)
+                  .limit(1)
+                  .maybeSingle();
+                
+                if (triggerContact?.contact_id) {
+                  console.log('🔍 Found trigger-created contact:', triggerContact.contact_id);
+                  finalContactId = triggerContact.contact_id;
+                  finalRelationshipId = triggerContact.id;
+                  
+                  // Update the trigger-created contact with complete information
+                  const updateData: Record<string, any> = {
+                    name: contactName,
+                    mobile: contactMobile,
+                    phone: contactPhone,
+                    email: contactEmail,
+                    country_id: contactCountryId,
+                    udate: currentDate
+                  };
+                  
+                  const { error: updateError } = await supabase
+                    .from('leads_contact')
+                    .update(updateData)
+                    .eq('id', finalContactId);
+                  
+                  if (updateError) {
+                    console.error('Error updating trigger-created contact:', updateError);
+                  } else {
+                    console.log('✅ Successfully updated trigger-created contact');
+                  }
+                } else {
+                  console.error('Error creating contact and could not find trigger-created contact:', contactError);
+                }
+              } else {
+                console.error('Error creating contact (duplicate key for legacy lead):', contactError);
+              }
+            } else {
+          console.error('Error creating contact:', contactError);
+              // Continue even if contact creation fails - don't exit, let the function complete
+            }
+          } else if (insertedContact) {
+            finalContactId = insertedContact.id;
+          
+            // Check if a relationship already exists (trigger may have created it)
+            let existingRel: any = null;
+            if (!isLegacyParent) {
+              const { data: relData } = await supabase
+                .from('lead_leadcontact')
+                .select('id')
+                .eq('newlead_id', insertedLeadId)
+                .eq('contact_id', finalContactId)
+                .maybeSingle();
+              existingRel = relData;
+        } else {
+              const { data: relData } = await supabase
+            .from('lead_leadcontact')
+            .select('id')
+                .eq('lead_id', insertedLeadId)
+                .eq('contact_id', finalContactId)
+                .maybeSingle();
+              existingRel = relData;
+            }
 
-          // Create the relationship, marking it as main
+            if (existingRel) {
+              // Relationship already exists, update it to mark as main
+              console.log('🔍 Relationship already exists, updating it:', existingRel.id);
+              finalRelationshipId = existingRel.id;
+              
+              const { error: updateRelError } = await supabase
+                .from('lead_leadcontact')
+                .update({ main: 'true' })
+                .eq('id', existingRel.id);
+              
+              if (updateRelError) {
+                console.error('Error updating relationship:', updateRelError);
+              }
+            } else {
+              // Create the relationship - let the database sequence handle the ID
           const relationshipData: Record<string, any> = {
-            id: newRelationshipId,
-            contact_id: newContactId,
+                contact_id: finalContactId,
             main: true
           };
 
@@ -12247,20 +12789,159 @@ const Clients: React.FC<ClientsProps> = ({
             relationshipData.newlead_id = insertedLeadId;
           }
 
-          const { error: relationshipError } = await supabase
+              const { data: insertedRelationship, error: relationshipError } = await supabase
             .from('lead_leadcontact')
-            .insert([relationshipData]);
+                .insert([relationshipData])
+                .select('id')
+                .single();
 
           if (relationshipError) {
+                // If duplicate key error, try to find the existing relationship
+                if (relationshipError.code === '23505') {
+                  console.log('🔍 Duplicate key error for relationship, searching for existing one...');
+                  
+                  if (!isLegacyParent) {
+                    const { data: relData } = await supabase
+                      .from('lead_leadcontact')
+                      .select('id')
+                      .eq('newlead_id', insertedLeadId)
+                      .eq('contact_id', finalContactId)
+                      .maybeSingle();
+                    
+                    if (relData) {
+                      finalRelationshipId = relData.id;
+                      // Update it to mark as main
+                      await supabase
+                        .from('lead_leadcontact')
+                        .update({ main: 'true' })
+                        .eq('id', relData.id);
+                    }
+                  } else {
+                    const { data: relData } = await supabase
+                      .from('lead_leadcontact')
+                      .select('id')
+                      .eq('lead_id', insertedLeadId)
+                      .eq('contact_id', finalContactId)
+                      .maybeSingle();
+                    
+                    if (relData) {
+                      finalRelationshipId = relData.id;
+                      // Update it to mark as main
+                      await supabase
+                        .from('lead_leadcontact')
+                        .update({ main: 'true' })
+                        .eq('id', relData.id);
+                    }
+                  }
+                } else {
             console.error('Error creating contact relationship:', relationshipError);
-            // Continue even if relationship creation fails
+                }
+              } else if (insertedRelationship) {
+                finalRelationshipId = insertedRelationship.id;
+              }
+            }
           }
-
-          // For 'sameContract' step, we don't copy or modify the contract
-          // The contract remains linked to the original lead/client
-          // The UI should display contracts from the master lead when viewing sub-leads
-          if (subLeadStep === 'sameContract' && selectedContractId) {
-            console.log('🔍 Sub-lead created with same contract. Contract remains with original lead:', selectedContractId);
+        }
+        
+        // Use finalContactId for contract copying logic below
+        // For 'sameContract' step, copy the contract to the new sub-lead
+        if (subLeadStep === 'sameContract' && selectedContractId && finalContactId) {
+            try {
+              console.log('🔍 Copying contract to sub-lead:', { selectedContractId, insertedLeadId, finalContactId });
+              
+              // Check if this is a legacy contract (starts with 'legacy_')
+              const isLegacyContract = selectedContractId.startsWith('legacy_');
+              
+              if (isLegacyContract) {
+                // For legacy contracts, fetch from lead_leadcontact
+                const legacyContractId = selectedContractId.replace('legacy_', '');
+                const { data: legacyContract, error: legacyError } = await supabase
+                  .from('lead_leadcontact')
+                  .select('contract_html, signed_contract_html, public_token')
+                  .eq('id', legacyContractId)
+                  .single();
+                
+                if (legacyError) {
+                  console.error('Error fetching legacy contract:', legacyError);
+                  toast.error('Failed to copy contract. Please try again.');
+                } else if (legacyContract) {
+                  // Copy the contract HTML to the new contact's lead_leadcontact record
+                  // Find the relationship record we just created
+                  const { data: relationshipRecord } = await supabase
+                    .from('lead_leadcontact')
+                    .select('id')
+                    .eq('contact_id', finalContactId)
+                    .eq(isLegacyParent ? 'lead_id' : 'newlead_id', insertedLeadId)
+                    .single();
+                  
+                  if (relationshipRecord) {
+                    const { error: updateError } = await supabase
+                      .from('lead_leadcontact')
+                      .update({
+                        contract_html: legacyContract.contract_html,
+                        signed_contract_html: legacyContract.signed_contract_html,
+                        public_token: legacyContract.public_token
+                      })
+                      .eq('id', relationshipRecord.id);
+                    
+                    if (updateError) {
+                      console.error('Error copying legacy contract:', updateError);
+                      toast.error('Failed to copy contract. Please try again.');
+                    } else {
+                      console.log('✅ Legacy contract copied successfully');
+                    }
+                  }
+                }
+              } else {
+                // For new contracts, fetch from contracts table and create a copy
+                // Note: New contracts don't have contract_html or signed_contract_html columns
+                // They use templates and client_inputs instead
+                const { data: originalContract, error: contractError } = await supabase
+                  .from('contracts')
+                  .select('template_id, applicant_count, total_amount, status, signed_at, client_country, custom_pricing, client_inputs, contact_name, contact_email, contact_phone, contact_mobile')
+                  .eq('id', selectedContractId)
+                  .single();
+                
+                if (contractError) {
+                  console.error('Error fetching contract:', contractError);
+                  toast.error('Failed to copy contract. Please try again.');
+                } else if (originalContract) {
+                  // Create a new contract record for the sub-lead
+                  // For new contracts, we copy the template and client inputs, not HTML
+                  const newContractData: Record<string, any> = {
+                    client_id: insertedLeadId, // New sub-lead's ID
+                    contact_id: finalContactId, // New contact's ID
+                    template_id: originalContract.template_id,
+                    applicant_count: originalContract.applicant_count,
+                    total_amount: originalContract.total_amount,
+                    status: originalContract.status,
+                    signed_at: originalContract.signed_at,
+                    client_country: originalContract.client_country,
+                    custom_pricing: originalContract.custom_pricing,
+                    client_inputs: originalContract.client_inputs, // Copy client inputs (text fields, signatures, etc.)
+                    contact_name: originalContract.contact_name,
+                    contact_email: originalContract.contact_email,
+                    contact_phone: originalContract.contact_phone,
+                    contact_mobile: originalContract.contact_mobile,
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                  };
+                  
+                  const { error: insertError } = await supabase
+                    .from('contracts')
+                    .insert([newContractData]);
+                  
+                  if (insertError) {
+                    console.error('Error copying contract:', insertError);
+                    toast.error('Failed to copy contract. Please try again.');
+                  } else {
+                    console.log('✅ Contract copied successfully to sub-lead');
+                  }
+                }
+              }
+            } catch (error) {
+              console.error('Error in contract copying logic:', error);
+              toast.error('Failed to copy contract. Please try again.');
           }
         }
       }
@@ -12468,8 +13149,19 @@ const Clients: React.FC<ClientsProps> = ({
               setUserManuallyExpanded(true);
               setIsUnactivatedView(false);
               // Then navigate to ensure we're on the correct route
-              if (selectedClient.lead_number) {
-                navigate(`/clients/${selectedClient.lead_number}`, { replace: false });
+              // Use buildClientRoute to properly handle sub-leads
+              const manualId = selectedClient.manual_id ? String(selectedClient.manual_id) : null;
+              const leadNumber = selectedClient.lead_number ? String(selectedClient.lead_number) : null;
+              const isSubLead = leadNumber && leadNumber.includes('/');
+              
+              // For new leads with sub-leads, use manual_id in path and lead_number in query
+              if (isSubLead && manualId && selectedClient.lead_type !== 'legacy') {
+                const route = `/clients/${encodeURIComponent(manualId)}?lead=${encodeURIComponent(leadNumber)}`;
+                navigate(route, { replace: false });
+              } else if (leadNumber) {
+                // Use buildClientRoute for other cases
+                const route = buildClientRoute(manualId, leadNumber);
+                navigate(route, { replace: false });
               } else if (selectedClient.id) {
                 // Fallback to id if lead_number is not available
                 const leadId = selectedClient.id.toString().replace('legacy_', '');
@@ -13071,13 +13763,26 @@ const Clients: React.FC<ClientsProps> = ({
 
 
           {/* Desktop Header - Using new ClientHeader component */}
+          {/* Calculate total count: for master leads, it's subLeads.length + 1 (master). For sub-leads, we use masterSubLeadsCount which is the master's sub-leads count */}
+          {(() => {
+            const calculatedCount = isMasterLead ? subLeads.length : (isSubLead ? masterSubLeadsCount : 0);
+            console.log('🔍 Clients.tsx - Calculating subLeadsCount for ClientHeader:', {
+              isMasterLead,
+              isSubLead,
+              subLeadsLength: subLeads.length,
+              masterSubLeadsCount,
+              calculatedCount,
+              masterLeadNumber
+            });
+            return null;
+          })()}
           <ClientHeader
             selectedClient={selectedClient}
             refreshClientData={refreshClientData}
             isSubLead={isSubLead}
             masterLeadNumber={masterLeadNumber}
             isMasterLead={isMasterLead}
-            subLeadsCount={subLeads.length}
+            subLeadsCount={isMasterLead ? subLeads.length : (isSubLead ? masterSubLeadsCount : 0)}
             nextDuePayment={nextDuePayment}
             setIsBalanceModalOpen={setIsBalanceModalOpen}
             currentStageName={currentStageName}

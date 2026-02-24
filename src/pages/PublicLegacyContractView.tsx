@@ -161,6 +161,138 @@ const PublicLegacyContractView: React.FC = () => {
     }));
   };
 
+  // Helper function to process signed contract HTML for display (replaces placeholders with filled values)
+  const processSignedContractHtml = (html: string, signedDate?: string): string => {
+    if (!html) return '';
+
+    let processed = html;
+
+    // STEP 1: Extract ALL base64 signature data first (before any cleanup)
+    const base64Matches: string[] = [];
+    const base64Regex = /data:image\/png;base64,[A-Za-z0-9+/=]+/gi;
+    let match;
+    while ((match = base64Regex.exec(html)) !== null) {
+      if (!base64Matches.includes(match[0])) {
+        base64Matches.push(match[0]);
+      }
+    }
+
+    // STEP 2: Remove ALL img tags completely (including broken ones)
+    // This handles both properly formed and broken img tags
+    processed = processed.replace(/<img[^>]*>/gi, '');
+    // Also remove any broken img tag fragments
+    processed = processed.replace(/<img[^<]*/gi, '');
+    processed = processed.replace(/img[^>]*>/gi, '');
+    // Remove any orphaned attributes that might look like img tags
+    processed = processed.replace(/src\s*=\s*["']data:image[^"']*["'][^>]*/gi, '');
+    processed = processed.replace(/alt\s*=\s*["']Signature["'][^>]*/gi, '');
+    processed = processed.replace(/class\s*=\s*["']user-input["'][^>]*/gi, '');
+
+    // STEP 3: Insert proper img tags for each base64 signature found
+    base64Matches.forEach((base64Data, index) => {
+      // Check if this signature is in a right-aligned context by looking at surrounding HTML
+      const sigIndex = processed.search(/חתימת|Signature|{{sig}}/i);
+      const beforeMatch = sigIndex !== -1 ? processed.substring(Math.max(0, sigIndex - 200), sigIndex) : '';
+      const isInRightAlignedContext = /ql-align-right|ql-direction-rtl|hebrew-text/.test(beforeMatch);
+      const alignmentStyle = isInRightAlignedContext ? 'text-align: right; direction: rtl;' : 'text-align: left; direction: ltr;';
+      
+      const imgTag = `<img src="${base64Data}" style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px; margin: 0 4px; background-color: #f0fdf4; max-width: 200px; max-height: 80px; object-fit: contain; ${alignmentStyle}" alt="Signature" />`;
+
+      // Priority 1: Replace {{sig}} placeholder (this is the correct location at the bottom)
+      if (processed.includes('{{sig}}')) {
+        processed = processed.replace('{{sig}}', imgTag);
+      } else {
+        // Priority 2: Look for "חתימת הלקוח" (Client Signature) - this should be at the bottom
+        const clientSigIndex = processed.search(/חתימת\s+הלקוח|Client\s+Signature/i);
+        if (clientSigIndex !== -1) {
+          // Find the end of the paragraph/tag containing "חתימת הלקוח" and insert after it
+          // Look for the closing tag after the signature text
+          let insertPos = processed.indexOf('</p>', clientSigIndex);
+          if (insertPos === -1) {
+            insertPos = processed.indexOf('</div>', clientSigIndex);
+          }
+          if (insertPos === -1) {
+            insertPos = processed.indexOf('>', clientSigIndex);
+            if (insertPos !== -1) insertPos += 1;
+          } else {
+            insertPos += 4; // Move past </p> or </div>
+          }
+          
+          if (insertPos === -1 || insertPos < clientSigIndex) {
+            // Fallback: insert right after the signature text
+            insertPos = clientSigIndex + 20; // Approximate length of "חתימת הלקוח"
+          }
+          
+          processed = processed.substring(0, insertPos) + ' ' + imgTag + processed.substring(insertPos);
+        } else {
+          // Priority 3: Find the LAST occurrence of "חתימת" in the document (should be at bottom)
+          let lastSigIndex = -1;
+          let searchIndex = 0;
+          while (true) {
+            const found = processed.indexOf('חתימת', searchIndex);
+            if (found === -1) break;
+            lastSigIndex = found;
+            searchIndex = found + 1;
+          }
+          
+          if (lastSigIndex !== -1) {
+            // Found last occurrence - insert after the paragraph containing it
+            let insertPos = processed.indexOf('</p>', lastSigIndex);
+            if (insertPos === -1) {
+              insertPos = processed.indexOf('</div>', lastSigIndex);
+            }
+            if (insertPos === -1) {
+              insertPos = processed.indexOf('>', lastSigIndex);
+              if (insertPos !== -1) insertPos += 1;
+            } else {
+              insertPos += 4;
+            }
+            
+            if (insertPos === -1 || insertPos < lastSigIndex) {
+              insertPos = lastSigIndex + 10;
+            }
+            
+            processed = processed.substring(0, insertPos) + ' ' + imgTag + processed.substring(insertPos);
+          } else {
+            // Last resort: append at the very end, before any closing tags
+            // Find the last </p> or </div> and insert before it
+            const lastP = processed.lastIndexOf('</p>');
+            const lastDiv = processed.lastIndexOf('</div>');
+            const lastTag = Math.max(lastP, lastDiv);
+            
+            if (lastTag !== -1) {
+              processed = processed.substring(0, lastTag) + ' ' + imgTag + processed.substring(lastTag);
+            } else {
+              // No closing tags found, just append at the end
+              processed += ' ' + imgTag;
+            }
+          }
+        }
+      }
+    });
+
+    // Replace {{date}} placeholders with the actual signed date (if available)
+    if (signedDate) {
+      const formattedDate = new Date(signedDate).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+      processed = processed.replace(/\{\{date\}\}/g, `<span style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; background-color: #f0fdf4; color: #065f46; font-weight: bold;">${formattedDate}</span>`);
+    } else {
+      // If no date provided, show placeholder
+      processed = processed.replace(/\{\{date\}\}/g, '<span style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; background-color: #f0fdf4; color: #065f46; font-weight: bold;">_____________</span>');
+    }
+
+    // Replace {{text}} placeholders with styled filled text
+    processed = processed.replace(/\{\{text\}\}/g, '<span style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; background-color: #f0fdf4; color: #065f46; font-weight: bold;">_____________</span>');
+
+    // Replace {{sig}} placeholders with signature image display (only if not already replaced by base64)
+    processed = processed.replace(/\{\{sig\}\}/g, '<div style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px; margin: 0 4px; background-color: #f0fdf4; min-width: 200px; min-height: 80px; display: flex; align-items: center; justify-content: center;"><span style="color: #065f46; font-size: 12px;">✓ Signed</span></div>');
+
+    return processed;
+  };
+
   // Helper function to process HTML for editing with input fields
   const processHtmlForEditing = (html: string): string => {
     if (!html) return '';
@@ -487,17 +619,10 @@ const PublicLegacyContractView: React.FC = () => {
   const renderContractContent = (htmlContent: string, isReadOnly: boolean = false) => {
     if (!htmlContent) return null;
     
-    // For signed contracts, first process any base64 signature data
+    // For signed contracts, process the HTML to properly position signatures at the bottom
     if (isReadOnly) {
-      // Handle base64 signature data (data:image/png;base64,...)
-      // We'll process this with context awareness for RTL alignment
-      htmlContent = htmlContent.replace(/data:image\/png;base64,[A-Za-z0-9+/=]+/g, (match, offset, string) => {
-        // Check if this signature is in a right-aligned context by looking at surrounding HTML
-        const beforeMatch = string.substring(Math.max(0, offset - 200), offset);
-        const isInRightAlignedContext = /ql-align-right|ql-direction-rtl|hebrew-text/.test(beforeMatch);
-        const alignmentStyle = isInRightAlignedContext ? 'text-align: right; direction: rtl;' : 'text-align: left; direction: ltr;';
-        return `<img src="${match}" style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px; margin: 0 4px; background-color: #f0fdf4; max-width: 200px; max-height: 80px; object-fit: contain; ${alignmentStyle}" alt="Signature" />`;
-      });
+      // Use the processSignedContractHtml function to handle signatures correctly
+      htmlContent = processSignedContractHtml(htmlContent);
       
       // For read-only mode, render the HTML
       return (

@@ -43,9 +43,102 @@ const processSignedContractHtml = (html: string, signedDate?: string): string =>
 
   let processed = html;
 
-  // First, handle base64 signature data (data:image/png;base64,...) - do this before replacing placeholders
-  processed = processed.replace(/data:image\/png;base64,[A-Za-z0-9+/=]+/g, (match) => {
-    return `<img src="${match}" style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px; margin: 0 4px; background-color: #f0fdf4; max-width: 200px; max-height: 80px; object-fit: contain;" alt="Signature" />`;
+  // STEP 1: Extract ALL base64 signature data first (before any cleanup)
+  const base64Matches: string[] = [];
+  const base64Regex = /data:image\/png;base64,[A-Za-z0-9+/=]+/gi;
+  let match;
+  while ((match = base64Regex.exec(html)) !== null) {
+    if (!base64Matches.includes(match[0])) {
+      base64Matches.push(match[0]);
+    }
+  }
+
+  // STEP 2: Remove ALL img tags completely (including broken ones)
+  // This handles both properly formed and broken img tags
+  processed = processed.replace(/<img[^>]*>/gi, '');
+  // Also remove any broken img tag fragments
+  processed = processed.replace(/<img[^<]*/gi, '');
+  processed = processed.replace(/img[^>]*>/gi, '');
+  // Remove any orphaned attributes that might look like img tags
+  processed = processed.replace(/src\s*=\s*["']data:image[^"']*["'][^>]*/gi, '');
+  processed = processed.replace(/alt\s*=\s*["']Signature["'][^>]*/gi, '');
+  processed = processed.replace(/class\s*=\s*["']user-input["'][^>]*/gi, '');
+
+  // STEP 3: Insert proper img tags for each base64 signature found
+  base64Matches.forEach((base64Data, index) => {
+    const imgTag = `<img src="${base64Data}" style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px; margin: 0 4px; background-color: #f0fdf4; max-width: 200px; max-height: 80px; object-fit: contain;" alt="Signature" />`;
+
+    // Priority 1: Replace {{sig}} placeholder (this is the correct location at the bottom)
+    if (processed.includes('{{sig}}')) {
+      processed = processed.replace('{{sig}}', imgTag);
+    } else {
+      // Priority 2: Look for "חתימת הלקוח" (Client Signature) - this should be at the bottom
+      const clientSigIndex = processed.search(/חתימת\s+הלקוח|Client\s+Signature/i);
+      if (clientSigIndex !== -1) {
+        // Find the end of the paragraph/tag containing "חתימת הלקוח" and insert after it
+        // Look for the closing tag after the signature text
+        let insertPos = processed.indexOf('</p>', clientSigIndex);
+        if (insertPos === -1) {
+          insertPos = processed.indexOf('</div>', clientSigIndex);
+        }
+        if (insertPos === -1) {
+          insertPos = processed.indexOf('>', clientSigIndex);
+          if (insertPos !== -1) insertPos += 1;
+        } else {
+          insertPos += 4; // Move past </p> or </div>
+        }
+
+        if (insertPos === -1 || insertPos < clientSigIndex) {
+          // Fallback: insert right after the signature text
+          insertPos = clientSigIndex + 20; // Approximate length of "חתימת הלקוח"
+        }
+
+        processed = processed.substring(0, insertPos) + ' ' + imgTag + processed.substring(insertPos);
+      } else {
+        // Priority 3: Find the LAST occurrence of "חתימת" in the document (should be at bottom)
+        let lastSigIndex = -1;
+        let searchIndex = 0;
+        while (true) {
+          const found = processed.indexOf('חתימת', searchIndex);
+          if (found === -1) break;
+          lastSigIndex = found;
+          searchIndex = found + 1;
+        }
+
+        if (lastSigIndex !== -1) {
+          // Found last occurrence - insert after the paragraph containing it
+          let insertPos = processed.indexOf('</p>', lastSigIndex);
+          if (insertPos === -1) {
+            insertPos = processed.indexOf('</div>', lastSigIndex);
+          }
+          if (insertPos === -1) {
+            insertPos = processed.indexOf('>', lastSigIndex);
+            if (insertPos !== -1) insertPos += 1;
+          } else {
+            insertPos += 4;
+          }
+
+          if (insertPos === -1 || insertPos < lastSigIndex) {
+            insertPos = lastSigIndex + 10;
+          }
+
+          processed = processed.substring(0, insertPos) + ' ' + imgTag + processed.substring(insertPos);
+        } else {
+          // Last resort: append at the very end, before any closing tags
+          // Find the last </p> or </div> and insert before it
+          const lastP = processed.lastIndexOf('</p>');
+          const lastDiv = processed.lastIndexOf('</div>');
+          const lastTag = Math.max(lastP, lastDiv);
+
+          if (lastTag !== -1) {
+            processed = processed.substring(0, lastTag) + ' ' + imgTag + processed.substring(lastTag);
+          } else {
+            // No closing tags found, just append at the end
+            processed += ' ' + imgTag;
+          }
+        }
+      }
+    }
   });
 
   // Replace {{date}} placeholders with the actual signed date (if available)
@@ -84,6 +177,7 @@ const executeCommand = (command: string, value?: string) => {
 const MasterLeadPage: React.FC = () => {
   const { lead_number } = useParams<{ lead_number: string }>();
   const navigate = useNavigate();
+  const [allEmployees, setAllEmployees] = useState<any[]>([]);
 
   // Persisted state - convert Map to/from array for serialization
   const [contractsDataArray, setContractsDataArray] = usePersistedState<Array<[string, ContractData]>>(
@@ -114,6 +208,31 @@ const MasterLeadPage: React.FC = () => {
     { storage: 'sessionStorage' }
   );
 
+  // Track the current lead number to detect changes and clear old data immediately
+  const currentLeadNumberRef = useRef<string | undefined>(undefined);
+
+  // Clear persisted state immediately when lead_number changes to prevent showing old data
+  useEffect(() => {
+    if (!lead_number) return;
+
+    const decodedLeadNumber = decodeURIComponent(lead_number);
+    const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
+    const prevBaseLeadNumber = currentLeadNumberRef.current
+      ? (currentLeadNumberRef.current.includes('/') ? currentLeadNumberRef.current.split('/')[0] : currentLeadNumberRef.current)
+      : undefined;
+
+    // If lead number changed, clear persisted state immediately
+    if (prevBaseLeadNumber && baseLeadNumber !== prevBaseLeadNumber) {
+      setSubLeads([]);
+      setMasterLeadInfo(null);
+      setContractsDataArray([]);
+      setLoading(true);
+      setSubLeadsLoading(true);
+    }
+
+    currentLeadNumberRef.current = decodedLeadNumber;
+  }, [lead_number, setSubLeads, setMasterLeadInfo, setContractsDataArray]);
+
   // Initialize loading based on whether we have persisted data
   // If we have persisted data that matches, start with loading=false
   const [loading, setLoading] = useState(() => {
@@ -122,39 +241,56 @@ const MasterLeadPage: React.FC = () => {
     return true;
   });
 
-  // Check persisted data on mount and set loading accordingly
+  // Check persisted data on mount and validate it matches current lead_number
+  // Clear immediately if it doesn't match to prevent showing old data
+  // Set loading to true immediately if no matching data found
   useEffect(() => {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:120', message: 'Mount check persisted data', data: { lead_number, hasMasterLeadInfo: !!masterLeadInfo, subLeadsCount: subLeads.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
-    // #endregion
-    if (lead_number && masterLeadInfo && subLeads.length > 0) {
-      const decodedLeadNumber = decodeURIComponent(lead_number);
-      const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
+    if (!lead_number) {
+      // No lead_number, clear any persisted data and set loading
+      if (subLeads.length > 0 || masterLeadInfo) {
+        setSubLeads([]);
+        setMasterLeadInfo(null);
+        setContractsDataArray([]);
+      }
+      setLoading(true);
+      setSubLeadsLoading(true);
+      return;
+    }
+
+    const decodedLeadNumber = decodeURIComponent(lead_number);
+    const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
+
+    // Set loading to true immediately - will be set to false only if we have matching persisted data
+    setLoading(true);
+    setSubLeadsLoading(true);
+
+    // If we have persisted data, validate it matches the current lead
+    if (masterLeadInfo && subLeads.length > 0) {
       const persistedLeadNumber = String(masterLeadInfo.lead_number || masterLeadInfo.id || '');
       const persistedBaseNumber = persistedLeadNumber.includes('/') ? persistedLeadNumber.split('/')[0] : persistedLeadNumber;
 
       // Check if persisted data matches current lead
-      if (persistedBaseNumber === baseLeadNumber || subLeads.some(subLead => {
+      const subLeadMatches = subLeads.some(subLead => {
         const subLeadNumber = String(subLead.lead_number || subLead.id || '');
         const subLeadBase = subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber;
         return subLeadBase === baseLeadNumber || subLeadNumber === baseLeadNumber;
-      })) {
+      });
+
+      const dataMatches = persistedBaseNumber === baseLeadNumber || subLeadMatches;
+
+      if (dataMatches) {
         // We have matching persisted data, set loading to false immediately
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:135', message: 'Setting loading false from persisted data', data: { baseLeadNumber, persistedBaseNumber }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
-        // #endregion
         setLoading(false);
         setSubLeadsLoading(false);
       } else {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:139', message: 'Persisted data does not match', data: { baseLeadNumber, persistedBaseNumber }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
-        // #endregion
+        // Persisted data doesn't match - clear it immediately to prevent showing old data
+        setSubLeads([]);
+        setMasterLeadInfo(null);
+        setContractsDataArray([]);
+        // Loading already set to true above
       }
-    } else {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:143', message: 'No persisted data on mount', data: { hasLeadNumber: !!lead_number, hasMasterLeadInfo: !!masterLeadInfo, subLeadsCount: subLeads.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
-      // #endregion
     }
+    // If no persisted data, loading is already set to true above
   }, []); // Only run on mount
   const [subLeadsLoading, setSubLeadsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -227,6 +363,108 @@ const MasterLeadPage: React.FC = () => {
     );
   };
 
+  // Fetch employees for avatars
+  useEffect(() => {
+    const fetchEmployees = async () => {
+      const { data, error } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name, photo_url, photo')
+        .order('display_name', { ascending: true });
+
+      if (error) {
+        console.error('🔍 Error fetching employees:', error);
+      } else if (data) {
+        console.log('🔍 Fetched employees:', data.length, 'employees');
+        setAllEmployees(data);
+      }
+    };
+    fetchEmployees();
+  }, []);
+
+  // Helper function to get employee by ID
+  const getEmployeeById = (employeeId: string | number | null | undefined) => {
+    if (!employeeId || employeeId === '---' || employeeId === null || employeeId === undefined) {
+      return null;
+    }
+
+    const idAsNumber = typeof employeeId === 'string' ? parseInt(employeeId, 10) : Number(employeeId);
+    if (isNaN(idAsNumber)) {
+      console.log('🔍 getEmployeeById: Invalid employee ID:', employeeId);
+      return null;
+    }
+
+    const employee = allEmployees.find((emp: any) => {
+      const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
+      const empIdNum = typeof empId === 'string' ? parseInt(empId, 10) : Number(empId);
+      if (isNaN(empIdNum)) return false;
+      return empIdNum === idAsNumber;
+    });
+
+    if (!employee) {
+      console.log('🔍 getEmployeeById: Employee not found for ID:', employeeId, 'Available IDs:', allEmployees.map((e: any) => e.id));
+    }
+
+    return employee || null;
+  };
+
+  // Helper function to get employee initials
+  const getEmployeeInitials = (name: string | null | undefined): string => {
+    if (!name || name === '---' || name === '--' || name === 'Not assigned') return '';
+    const parts = name.trim().split(' ');
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+    return name.substring(0, 2).toUpperCase();
+  };
+
+  // Component to render employee avatar
+  const EmployeeAvatar: React.FC<{
+    employeeId: string | number | null | undefined;
+    size?: 'sm' | 'md' | 'lg';
+  }> = ({ employeeId, size = 'sm' }) => {
+    const [imageError, setImageError] = useState(false);
+    const employee = getEmployeeById(employeeId);
+    const sizeClasses = size === 'sm' ? 'w-6 h-6 text-xs' : size === 'md' ? 'w-8 h-8 text-sm' : 'w-12 h-12 text-base';
+
+    if (!employee) {
+      console.log('🔍 EmployeeAvatar: No employee found for ID:', employeeId, 'allEmployees count:', allEmployees.length);
+      return null;
+    }
+
+    const photoUrl = employee.photo_url || employee.photo;
+    const initials = getEmployeeInitials(employee.display_name);
+
+    if (imageError || !photoUrl) {
+      return (
+        <div
+          className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
+          onClick={() => {
+            if (employee.id) {
+              navigate(`/my-profile/${employee.id}`);
+            }
+          }}
+          title={`View ${employee.display_name}'s profile`}
+        >
+          {initials}
+        </div>
+      );
+    }
+
+    return (
+      <img
+        src={photoUrl}
+        alt={employee.display_name}
+        className={`${sizeClasses} rounded-full object-cover flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
+        onClick={() => {
+          if (employee.id) {
+            navigate(`/my-profile/${employee.id}`);
+          }
+        }}
+        onError={() => setImageError(true)}
+        title={`View ${employee.display_name}'s profile`}
+      />
+    );
+  };
 
   // Create agreement button for a lead
   const createAgreementButton = (lead: SubLead, isLegacy: boolean) => {
@@ -288,11 +526,16 @@ const MasterLeadPage: React.FC = () => {
 
       if (newLeadResult.success && newLeadResult.masterLead) {
         setMasterLeadInfo(newLeadResult.masterLead);
-        // Add agreement buttons to sub-leads
-        const subLeadsWithAgreements = (newLeadResult.subLeads || []).map(lead => ({
-          ...lead,
-          agreement: createAgreementButton(lead, false)
-        }));
+        // Add agreement data to sub-leads (store contract ID, not React element)
+        const subLeadsWithAgreements = (newLeadResult.subLeads || []).map(lead => {
+          const lookupKey = lead.id;
+          const contractData = contractsDataMap.get(lookupKey);
+          return {
+            ...lead,
+            agreement: contractData ? contractData.id : '---',
+            agreementIsLegacy: contractData ? contractData.isLegacy : undefined
+          };
+        });
         setSubLeads(subLeadsWithAgreements);
         // #region agent log
         fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:260', message: 'New lead fetch success - setting loading false', data: { duration: Date.now() - fetchStartTime, subLeadsCount: subLeadsWithAgreements.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
@@ -315,11 +558,16 @@ const MasterLeadPage: React.FC = () => {
 
       if (legacyResult.success && legacyResult.masterLead) {
         setMasterLeadInfo(legacyResult.masterLead);
-        // Add agreement buttons to sub-leads
-        const subLeadsWithAgreements = (legacyResult.subLeads || []).map(lead => ({
-          ...lead,
-          agreement: createAgreementButton(lead, true)
-        }));
+        // Add agreement data to sub-leads (store contract ID, not React element)
+        const subLeadsWithAgreements = (legacyResult.subLeads || []).map(lead => {
+          const lookupKey = lead.id.replace('legacy_', '');
+          const contractData = contractsDataMap.get(lookupKey);
+          return {
+            ...lead,
+            agreement: contractData ? contractData.id : '---',
+            agreementIsLegacy: contractData ? contractData.isLegacy : undefined
+          };
+        });
         setSubLeads(subLeadsWithAgreements);
         // #region agent log
         fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:283', message: 'Legacy lead fetch success - setting loading false', data: { duration: Date.now() - fetchStartTime, subLeadsCount: subLeadsWithAgreements.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
@@ -342,6 +590,36 @@ const MasterLeadPage: React.FC = () => {
     }
   }, [lead_number]);
 
+  // Refresh data when page becomes visible (e.g., returning from sub-lead creation)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && lead_number) {
+        // Small delay to ensure we're fully back on the page
+        setTimeout(() => {
+          fetchSubLeads();
+        }, 100);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Also refresh when window gains focus
+    const handleFocus = () => {
+      if (lead_number) {
+        setTimeout(() => {
+          fetchSubLeads();
+        }, 100);
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [lead_number, fetchSubLeads]);
+
   // Track previous lead_number to detect changes
   const prevLeadNumberRef = useRef<string | undefined>(undefined);
   const hasCheckedPersistedDataRef = useRef<string | undefined>(undefined);
@@ -352,6 +630,59 @@ const MasterLeadPage: React.FC = () => {
       console.error('Error initializing stage names:', error);
     });
   }, []);
+
+  // Update agreements when contractsDataMap changes
+  // Store contract identifiers instead of React elements (for sessionStorage serialization)
+  useEffect(() => {
+    if (subLeads.length > 0 && contractsDataMap.size > 0) {
+      console.log('🔍 Updating agreements - contractsDataMap size:', contractsDataMap.size, 'subLeads count:', subLeads.length);
+      console.log('🔍 Contracts in map:', Array.from(contractsDataMap.entries()));
+
+      const updatedSubLeads = subLeads.map(lead => {
+        // Determine if this is a legacy lead
+        const isLegacy = lead.id?.toString().startsWith('legacy_') ||
+          (masterLeadInfo && (masterLeadInfo.lead_type === 'legacy' || masterLeadInfo.id?.toString().startsWith('legacy_')));
+
+        // Create lookup key
+        const lookupKey = isLegacy
+          ? String(lead.id).replace('legacy_', '')
+          : String(lead.id);
+
+        console.log('🔍 Checking lead:', lead.id, 'lookupKey:', lookupKey, 'isLegacy:', isLegacy);
+
+        // Get contract data
+        const contractData = contractsDataMap.get(lookupKey);
+
+        console.log('🔍 Contract data for', lookupKey, ':', contractData);
+
+        // Store contract identifier instead of React element (for serialization)
+        if (contractData) {
+          return {
+            ...lead,
+            agreement: contractData.id, // Store contract ID as string
+            agreementIsLegacy: contractData.isLegacy // Store legacy flag separately
+          };
+        }
+        // Clear agreement if no contract found
+        return {
+          ...lead,
+          agreement: '---',
+          agreementIsLegacy: undefined
+        };
+      });
+
+      // Only update if agreements actually changed
+      const hasChanges = updatedSubLeads.some((updated, index) => {
+        const original = subLeads[index];
+        return updated.agreement !== original.agreement || updated.agreementIsLegacy !== original.agreementIsLegacy;
+      });
+
+      if (hasChanges) {
+        console.log('🔍 Updating subLeads with new agreements');
+        setSubLeads(updatedSubLeads);
+      }
+    }
+  }, [contractsDataArray]); // Depend on contractsDataArray to trigger when contracts change
 
   useEffect(() => {
     // #region agent log
@@ -375,6 +706,9 @@ const MasterLeadPage: React.FC = () => {
       // #region agent log
       fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:319', message: 'Lead number changed - clearing persisted data and fetching', data: { baseLeadNumber, prevBaseLeadNumber }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
       // #endregion
+      // Set loading immediately before clearing data
+      setLoading(true);
+      setSubLeadsLoading(true);
       setSubLeads([]);
       setMasterLeadInfo(null);
       setContractsDataArray([]);
@@ -418,6 +752,20 @@ const MasterLeadPage: React.FC = () => {
       });
 
       currentLeadMatches = persistedBaseNumber === baseLeadNumber || subLeadMatches;
+
+      // If persisted data doesn't match, clear it immediately and set loading
+      if (!currentLeadMatches) {
+        setLoading(true);
+        setSubLeadsLoading(true);
+        setSubLeads([]);
+        setMasterLeadInfo(null);
+        setContractsDataArray([]);
+        // Continue to fetch new data
+      }
+    } else {
+      // No persisted data - ensure loading is set immediately
+      setLoading(true);
+      setSubLeadsLoading(true);
     }
 
     // Mark as checked BEFORE deciding what to do (prevents loops)
@@ -547,6 +895,22 @@ const MasterLeadPage: React.FC = () => {
     navigate(`/contract/${contractId}`);
   };
 
+  // Filter subLeads to only show ones that match the current lead_number
+  // This prevents showing old data when navigating to a different master lead
+  const filteredSubLeads = useMemo(() => {
+    if (!lead_number) return [];
+
+    const decodedLeadNumber = decodeURIComponent(lead_number);
+    const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
+
+    return subLeads.filter(subLead => {
+      const subLeadNumber = String(subLead.lead_number || subLead.id || '');
+      const subLeadBase = subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber;
+      // Match if base numbers match or if the subLead number exactly matches the base
+      return subLeadBase === baseLeadNumber || subLeadNumber === baseLeadNumber;
+    });
+  }, [subLeads, lead_number]);
+
   const handleSubLeadClick = (subLead: SubLead, event?: React.MouseEvent) => {
     const isNewTab = event?.metaKey || event?.ctrlKey;
 
@@ -616,8 +980,8 @@ const MasterLeadPage: React.FC = () => {
                   })()}
                 </h1>
                 <p className="text-sm text-gray-500">
-                  {subLeads.length} lead{subLeads.length !== 1 ? 's' : ''} found (including master lead)
-                  {subLeads.length === 1 && (
+                  {filteredSubLeads.length} lead{filteredSubLeads.length !== 1 ? 's' : ''} found (including master lead)
+                  {filteredSubLeads.length === 1 && (
                     <span className="ml-2 text-orange-600">
                       • Sub-leads temporarily unavailable due to database performance
                     </span>
@@ -683,7 +1047,7 @@ const MasterLeadPage: React.FC = () => {
               <>
                 {/* Mobile Card View */}
                 <div className="md:hidden space-y-4 p-4">
-                  {subLeads.map((subLead) => {
+                  {filteredSubLeads.map((subLead) => {
                     const cardClasses = [
                       'card',
                       'shadow-lg',
@@ -741,18 +1105,19 @@ const MasterLeadPage: React.FC = () => {
                                 {subLead.currency_symbol}{subLead.total?.toLocaleString() || '0.0'}
                               </span>
                             </div>
-                            {subLead.category && subLead.category !== 'Unknown' && (
-                              <div className="flex items-start gap-2" title="Category">
+                            {(subLead.category && subLead.category !== 'Unknown') || subLead.topic ? (
+                              <div className="flex items-start gap-2" title="Category / Topic">
                                 <TagIcon className="h-4 w-4 text-base-content/50 mt-0.5 flex-shrink-0" />
-                                <span className="line-clamp-2 break-words">{subLead.category}</span>
+                                <div className="flex flex-col gap-1">
+                                  {subLead.category && subLead.category !== 'Unknown' && (
+                                    <span className="line-clamp-1 break-words text-sm">{subLead.category}</span>
+                                  )}
+                                  {subLead.topic && (
+                                    <span className="line-clamp-1 break-words text-sm text-base-content/70">{subLead.topic}</span>
+                                  )}
+                                </div>
                               </div>
-                            )}
-                            {subLead.topic && (
-                              <div className="flex items-start gap-2" title="Topic">
-                                <DocumentTextIcon className="h-4 w-4 text-base-content/50 mt-0.5 flex-shrink-0" />
-                                <span className="line-clamp-2 break-words">{subLead.topic}</span>
-                              </div>
-                            )}
+                            ) : null}
                             {subLead.contact && subLead.contact !== '---' && (
                               <div className="flex items-center gap-2" title="Contact">
                                 <UserIcon className="h-4 w-4 text-base-content/50" />
@@ -774,7 +1139,17 @@ const MasterLeadPage: React.FC = () => {
                             >
                               <div className="flex items-center gap-2 text-sm">
                                 <LinkIcon className="h-4 w-4 text-base-content/50" />
-                                {subLead.agreement}
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (subLead.agreement) {
+                                      handleViewContract(subLead.agreement, subLead.agreementIsLegacy);
+                                    }
+                                  }}
+                                  className="text-blue-600 hover:text-blue-800 underline cursor-pointer"
+                                >
+                                  View
+                                </button>
                               </div>
                             </div>
                           )}
@@ -799,43 +1174,40 @@ const MasterLeadPage: React.FC = () => {
                   <table className="table w-full compact-table">
                     <thead>
                       <tr>
-                        <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                        <th className="px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
                           Lead
                         </th>
-                        <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                        <th className="px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
                           Total
                         </th>
-                        <th className="hidden md:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
-                          Category
+                        <th className="hidden md:table-cell px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
+                          Category / Topic
                         </th>
-                        <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
-                          Topic
-                        </th>
-                        <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                        <th className="px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
                           Stage
                         </th>
-                        <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                        <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
                           Contact
                         </th>
-                        <th className="hidden sm:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
-                          Applicants
+                        <th className="hidden sm:table-cell px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
+                          APP
                         </th>
-                        <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
-                          Agreement
+                        <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
+                          CONTRACT
                         </th>
-                        <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                        <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
                           Scheduler
                         </th>
-                        <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                        <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
                           Closer
                         </th>
-                        <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+                        <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-bold text-black uppercase tracking-wider">
                           Handler
                         </th>
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                      {subLeads.map((subLead) => (
+                      {filteredSubLeads.map((subLead) => (
                         <tr
                           key={subLead.id}
                           className="hover:bg-gray-50 cursor-pointer"
@@ -857,13 +1229,16 @@ const MasterLeadPage: React.FC = () => {
                             </div>
                           </td>
                           <td className="hidden md:table-cell px-3 sm:px-6 py-4">
-                            <div className="flex items-center">
-                              <span className="text-gray-900 line-clamp-2 break-words">{subLead.category}</span>
-                            </div>
-                          </td>
-                          <td className="hidden lg:table-cell px-3 sm:px-6 py-4">
-                            <div className="flex items-center">
-                              <span className="text-gray-900 line-clamp-2 break-words">{subLead.topic || '---'}</span>
+                            <div className="flex flex-col gap-1">
+                              {subLead.category && subLead.category !== 'Unknown' && (
+                                <span className="text-gray-900 line-clamp-1 break-words text-sm">{subLead.category}</span>
+                              )}
+                              {subLead.topic && (
+                                <span className="text-gray-600 line-clamp-1 break-words text-sm">{subLead.topic}</span>
+                              )}
+                              {(!subLead.category || subLead.category === 'Unknown') && !subLead.topic && (
+                                <span className="text-gray-500 text-sm">---</span>
+                              )}
                             </div>
                           </td>
                           <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
@@ -882,16 +1257,60 @@ const MasterLeadPage: React.FC = () => {
                             </div>
                           </td>
                           <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                            {subLead.agreement}
+                            {subLead.agreement && subLead.agreement !== '---' ? (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (subLead.agreement) {
+                                    handleViewContract(subLead.agreement, subLead.agreementIsLegacy);
+                                  }
+                                }}
+                                className="text-blue-600 hover:text-blue-800 underline cursor-pointer"
+                              >
+                                View
+                              </button>
+                            ) : (
+                              '---'
+                            )}
                           </td>
                           <td className="hidden lg:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                            {subLead.scheduler}
+                            <div className="flex items-center gap-2">
+                              {subLead.scheduler && subLead.scheduler !== '---' && (
+                                <>
+                                  <EmployeeAvatar employeeId={subLead.scheduler_id} size="lg" />
+                                  <span className="text-sm">{subLead.scheduler}</span>
+                                </>
+                              )}
+                              {(!subLead.scheduler || subLead.scheduler === '---') && (
+                                <span className="text-sm">---</span>
+                              )}
+                            </div>
                           </td>
                           <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                            {subLead.closer}
+                            <div className="flex items-center gap-2">
+                              {subLead.closer && subLead.closer !== '---' && (
+                                <>
+                                  <EmployeeAvatar employeeId={subLead.closer_id} size="lg" />
+                                  <span className="text-sm">{subLead.closer}</span>
+                                </>
+                              )}
+                              {(!subLead.closer || subLead.closer === '---') && (
+                                <span className="text-sm">---</span>
+                              )}
+                            </div>
                           </td>
                           <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                            {subLead.handler}
+                            <div className="flex items-center gap-2">
+                              {subLead.handler && subLead.handler !== '---' && subLead.handler !== 'Not assigned' && (
+                                <>
+                                  <EmployeeAvatar employeeId={subLead.handler_id} size="lg" />
+                                  <span className="text-sm">{subLead.handler}</span>
+                                </>
+                              )}
+                              {(!subLead.handler || subLead.handler === '---' || subLead.handler === 'Not assigned') && (
+                                <span className="text-sm">---</span>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -1174,7 +1593,7 @@ const MasterLeadPage: React.FC = () => {
                         className="font-sans text-base leading-relaxed text-gray-800"
                         dangerouslySetInnerHTML={{
                           __html: viewingContract.status === 'signed' && viewingContract.signedContractHtml
-                            ? viewingContract.signedContractHtml
+                            ? processSignedContractHtml(viewingContract.signedContractHtml, viewingContract.signed_at)
                             : viewingContract.contractHtml || ''
                         }}
                       />

@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import websocketService, { MessageData, TypingData } from '../lib/websocket';
 import { motion, AnimatePresence } from 'framer-motion';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
 import EmojiPicker from 'emoji-picker-react';
@@ -142,6 +143,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
   // State management
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  
+  // Persisted state for conversations and messages (survives modal close/reopen and tab switches)
+  const [persistedConversations, setPersistedConversations] = usePersistedState<Conversation[]>('rmq_conversations', [], {
+    storage: 'sessionStorage',
+  });
+  const [persistedMessages, setPersistedMessages] = usePersistedState<Record<number, { messages: Message[]; lastFetched: number; lastMessageId: number | null }>>('rmq_messages', {}, {
+    storage: 'sessionStorage',
+  });
+  const [persistedSelectedConversationId, setPersistedSelectedConversationId] = usePersistedState<number | null>('rmq_selectedConversationId', null, {
+    storage: 'sessionStorage',
+  });
+  const [persistedActiveTab, setPersistedActiveTab] = usePersistedState<'chats' | 'groups'>('rmq_activeTab', 'chats', {
+    storage: 'sessionStorage',
+  });
+  
+  // Local state (synced with persisted state)
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -151,6 +168,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [searchQuery, setSearchQuery] = useState('');
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [activeTab, setActiveTab] = useState<'chats' | 'groups'>('chats');
+  
+  // Cache timestamps and flags
+  const conversationsLastFetchedRef = useRef<number>(0);
+  const MESSAGE_CACHE_DURATION = 30000; // 30 seconds - messages cache duration
+  const CONVERSATION_CACHE_DURATION = 60000; // 60 seconds - conversations cache duration
+  const hasRestoredFromCacheRef = useRef<boolean>(false);
+  
+  // Helper function to select conversation (updates both local and persisted state)
+  const selectConversation = useCallback((conversation: Conversation | null) => {
+    setSelectedConversation(conversation);
+    if (conversation) {
+      setPersistedSelectedConversationId(conversation.id);
+    } else {
+      setPersistedSelectedConversationId(null);
+    }
+  }, []);
   const [showMobileConversations, setShowMobileConversations] = useState(true);
   const [showMobileGroupMembers, setShowMobileGroupMembers] = useState(false);
   const [showDesktopGroupMembers, setShowDesktopGroupMembers] = useState(false);
@@ -286,6 +319,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const isFadingOutRef = useRef(false);
   const lastScrollPositionRef = useRef<number>(0);
   const scrollPositionCheckRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Loading state for messages
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  // Track if images are being preloaded (to prevent scroll jumping)
+  const [isPreloadingImages, setIsPreloadingImages] = useState(false);
+  const imagesLoadedRef = useRef<Set<string>>(new Set());
+  // Track which videos are currently loading
+  const [loadingVideos, setLoadingVideos] = useState<Set<number>>(new Set());
+  // Track which videos have been loaded/attempted
+  const loadedVideosRef = useRef<Set<number>>(new Set());
 
   // Helper functions
   const getRoleDisplayName = (role: string): string => {
@@ -515,31 +558,60 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   };
 
   // Preload images for faster display when conversation opens
-  const preloadImages = useCallback((messages: any[]) => {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:preloadImages', message: 'Starting image preload', data: { messageCount: messages.length, imageMessages: messages.filter(m => isImageMessage(m)).length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-    // #endregion
-
+  // Preload images in background (non-blocking)
+  const preloadImages = useCallback(async (messages: any[], waitForCritical: boolean = false): Promise<void> => {
     const imageMessages = messages.filter(m => isImageMessage(m));
     const imageUrls = imageMessages.map(m => m.attachment_url).filter(url => url);
 
-    // Preload images in parallel (limit to 10 at a time to avoid overwhelming the browser)
-    const batchSize = 10;
-    for (let i = 0; i < imageUrls.length; i += batchSize) {
-      const batch = imageUrls.slice(i, i + batchSize);
-      batch.forEach(url => {
-        const img = new Image();
-        img.src = url;
-        // #region agent log
-        img.onload = () => fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:preloadImages', message: 'Image preloaded successfully', data: { url }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-        img.onerror = () => fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:preloadImages', message: 'Image preload failed', data: { url }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-        // #endregion
-      });
+    if (imageUrls.length === 0) {
+      return;
     }
 
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:preloadImages', message: 'Image preload initiated', data: { totalImages: imageUrls.length, batches: Math.ceil(imageUrls.length / batchSize) }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-    // #endregion
+    // Don't set loading state - this runs in background and shouldn't block UI
+    imagesLoadedRef.current.clear();
+
+    // For critical loading, only wait for the last 5 images (most recent messages)
+    const criticalImages = waitForCritical ? imageUrls.slice(-5) : [];
+    const otherImages = waitForCritical ? imageUrls.slice(0, -5) : imageUrls;
+
+    // Preload critical images first and wait for them
+    const criticalPromises = criticalImages.map(url => {
+      return new Promise<void>((resolve) => {
+        if (imagesLoadedRef.current.has(url)) {
+          resolve();
+          return;
+        }
+        const img = new Image();
+        img.onload = () => {
+          imagesLoadedRef.current.add(url);
+          resolve();
+        };
+        img.onerror = () => {
+          imagesLoadedRef.current.add(url); // Mark as attempted even if failed
+          resolve();
+        };
+        img.src = url;
+      });
+    });
+
+    // Wait for critical images if needed
+    if (waitForCritical && criticalPromises.length > 0) {
+      await Promise.all(criticalPromises);
+    }
+
+    // Preload other images in background (don't wait)
+    const batchSize = 10;
+    for (let i = 0; i < otherImages.length; i += batchSize) {
+      const batch = otherImages.slice(i, i + batchSize);
+      batch.forEach(url => {
+        if (!imagesLoadedRef.current.has(url)) {
+          const img = new Image();
+          img.onload = () => imagesLoadedRef.current.add(url);
+          img.onerror = () => imagesLoadedRef.current.add(url);
+          img.src = url;
+        }
+      });
+    }
   }, []);
 
   const isVideoMessage = (message: Message): boolean => {
@@ -1714,7 +1786,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         }
         // Set the conversation as selected first if not already
         if (conversation.id !== selectedConversation?.id) {
-          setSelectedConversation(conversation);
+          selectConversation(conversation);
         }
         setGroupTitle(conversation.title || '');
         setGroupDescription(conversation.description || '');
@@ -1951,13 +2023,77 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     return () => {
       if (!isOpen) {
         websocketService.disconnect();
-        // Reset conversation state when modal closes to ensure clean state on reopen
-        setSelectedConversation(null);
-        setMessages([]);
+        // Don't reset state - keep it in cache for next open
+        // Only reset initialLoadRef
         initialLoadRef.current = null;
       }
     };
   }, [isOpen, selectedConversation?.id]);
+  
+  // Restore state from cache when modal opens
+  useEffect(() => {
+    if (!isOpen || !currentUser || hasRestoredFromCacheRef.current) return;
+    
+    // Mark as restored to prevent multiple restorations
+    hasRestoredFromCacheRef.current = true;
+    
+    // Restore conversations from cache if available
+    if (persistedConversations.length > 0) {
+      setConversations(persistedConversations);
+      console.log('[RMQ] Restored conversations from cache on modal open');
+    }
+    
+    // Restore active tab
+    if (persistedActiveTab) {
+      setActiveTab(persistedActiveTab);
+    }
+    
+    // Restore selected conversation if available
+    if (persistedSelectedConversationId) {
+      const cachedConv = persistedConversations.find(c => c.id === persistedSelectedConversationId);
+      if (cachedConv) {
+        selectConversation(cachedConv);
+        
+        // Restore messages from cache if available
+        const cachedMessages = persistedMessages[cachedConv.id];
+        if (cachedMessages && cachedMessages.messages.length > 0) {
+          setMessages(cachedMessages.messages);
+          console.log(`[RMQ] Restored ${cachedMessages.messages.length} messages from cache for conversation ${cachedConv.id}`);
+          
+          // Check for new messages in background
+          setTimeout(() => {
+            fetchMessages(cachedConv.id, false).catch(console.error);
+          }, 100);
+        } else {
+          // No cache, fetch messages
+          fetchMessages(cachedConv.id, false).catch(console.error);
+        }
+      }
+    }
+    
+    // Fetch conversations in background to update cache (non-blocking)
+    setTimeout(() => {
+      fetchConversations(false, false).catch(console.error);
+    }, 200);
+  }, [isOpen, currentUser]);
+  
+  // Reset restoration flag when modal closes
+  useEffect(() => {
+    if (!isOpen) {
+      hasRestoredFromCacheRef.current = false;
+    }
+  }, [isOpen]);
+  
+  // Sync local state with persisted state when it changes
+  useEffect(() => {
+    if (selectedConversation) {
+      setPersistedSelectedConversationId(selectedConversation.id);
+    }
+  }, [selectedConversation?.id, setPersistedSelectedConversationId]);
+  
+  useEffect(() => {
+    setPersistedActiveTab(activeTab);
+  }, [activeTab, setPersistedActiveTab]);
 
   // Helper function to get updated conversations without setting state
   const getUpdatedConversations = async (): Promise<Conversation[]> => {
@@ -2156,8 +2292,26 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   };
 
   // Fetch conversations
-  const fetchConversations = useCallback(async (showErrors = true) => {
+  const fetchConversations = useCallback(async (showErrors = true, forceRefresh = false) => {
     if (!currentUser) return;
+
+    // Check cache first (unless forced refresh)
+    const now = Date.now();
+    const cacheAge = now - conversationsLastFetchedRef.current;
+    const hasCachedData = persistedConversations.length > 0;
+    const isCacheValid = hasCachedData && cacheAge < CONVERSATION_CACHE_DURATION && !forceRefresh;
+
+    if (isCacheValid) {
+      // Restore from cache
+      setConversations(persistedConversations);
+      console.log('[RMQ] Restored conversations from cache');
+      
+      // Fetch in background to update cache (non-blocking)
+      setTimeout(() => {
+        fetchConversations(showErrors, true).catch(console.error);
+      }, 100);
+      return;
+    }
 
     // Prevent duplicate concurrent calls
     if (isFetchingConversations) {
@@ -2406,6 +2560,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         // Filter out any null values from failed processing
         const validConversations = processedConversations.filter((conv): conv is Conversation => conv !== null);
         setConversations(validConversations);
+        // Update persisted cache
+        setPersistedConversations(validConversations);
+        conversationsLastFetchedRef.current = Date.now();
+        console.log('[RMQ] Updated conversations cache');
       }
     } catch (error: any) {
       // Only show error for non-abort errors and if explicitly requested
@@ -2426,8 +2584,117 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   }, [currentUser]);
 
   // Fetch messages for selected conversation
-  const fetchMessages = useCallback(async (conversationId: number) => {
+  const fetchMessages = useCallback(async (conversationId: number, forceRefresh = false) => {
     try {
+      // Check cache first (unless forced refresh)
+      const cachedData = persistedMessages[conversationId];
+      const now = Date.now();
+      const cacheAge = cachedData ? now - cachedData.lastFetched : Infinity;
+      const isCacheValid = cachedData && cacheAge < MESSAGE_CACHE_DURATION && !forceRefresh;
+
+      if (isCacheValid && cachedData.messages.length > 0) {
+        // Restore from cache immediately
+        setMessages(cachedData.messages);
+        setIsLoadingMessages(false);
+        console.log(`[RMQ] Restored ${cachedData.messages.length} messages from cache for conversation ${conversationId}`);
+        
+        // Check for new messages in background (non-blocking)
+        setTimeout(async () => {
+          try {
+            // Fetch only messages newer than the last cached message
+            const lastMessageId = cachedData.lastMessageId;
+            const { data: newMessagesData, error: newError } = await supabase
+              .from('messages')
+              .select(`
+                id,
+                conversation_id,
+                sender_id,
+                content,
+                message_type,
+                sent_at,
+                edited_at,
+                is_deleted,
+                attachment_url,
+                attachment_name,
+                attachment_type,
+                attachment_size,
+                reply_to_message_id,
+                reactions,
+                voice_duration,
+                voice_waveform,
+                is_voice_message,
+                delivery_status,
+                sender:users!sender_id(
+                  id,
+                  full_name,
+                  email,
+                  employee_id,
+                  is_active,
+                  tenants_employee!users_employee_id_fkey(
+                    display_name,
+                    bonuses_role,
+                    photo_url
+                  )
+                )
+              `)
+              .eq('conversation_id', conversationId)
+              .eq('is_deleted', false)
+              .gt('id', lastMessageId || 0)
+              .order('sent_at', { ascending: true });
+
+            if (!newError && newMessagesData && newMessagesData.length > 0) {
+              // Process new messages (simplified - no reply fetching for new messages)
+              const processedNewMessages = newMessagesData.map((msg: any) => ({
+                ...msg,
+                reply_to_message: null,
+                read_receipts: []
+              }));
+
+              // Merge with cached messages
+              const allMessages = [...cachedData.messages, ...processedNewMessages];
+              setMessages(allMessages);
+              
+              // Update cache
+              const lastMessage = allMessages[allMessages.length - 1];
+              setPersistedMessages(prev => ({
+                ...prev,
+                [conversationId]: {
+                  messages: allMessages,
+                  lastFetched: Date.now(),
+                  lastMessageId: lastMessage?.id || lastMessageId
+                }
+              }));
+              console.log(`[RMQ] Added ${newMessagesData.length} new messages to conversation ${conversationId}`);
+            }
+          } catch (err) {
+            console.error('[RMQ] Error checking for new messages:', err);
+          }
+        }, 100);
+        
+        // Preload images and videos in background
+        preloadImages(cachedData.messages, false);
+        
+        // Load newest videos
+        setTimeout(() => {
+          const videoMessages = cachedData.messages.filter(m => isVideoMessage(m));
+          if (videoMessages.length > 0) {
+            const videosToLoad = videoMessages.slice(-5).reverse();
+            videosToLoad.forEach((msg, index) => {
+              setTimeout(() => {
+                const videoElement = document.querySelector(`video[data-message-id="${msg.id}"]`) as HTMLVideoElement;
+                if (videoElement && videoElement.readyState === 0 && !loadedVideosRef.current.has(msg.id)) {
+                  loadedVideosRef.current.add(msg.id);
+                  setLoadingVideos(prev => new Set(prev).add(msg.id));
+                  videoElement.load();
+                }
+              }, index * 200);
+            });
+          }
+        }, 100);
+        
+        return;
+      }
+
       setIsLoadingMessages(true);
       const { data: messagesData, error } = await supabase
         .from('messages')
@@ -2546,11 +2813,43 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         };
       });
 
+      // Set messages first to show content immediately
       setMessages(finalMessages as unknown as Message[]);
       setIsLoadingMessages(false);
 
-      // Preload images for faster display (async, don't wait)
-      preloadImages(finalMessages);
+      // Update persisted cache
+      const lastMessage = finalMessages[finalMessages.length - 1];
+      setPersistedMessages(prev => ({
+        ...prev,
+        [conversationId]: {
+          messages: finalMessages as unknown as Message[],
+          lastFetched: Date.now(),
+          lastMessageId: lastMessage?.id || null
+        }
+      }));
+      console.log(`[RMQ] Updated messages cache for conversation ${conversationId}`);
+
+      // Preload images in background (non-blocking)
+      preloadImages(finalMessages, false);
+
+      // Load newest videos first (from bottom of chat)
+      setTimeout(() => {
+        const videoMessages = finalMessages.filter(m => isVideoMessage(m));
+        if (videoMessages.length > 0) {
+          // Start from the last (newest) videos and work backwards
+          const videosToLoad = videoMessages.slice(-5).reverse(); // Last 5 videos, newest first
+          videosToLoad.forEach((msg, index) => {
+            setTimeout(() => {
+              const videoElement = document.querySelector(`video[data-message-id="${msg.id}"]`) as HTMLVideoElement;
+              if (videoElement && videoElement.readyState === 0 && !loadedVideosRef.current.has(msg.id)) {
+                loadedVideosRef.current.add(msg.id);
+                setLoadingVideos(prev => new Set(prev).add(msg.id));
+                videoElement.load();
+              }
+            }, index * 200); // Stagger loading by 200ms
+          });
+        }
+      }, 100);
 
       // Mark messages as read for current user when viewing conversation (async, don't wait)
       if (messageIds.length > 0) {
@@ -3217,8 +3516,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         });
       }
 
-      // Always scroll to bottom when user sends a message
-      setTimeout(() => scrollToBottom('smooth'), 100);
+      // Always scroll to bottom when user sends a message (only if not loading)
+      if (!isLoadingMessages && !isPreloadingImages) {
+        setTimeout(() => scrollToBottom('smooth'), 100);
+      }
 
       // Update conversation list immediately
       setConversations(prev =>
@@ -3301,11 +3602,27 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       if (error) throw error;
 
       // Update local state
-      setMessages(prev => prev.map(msg =>
-        msg.id === messageToEdit.id
-          ? { ...msg, content: editingMessageText.trim(), edited_at: new Date().toISOString() }
-          : msg
-      ));
+      setMessages(prev => {
+        const updated = prev.map(msg =>
+          msg.id === messageToEdit.id
+            ? { ...msg, content: editingMessageText.trim(), edited_at: new Date().toISOString() }
+            : msg
+        );
+        
+        // Update persisted cache
+        if (selectedConversation) {
+          setPersistedMessages(prevCache => ({
+            ...prevCache,
+            [selectedConversation.id]: {
+              messages: updated,
+              lastFetched: prevCache[selectedConversation.id]?.lastFetched || Date.now(),
+              lastMessageId: prevCache[selectedConversation.id]?.lastMessageId || null
+            }
+          }));
+        }
+        
+        return updated;
+      });
 
       setMessageToEdit(null);
       setEditingMessageText('');
@@ -3644,8 +3961,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       setMessageToReply(null); // Clear reply after sending
       resetInputHeights();
 
-      // Always scroll to bottom when user sends a message
-      setTimeout(() => scrollToBottom('smooth'), 100);
+      // Always scroll to bottom when user sends a message (only if not loading)
+      if (!isLoadingMessages && !isPreloadingImages) {
+        setTimeout(() => scrollToBottom('smooth'), 100);
+      }
 
       // Update conversation list immediately for optimistic UI update
       // The WebSocket handler will also update it when the message comes back, but this ensures immediate feedback
@@ -3698,8 +4017,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       );
 
       if (existingConv) {
-        setSelectedConversation(existingConv);
-        // fetchMessages will be called by useEffect when selectedConversation changes
+        selectConversation(existingConv);
+        fetchMessages(existingConv.id, false);
         setShowMobileConversations(false);
         setActiveTab('chats');
         return;
@@ -3727,8 +4046,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         const newConv = updatedConversations.find(c => c.id === conversationId);
 
         if (newConv) {
-          setSelectedConversation(newConv);
-          // fetchMessages will be called by useEffect when selectedConversation changes
+          selectConversation(newConv);
+          fetchMessages(newConv.id, false);
           setShowMobileConversations(false);
           setActiveTab('chats');
           toast.success('Direct conversation started');
@@ -3738,8 +4057,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             const retryConversations = await getUpdatedConversations();
             const retryConv = retryConversations.find(c => c.id === conversationId);
             if (retryConv) {
-              setSelectedConversation(retryConv);
-              // fetchMessages will be called by useEffect when selectedConversation changes
+              selectConversation(retryConv);
+              fetchMessages(retryConv.id, false);
               setShowMobileConversations(false);
               setActiveTab('chats');
               toast.success('Direct conversation started');
@@ -3789,7 +4108,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       // Close the modal and refresh conversations
       setShowDeleteGroupModal(false);
-      setSelectedConversation(null);
+      selectConversation(null);
       await fetchConversations();
 
     } catch (error) {
@@ -3821,7 +4140,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       // Refresh conversations list
       await fetchConversations();
-      setSelectedConversation(null);
+      selectConversation(null);
 
       toast.success(`Deleted ${conversationsToDelete.length} problematic conversations`);
 
@@ -3878,8 +4197,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         const newConversation = updatedConversations.find(c => c.id === conversationData.id);
 
         if (newConversation && newConversation.participants) {
-          setSelectedConversation(newConversation);
-          fetchMessages(newConversation.id);
+          selectConversation(newConversation);
+          fetchMessages(newConversation.id, false);
         } else {
           // Fallback: create a temporary conversation object with participants
           const tempConversation = {
@@ -3889,7 +4208,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               ...selectedUsers.map(userId => ({ user_id: userId }))
             ]
           };
-          setSelectedConversation(tempConversation);
+          selectConversation(tempConversation);
+          fetchMessages(conversationData.id, false);
         }
 
         setShowMobileConversations(false);
@@ -3940,7 +4260,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       const updatedConversations = await getUpdatedConversations();
       const updatedConversation = updatedConversations.find(c => c.id === conversationId);
       if (updatedConversation) {
-        setSelectedConversation(updatedConversation);
+        selectConversation(updatedConversation);
       }
 
       setShowAddMemberModal(false);
@@ -3992,7 +4312,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       if (selectedConversation?.id === conversationId) {
         const updatedConversation = updatedConversations.find(c => c.id === conversationId);
         if (updatedConversation) {
-          setSelectedConversation(updatedConversation);
+          selectConversation(updatedConversation);
         }
       }
 
@@ -4031,7 +4351,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       const updatedConversations = await getUpdatedConversations();
       const updatedConversation = updatedConversations.find(c => c.id === conversationId);
       if (updatedConversation) {
-        setSelectedConversation(updatedConversation);
+        selectConversation(updatedConversation);
       }
 
       toast.success('Member removed from the group');
@@ -4175,7 +4495,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       const updatedConversations = await getUpdatedConversations();
       const updatedConversation = updatedConversations.find(c => c.id === conversationId);
       if (updatedConversation) {
-        setSelectedConversation(updatedConversation);
+        selectConversation(updatedConversation);
       }
 
       setShowGroupInfoModal(false);
@@ -4326,6 +4646,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
   // Smart auto-scroll logic - scrolls the visible container (desktop or mobile)
   const scrollToBottom = useCallback((behavior: 'smooth' | 'instant' = 'smooth') => {
+    // Don't scroll if still loading or preloading images
+    if (isLoadingMessages || isPreloadingImages) {
+      return;
+    }
+
     // Try to find the active container
     let container: HTMLDivElement | null = null;
 
@@ -4345,7 +4670,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       // Double check in next frame to ensure it stuck (sometimes content layout shifts)
       requestAnimationFrame(() => {
-        if (container) {
+        if (container && !isLoadingMessages && !isPreloadingImages) {
           container.scrollTop = container.scrollHeight;
         }
       });
@@ -4356,7 +4681,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         behavior: 'smooth'
       });
     }
-  }, []);
+  }, [isLoadingMessages, isPreloadingImages]);
 
   // Check if user is near bottom of messages
   const isNearBottom = useCallback(() => {
@@ -4656,7 +4981,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       // Use efficient single RAF for rendering updates - no double RAF to prevent interference
       requestAnimationFrame(() => {
-        if (messages.length > 0 && !isUserScrolling) {
+        if (messages.length > 0 && !isUserScrolling && !isLoadingMessages && !isPreloadingImages) {
           scrollToBottom('smooth');
           isScrollingRef.current = false;
         }
@@ -4714,7 +5039,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           // Add a small delay to allow user scroll to complete
           setTimeout(() => {
             // Double-check user hasn't started scrolling in the meantime
-            if (shouldAutoScroll && !isUserScrolling) {
+            if (shouldAutoScroll && !isUserScrolling && !isLoadingMessages && !isPreloadingImages) {
               requestAnimationFrame(() => {
                 scrollToBottom('instant');
               });
@@ -4742,10 +5067,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       hasScrolledForConversationRef.current = selectedConversation.id;
 
       // FORCE INSTANT SCROLL TO BOTTOM
-      // We use requestAnimationFrame to wait for paint, then force scroll
-      requestAnimationFrame(() => {
-        scrollToBottom('instant');
-      });
+      // We use requestAnimationFrame to wait for paint, then force scroll (only if not loading)
+      if (!isLoadingMessages && !isPreloadingImages) {
+        requestAnimationFrame(() => {
+          scrollToBottom('instant');
+        });
+      }
 
       // Set state
       setShouldAutoScroll(true);
@@ -4760,9 +5087,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
     };
   }, [messages.length, selectedConversation?.id, scrollToBottom, shouldAutoScroll]);
-
-  // Loading state for messages
-  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
 
   // Reset scroll tracking and fetch messages when conversation changes
   useEffect(() => {
@@ -4876,8 +5200,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     if (isOpen && initialConversationId && conversations.length > 0) {
       const conversation = conversations.find(c => c.id === initialConversationId);
       if (conversation) {
-        setSelectedConversation(conversation);
-        // fetchMessages will be called by useEffect when selectedConversation changes
+        selectConversation(conversation);
+        fetchMessages(conversation.id, false);
         setShowMobileConversations(false);
         // Set the correct tab based on conversation type
         if (conversation.type === 'group' || conversation.type === 'announcement') {
@@ -4902,8 +5226,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   }, [isOpen, initialUserId, currentUser?.id, selectedConversation?.id, conversations.length]);
 
   // Auto-scroll to newest unread message or bottom when conversation changes (initial load only)
+  // Only scroll when messages are loaded AND not preloading images to prevent jumping
   useEffect(() => {
-    if (selectedConversation && messages.length > 0) {
+    if (selectedConversation && messages.length > 0 && !isLoadingMessages && !isPreloadingImages) {
       const isInitialLoad = initialLoadRef.current !== selectedConversation.id;
 
       if (isInitialLoad) {
@@ -4915,26 +5240,24 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         setIsUserScrolling(false);
         setNewMessagesCount(0);
 
-        // Find newest unread message (works for both direct chats and group chats)
-        const newestUnreadMessage = findNewestUnreadMessage();
-        firstUnreadMessageIdRef.current = newestUnreadMessage?.id || null;
-
-        // Scroll to newest unread message if it exists, otherwise scroll to bottom
-        // Works for both direct chats (1-on-1) and group chats (multiple participants)
-        // Use instant scroll - no visible animation, appears automatically
-        // Single scroll attempt - no backup to prevent interference with user scrolling
+        // Wait a bit for DOM to settle after images load
         requestAnimationFrame(() => {
-          if (newestUnreadMessage) {
-            // Scroll to newest unread message (instant, no animation)
-            scrollToMessage(newestUnreadMessage.id, 'instant');
-          } else {
-            // No unread messages, scroll to bottom
-            scrollToBottom('instant');
-          }
+          requestAnimationFrame(() => {
+            // Find newest unread message (works for both direct chats and group chats)
+            const newestUnreadMessage = findNewestUnreadMessage();
+            firstUnreadMessageIdRef.current = newestUnreadMessage?.id || null;
+
+            // Scroll to newest unread message if it exists, otherwise scroll to bottom
+            if (newestUnreadMessage) {
+              scrollToMessage(newestUnreadMessage.id, 'instant');
+            } else {
+              scrollToBottom('instant');
+            }
+          });
         });
       }
     }
-  }, [selectedConversation?.id, messages.length, findNewestUnreadMessage, scrollToMessage]); // Trigger when conversation ID or message count changes
+  }, [selectedConversation?.id, messages.length, isLoadingMessages, isPreloadingImages, findNewestUnreadMessage, scrollToMessage, scrollToBottom]);
 
   // Set initial message when conversation is selected and initialMessage/lead info is provided
   useEffect(() => {
@@ -5350,14 +5673,33 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           }
           // Add message and sort by sent_at to ensure correct chronological order
           const updated = [...prev, enhancedMessage];
-          return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+          const sorted = updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+          
+          // Update persisted cache with new message
+          if (selectedConversation) {
+            setPersistedMessages(prevCache => {
+              const lastMessage = sorted[sorted.length - 1];
+              return {
+                ...prevCache,
+                [selectedConversation.id]: {
+                  messages: sorted,
+                  lastFetched: Date.now(),
+                  lastMessageId: lastMessage?.id || null
+                }
+              };
+            });
+          }
+          
+          return sorted;
         });
 
-        // Scroll to bottom when new message arrives
-        setTimeout(() => {
-          setShouldAutoScroll(true);
-          scrollToBottom('smooth');
-        }, 100);
+        // Scroll to bottom when new message arrives (only if not loading)
+        if (!isLoadingMessages && !isPreloadingImages) {
+          setTimeout(() => {
+            setShouldAutoScroll(true);
+            scrollToBottom('smooth');
+          }, 100);
+        }
 
         // Mark message as read if current user is viewing the conversation
         if (message.id && message.sender_id !== currentUser.id) {
@@ -5378,7 +5720,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           previewText = 'New message';
         }
 
-        return prev.map(conv =>
+        const updated = prev.map(conv =>
           conv.id === message.conversation_id
             ? {
               ...conv,
@@ -5388,6 +5730,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             }
             : conv
         ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
+        
+        // Update persisted conversations cache
+        setPersistedConversations(updated);
+        
+        return updated;
       });
     };
 
@@ -5794,8 +6141,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <div
                   key={conversation.id}
                   onClick={() => {
-                    setSelectedConversation(conversation);
-                    fetchMessages(conversation.id);
+                    selectConversation(conversation);
+                    fetchMessages(conversation.id, false);
                     setShowMobileConversations(false);
                   }}
                   className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors bg-white ${selectedConversation?.id === conversation.id ? 'border-l-4' : ''
@@ -6055,8 +6402,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <div
                   key={conversation.id}
                   onClick={() => {
-                    setSelectedConversation(conversation);
-                    // fetchMessages will be called by useEffect when selectedConversation changes
+                    selectConversation(conversation);
+                    fetchMessages(conversation.id, false);
                     setShowMobileConversations(false);
                   }}
                   className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 active:bg-gray-100 bg-white"
@@ -6376,7 +6723,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               {isLoadingMessages ? (
                 <div className="text-center py-12">
                   <div className="loading loading-spinner loading-lg mx-auto mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.9)' : '#3E28CD' }}></div>
-                  <p className="font-medium" style={{ color: chatBackgroundImageUrl ? 'white' : '#6b7280' }}>Loading messages...</p>
+                  <p className="font-medium" style={{ color: chatBackgroundImageUrl ? 'white' : '#6b7280' }}>
+                    Loading messages...
+                  </p>
                 </div>
               ) : messages.length === 0 ? (
                 <div className="text-center py-12">
@@ -6459,11 +6808,66 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               onClick={() => openMediaModal(message)}
                             >
                               <video
+                                data-message-id={message.id}
                                 src={message.attachment_url}
-                                className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
+                                className="max-w-full max-h-80 md:max-h-[600px] min-h-[200px] md:min-h-[300px] rounded-lg object-cover transition-transform group-hover:scale-105 bg-gray-100 dark:bg-gray-800"
                                 controls
                                 preload="metadata"
+                                playsInline
+                                onLoadStart={() => {
+                                  setLoadingVideos(prev => new Set(prev).add(message.id));
+                                }}
+                                onLoadedMetadata={() => {
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                  // Try to show first frame
+                                  const target = document.querySelector(`video[data-message-id="${message.id}"]`) as HTMLVideoElement;
+                                  if (target && target.readyState >= 2) {
+                                    target.currentTime = 0.1;
+                                  }
+                                }}
+                                onSeeked={() => {
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                }}
+                                onError={(e) => {
+                                  console.error('Video load error:', e);
+                                  const target = e.target as HTMLVideoElement;
+                                  target.style.display = 'none';
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                }}
+                                onMouseEnter={(e) => {
+                                  const target = e.target as HTMLVideoElement;
+                                  if (target.readyState === 0 && !loadedVideosRef.current.has(message.id)) {
+                                    loadedVideosRef.current.add(message.id);
+                                    setLoadingVideos(prev => new Set(prev).add(message.id));
+                                    target.load();
+                                  }
+                                }}
+                                onTouchStart={(e) => {
+                                  const target = e.target as HTMLVideoElement;
+                                  if (target.readyState === 0 && !loadedVideosRef.current.has(message.id)) {
+                                    loadedVideosRef.current.add(message.id);
+                                    setLoadingVideos(prev => new Set(prev).add(message.id));
+                                    target.load();
+                                  }
+                                }}
                               />
+                              {loadingVideos.has(message.id) && (
+                                <div className="absolute inset-0 bg-gray-100 dark:bg-gray-800 rounded-lg flex items-center justify-center">
+                                  <div className="loading loading-spinner loading-lg" style={{ color: '#3E28CD' }}></div>
+                                </div>
+                              )}
                               <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
                                 <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
@@ -7661,8 +8065,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   </div>
                 )}
               </div>
-              <AnimatePresence initial={false}>
-                {messages.map((message, index) => {
+              {isLoadingMessages ? (
+                <div className="text-center py-12">
+                  <div className="loading loading-spinner loading-lg mx-auto mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.9)' : '#3E28CD' }}></div>
+                  <p className="font-medium" style={{ color: chatBackgroundImageUrl ? 'white' : '#6b7280' }}>
+                    Loading messages...
+                  </p>
+                </div>
+              ) : messages.length === 0 ? (
+                <div className="text-center py-12">
+                  <ChatBubbleLeftRightIcon className="w-16 h-16 mx-auto mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.7)' : '#d1d5db' }} />
+                  <p className="font-medium" style={{ color: chatBackgroundImageUrl ? 'white' : '#6b7280' }}>No messages yet</p>
+                  <p className="text-sm" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : '#9ca3af' }}>Start the conversation!</p>
+                </div>
+              ) : (
+                <AnimatePresence initial={false}>
+                  {messages.map((message, index) => {
                   const isOwn = message.sender_id === currentUser?.id;
                   const senderName = message.sender?.tenants_employee?.display_name ||
                     message.sender?.full_name ||
@@ -7731,11 +8149,66 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             onClick={() => openMediaModal(message)}
                           >
                             <video
+                              data-message-id={message.id}
                               src={message.attachment_url}
-                              className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
+                              className="max-w-full max-h-80 md:max-h-[600px] min-h-[200px] md:min-h-[300px] rounded-lg object-cover transition-transform group-hover:scale-105 bg-gray-100 dark:bg-gray-800"
                               controls
                               preload="metadata"
+                              playsInline
+                              onLoadStart={() => {
+                                setLoadingVideos(prev => new Set(prev).add(message.id));
+                              }}
+                              onLoadedMetadata={() => {
+                                setLoadingVideos(prev => {
+                                  const next = new Set(prev);
+                                  next.delete(message.id);
+                                  return next;
+                                });
+                                // Try to show first frame
+                                const target = document.querySelector(`video[data-message-id="${message.id}"]`) as HTMLVideoElement;
+                                if (target && target.readyState >= 2) {
+                                  target.currentTime = 0.1;
+                                }
+                              }}
+                              onSeeked={() => {
+                                setLoadingVideos(prev => {
+                                  const next = new Set(prev);
+                                  next.delete(message.id);
+                                  return next;
+                                });
+                              }}
+                              onError={(e) => {
+                                console.error('Video load error:', e);
+                                const target = e.target as HTMLVideoElement;
+                                target.style.display = 'none';
+                                setLoadingVideos(prev => {
+                                  const next = new Set(prev);
+                                  next.delete(message.id);
+                                  return next;
+                                });
+                              }}
+                              onMouseEnter={(e) => {
+                                const target = e.target as HTMLVideoElement;
+                                if (target.readyState === 0 && !loadedVideosRef.current.has(message.id)) {
+                                  loadedVideosRef.current.add(message.id);
+                                  setLoadingVideos(prev => new Set(prev).add(message.id));
+                                  target.load();
+                                }
+                              }}
+                              onTouchStart={(e) => {
+                                const target = e.target as HTMLVideoElement;
+                                if (target.readyState === 0 && !loadedVideosRef.current.has(message.id)) {
+                                  loadedVideosRef.current.add(message.id);
+                                  setLoadingVideos(prev => new Set(prev).add(message.id));
+                                  target.load();
+                                }
+                              }}
                             />
+                            {loadingVideos.has(message.id) && (
+                              <div className="absolute inset-0 bg-gray-100 dark:bg-gray-800 rounded-lg flex items-center justify-center">
+                                <div className="loading loading-spinner loading-lg" style={{ color: '#3E28CD' }}></div>
+                              </div>
+                            )}
                             <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
                               <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
@@ -8155,7 +8628,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     </motion.div>
                   );
                 })}
-              </AnimatePresence>
+                </AnimatePresence>
+              )}
 
               {/* New messages indicator when user is scrolled up - Mobile */}
               {isUserScrolling && !shouldAutoScroll && (
@@ -9048,21 +9522,28 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           </div>
 
           {/* Main Media Display */}
-          <div className="flex-1 flex items-center justify-center relative">
+          <div className="flex-1 flex items-center justify-center relative p-4 pb-8">
             {conversationMedia[selectedMediaIndex]?.message_type === 'image' ||
               (conversationMedia[selectedMediaIndex]?.attachment_type &&
                 conversationMedia[selectedMediaIndex]?.attachment_type.startsWith('image/')) ? (
               <img
                 src={conversationMedia[selectedMediaIndex]?.attachment_url}
                 alt={conversationMedia[selectedMediaIndex]?.attachment_name}
-                className="max-w-full max-h-full object-contain"
+                className="max-w-full max-h-[calc(100vh-200px)] object-contain"
               />
             ) : conversationMedia[selectedMediaIndex]?.attachment_type?.startsWith('video/') ? (
               <video
                 src={conversationMedia[selectedMediaIndex]?.attachment_url}
-                controls
-                className="max-w-full max-h-full"
-                autoPlay
+                controls={true}
+                className="max-w-full max-h-[calc(100vh-200px)] bg-gray-900"
+                autoPlay={true}
+                playsInline={true}
+                preload="auto"
+                onError={(e) => {
+                  console.error('Video load error in modal:', e);
+                  const target = e.target as HTMLVideoElement;
+                  target.style.display = 'none';
+                }}
               />
             ) : (
               <div className="text-center text-white">

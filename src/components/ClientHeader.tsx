@@ -870,47 +870,55 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {selectedClient.name || 'Unnamed Lead'}
                                     </h1>
                                     {/* Master/Sub Links - Icon Button with Count Badge */}
-                                    {isSubLead && masterLeadNumber && (
-                                        <button
-                                            onClick={() => navigate(`/clients/${masterLeadNumber}/master`)}
-                                            className="btn btn-square btn-sm relative bg-red-100 hover:bg-red-200 text-red-700 border-red-300"
-                                            title="Master Dashboard"
-                                        >
-                                            <Squares2X2Icon className="w-5 h-5" />
-                                            {/* Count Badge - Always show (1 master + subleads) */}
-                                            <span className="absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full min-w-[1.25rem] h-5 flex items-center justify-center px-1">
-                                                1+
-                                            </span>
-                                        </button>
-                                    )}
-                                    {isMasterLead && (
+                                    {/* Show button for sub-leads OR master leads, but only one */}
+                                    {(isSubLead && masterLeadNumber) || (isMasterLead && subLeadsCount !== undefined && subLeadsCount >= 0) ? (
                                         <button
                                             onClick={() => {
-                                                if (!selectedClient) return;
-                                                // Use the same logic as MasterLeadPage and LeadSearchPage
-                                                // For legacy leads: use numeric id from leads_lead table
-                                                // For new leads: use lead_number or manual_id
-                                                const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                                let identifier: string;
-                                                if (isLegacyLead) {
-                                                    // Legacy leads: use numeric id (remove 'legacy_' prefix if present)
-                                                    identifier = selectedClient.id.toString().replace('legacy_', '');
-                                                } else {
-                                                    // New leads: use lead_number or manual_id
-                                                    identifier = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '';
+                                                if (isSubLead && masterLeadNumber) {
+                                                    // For sub-leads, navigate to master dashboard
+                                                    navigate(`/clients/${masterLeadNumber}/master`);
+                                                } else if (isMasterLead && selectedClient) {
+                                                    // For master leads, navigate to master dashboard
+                                                    // Use the same logic as MasterLeadPage and LeadSearchPage
+                                                    // For legacy leads: use numeric id from leads_lead table
+                                                    // For new leads: use lead_number or manual_id
+                                                    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                                    let identifier: string;
+                                                    if (isLegacyLead) {
+                                                        // Legacy leads: use numeric id (remove 'legacy_' prefix if present)
+                                                        identifier = selectedClient.id.toString().replace('legacy_', '');
+                                                    } else {
+                                                        // New leads: use lead_number or manual_id
+                                                        identifier = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '';
+                                                    }
+                                                    navigate(`/clients/${encodeURIComponent(identifier)}/master`);
                                                 }
-                                                navigate(`/clients/${encodeURIComponent(identifier)}/master`);
                                             }}
                                             className="btn btn-square btn-sm relative bg-red-100 hover:bg-red-200 text-red-700 border-red-300"
-                                            title={`View all ${subLeadsCount || 0} sub-lead${subLeadsCount !== 1 ? 's' : ''} and master lead`}
+                                            title={
+                                                isSubLead
+                                                    ? `View master dashboard (${(subLeadsCount || 0) + 1} total leads)`
+                                                    : `View all ${subLeadsCount || 0} sub-lead${subLeadsCount !== 1 ? 's' : ''} and master lead (${(subLeadsCount || 0) + 1} total)`
+                                            }
                                         >
                                             <Squares2X2Icon className="w-5 h-5" />
-                                            {/* Count Badge - Always show total (subleads + master) */}
-                                            <span className="absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full min-w-[1.25rem] h-5 flex items-center justify-center px-1">
-                                                {(subLeadsCount || 0) + 1}
-                                            </span>
+                                            {/* Count Badge - Always show total (subleads + master = subLeadsCount + 1) */}
+                                            {(() => {
+                                                const totalCount = (subLeadsCount || 0) + 1;
+                                                console.log('🔍 ClientHeader - Rendering count badge:', {
+                                                    subLeadsCount,
+                                                    totalCount,
+                                                    isSubLead,
+                                                    isMasterLead
+                                                });
+                                                return (
+                                                    <span className="absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full min-w-[1.25rem] h-5 flex items-center justify-center px-1">
+                                                        {totalCount}
+                                                    </span>
+                                                );
+                                            })()}
                                         </button>
-                                    )}
+                                    ) : null}
                                 </div>
                                 <div className="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
                                     {selectedClient.language && (

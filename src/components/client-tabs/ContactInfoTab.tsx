@@ -23,14 +23,14 @@ import { getFrontendBaseUrl } from '../../lib/api';
 // Function to clean HTML content and make it readable
 const cleanHtmlContent = (html: string): string => {
   if (!html) return '';
-  
+
   // Create a temporary div to parse HTML
   const tempDiv = document.createElement('div');
   tempDiv.innerHTML = html;
-  
+
   // Get text content and clean it up
   let text = tempDiv.textContent || tempDiv.innerText || '';
-  
+
   // Clean up common HTML artifacts and formatting
   text = text
     .replace(/\s+/g, ' ') // Replace multiple spaces with single space
@@ -52,26 +52,26 @@ const cleanHtmlContent = (html: string): string => {
     .replace(/\s*\n\s*/g, '\n') // Clean up newlines
     .replace(/\n{3,}/g, '\n\n') // Limit consecutive newlines to 2
     .trim();
-  
+
   return text;
 };
 
 // Helper function to process HTML for editing with consistent styling
 const processHtmlForEditing = (html: string): string => {
   if (!html) return '';
-  
+
   // First, convert any existing lines (_____________) in styled spans back to placeholders
   // This handles cases where the contract was saved with lines instead of placeholders
   let processed = html.replace(/<span[^>]*style="[^"]*border: 2px solid #10b981[^"]*"[^>]*>_____________<\/span>/g, '{{text}}');
-  
+
   // Also handle plain lines that appear in paragraph text (common pattern: ": _____________")
   // Convert plain _____________ that appear after colons or in form contexts back to placeholders
   processed = processed.replace(/(:\s*)_____________(\s*)/g, '$1{{text}}$2');
-  
+
   // Handle lines that appear as standalone text (without specific context)
   // Look for patterns like "_____________" that are clearly placeholders (between tags or after spaces)
   processed = processed.replace(/([>\s])_____________([\s<])/g, '$1{{text}}$2');
-  
+
   // Replace placeholders with styled input fields and signature pads
   // Add unique IDs to each input field for tracking
   let textFieldCounter = 0;
@@ -84,38 +84,133 @@ const processHtmlForEditing = (html: string): string => {
       </span>`;
     })
     .replace(/\{\{sig\}\}/g, '<div class="signature-pad" style="display: inline-block; border: 2px dashed #3b82f6; border-radius: 6px; padding: 12px; margin: 0 4px; min-width: 180px; min-height: 50px; background: #f8fafc; cursor: pointer; text-align: center; font-size: 14px; color: #6b7280; font-weight: 500;">Click to sign</div>');
-  
+
   return processed;
 };
 
 // Helper function to process signed contract HTML for display (replaces placeholders with filled values)
-const processSignedContractHtml = (html: string): string => {
+const processSignedContractHtml = (html: string, signedDate?: string): string => {
   if (!html) return '';
-  
-  console.log('🔍 Processing signed contract HTML:', html.substring(0, 500) + '...');
-  
+
   let processed = html;
-  
-  // First, handle base64 signature data (data:image/png;base64,...) - convert to img tags
-  // The signed contract HTML contains base64 data URLs as plain text strings
-  // Use the same pattern as PublicLegacyContractView for consistency
-  processed = processed.replace(/data:image\/png;base64,[A-Za-z0-9+/=]+/g, (match, offset, string) => {
-    console.log('🔍 Found base64 signature data, length:', match.length);
-    // Check if this signature is in a right-aligned context by looking at surrounding HTML
-    const beforeMatch = string.substring(Math.max(0, offset - 200), offset);
-    const isInRightAlignedContext = /ql-align-right|ql-direction-rtl/.test(beforeMatch);
-    const alignmentStyle = isInRightAlignedContext ? 'text-align: right; direction: rtl;' : '';
-    return `<img src="${match}" style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px; margin: 0 4px; background-color: #f0fdf4; max-width: 200px; max-height: 80px; object-fit: contain; ${alignmentStyle}" alt="Signature" />`;
+
+  // STEP 1: Extract ALL base64 signature data first (before any cleanup)
+  const base64Matches: string[] = [];
+  const base64Regex = /data:image\/png;base64,[A-Za-z0-9+/=]+/gi;
+  let match;
+  while ((match = base64Regex.exec(html)) !== null) {
+    if (!base64Matches.includes(match[0])) {
+      base64Matches.push(match[0]);
+    }
+  }
+
+  // STEP 2: Remove ALL img tags completely (including broken ones)
+  // This handles both properly formed and broken img tags
+  processed = processed.replace(/<img[^>]*>/gi, '');
+  // Also remove any broken img tag fragments
+  processed = processed.replace(/<img[^<]*/gi, '');
+  processed = processed.replace(/img[^>]*>/gi, '');
+  // Remove any orphaned attributes that might look like img tags
+  processed = processed.replace(/src\s*=\s*["']data:image[^"']*["'][^>]*/gi, '');
+  processed = processed.replace(/alt\s*=\s*["']Signature["'][^>]*/gi, '');
+  processed = processed.replace(/class\s*=\s*["']user-input["'][^>]*/gi, '');
+
+  // STEP 3: Insert proper img tags for each base64 signature found
+  base64Matches.forEach((base64Data, index) => {
+    const imgTag = `<img src="${base64Data}" style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px; margin: 0 4px; background-color: #f0fdf4; max-width: 200px; max-height: 80px; object-fit: contain;" alt="Signature" />`;
+
+    // Priority 1: Replace {{sig}} placeholder (this is the correct location at the bottom)
+    if (processed.includes('{{sig}}')) {
+      processed = processed.replace('{{sig}}', imgTag);
+    } else {
+      // Priority 2: Look for "חתימת הלקוח" (Client Signature) - this should be at the bottom
+      const clientSigIndex = processed.search(/חתימת\s+הלקוח|Client\s+Signature/i);
+      if (clientSigIndex !== -1) {
+        // Find the end of the paragraph/tag containing "חתימת הלקוח" and insert after it
+        // Look for the closing tag after the signature text
+        let insertPos = processed.indexOf('</p>', clientSigIndex);
+        if (insertPos === -1) {
+          insertPos = processed.indexOf('</div>', clientSigIndex);
+        }
+        if (insertPos === -1) {
+          insertPos = processed.indexOf('>', clientSigIndex);
+          if (insertPos !== -1) insertPos += 1;
+        } else {
+          insertPos += 4; // Move past </p> or </div>
+        }
+
+        if (insertPos === -1 || insertPos < clientSigIndex) {
+          // Fallback: insert right after the signature text
+          insertPos = clientSigIndex + 20; // Approximate length of "חתימת הלקוח"
+        }
+
+        processed = processed.substring(0, insertPos) + ' ' + imgTag + processed.substring(insertPos);
+      } else {
+        // Priority 3: Find the LAST occurrence of "חתימת" in the document (should be at bottom)
+        let lastSigIndex = -1;
+        let searchIndex = 0;
+        while (true) {
+          const found = processed.indexOf('חתימת', searchIndex);
+          if (found === -1) break;
+          lastSigIndex = found;
+          searchIndex = found + 1;
+        }
+
+        if (lastSigIndex !== -1) {
+          // Found last occurrence - insert after the paragraph containing it
+          let insertPos = processed.indexOf('</p>', lastSigIndex);
+          if (insertPos === -1) {
+            insertPos = processed.indexOf('</div>', lastSigIndex);
+          }
+          if (insertPos === -1) {
+            insertPos = processed.indexOf('>', lastSigIndex);
+            if (insertPos !== -1) insertPos += 1;
+          } else {
+            insertPos += 4;
+          }
+
+          if (insertPos === -1 || insertPos < lastSigIndex) {
+            insertPos = lastSigIndex + 10;
+          }
+
+          processed = processed.substring(0, insertPos) + ' ' + imgTag + processed.substring(insertPos);
+        } else {
+          // Last resort: append at the very end, before any closing tags
+          // Find the last </p> or </div> and insert before it
+          const lastP = processed.lastIndexOf('</p>');
+          const lastDiv = processed.lastIndexOf('</div>');
+          const lastTag = Math.max(lastP, lastDiv);
+
+          if (lastTag !== -1) {
+            processed = processed.substring(0, lastTag) + ' ' + imgTag + processed.substring(lastTag);
+          } else {
+            // No closing tags found, just append at the end
+            processed += ' ' + imgTag;
+          }
+        }
+      }
+    }
   });
-  
-  // Replace remaining {{text}} placeholders (if any) with styled lines
+
+  // Replace {{date}} placeholders with the actual signed date (if available)
+  if (signedDate) {
+    const formattedDate = new Date(signedDate).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+    processed = processed.replace(/\{\{date\}\}/g, `<span style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; background-color: #f0fdf4; color: #065f46; font-weight: bold;">${formattedDate}</span>`);
+  } else {
+    // If no date provided, show placeholder
+    processed = processed.replace(/\{\{date\}\}/g, '<span style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; background-color: #f0fdf4; color: #065f46; font-weight: bold;">_____________</span>');
+  }
+
+  // Replace {{text}} placeholders with styled filled text
   processed = processed.replace(/\{\{text\}\}/g, '<span style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; background-color: #f0fdf4; color: #065f46; font-weight: bold;">_____________</span>');
-  
-  // Replace remaining {{sig}} placeholders (if any) with signature indicator
+
+  // Replace {{sig}} placeholders with signature image display (only if not already replaced by base64)
   processed = processed.replace(/\{\{sig\}\}/g, '<div style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px; margin: 0 4px; background-color: #f0fdf4; min-width: 200px; min-height: 80px; display: flex; align-items: center; justify-content: center;"><span style="color: #065f46; font-size: 12px;">✓ Signed</span></div>');
-  
-  console.log('🔍 Processed HTML result:', processed.substring(0, 500) + '...');
-  
+
   return processed;
 };
 
@@ -236,8 +331,8 @@ const renderTiptapContent = (content: any, keyPrefix = '', asClient = false, sig
       return <p key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-p', asClient, signaturePads)}</p>;
     case 'heading':
       const level = content.attrs?.level || 1;
-      const headingTags = ['h1','h2','h3','h4','h5','h6'];
-      const HeadingTag = headingTags[Math.max(0, Math.min(5, level-1))] || 'h1';
+      const headingTags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
+      const HeadingTag = headingTags[Math.max(0, Math.min(5, level - 1))] || 'h1';
       return React.createElement(
         HeadingTag,
         { key: keyPrefix },
@@ -285,7 +380,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
   const [contactContracts, setContactContracts] = useState<{ [id: number]: { id: string; name: string; status: string; signed_at?: string; isLegacy?: boolean; contractHtml?: string; signedContractHtml?: string; public_token?: string } | null }>({});
   const [contractTemplates, setContractTemplates] = useState<ContractTemplate[]>([]);
-  const [viewingContract, setViewingContract] = useState<{ id: string; mode: 'view' | 'edit'; contractHtml?: string; signedContractHtml?: string; status?: string; public_token?: string } | null>(null);
+  const [viewingContract, setViewingContract] = useState<{ id: string; mode: 'view' | 'edit'; contractHtml?: string; signedContractHtml?: string; status?: string; public_token?: string; signed_at?: string } | null>(null);
 
   // State for 'View as Client' mode in contract modal
   const [viewAsClient, setViewAsClient] = useState(false);
@@ -295,7 +390,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   const [showContractCreation, setShowContractCreation] = useState(false);
   const [contractForm, setContractForm] = useState({
     applicantCount: 1,
-    selectedCurrency: null as {id: string, front_name: string, iso_code: string, name: string} | null,
+    selectedCurrency: null as { id: string, front_name: string, iso_code: string, name: string } | null,
     selectedTemplateId: '',
     contactId: null as number | null,
   });
@@ -312,36 +407,36 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   const [archivalResearch, setArchivalResearch] = useState<'none' | 'with'>('none');
   // Add state for VAT inclusion
   const [includeVAT, setIncludeVAT] = useState<boolean>(false);
-  
+
   // State to track current stage (for legacy leads, fetch from DB)
   const [currentStage, setCurrentStage] = useState<number | null>(null);
 
   // Add state for currencies from database
-  const [currencies, setCurrencies] = useState<Array<{id: string, front_name: string, iso_code: string, name: string}>>([]);
+  const [currencies, setCurrencies] = useState<Array<{ id: string, front_name: string, iso_code: string, name: string }>>([]);
 
   // Add country codes data from database (matching CreateNewLead structure)
   const [countryOptions, setCountryOptions] = useState<Array<{ id: number; name: string; phone_code: string; iso_code: string }>>([
     { id: 0, name: 'Israel', phone_code: '+972', iso_code: 'IL' } // Default fallback
   ]);
-  
+
   // State for country code search (for main contact mobile)
   const [mainContactMobileCodeSearchTerm, setMainContactMobileCodeSearchTerm] = useState<string>('');
   const [showMainContactMobileCodeDropdown, setShowMainContactMobileCodeDropdown] = useState<boolean>(false);
   const mainContactMobileCodeInputRef = useRef<HTMLDivElement>(null);
   const [selectedMainContactMobileCode, setSelectedMainContactMobileCode] = useState<string>('+972');
-  
+
   // State for country code search (for main contact phone)
   const [mainContactPhoneCodeSearchTerm, setMainContactPhoneCodeSearchTerm] = useState<string>('');
   const [showMainContactPhoneCodeDropdown, setShowMainContactPhoneCodeDropdown] = useState<boolean>(false);
   const mainContactPhoneCodeInputRef = useRef<HTMLDivElement>(null);
   const [selectedMainContactPhoneCode, setSelectedMainContactPhoneCode] = useState<string>('+972');
-  
+
   // State for country code search (for regular contacts mobile - keyed by contact ID)
   const [contactMobileCodeSearchTerms, setContactMobileCodeSearchTerms] = useState<{ [key: number]: string }>({});
   const [showContactMobileCodeDropdowns, setShowContactMobileCodeDropdowns] = useState<{ [key: number]: boolean }>({});
   const contactMobileCodeInputRefs = useRef<{ [key: number]: HTMLDivElement | null }>({});
   const [selectedContactMobileCodes, setSelectedContactMobileCodes] = useState<{ [key: number]: string }>({});
-  
+
   // State for country code search (for regular contacts phone - keyed by contact ID)
   const [contactPhoneCodeSearchTerms, setContactPhoneCodeSearchTerms] = useState<{ [key: number]: string }>({});
   const [showContactPhoneCodeDropdowns, setShowContactPhoneCodeDropdowns] = useState<{ [key: number]: boolean }>({});
@@ -350,17 +445,17 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
   // Add state for countries from database (for country dropdown)
   const [countries, setCountries] = useState<Array<{ id: number; name: string; iso_code: string | null }>>([]);
-  
+
   // State for country search (for main contact)
   const [mainContactCountrySearchTerm, setMainContactCountrySearchTerm] = useState<string>('');
   const [showMainContactCountryDropdown, setShowMainContactCountryDropdown] = useState<boolean>(false);
   const mainContactCountryInputRef = useRef<HTMLDivElement>(null);
-  
+
   // Call options modal state
   const [isCallModalOpen, setIsCallModalOpen] = useState(false);
   const [callPhoneNumber, setCallPhoneNumber] = useState<string>('');
   const [callContactName, setCallContactName] = useState<string>('');
-  
+
   // State for country search (for regular contacts - keyed by contact ID)
   const [contactCountrySearchTerms, setContactCountrySearchTerms] = useState<{ [key: number]: string }>({});
   const [showContactCountryDropdowns, setShowContactCountryDropdowns] = useState<{ [key: number]: boolean }>({});
@@ -412,10 +507,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   // Function to insert a new text field at the cursor position
   const insertTextField = () => {
     if (!contractEditorRef.current) return;
-    
+
     const selection = window.getSelection();
     if (!selection) return;
-    
+
     let range: Range;
     if (selection.rangeCount === 0) {
       // If no selection, insert at the end
@@ -432,7 +527,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     const fieldId = `text-field-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     textFieldWrapper.setAttribute('data-field-id', fieldId);
     textFieldWrapper.style.cssText = 'display: inline-block; position: relative; margin: 0 4px;';
-    
+
     const input = document.createElement('input');
     input.type = 'text';
     input.className = 'inline-input';
@@ -440,7 +535,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     input.setAttribute('data-field-type', 'text');
     input.style.cssText = 'border: 2px solid #3b82f6; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; font-family: inherit; font-size: 14px; background: #ffffff; color: #374151; box-shadow: 0 1px 3px rgba(0,0,0,0.1);';
     input.placeholder = 'Enter text...';
-    
+
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
     removeBtn.className = 'text-field-remove-btn';
@@ -453,27 +548,27 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       e.stopPropagation();
       removeTextField(fieldId);
     };
-    
+
     textFieldWrapper.appendChild(input);
     textFieldWrapper.appendChild(removeBtn);
-    
+
     range.deleteContents();
     range.insertNode(textFieldWrapper);
-    
+
     // Move cursor after the input
     const newRange = document.createRange();
     newRange.setStartAfter(input);
     newRange.collapse(true);
     selection.removeAllRanges();
     selection.addRange(newRange);
-    
+
     input.focus();
   };
 
   // Function to remove a text field
   const removeTextField = (fieldId: string) => {
     if (!contractEditorRef.current) return;
-    
+
     const wrapper = contractEditorRef.current.querySelector(`[data-field-id="${fieldId}"]`);
     if (wrapper && wrapper.parentNode) {
       wrapper.parentNode.removeChild(wrapper);
@@ -493,7 +588,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             // Remove existing listeners to prevent duplicates
             const newPad = pad.cloneNode(true) as HTMLElement;
             pad.parentNode?.replaceChild(newPad, pad);
-            
+
             newPad.addEventListener('click', (e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -513,7 +608,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               signatureInput.focus();
             });
           });
-          
+
           // Handle remove button clicks for text fields
           const removeButtons = contentDiv.querySelectorAll('.text-field-remove-btn');
           removeButtons.forEach(btn => {
@@ -534,29 +629,29 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   // Function to render contract content with interactive fields
   const renderContractContent = (htmlContent: string) => {
     if (!htmlContent) return null;
-    
+
     // Split the HTML content by placeholders
     const parts = [];
     let lastIndex = 0;
     let textCounter = 1;
     let signatureCounter = 1;
-    
+
     // Find all {{text}} and {{signature}} placeholders
     const regex = /({{text}}|{{signature}})/g;
     let match;
-    
+
     while ((match = regex.exec(htmlContent)) !== null) {
       // Add the HTML content before the placeholder
       if (match.index > lastIndex) {
         const htmlBefore = htmlContent.slice(lastIndex, match.index);
         parts.push(
-          <span 
+          <span
             key={`html-${lastIndex}`}
             dangerouslySetInnerHTML={{ __html: htmlBefore }}
           />
         );
       }
-      
+
       // Add the interactive field
       if (match[1] === '{{text}}') {
         const id = `text-${textCounter++}`;
@@ -619,21 +714,21 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           </div>
         );
       }
-      
+
       lastIndex = match.index + match[1].length;
     }
-    
+
     // Add any remaining HTML content
     if (lastIndex < htmlContent.length) {
       const htmlAfter = htmlContent.slice(lastIndex);
       parts.push(
-        <span 
+        <span
           key={`html-${lastIndex}`}
           dangerouslySetInnerHTML={{ __html: htmlAfter }}
         />
       );
     }
-    
+
     return parts;
   };
 
@@ -645,10 +740,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     if (!fullNumber || fullNumber === '---' || fullNumber === null || fullNumber === undefined || fullNumber.trim() === '') {
       return { countryCode: '+972', number: '' };
     }
-    
+
     // Trim the input to remove any extra spaces
     const trimmed = fullNumber.trim();
-    
+
     // Find matching country code
     const matchedCode = countryOptions.find(country => trimmed.startsWith(country.phone_code));
     if (matchedCode) {
@@ -657,7 +752,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         number: trimmed.substring(matchedCode.phone_code.length)
       };
     }
-    
+
     // Default to Israel if no match found
     return { countryCode: '+972', number: trimmed };
   };
@@ -681,16 +776,16 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     (async () => {
       try {
         console.log('🔍 Fetching contracts for client:', client.id, 'main contact ID:', mainContactId);
-        
+
         // Check if this is a legacy lead
         const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
         console.log('🔍 Is legacy lead:', isLegacyLead);
-        
+
         if (isLegacyLead) {
           // For legacy leads, fetch contracts from lead_leadcontact table
           const legacyId = client.id.toString().replace('legacy_', '');
           console.log('🔍 Legacy ID:', legacyId);
-          
+
           // Fetch legacy contracts from lead_leadcontact table (include public_token)
           const { data: legacyContracts, error: legacyError } = await supabase
             .from('lead_leadcontact')
@@ -704,95 +799,105 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               main
             `)
             .eq('lead_id', legacyId);
-          
+
           console.log('🔍 Legacy contracts query result:', { data: legacyContracts, error: legacyError });
-          
+
           if (legacyError) {
             console.error('❌ Error fetching legacy contracts:', legacyError);
           }
-          
+
           // Fetch new contracts from contracts table
           const { data: newContracts, error: newError } = await supabase
             .from('contracts')
             .select('*')
             .eq('legacy_id', legacyId)
             .order('created_at', { ascending: false });
-          
+
           console.log('🔍 New contracts query result:', { data: newContracts, error: newError });
-          
+
           if (newError) {
             console.error('❌ Error fetching new contracts for legacy lead:', newError);
           }
-          
+
           if (mounted) {
             // Group contracts by contact_id for legacy leads
             const contactContractsMap: { [id: number]: { id: string; name: string; status: string; signed_at?: string; isLegacy?: boolean; contractHtml?: string; signedContractHtml?: string; public_token?: string } | null } = {};
-            
+
             // Initialize all contacts with no contract
             contacts.forEach(contact => {
               contactContractsMap[contact.id] = null;
             });
-            
-            // Find the main contact
-            const mainContact = contacts.find(c => c.isMain);
-            
-            // Assign ALL legacy contracts to the main contact (regardless of which contact they're associated with)
-            if (legacyContracts && mainContact) {
+
+            // Process legacy contracts - assign to the specific contact they belong to
+            if (legacyContracts) {
               console.log('🔍 Processing legacy contracts:', legacyContracts);
               legacyContracts.forEach((legacyContract: any) => {
                 console.log('🔍 Processing legacy contract:', legacyContract);
-                // Assign to main contact regardless of contact_id - if contract exists in any state, show it
                 const hasContractHtml = legacyContract.contract_html && legacyContract.contract_html.trim() !== '';
-                const hasSignedContract = legacyContract.signed_contract_html && 
-                  legacyContract.signed_contract_html.trim() !== '' && 
+                const hasSignedContract = legacyContract.signed_contract_html &&
+                  legacyContract.signed_contract_html.trim() !== '' &&
                   legacyContract.signed_contract_html !== '\\N';
-                
-                console.log('🔍 Contract status check:', { hasContractHtml, hasSignedContract, signedContractHtml: legacyContract.signed_contract_html });
-                
+
+                console.log('🔍 Contract status check:', { hasContractHtml, hasSignedContract, contact_id: legacyContract.contact_id });
+
                 if (hasContractHtml || hasSignedContract) {
                   const status = hasSignedContract ? 'signed' : 'draft';
                   console.log('🔍 Setting contract status to:', status);
-                  
-                  // Always assign to main contact, but keep the most recent/complete one if multiple exist
-                  const existingContract = contactContractsMap[mainContact.id];
-                  if (!existingContract || (hasSignedContract && existingContract.status !== 'signed')) {
-                    contactContractsMap[mainContact.id] = {
-                      id: `legacy_${legacyContract.id}`,
-                      name: 'Legacy Contract',
-                      status: status,
-                      signed_at: hasSignedContract ? new Date().toISOString() : undefined,
-                      isLegacy: true,
-                      contractHtml: legacyContract.contract_html,
-                      signedContractHtml: legacyContract.signed_contract_html,
-                      public_token: legacyContract.public_token
-                    };
-                    
-                    console.log('🔍 Added legacy contract to main contact:', contactContractsMap[mainContact.id]);
+
+                  // Assign to the specific contact this contract belongs to
+                  const targetContactId = legacyContract.contact_id;
+                  if (targetContactId) {
+                    const targetContact = contacts.find(c => c.id === targetContactId);
+                    if (targetContact) {
+                      // Keep the most recent/complete one if multiple exist for same contact
+                      const existingContract = contactContractsMap[targetContactId];
+                      if (!existingContract || (hasSignedContract && existingContract.status !== 'signed')) {
+                        contactContractsMap[targetContactId] = {
+                          id: `legacy_${legacyContract.id}`,
+                          name: 'Legacy Contract',
+                          status: status,
+                          signed_at: hasSignedContract ? new Date().toISOString() : undefined,
+                          isLegacy: true,
+                          contractHtml: legacyContract.contract_html,
+                          signedContractHtml: legacyContract.signed_contract_html,
+                          public_token: legacyContract.public_token
+                        };
+                        console.log('🔍 Added legacy contract to contact:', targetContactId, contactContractsMap[targetContactId]);
+                      }
+                    }
                   }
                 }
               });
             }
-            
-            // Assign ALL new contracts to the main contact (regardless of which contact they're associated with)
-            if (newContracts && mainContact) {
+
+            // Process new contracts - assign to the specific contact they belong to
+            if (newContracts) {
               console.log('🔍 Processing new contracts:', newContracts);
-              // Get the most recent contract (already ordered by created_at desc)
-              if (newContracts.length > 0) {
-                const contract = newContracts[0]; // Most recent contract
-                contactContractsMap[mainContact.id] = {
-                  id: contract.id,
-                  name: contractTemplates.find(t => t.id === contract.template_id)?.name || 'Contract',
-                  status: contract.status,
-                  signed_at: contract.signed_at,
-                  isLegacy: false
-                };
-                console.log('🔍 Added new contract to main contact:', contactContractsMap[mainContact.id]);
-              }
+              newContracts.forEach((contract: any) => {
+                const targetContactId = contract.contact_id;
+                if (targetContactId) {
+                  const targetContact = contacts.find(c => c.id === targetContactId);
+                  if (targetContact) {
+                    // Only assign if this contact doesn't already have a contract, or if this is more recent
+                    const existingContract = contactContractsMap[targetContactId];
+                    if (!existingContract || (contract.signed_at && !existingContract.signed_at)) {
+                      contactContractsMap[targetContactId] = {
+                        id: contract.id,
+                        name: contractTemplates.find(t => t.id === contract.template_id)?.name || 'Contract',
+                        status: contract.status,
+                        signed_at: contract.signed_at,
+                        isLegacy: false
+                      };
+                      console.log('🔍 Added new contract to contact:', targetContactId, contactContractsMap[targetContactId]);
+                    }
+                  }
+                }
+              });
             }
-            
+
             console.log('🔍 Final contact contracts map:', contactContractsMap);
             setContactContracts(contactContractsMap);
-            
+
             // Set most recent contract for backward compatibility
             const allContracts = [...(legacyContracts || []), ...(newContracts || [])];
             if (allContracts.length > 0) {
@@ -803,83 +908,66 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           }
         } else {
           // For new leads, fetch contracts from contracts table
-          // Check if this is a sub-lead and also fetch contracts from master lead
-          let masterLeadId: string | null = null;
-          
-          // Check if this is a sub-lead by checking lead_number or master_id
-          const isSubLead = client.lead_number && client.lead_number.includes('/');
-          
-          if (isSubLead) {
-            // Extract master lead number
-            const masterLeadNumber = client.lead_number.split('/')[0];
-            
-            // Fetch master lead to get its UUID
-            const { data: masterLead } = await supabase
-              .from('leads')
-              .select('id')
-              .eq('lead_number', masterLeadNumber)
-              .maybeSingle();
-            
-            if (masterLead?.id) {
-              masterLeadId = masterLead.id;
-              console.log('🔍 Sub-lead detected, master lead ID:', masterLeadId);
-            }
-          }
-          
-          // Fetch contracts for current client and master lead (if sub-lead)
-          const clientIds = [client.id];
-          if (masterLeadId && masterLeadId !== client.id) {
-            clientIds.push(masterLeadId);
-          }
-          
+          // IMPORTANT: Only fetch contracts for this specific lead, NOT from master lead
+          // Contracts should only be shared when explicitly using "same contract" during sublead creation
+
           const { data, error } = await supabase
             .from('contracts')
             .select('*')
-            .in('client_id', clientIds)
+            .eq('client_id', client.id) // Only fetch contracts for this specific lead
             .order('created_at', { ascending: false });
-          
+
           if (error) throw error;
-          
+
           if (mounted && data) {
             // Initialize all contacts with no contract
             const contactContractsMap: { [id: number]: { id: string; name: string; status: string; signed_at?: string } | null } = {};
             contacts.forEach(contact => {
               contactContractsMap[contact.id] = null;
             });
-            
-            // Get the most recent contract (prefer contracts from master lead if sub-lead)
-            let contractToUse = null;
-            if (data.length > 0) {
-              // If we have multiple contracts (sub-lead with master contracts), prefer master's contracts
-              if (masterLeadId) {
-                const masterContracts = data.filter(c => c.client_id === masterLeadId);
-                contractToUse = masterContracts.length > 0 ? masterContracts[0] : data[0];
+
+            // Assign contracts to their specific contacts based on contact_id
+            data.forEach((contract: any) => {
+              const targetContactId = contract.contact_id;
+              if (targetContactId) {
+                const targetContact = contacts.find(c => c.id === targetContactId);
+                if (targetContact) {
+                  // Only assign if this contact doesn't already have a contract, or if this is more recent/signed
+                  const existingContract = contactContractsMap[targetContactId];
+                  const shouldAssign = !existingContract ||
+                    (contract.signed_at && !existingContract.signed_at) ||
+                    (contract.created_at && existingContract.signed_at && new Date(contract.created_at) > new Date(existingContract.signed_at || ''));
+
+                  if (shouldAssign) {
+                    contactContractsMap[targetContactId] = {
+                      id: contract.id,
+                      name: contractTemplates.find(t => t.id === contract.template_id)?.name || 'Contract',
+                      status: contract.status,
+                      signed_at: contract.signed_at
+                    };
+                    console.log('🔍 Assigned contract to contact:', targetContactId, contactContractsMap[targetContactId]);
+                  }
+                }
               } else {
-                contractToUse = data[0];
+                // If contact_id is null, assign to main contact (backward compatibility)
+                const mainContact = contacts.find(c => c.isMain);
+                if (mainContact && !contactContractsMap[mainContact.id]) {
+                  contactContractsMap[mainContact.id] = {
+                    id: contract.id,
+                    name: contractTemplates.find(t => t.id === contract.template_id)?.name || 'Contract',
+                    status: contract.status,
+                    signed_at: contract.signed_at
+                  };
+                  console.log('🔍 Assigned contract without contact_id to main contact:', mainContact.id);
+                }
               }
-            }
-            
-            // If there's a contract, assign it ONLY to the main contact
-            if (contractToUse) {
-              const contractInfo = {
-                  id: contractToUse.id,
-                  name: contractTemplates.find(t => t.id === contractToUse.template_id)?.name || 'Contract',
-                  status: contractToUse.status,
-                  signed_at: contractToUse.signed_at
-                };
-              
-              // Find the main contact and assign contract only to it
-              const mainContact = contacts.find(c => c.isMain);
-              if (mainContact) {
-                contactContractsMap[mainContact.id] = contractInfo;
-              }
-            }
-            
+            });
+
             setContactContracts(contactContractsMap);
-            
+
             // Set most recent contract for backward compatibility
-            if (contractToUse) {
-              setMostRecentContract(contractToUse);
+            if (data.length > 0) {
+              setMostRecentContract(data[0]);
             } else {
               setMostRecentContract(null);
             }
@@ -907,7 +995,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           // Process countries: normalize phone codes, filter out NULL phone_code, and remove duplicates
           const processedCountries = countriesData
             .filter(country => country?.phone_code && country?.phone_code !== '\\N' && country?.phone_code !== null && country?.name)
-              .map(country => ({
+            .map(country => ({
               id: country.id,
               name: country.name,
               phone_code: country.phone_code.startsWith('+') ? country.phone_code : `+${country.phone_code}`,
@@ -924,13 +1012,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
           // Ensure USA is included (check by name or iso_code)
           const usaCountry = processedCountries.find(
-            c => c.name.toLowerCase().includes('united states') || 
-                 c.name.toLowerCase() === 'usa' || 
-                 c.name.toLowerCase() === 'us' ||
-                 c.iso_code === 'US' ||
-                 c.iso_code === 'USA'
+            c => c.name.toLowerCase().includes('united states') ||
+              c.name.toLowerCase() === 'usa' ||
+              c.name.toLowerCase() === 'us' ||
+              c.iso_code === 'US' ||
+              c.iso_code === 'USA'
           );
-          
+
           if (usaCountry && !uniqueCountriesMap.has(usaCountry.phone_code)) {
             uniqueCountriesMap.set(usaCountry.phone_code, usaCountry);
           } else if (!usaCountry) {
@@ -959,23 +1047,23 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               if (a.phone_code === '+1') return -1;
               if (b.phone_code === '+1') return 1;
               // Then sort UK (+44) and South Africa (+27) after USA
-              const isUK = a.name.toLowerCase().includes('united kingdom') || 
-                          a.name.toLowerCase() === 'uk' || 
-                          a.iso_code === 'GB' || 
-                          a.iso_code === 'UK' ||
-                          a.phone_code === '+44';
-              const isSouthAfrica = a.name.toLowerCase().includes('south africa') || 
-                                   a.iso_code === 'ZA' ||
-                                   a.phone_code === '+27';
-              const isBUK = b.name.toLowerCase().includes('united kingdom') || 
-                           b.name.toLowerCase() === 'uk' || 
-                           b.iso_code === 'GB' || 
-                           b.iso_code === 'UK' ||
-                           b.phone_code === '+44';
-              const isBSouthAfrica = b.name.toLowerCase().includes('south africa') || 
-                                    b.iso_code === 'ZA' ||
-                                    b.phone_code === '+27';
-              
+              const isUK = a.name.toLowerCase().includes('united kingdom') ||
+                a.name.toLowerCase() === 'uk' ||
+                a.iso_code === 'GB' ||
+                a.iso_code === 'UK' ||
+                a.phone_code === '+44';
+              const isSouthAfrica = a.name.toLowerCase().includes('south africa') ||
+                a.iso_code === 'ZA' ||
+                a.phone_code === '+27';
+              const isBUK = b.name.toLowerCase().includes('united kingdom') ||
+                b.name.toLowerCase() === 'uk' ||
+                b.iso_code === 'GB' ||
+                b.iso_code === 'UK' ||
+                b.phone_code === '+44';
+              const isBSouthAfrica = b.name.toLowerCase().includes('south africa') ||
+                b.iso_code === 'ZA' ||
+                b.phone_code === '+27';
+
               if (isUK && !isBUK) return -1;
               if (isBUK && !isUK) return 1;
               if (isSouthAfrica && !isBSouthAfrica) return -1;
@@ -1001,20 +1089,20 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
         if (!countriesError && countriesData) {
           const processedCountries = countriesData
-              .filter(country => country?.name)
-              .map(country => ({
-                id: country.id,
-                name: country.name,
-                iso_code: country.iso_code || null
+            .filter(country => country?.name)
+            .map(country => ({
+              id: country.id,
+              name: country.name,
+              iso_code: country.iso_code || null
             }));
 
           // Ensure United States is included - check if it exists
           const hasUnitedStates = processedCountries.some(
-            c => c.name.toLowerCase().includes('united states') || 
-                 c.name.toLowerCase() === 'usa' || 
-                 c.name.toLowerCase() === 'us' ||
-                 c.iso_code === 'US' ||
-                 c.iso_code === 'USA'
+            c => c.name.toLowerCase().includes('united states') ||
+              c.name.toLowerCase() === 'usa' ||
+              c.name.toLowerCase() === 'us' ||
+              c.iso_code === 'US' ||
+              c.iso_code === 'USA'
           );
 
           // If United States doesn't exist, try to find it in countryCodes (which includes phone_code filter)
@@ -1026,15 +1114,15 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               .not('phone_code', 'is', null)
               .order('order', { ascending: true })
               .order('name', { ascending: true });
-            
+
             const usaFromPhoneCode = countriesWithPhoneCode?.find(
-              c => c.name.toLowerCase().includes('united states') || 
-                   c.name.toLowerCase() === 'usa' || 
-                   c.name.toLowerCase() === 'us' ||
-                   c.iso_code === 'US' ||
-                   c.iso_code === 'USA'
+              c => c.name.toLowerCase().includes('united states') ||
+                c.name.toLowerCase() === 'usa' ||
+                c.name.toLowerCase() === 'us' ||
+                c.iso_code === 'US' ||
+                c.iso_code === 'USA'
             );
-            
+
             if (usaFromPhoneCode) {
               processedCountries.push({
                 id: usaFromPhoneCode.id,
@@ -1059,24 +1147,24 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   useEffect(() => {
     const fetchContacts = async () => {
       console.log('🔍 Fetching contacts for client:', client?.id);
-      
+
       // Check if this is a legacy lead
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
       console.log('🔍 Is legacy lead:', isLegacyLead);
-      
+
       if (isLegacyLead) {
         // For legacy leads, fetch contacts from leads_contact and lead_leadcontact tables
         const legacyId = client.id.toString().replace('legacy_', '');
         console.log('🔍 Legacy ID for contacts:', legacyId);
-        
+
         try {
           // Process contacts from lead_leadcontact and leads_contact tables
           const contactEntries: ContactEntry[] = [];
-          
+
           // For legacy leads, we should NOT add the main contact from leads_lead table
           // because it's already in the leads_contact table and linked via lead_leadcontact
           // This prevents duplicate entries
-          
+
           // Then get additional contacts from lead-contact relationships
           const { data: leadContacts, error: leadContactsError } = await supabase
             .from('lead_leadcontact')
@@ -1087,59 +1175,92 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               lead_id
             `)
             .eq('lead_id', legacyId);
-          
+
           console.log('🔍 Lead contacts query result:', { data: leadContacts, error: leadContactsError });
-          
+
           if (leadContactsError) {
             console.error('❌ Error fetching legacy lead contacts:', leadContactsError);
             return;
           }
-          
+
           if (leadContacts && leadContacts.length > 0) {
             console.log('🔍 Processing lead contacts:', leadContacts);
-            
+
             // Get all contact IDs
             const contactIds = leadContacts.map((lc: any) => lc.contact_id).filter(Boolean);
             console.log('🔍 Contact IDs found:', contactIds);
-            
+
             if (contactIds.length > 0) {
               // Fetch contact details from leads_contact table
               const { data: contacts, error: contactsError } = await supabase
                 .from('leads_contact')
                 .select('id, name, mobile, phone, email, notes, address, additional_phones, additional_emails, country_id')
                 .in('id', contactIds);
-              
+
               console.log('🔍 Contacts query result:', { data: contacts, error: contactsError });
-              
+
               if (contactsError) {
                 console.error('❌ Error fetching contact details:', contactsError);
               } else if (contacts) {
                 // Map contacts to their lead-contact relationships
                 let mainContactFound = false;
-                
-                // First pass: find explicitly marked main contacts
+                let mainContactId: number | null = null;
+
+                // First pass: find explicitly marked main contacts and count them
+                const mainContacts: any[] = [];
                 leadContacts.forEach((leadContact: any) => {
                   const isMarkedAsMain = leadContact.main === 'true' || leadContact.main === true || leadContact.main === 't';
                   if (isMarkedAsMain) {
-                    mainContactFound = true;
+                    mainContacts.push(leadContact);
+                    if (!mainContactFound) {
+                      mainContactFound = true;
+                      mainContactId = leadContact.contact_id;
+                    }
                   }
                 });
-                
+
+                // If multiple contacts are marked as main, fix the database to have only one
+                if (mainContacts.length > 1) {
+                  console.warn('⚠️ Multiple main contacts found, fixing database to have only one:', mainContacts.length);
+
+                  // Keep the first one as main, set all others to false
+                  const firstMainContact = mainContacts[0];
+                  mainContactId = firstMainContact.contact_id;
+
+                  // Set all other main contacts to false
+                  const otherMainContacts = mainContacts.slice(1);
+                  for (const otherMain of otherMainContacts) {
+                    const { error: fixError } = await supabase
+                      .from('lead_leadcontact')
+                      .update({ main: 'false' })
+                      .eq('lead_id', legacyId)
+                      .eq('contact_id', otherMain.contact_id);
+
+                    if (fixError) {
+                      console.error('❌ Error fixing duplicate main contact:', fixError);
+                    } else {
+                      console.log('✅ Fixed duplicate main contact:', otherMain.contact_id);
+                      // Update the leadContact object
+                      otherMain.main = 'false';
+                    }
+                  }
+                }
+
                 // If no main contact found and there's only one contact, treat it as main
                 const shouldTreatFirstAsMain = !mainContactFound && leadContacts.length === 1;
-                
+
                 // If we need to mark the first contact as main, update the database
                 if (shouldTreatFirstAsMain && leadContacts.length > 0) {
                   const firstLeadContact = leadContacts[0];
                   console.log('🔍 Auto-marking single contact as main in database:', firstLeadContact.contact_id);
-                  
+
                   // Update the database to mark this contact as main
                   const { error: updateError } = await supabase
                     .from('lead_leadcontact')
                     .update({ main: 'true' })
                     .eq('lead_id', legacyId)
                     .eq('contact_id', firstLeadContact.contact_id);
-                  
+
                   if (updateError) {
                     console.error('❌ Error updating contact to main:', updateError);
                   } else {
@@ -1147,29 +1268,26 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                     // Update the leadContact object so the rest of the code sees it as main
                     firstLeadContact.main = 'true';
                     mainContactFound = true;
+                    mainContactId = firstLeadContact.contact_id;
                   }
                 }
-                
+
                 leadContacts.forEach((leadContact: any, index: number) => {
                   console.log('🔍 Processing lead contact:', leadContact);
-                  
+
                   const contact = contacts.find((c: any) => c.id === leadContact.contact_id);
                   if (contact) {
                     console.log('🔍 Contact details found:', contact);
-                    
+
                     // Check if this is marked as main in the lead_leadcontact table
                     // After database update, this will reflect the updated value
                     const isMarkedAsMain = leadContact.main === 'true' || leadContact.main === true || leadContact.main === 't';
-                    
+
                     // Mark as main if:
-                    // 1. Explicitly marked as main (including after auto-update), OR
+                    // 1. This is the one we determined should be main (mainContactId), OR
                     // 2. It's the only contact and we're treating it as main
-                    const isMainContact = isMarkedAsMain || (shouldTreatFirstAsMain && index === 0);
-                    
-                    if (isMainContact) {
-                      mainContactFound = true;
-                    }
-                    
+                    const isMainContact = (mainContactId !== null && contact.id === mainContactId) || (shouldTreatFirstAsMain && index === 0);
+
                     // Create contact entry with complete information from leads_contact table
                     // Only use client data as fallback if the contact field is truly empty
                     const contactEntry: ContactEntry = {
@@ -1181,7 +1299,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       country_id: contact.country_id || null,
                       isMain: isMainContact,
                     };
-                    
+
                     console.log('🔍 Created contact entry:', contactEntry);
                     contactEntries.push(contactEntry);
                   }
@@ -1189,7 +1307,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               }
             }
           }
-          
+
           // If no contacts were found in the database, create a fallback main contact from client data
           if (contactEntries.length === 0) {
             console.log('🔍 No contacts found in database, creating fallback main contact');
@@ -1205,15 +1323,31 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           } else {
             console.log('🔍 Found', contactEntries.length, 'contacts in database, no fallback needed');
           }
-          
-          // Remove duplicates by ID before sorting
+
+          // Remove duplicates by ID before sorting, merging data to keep the most complete version
           const uniqueContacts = contactEntries.reduce((acc, contact) => {
-            if (!acc.find(c => c.id === contact.id)) {
+            const existingIndex = acc.findIndex(c => c.id === contact.id);
+            if (existingIndex === -1) {
+              // Contact doesn't exist yet, add it
               acc.push(contact);
+            } else {
+              // Contact already exists, merge to keep the most complete data
+              const existing = acc[existingIndex];
+              acc[existingIndex] = {
+                ...existing,
+                // Keep existing value if it's not '---' or null, otherwise use new value
+                name: (existing.name && existing.name !== '---') ? existing.name : (contact.name && contact.name !== '---' ? contact.name : existing.name),
+                mobile: (existing.mobile && existing.mobile !== '---') ? existing.mobile : (contact.mobile && contact.mobile !== '---' ? contact.mobile : existing.mobile),
+                phone: (existing.phone && existing.phone !== '---') ? existing.phone : (contact.phone && contact.phone !== '---' ? contact.phone : existing.phone),
+                email: (existing.email && existing.email !== '---') ? existing.email : (contact.email && contact.email !== '---' ? contact.email : existing.email),
+                country_id: existing.country_id || contact.country_id,
+                // If either is marked as main, keep it as main
+                isMain: existing.isMain || contact.isMain,
+              };
             }
             return acc;
           }, [] as ContactEntry[]);
-          
+
           // Sort contacts: main contact first, then others by ID
           uniqueContacts.sort((a, b) => {
             // Main contact always comes first
@@ -1222,10 +1356,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             // If both are main or both are not main, sort by ID
             return a.id - b.id;
           });
-          
+
           console.log('🔍 Final contacts list (deduplicated):', uniqueContacts);
           setContacts(uniqueContacts);
-          
+
         } catch (error) {
           console.error('❌ Error fetching legacy contacts:', error);
           // Fallback to basic contact structure
@@ -1244,10 +1378,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         try {
           const newLeadId = client.id; // UUID for new leads
           console.log('🔍 New lead ID for contacts:', newLeadId);
-          
+
           // Process contacts from lead_leadcontact and leads_contact tables
           const contactEntries: ContactEntry[] = [];
-          
+
           // Get contacts from lead-contact relationships
           const { data: leadContacts, error: leadContactsError } = await supabase
             .from('lead_leadcontact')
@@ -1258,40 +1392,40 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               newlead_id
             `)
             .eq('newlead_id', newLeadId);
-          
+
           console.log('🔍 New lead contacts query result:', { data: leadContacts, error: leadContactsError });
-          
+
           if (leadContactsError) {
             console.error('❌ Error fetching new lead contacts:', leadContactsError);
             // Fallback to basic contact structure
-        const mainContact: ContactEntry = {
-          id: 1,
-          name: client.name || '---',
-          mobile: client.mobile || '---',
-          phone: client.phone || '---',
-          email: client.email || '---',
-          isMain: true,
-        };
+            const mainContact: ContactEntry = {
+              id: 1,
+              name: client.name || '---',
+              mobile: client.mobile || '---',
+              phone: client.phone || '---',
+              email: client.email || '---',
+              isMain: true,
+            };
             setContacts([mainContact]);
             return;
           }
-          
+
           if (leadContacts && leadContacts.length > 0) {
             console.log('🔍 Processing new lead contacts:', leadContacts);
-            
+
             // Get all contact IDs
             const contactIds = leadContacts.map((lc: any) => lc.contact_id).filter(Boolean);
             console.log('🔍 Contact IDs found:', contactIds);
-            
+
             if (contactIds.length > 0) {
               // Fetch contact details from leads_contact table
               const { data: contacts, error: contactsError } = await supabase
                 .from('leads_contact')
                 .select('id, name, mobile, phone, email, notes, address, additional_phones, additional_emails, country_id')
                 .in('id', contactIds);
-              
+
               console.log('🔍 Contacts query result:', { data: contacts, error: contactsError });
-              
+
               if (contactsError) {
                 console.error('❌ Error fetching contact details:', contactsError);
               } else if (contacts) {
@@ -1301,35 +1435,68 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   .select('country_id')
                   .eq('id', newLeadId)
                   .single();
-                
+
                 const leadCountryId = leadData?.country_id || null;
-                
+
                 // Map contacts to their lead-contact relationships
                 let mainContactFound = false;
-                
-                // First pass: find explicitly marked main contacts
+                let mainContactId: number | null = null;
+
+                // First pass: find explicitly marked main contacts and count them
+                const mainContacts: any[] = [];
                 leadContacts.forEach((leadContact: any) => {
                   const isMarkedAsMain = leadContact.main === 'true' || leadContact.main === true || leadContact.main === 't';
                   if (isMarkedAsMain) {
-                    mainContactFound = true;
+                    mainContacts.push(leadContact);
+                    if (!mainContactFound) {
+                      mainContactFound = true;
+                      mainContactId = leadContact.contact_id;
+                    }
                   }
                 });
-                
+
+                // If multiple contacts are marked as main, fix the database to have only one
+                if (mainContacts.length > 1) {
+                  console.warn('⚠️ Multiple main contacts found, fixing database to have only one:', mainContacts.length);
+
+                  // Keep the first one as main, set all others to false
+                  const firstMainContact = mainContacts[0];
+                  mainContactId = firstMainContact.contact_id;
+
+                  // Set all other main contacts to false
+                  const otherMainContacts = mainContacts.slice(1);
+                  for (const otherMain of otherMainContacts) {
+                    const { error: fixError } = await supabase
+                      .from('lead_leadcontact')
+                      .update({ main: 'false' })
+                      .eq('newlead_id', newLeadId)
+                      .eq('contact_id', otherMain.contact_id);
+
+                    if (fixError) {
+                      console.error('❌ Error fixing duplicate main contact:', fixError);
+                    } else {
+                      console.log('✅ Fixed duplicate main contact:', otherMain.contact_id);
+                      // Update the leadContact object
+                      otherMain.main = 'false';
+                    }
+                  }
+                }
+
                 // If no main contact found and there's only one contact, treat it as main
                 const shouldTreatFirstAsMain = !mainContactFound && leadContacts.length === 1;
-                
+
                 // If we need to mark the first contact as main, update the database
                 if (shouldTreatFirstAsMain && leadContacts.length > 0) {
                   const firstLeadContact = leadContacts[0];
                   console.log('🔍 Auto-marking single contact as main in database:', firstLeadContact.contact_id);
-                  
+
                   // Update the database to mark this contact as main
                   const { error: updateError } = await supabase
                     .from('lead_leadcontact')
                     .update({ main: 'true' })
                     .eq('newlead_id', newLeadId)
                     .eq('contact_id', firstLeadContact.contact_id);
-                  
+
                   if (updateError) {
                     console.error('❌ Error updating contact to main:', updateError);
                   } else {
@@ -1337,32 +1504,25 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                     // Update the leadContact object so the rest of the code sees it as main
                     firstLeadContact.main = 'true';
                     mainContactFound = true;
+                    mainContactId = firstLeadContact.contact_id;
                   }
                 }
-                
+
                 leadContacts.forEach((leadContact: any, index: number) => {
                   console.log('🔍 Processing lead contact:', leadContact);
-                  
+
                   const contact = contacts.find((c: any) => c.id === leadContact.contact_id);
                   if (contact) {
                     console.log('🔍 Contact details found:', contact);
-                    
-                    // Check if this is marked as main in the lead_leadcontact table
-                    // After database update, this will reflect the updated value
-                    const isMarkedAsMain = leadContact.main === 'true' || leadContact.main === true || leadContact.main === 't';
-                    
+
                     // Mark as main if:
-                    // 1. Explicitly marked as main (including after auto-update), OR
+                    // 1. This is the one we determined should be main (mainContactId), OR
                     // 2. It's the only contact and we're treating it as main
-                    const isMainContact = isMarkedAsMain || (shouldTreatFirstAsMain && index === 0);
-                    
-                    if (isMainContact) {
-                      mainContactFound = true;
-                    }
-                    
+                    const isMainContact = (mainContactId !== null && contact.id === mainContactId) || (shouldTreatFirstAsMain && index === 0);
+
                     // Use country_id from contact, fallback to leads table, then null
                     const countryId = contact.country_id || leadCountryId || null;
-                    
+
                     // Create contact entry with complete information from leads_contact table
                     const contactEntry: ContactEntry = {
                       id: contact.id,
@@ -1373,7 +1533,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       country_id: countryId,
                       isMain: isMainContact,
                     };
-                    
+
                     console.log('🔍 Created contact entry:', contactEntry);
                     contactEntries.push(contactEntry);
                   }
@@ -1381,51 +1541,58 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               }
             }
           }
-          
+
           // If no contacts were found in the database, check if one exists but wasn't found, or create a new one
           if (contactEntries.length === 0) {
             console.log('🔍 No contacts found in database, checking if contact exists or creating main contact from client data');
-            
+
             // First, try to find an existing contact for this lead (in case it was created by SQL function but query didn't find it)
             const { data: existingContacts, error: existingError } = await supabase
               .from('leads_contact')
               .select('id, name, mobile, phone, email, country_id')
               .eq('newlead_id', newLeadId)
               .limit(1);
-            
+
             if (existingContacts && existingContacts.length > 0) {
               console.log('🔍 Found existing contact that was missed in previous query:', existingContacts);
               const existingContact = existingContacts[0];
-              
-              // Check if relationship exists
-              const { data: existingRelationship } = await supabase
-                .from('lead_leadcontact')
-                .select('id, main')
-                .eq('newlead_id', newLeadId)
-                .eq('contact_id', existingContact.id)
-                .single();
-              
-              // Get country_id from leads table as fallback if contact doesn't have it
-              let countryId = existingContact.country_id;
-              if (!countryId) {
-                const { data: leadData } = await supabase
-                  .from('leads')
-                  .select('country_id')
-                  .eq('id', newLeadId)
+
+              // Check if this contact was already added to contactEntries
+              const alreadyAdded = contactEntries.some(c => c.id === existingContact.id);
+              if (alreadyAdded) {
+                console.log('🔍 Contact already exists in contactEntries, skipping fallback addition:', existingContact.id);
+                // Don't add it again, it will be handled by the deduplication logic
+              } else {
+                // Check if relationship exists
+                const { data: existingRelationship } = await supabase
+                  .from('lead_leadcontact')
+                  .select('id, main')
+                  .eq('newlead_id', newLeadId)
+                  .eq('contact_id', existingContact.id)
                   .single();
-                countryId = leadData?.country_id || null;
+
+                // Get country_id from leads table as fallback if contact doesn't have it
+                let countryId = existingContact.country_id;
+                if (!countryId) {
+                  const { data: leadData } = await supabase
+                    .from('leads')
+                    .select('country_id')
+                    .eq('id', newLeadId)
+                    .single();
+                  countryId = leadData?.country_id || null;
+                }
+
+                const mainContact: ContactEntry = {
+                  id: existingContact.id,
+                  name: existingContact.name || client.name || '---',
+                  mobile: existingContact.mobile || client.mobile || '---',
+                  phone: existingContact.phone || client.phone || '---',
+                  email: existingContact.email || client.email || '---',
+                  country_id: countryId,
+                  isMain: existingRelationship?.main === true || existingRelationship?.main === 'true' || existingRelationship?.main === 't',
+                };
+                contactEntries.push(mainContact);
               }
-              
-              const mainContact: ContactEntry = {
-                id: existingContact.id,
-                name: existingContact.name || client.name || '---',
-                mobile: existingContact.mobile || client.mobile || '---',
-                phone: existingContact.phone || client.phone || '---',
-                email: existingContact.email || client.email || '---',
-                country_id: countryId,
-                isMain: existingRelationship?.main === true || existingRelationship?.main === 'true' || existingRelationship?.main === 't',
-              };
-              contactEntries.push(mainContact);
             } else {
               // No existing contact found, create a new one
               // Get country_id from leads table first
@@ -1434,7 +1601,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 .select('country_id')
                 .eq('id', newLeadId)
                 .single();
-              
+
               const insertData: Record<string, any> = {
                 name: client.name || '',
                 mobile: client.mobile || null,
@@ -1445,43 +1612,43 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 cdate: new Date().toISOString().split('T')[0],
                 udate: new Date().toISOString().split('T')[0]
               };
-              
+
               let newContact: any = null;
               let contactError: any = null;
-              
+
               try {
                 const result = await supabase
                   .from('leads_contact')
                   .insert([insertData])
                   .select('id')
                   .single();
-                
+
                 newContact = result.data;
                 contactError = result.error;
-                
+
                 // If duplicate key error, try to get the existing contact
                 if (contactError && contactError.code === '23505') {
                   console.warn('Duplicate key error when creating contact. Fetching existing contact...');
-                  
+
                   const { data: maxIdData } = await supabase
                     .from('leads_contact')
                     .select('id')
                     .order('id', { ascending: false })
                     .limit(1)
                     .single();
-                  
+
                   const nextId = maxIdData ? maxIdData.id + 1 : 1;
-                  
+
                   // Try insert with explicit ID
                   const resultWithId = await supabase
                     .from('leads_contact')
                     .insert([{ ...insertData, id: nextId }])
                     .select('id')
                     .single();
-                  
+
                   newContact = resultWithId.data;
                   contactError = resultWithId.error;
-                  
+
                   // If still error, try to fetch existing contact by newlead_id
                   if (contactError) {
                     const { data: fetchedContact } = await supabase
@@ -1490,7 +1657,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       .eq('newlead_id', newLeadId)
                       .limit(1)
                       .single();
-                    
+
                     if (fetchedContact) {
                       newContact = { id: fetchedContact.id };
                       contactError = null;
@@ -1501,7 +1668,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 console.error('Insert failed:', err);
                 contactError = err;
               }
-              
+
               if (contactError) {
                 console.error('Error creating main contact:', contactError);
                 // Fallback to temporary contact entry with country_id from leads table
@@ -1510,7 +1677,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   .select('country_id')
                   .eq('id', newLeadId)
                   .single();
-                
+
                 const fallbackContact: ContactEntry = {
                   id: 1,
                   name: client.name || '---',
@@ -1524,7 +1691,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               } else if (newContact) {
                 // Create relationship in lead_leadcontact table with main = 'true'
                 let relationshipError: any = null;
-                
+
                 try {
                   const result = await supabase
                     .from('lead_leadcontact')
@@ -1533,22 +1700,22 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       newlead_id: newLeadId,
                       main: 'true'
                     }]);
-                  
+
                   relationshipError = result.error;
-                  
+
                   // If duplicate key error, try to get next available ID
                   if (relationshipError && relationshipError.code === '23505') {
                     console.warn('Duplicate key error for relationship. Getting next available ID...');
-                    
+
                     const { data: maxIdData } = await supabase
                       .from('lead_leadcontact')
                       .select('id')
                       .order('id', { ascending: false })
                       .limit(1)
                       .single();
-                    
+
                     const nextId = maxIdData ? maxIdData.id + 1 : 1;
-                    
+
                     const resultWithId = await supabase
                       .from('lead_leadcontact')
                       .insert([{
@@ -1557,25 +1724,25 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         newlead_id: newLeadId,
                         main: 'true'
                       }]);
-                    
+
                     relationshipError = resultWithId.error;
                   }
                 } catch (err) {
                   console.error('Relationship insert failed:', err);
                   relationshipError = err;
                 }
-                
+
                 if (relationshipError) {
                   console.error('Error creating main contact relationship:', relationshipError);
                 }
-                
+
                 // Get country_id from leads table for the newly created contact
                 const { data: leadDataForNewContact } = await supabase
                   .from('leads')
                   .select('country_id')
                   .eq('id', newLeadId)
                   .single();
-                
+
                 const mainContact: ContactEntry = {
                   id: newContact.id,
                   name: client.name || '---',
@@ -1591,15 +1758,31 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           } else {
             console.log('🔍 Found', contactEntries.length, 'contacts in database, no fallback needed');
           }
-          
-          // Remove duplicates by ID before sorting
+
+          // Remove duplicates by ID before sorting, merging data to keep the most complete version
           const uniqueContacts = contactEntries.reduce((acc, contact) => {
-            if (!acc.find(c => c.id === contact.id)) {
+            const existingIndex = acc.findIndex(c => c.id === contact.id);
+            if (existingIndex === -1) {
+              // Contact doesn't exist yet, add it
               acc.push(contact);
+            } else {
+              // Contact already exists, merge to keep the most complete data
+              const existing = acc[existingIndex];
+              acc[existingIndex] = {
+                ...existing,
+                // Keep existing value if it's not '---' or null, otherwise use new value
+                name: (existing.name && existing.name !== '---') ? existing.name : (contact.name && contact.name !== '---' ? contact.name : existing.name),
+                mobile: (existing.mobile && existing.mobile !== '---') ? existing.mobile : (contact.mobile && contact.mobile !== '---' ? contact.mobile : existing.mobile),
+                phone: (existing.phone && existing.phone !== '---') ? existing.phone : (contact.phone && contact.phone !== '---' ? contact.phone : existing.phone),
+                email: (existing.email && existing.email !== '---') ? existing.email : (contact.email && contact.email !== '---' ? contact.email : existing.email),
+                country_id: existing.country_id || contact.country_id,
+                // If either is marked as main, keep it as main
+                isMain: existing.isMain || contact.isMain,
+              };
             }
             return acc;
           }, [] as ContactEntry[]);
-          
+
           // Sort contacts: main contact first, then others by ID
           uniqueContacts.sort((a, b) => {
             // Main contact always comes first
@@ -1608,10 +1791,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             // If both are main or both are not main, sort by ID
             return a.id - b.id;
           });
-          
+
           console.log('🔍 Final contacts list (deduplicated):', uniqueContacts);
           setContacts(uniqueContacts);
-          
+
         } catch (error) {
           console.error('❌ Error fetching new lead contacts:', error);
           // Fallback to basic contact structure
@@ -1626,10 +1809,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           setContacts([mainContact]);
         }
       }
-      
+
       // Don't initialize editedMainContact here - it will be set when Edit button is clicked
     };
-    
+
     fetchContacts();
   }, [client?.id]); // Only depend on client.id to prevent unnecessary re-fetches
 
@@ -1637,35 +1820,35 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   useEffect(() => {
     const fetchCurrentStage = async () => {
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-      
+
       console.log('🔍 fetchCurrentStage called:', {
         isLegacyLead,
         clientId: client?.id,
         clientStage: client?.stage,
         leadType: client?.lead_type
       });
-      
+
       if (isLegacyLead && client?.id) {
         try {
           const legacyId = client.id.toString().replace('legacy_', '');
           console.log('🔍 Fetching stage for legacy lead, legacyId:', legacyId);
-          
+
           const { data, error } = await supabase
             .from('leads_lead')
             .select('stage')
             .eq('id', legacyId)
             .single();
-          
+
           console.log('🔍 Stage fetch result:', { data, error });
-          
+
           if (!error && data) {
             const stageValue = data.stage;
             console.log('🔍 Stage value from DB:', stageValue, 'type:', typeof stageValue);
-            
+
             if (stageValue !== null && stageValue !== undefined) {
               const parsed = typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
               console.log('🔍 Parsed stage:', parsed, 'isNaN:', isNaN(parsed), 'isFinite:', isFinite(parsed));
-              
+
               if (!isNaN(parsed) && isFinite(parsed)) {
                 console.log('✅ Setting currentStage to:', parsed);
                 setCurrentStage(parsed);
@@ -1679,7 +1862,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           } else {
             console.error('❌ Error fetching stage:', error);
           }
-          
+
           // If fetch failed or returned invalid data, try fallback to client.stage
           console.log('🔍 Trying fallback to client.stage:', client?.stage);
           if (client?.stage !== null && client?.stage !== undefined && client?.stage !== '') {
@@ -1691,7 +1874,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               return;
             }
           }
-          
+
           // If all else fails, set to null
           console.warn('⚠️ Could not determine stage, setting to null');
           setCurrentStage(null);
@@ -1727,7 +1910,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         }
       }
     };
-    
+
     fetchCurrentStage();
   }, [client?.id, client?.stage, client?.lead_type]);
 
@@ -1772,7 +1955,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             // Handle boolean true, string 't', or truthy values
             return template.active === true || template.active === 't' || template.active === 1 || (template.active !== false && template.active !== 'f' && template.active !== 0);
           });
-          
+
           legacyTemplates.push(...activeLegacyTemplates.map((template: any) => ({
             ...template,
             id: String(template.id), // Convert numeric ID to string for consistency
@@ -1813,24 +1996,24 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   useEffect(() => {
     const fetchContractStatuses = async () => {
       if (!client?.id) return;
-      
+
       // Check if this is a legacy lead
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-      
+
       if (isLegacyLead) {
         // For legacy leads, contract statuses are handled in the main contract fetching logic
         // No need to fetch from contracts table
         return;
       }
-      
+
       try {
         const { data, error } = await supabase
           .from('contracts')
           .select('id, status, signed_at')
           .eq('client_id', client.id);
-        
+
         if (error) throw error;
-        
+
         const statusMap: { [id: string]: { status: string; signed_at?: string } } = {};
         data?.forEach(contract => {
           statusMap[contract.id] = {
@@ -1838,7 +2021,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             signed_at: contract.signed_at
           };
         });
-        
+
         setContractStatuses(statusMap);
       } catch (error) {
         console.error('Error fetching contract statuses:', error);
@@ -1863,24 +2046,24 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   const handleSaveMainContact = async () => {
     // Check if this is a legacy lead
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-    
+
     if (isLegacyLead) {
       // For legacy leads, update the leads_contact table (not leads_lead)
       try {
         const legacyId = client.id.toString().replace('legacy_', '');
-        
+
         // Find the main contact from the current contacts list
         const mainContactFromList = contacts.find(c => c.isMain);
-        
+
         if (!mainContactFromList) {
           console.error('No main contact found in contacts list');
           alert('Failed to find main contact to update');
           return;
         }
-        
+
         console.log('Updating main contact:', mainContactFromList.id);
         console.log('Updated data:', editedMainContact);
-        
+
         // Update the contact in leads_contact table using the contact ID from the list
         const { error } = await supabase
           .from('leads_contact')
@@ -1898,7 +2081,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           console.error('Error updating contact:', error);
           throw error;
         }
-        
+
         console.log('Contact updated successfully');
 
         // Also update leads_lead table with main contact details (country_id doesn't exist in leads_lead table)
@@ -1912,7 +2095,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             // Note: country_id doesn't exist in leads_lead table, so we don't update it
           })
           .eq('id', parseInt(legacyId));
-        
+
         if (updateLeadError) {
           console.error('Error updating leads_lead with main contact details:', updateLeadError);
           // Don't throw - this is a secondary update, contact update already succeeded
@@ -1922,7 +2105,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         }
 
         // Update the local contacts state to reflect the changes immediately
-        setContacts(contacts.map(c => 
+        setContacts(contacts.map(c =>
           c.isMain ? {
             ...c,
             name: editedMainContact.name,
@@ -1932,9 +2115,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             country_id: editedMainContact.country_id || null
           } : c
         ));
-        
+
         setIsEditingMainContact(false);
-        
+
         // Refresh client data in parent component
         if (onClientUpdate) {
           await onClientUpdate();
@@ -1947,19 +2130,19 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       // For new leads, update leads_contact and lead_leadcontact tables
       try {
         const newLeadId = client.id; // UUID for new leads
-        
+
         // Find the main contact from the current contacts list
         const mainContactFromList = contacts.find(c => c.isMain);
-        
+
         if (!mainContactFromList) {
           console.error('No main contact found in contacts list');
           alert('Failed to find main contact to update');
           return;
         }
-        
+
         console.log('Updating main contact for new lead:', mainContactFromList.id);
         console.log('Updated data:', editedMainContact);
-        
+
         // Update the contact in leads_contact table using the contact ID from the list
         const { error } = await supabase
           .from('leads_contact')
@@ -1977,7 +2160,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           console.error('Error updating contact:', error);
           throw error;
         }
-        
+
         console.log('Contact updated successfully');
 
         // Also update leads table with main contact details (including country_id)
@@ -1991,7 +2174,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             country_id: editedMainContact.country_id || null
           })
           .eq('id', newLeadId);
-        
+
         if (updateLeadError) {
           console.error('Error updating leads table with main contact details:', updateLeadError);
           // Don't throw - this is a secondary update, contact update already succeeded
@@ -2001,7 +2184,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         }
 
         // Update the local contacts state to reflect the changes immediately
-        setContacts(contacts.map(c => 
+        setContacts(contacts.map(c =>
           c.isMain ? {
             ...c,
             name: editedMainContact.name,
@@ -2013,7 +2196,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         ));
 
         setIsEditingMainContact(false);
-        
+
         // Refresh client data in parent component
         if (onClientUpdate) {
           await onClientUpdate();
@@ -2047,24 +2230,24 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     const searchTerm = mainContactCountrySearchTerm.toLowerCase();
     const countryName = country.name.toLowerCase();
     const isoCode = (country.iso_code || '').toLowerCase();
-    
+
     // Check if search term matches country name or ISO code
     if (countryName.includes(searchTerm) || isoCode.includes(searchTerm)) {
       return true;
     }
-    
+
     // Special handling for United States aliases
-    const isUnitedStates = countryName.includes('united states') || 
-                          countryName === 'usa' || 
-                          isoCode === 'us' || 
-                          isoCode === 'usa';
+    const isUnitedStates = countryName.includes('united states') ||
+      countryName === 'usa' ||
+      isoCode === 'us' ||
+      isoCode === 'usa';
     if (isUnitedStates) {
-      return searchTerm === 'usa' || 
-             searchTerm === 'us' || 
-             searchTerm === 'america' || 
-             searchTerm.includes('united states');
+      return searchTerm === 'usa' ||
+        searchTerm === 'us' ||
+        searchTerm === 'america' ||
+        searchTerm.includes('united states');
     }
-    
+
     return false;
   });
 
@@ -2074,24 +2257,24 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     return countries.filter(country => {
       const countryName = country.name.toLowerCase();
       const isoCode = (country.iso_code || '').toLowerCase();
-      
+
       // Check if search term matches country name or ISO code
       if (countryName.includes(searchTerm) || isoCode.includes(searchTerm)) {
         return true;
       }
-      
+
       // Special handling for United States aliases
-      const isUnitedStates = countryName.includes('united states') || 
-                            countryName === 'usa' || 
-                            isoCode === 'us' || 
-                            isoCode === 'usa';
+      const isUnitedStates = countryName.includes('united states') ||
+        countryName === 'usa' ||
+        isoCode === 'us' ||
+        isoCode === 'usa';
       if (isUnitedStates) {
-        return searchTerm === 'usa' || 
-               searchTerm === 'us' || 
-               searchTerm === 'america' || 
-               searchTerm.includes('united states');
+        return searchTerm === 'usa' ||
+          searchTerm === 'us' ||
+          searchTerm === 'america' ||
+          searchTerm.includes('united states');
       }
-      
+
       return false;
     });
   };
@@ -2105,7 +2288,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
   // Handle country select for regular contact
   const handleContactCountrySelect = (contactId: number, countryId: number, countryName: string) => {
-    setContacts(contacts.map(c => 
+    setContacts(contacts.map(c =>
       c.id === contactId ? { ...c, country_id: countryId } : c
     ));
     setContactCountrySearchTerms({ ...contactCountrySearchTerms, [contactId]: countryName });
@@ -2118,26 +2301,26 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       const searchLower = searchTerm.toLowerCase();
       const phoneCode = country.phone_code.toLowerCase();
       const countryName = country.name.toLowerCase();
-      
+
       // Direct matches
       if (phoneCode.includes(searchLower) || countryName.includes(searchLower)) {
         return true;
       }
-      
+
       // Special handling for USA/United States/America
       const usaSearchTerms = ['usa', 'us', 'america', 'united states'];
       const isUSASearch = usaSearchTerms.some(term => searchLower.includes(term) || term.includes(searchLower));
-      
+
       if (isUSASearch) {
-        return countryName.includes('united states') || 
-               countryName.includes('america') ||
-               countryName === 'usa' || 
-               countryName === 'us' ||
-               country.iso_code === 'US' ||
-               country.iso_code === 'USA' ||
-               phoneCode === '+1';
+        return countryName.includes('united states') ||
+          countryName.includes('america') ||
+          countryName === 'usa' ||
+          countryName === 'us' ||
+          country.iso_code === 'US' ||
+          country.iso_code === 'USA' ||
+          phoneCode === '+1';
       }
-      
+
       return false;
     });
   };
@@ -2148,17 +2331,17 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       if (mainContactCountryInputRef.current && !mainContactCountryInputRef.current.contains(event.target as Node)) {
         setShowMainContactCountryDropdown(false);
       }
-      
+
       if (mainContactMobileCodeInputRef.current && !mainContactMobileCodeInputRef.current.contains(event.target as Node)) {
         setShowMainContactMobileCodeDropdown(false);
         setMainContactMobileCodeSearchTerm('');
       }
-      
+
       if (mainContactPhoneCodeInputRef.current && !mainContactPhoneCodeInputRef.current.contains(event.target as Node)) {
         setShowMainContactPhoneCodeDropdown(false);
         setMainContactPhoneCodeSearchTerm('');
       }
-      
+
       // Check all contact country dropdowns
       Object.keys(contactCountryInputRefs.current).forEach(contactIdStr => {
         const contactId = parseInt(contactIdStr, 10);
@@ -2167,7 +2350,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           setShowContactCountryDropdowns(prev => ({ ...prev, [contactId]: false }));
         }
       });
-      
+
       // Check all contact mobile code dropdowns
       Object.keys(contactMobileCodeInputRefs.current).forEach(contactIdStr => {
         const contactId = parseInt(contactIdStr, 10);
@@ -2177,7 +2360,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           setContactMobileCodeSearchTerms(prev => ({ ...prev, [contactId]: '' }));
         }
       });
-      
+
       // Check all contact phone code dropdowns
       Object.keys(contactPhoneCodeInputRefs.current).forEach(contactIdStr => {
         const contactId = parseInt(contactIdStr, 10);
@@ -2189,7 +2372,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       });
     };
 
-    const hasAnyDropdownOpen = showMainContactCountryDropdown || 
+    const hasAnyDropdownOpen = showMainContactCountryDropdown ||
       showMainContactMobileCodeDropdown ||
       showMainContactPhoneCodeDropdown ||
       Object.values(showContactCountryDropdowns).some(open => open) ||
@@ -2205,8 +2388,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   // Sync country search term when editing main contact starts
   useEffect(() => {
     if (isEditingMainContact) {
-      const countryName = editedMainContact.country_id 
-        ? countries.find(c => c.id === editedMainContact.country_id)?.name || '' 
+      const countryName = editedMainContact.country_id
+        ? countries.find(c => c.id === editedMainContact.country_id)?.name || ''
         : '';
       setMainContactCountrySearchTerm(countryName);
     }
@@ -2216,8 +2399,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   useEffect(() => {
     contacts.forEach(contact => {
       if (contact.isEditing && !contactCountrySearchTerms[contact.id]) {
-        const countryName = contact.country_id 
-          ? countries.find(c => c.id === contact.country_id)?.name || '' 
+        const countryName = contact.country_id
+          ? countries.find(c => c.id === contact.country_id)?.name || ''
           : '';
         setContactCountrySearchTerms(prev => ({ ...prev, [contact.id]: countryName }));
       }
@@ -2258,7 +2441,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     // Date.now() returns a timestamp in milliseconds (e.g., 1734567890123)
     // Database IDs are usually sequential numbers (1, 2, 3, etc.)
     const isNewContact = contact.id > 1000000000000; // Roughly year 2001 in milliseconds
-    
+
     if (isNewContact && contact.isEditing) {
       // This is a newly created contact that hasn't been saved, remove it from the list
       setContacts(contacts.filter(c => c.id !== contact.id));
@@ -2276,7 +2459,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
     // Check if this is a legacy lead
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-    
+
     if (isLegacyLead) {
       // For legacy leads, we need to save to leads_contact and lead_leadcontact tables
       try {
@@ -2285,10 +2468,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         // Check if this is a newly created contact (temporary ID from Date.now())
         // Database IDs are typically much smaller than timestamps
         const isNewContact = id > 1000000000000; // Roughly year 2001 in milliseconds
-        
+
         if (isNewContact) {
           console.log('Creating new legacy contact with data:', contact);
-          
+
           // Prepare the insert data WITHOUT the timestamp ID
           // We cannot include the id from contact (which is a timestamp)
           const insertData: Record<string, any> = {
@@ -2300,14 +2483,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             cdate: new Date().toISOString().split('T')[0],
             udate: new Date().toISOString().split('T')[0]
           };
-          
+
           // console.log('Insert data (without ID):', insertData);
           // console.log('Contact timestamp ID to ignore:', contact.id);
-          
+
           // Always get the next highest available ID before inserting to avoid duplicate key errors
           let newContact: any = null;
           let contactError: any = null;
-          
+
           try {
             // Get the max ID from the table to ensure we use the next available ID
             const { data: maxIdData, error: maxIdError } = await supabase
@@ -2316,26 +2499,26 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               .order('id', { ascending: false })
               .limit(1)
               .maybeSingle();
-            
+
             if (maxIdError) {
               console.error('Error fetching max ID:', maxIdError);
               contactError = maxIdError;
             } else {
               const nextId = maxIdData ? maxIdData.id + 1 : 1;
               console.log('Next available contact ID:', nextId);
-              
+
               // Insert with explicit ID to avoid duplicate key errors
               const result = await supabase
                 .from('leads_contact')
                 .insert([{ ...insertData, id: nextId }])
                 .select('id')
                 .single();
-              
+
               newContact = result.data;
               contactError = result.error;
-              
+
               console.log('Contact insert result:', { newContact, contactError });
-              
+
               // If still duplicate key error, try incrementing the ID
               if (contactError && contactError.code === '23505') {
                 console.warn('Duplicate key error even with calculated ID. Trying next ID...');
@@ -2345,7 +2528,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   .insert([{ ...insertData, id: retryId }])
                   .select('id')
                   .single();
-                
+
                 newContact = retryResult.data;
                 contactError = retryResult.error;
                 console.log('Retry insert result:', { newContact, contactError });
@@ -2355,22 +2538,22 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             console.error('Insert failed:', err);
             contactError = err;
           }
-          
+
           console.log('Contact insert result:', { newContact, contactError });
-          
+
           if (contactError) {
             console.error('Error creating contact:', contactError);
             throw contactError;
           }
-          
+
           // Create relationship in lead_leadcontact table
           if (!newContact || !newContact.id) {
             throw new Error('Failed to get new contact ID');
           }
-          
+
           let relationshipError: any = null;
           let isMainContact = false;
-          
+
           try {
             // First, check if there are existing main contacts
             // New contacts should NOT be main if there's already a main contact
@@ -2379,10 +2562,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               .select('id, contact_id')
               .eq('lead_id', legacyId)
               .eq('main', 'true');
-            
+
             // Only set main=true if there are NO existing main contacts
             isMainContact = !existingMainContacts || existingMainContacts.length === 0;
-            
+
             // Always get the next highest available ID before inserting to avoid duplicate key errors
             const { data: maxIdData, error: maxIdError } = await supabase
               .from('lead_leadcontact')
@@ -2390,14 +2573,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               .order('id', { ascending: false })
               .limit(1)
               .maybeSingle();
-            
+
             if (maxIdError) {
               console.error('Error fetching max relationship ID:', maxIdError);
               relationshipError = maxIdError;
             } else {
               const nextId = maxIdData ? maxIdData.id + 1 : 1;
               console.log('Next available relationship ID:', nextId);
-              
+
               // Insert with explicit ID to avoid duplicate key errors
               // New contacts should NOT be main if there's already a main contact
               const result = await supabase
@@ -2408,9 +2591,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   lead_id: legacyId,
                   main: isMainContact ? 'true' : 'false'
                 }]);
-              
+
               relationshipError = result.error;
-              
+
               // If still duplicate key error, try incrementing the ID
               if (relationshipError && relationshipError.code === '23505') {
                 console.warn('Duplicate key error even with calculated ID. Trying next ID...');
@@ -2423,7 +2606,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                     lead_id: legacyId,
                     main: isMainContact ? 'true' : 'false'
                   }]);
-                
+
                 relationshipError = retryResult.error;
                 console.log('Retry relationship insert result:', { relationshipError });
               }
@@ -2432,35 +2615,35 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             console.error('Relationship insert failed:', err);
             relationshipError = err;
           }
-          
+
           console.log('Relationship insert result:', { relationshipError });
-          
+
           if (relationshipError) {
             console.error('Error creating relationship:', relationshipError);
             throw relationshipError;
           }
-          
+
           // Update local state with the new contact ID - use functional update to prevent duplicates
           setContacts(prevContacts => {
             // Remove the old temporary contact and add the new one with real ID
             const filtered = prevContacts.filter(c => c.id !== id && c.id !== newContact.id);
             return [...filtered, { ...contact, id: newContact.id, isEditing: false, isMain: isMainContact }];
           });
-          
+
           toast.success('New contact created successfully!');
           console.log('New legacy contact created successfully');
-          
+
           // Don't call onClientUpdate to prevent duplicate fetching
         } else {
           // Update existing contact in leads_contact table
           // Find the contact_id from the current contacts list
           const contactToUpdate = contacts.find(c => c.id === id);
-          
+
           if (!contactToUpdate) {
             console.error('Contact not found for update');
             return;
           }
-          
+
           // Update the contact in leads_contact table using the contact ID
           const { error: updateError } = await supabase
             .from('leads_contact')
@@ -2473,22 +2656,22 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               udate: new Date().toISOString().split('T')[0]
             })
             .eq('id', contactToUpdate.id);
-          
+
           if (updateError) {
             console.error('Error updating legacy contact:', updateError);
             throw updateError;
           }
           // Use functional update to avoid stale state - preserve isMain status
-          setContacts(prevContacts => 
-            prevContacts.map(c => 
+          setContacts(prevContacts =>
+            prevContacts.map(c =>
               c.id === id ? { ...contact, isEditing: false, isMain: c.isMain } : c
             )
           );
-          
+
           toast.success('Contact updated successfully');
           console.log('Legacy contact updated in local state');
         }
-        
+
         // Don't call onClientUpdate to prevent unnecessary re-fetches
       } catch (error) {
         console.error('Error saving legacy contact:', error);
@@ -2502,10 +2685,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         // Check if this is a newly created contact (temporary ID from Date.now())
         // Database IDs are typically much smaller than timestamps
         const isNewContact = id > 1000000000000; // Roughly year 2001 in milliseconds
-        
+
         if (isNewContact) {
           console.log('Creating new contact for new lead with data:', contact);
-          
+
           // Prepare the insert data - explicitly exclude ID to let database auto-generate it
           const insertData: Record<string, any> = {
             name: contact.name || '',
@@ -2517,11 +2700,11 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             cdate: new Date().toISOString().split('T')[0],
             udate: new Date().toISOString().split('T')[0]
           };
-          
+
           // Always get the next highest available ID before inserting to avoid duplicate key errors
           let newContact: any = null;
           let contactError: any = null;
-          
+
           try {
             // Get the max ID from the table to ensure we use the next available ID
             const { data: maxIdData, error: maxIdError } = await supabase
@@ -2530,26 +2713,26 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               .order('id', { ascending: false })
               .limit(1)
               .maybeSingle();
-            
+
             if (maxIdError) {
               console.error('Error fetching max ID:', maxIdError);
               contactError = maxIdError;
             } else {
               const nextId = maxIdData ? maxIdData.id + 1 : 1;
               console.log('Next available contact ID:', nextId);
-              
+
               // Insert with explicit ID to avoid duplicate key errors
               const result = await supabase
                 .from('leads_contact')
                 .insert([{ ...insertData, id: nextId }])
                 .select('id')
                 .single();
-              
+
               newContact = result.data;
               contactError = result.error;
-              
+
               console.log('Contact insert result:', { newContact, contactError });
-              
+
               // If still duplicate key error, try incrementing the ID
               if (contactError && contactError.code === '23505') {
                 console.warn('Duplicate key error even with calculated ID. Trying next ID...');
@@ -2559,7 +2742,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   .insert([{ ...insertData, id: retryId }])
                   .select('id')
                   .single();
-                
+
                 newContact = retryResult.data;
                 contactError = retryResult.error;
                 console.log('Retry insert result:', { newContact, contactError });
@@ -2569,19 +2752,19 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             console.error('Insert failed:', err);
             contactError = err;
           }
-          
+
           if (contactError) {
             console.error('Error creating contact:', contactError);
             throw contactError;
           }
-          
+
           if (!newContact || !newContact.id) {
             throw new Error('Failed to get new contact ID');
           }
-          
+
           // Create relationship in lead_leadcontact table
           let relationshipError: any = null;
-          
+
           try {
             // Always get the next highest available ID before inserting to avoid duplicate key errors
             const { data: maxIdData, error: maxIdError } = await supabase
@@ -2590,14 +2773,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               .order('id', { ascending: false })
               .limit(1)
               .maybeSingle();
-            
+
             if (maxIdError) {
               console.error('Error fetching max relationship ID:', maxIdError);
               relationshipError = maxIdError;
             } else {
               const nextId = maxIdData ? maxIdData.id + 1 : 1;
               console.log('Next available relationship ID:', nextId);
-              
+
               // Insert with explicit ID to avoid duplicate key errors
               const result = await supabase
                 .from('lead_leadcontact')
@@ -2607,9 +2790,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   newlead_id: newLeadId,
                   main: 'false'
                 }]);
-              
+
               relationshipError = result.error;
-              
+
               // If still duplicate key error, try incrementing the ID
               if (relationshipError && relationshipError.code === '23505') {
                 console.warn('Duplicate key error even with calculated ID. Trying next ID...');
@@ -2622,7 +2805,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                     newlead_id: newLeadId,
                     main: 'false'
                   }]);
-                
+
                 relationshipError = retryResult.error;
                 console.log('Retry relationship insert result:', { relationshipError });
               }
@@ -2631,12 +2814,12 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             console.error('Relationship insert failed:', err);
             relationshipError = err;
           }
-          
+
           if (relationshipError) {
             console.error('Error creating relationship:', relationshipError);
             throw relationshipError;
           }
-          
+
           // Update local state with the new contact ID - use functional update to avoid stale state
           setContacts(prevContacts => {
             // Remove the old temporary contact (by the temporary ID) and add the new one with real ID
@@ -2644,22 +2827,22 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             const filtered = prevContacts.filter(c => c.id !== id && c.id !== newContact.id);
             return [...filtered, { ...contact, id: newContact.id, isEditing: false, isMain: false }];
           });
-          
+
           toast.success('New contact created successfully!');
           console.log('New contact created successfully');
-          
+
           // Don't call onClientUpdate here as it will trigger fetchContacts which might cause duplicates
           // The state is already updated, so the UI will reflect the change immediately
           // If we need to refresh other parts of the client data, we can do it more selectively
         } else {
           // Update existing contact in leads_contact table
           const contactToUpdate = contacts.find(c => c.id === id);
-          
+
           if (!contactToUpdate) {
             console.error('Contact not found for update');
             return;
           }
-          
+
           // Update the contact in leads_contact table using the contact ID
           const { error: updateError } = await supabase
             .from('leads_contact')
@@ -2679,15 +2862,15 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           }
 
           // Use functional update to avoid stale state - preserve isMain status
-          setContacts(prevContacts => 
-            prevContacts.map(c => 
+          setContacts(prevContacts =>
+            prevContacts.map(c =>
               c.id === id ? { ...contact, isEditing: false, isMain: c.isMain } : c
             )
           );
-          
+
           toast.success('Contact updated successfully');
           console.log('Contact updated in local state');
-          
+
           // Don't call onClientUpdate to prevent unnecessary re-fetches
         }
       } catch (error) {
@@ -2701,61 +2884,61 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   const handleSetMainContact = async (contactId: number) => {
     // Check if this is a legacy lead
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-    
+
     try {
       if (isLegacyLead) {
         const legacyId = client.id.toString().replace('legacy_', '');
-        
+
         // First, set all contacts for this lead to main = 'false'
         const { error: clearError } = await supabase
           .from('lead_leadcontact')
           .update({ main: 'false' })
           .eq('lead_id', legacyId);
-        
+
         if (clearError) throw clearError;
-        
+
         // Then set the selected contact to main = 'true'
         const { error: setError } = await supabase
           .from('lead_leadcontact')
           .update({ main: 'true' })
           .eq('lead_id', legacyId)
           .eq('contact_id', contactId);
-        
+
         if (setError) throw setError;
       } else {
         const newLeadId = client.id; // UUID for new leads
-        
+
         // First, set all contacts for this lead to main = 'false'
         const { error: clearError } = await supabase
           .from('lead_leadcontact')
           .update({ main: 'false' })
           .eq('newlead_id', newLeadId);
-        
+
         if (clearError) throw clearError;
-        
+
         // Then set the selected contact to main = 'true'
         const { error: setError } = await supabase
           .from('lead_leadcontact')
           .update({ main: 'true' })
           .eq('newlead_id', newLeadId)
           .eq('contact_id', contactId);
-        
+
         if (setError) throw setError;
       }
-      
+
       // Update local state
       setContacts(contacts.map(c => ({
         ...c,
         isMain: c.id === contactId
       })));
-        
-        // Refresh client data in parent component
-        if (onClientUpdate) {
-          await onClientUpdate();
-        }
-      
+
+      // Refresh client data in parent component
+      if (onClientUpdate) {
+        await onClientUpdate();
+      }
+
       toast.success('Main contact updated successfully');
-      } catch (error) {
+    } catch (error) {
       console.error('Error setting main contact:', error);
       toast.error('Failed to update main contact');
     }
@@ -2769,34 +2952,34 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
     // Check if this is a legacy lead
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-    
+
     if (isLegacyLead) {
       // For legacy leads, delete from lead_leadcontact table
       try {
         const legacyId = client.id.toString().replace('legacy_', '');
-        
+
         // Find the contact to get its contact_id
         const contactToDelete = contacts.find(c => c.id === id);
         if (!contactToDelete) {
           throw new Error('Contact not found');
         }
-        
+
         // Delete the relationship from lead_leadcontact table
         const { error: relationshipError } = await supabase
           .from('lead_leadcontact')
           .delete()
           .eq('lead_id', legacyId)
           .eq('contact_id', contactToDelete.id);
-        
+
         if (relationshipError) throw relationshipError;
-        
+
         // Note: We don't delete from leads_contact table as the contact might be used by other leads
         // Only the relationship is deleted
-        
+
         setContacts(contacts.filter(c => c.id !== id));
-        
+
         console.log('Legacy contact relationship deleted successfully');
-        
+
         // Refresh client data in parent component
         if (onClientUpdate) {
           await onClientUpdate();
@@ -2809,29 +2992,29 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       // For new leads, delete from lead_leadcontact table
       try {
         const newLeadId = client.id; // UUID for new leads
-        
+
         // Find the contact to get its contact_id
         const contactToDelete = contacts.find(c => c.id === id);
         if (!contactToDelete) {
           throw new Error('Contact not found');
         }
-        
+
         // Delete the relationship from lead_leadcontact table
         const { error: relationshipError } = await supabase
           .from('lead_leadcontact')
           .delete()
           .eq('newlead_id', newLeadId)
           .eq('contact_id', contactToDelete.id);
-        
+
         if (relationshipError) throw relationshipError;
-        
+
         // Note: We don't delete from leads_contact table as the contact might be used by other leads
         // Only the relationship is deleted
 
         setContacts(contacts.filter(c => c.id !== id));
-        
+
         console.log('Contact relationship deleted successfully');
-        
+
         // Refresh client data in parent component
         if (onClientUpdate) {
           await onClientUpdate();
@@ -2846,9 +3029,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   // Select contract template (for the modal)
   const handleSelectContract = async (template: ContractTemplate) => {
     // Set the selected template in the form and open the creation modal
-    setContractForm(prev => ({ 
-      ...prev, 
-      selectedTemplateId: template.id 
+    setContractForm(prev => ({
+      ...prev,
+      selectedTemplateId: template.id
     }));
     setShowContractCreation(true); // Open the creation modal
   };
@@ -2859,16 +3042,16 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   // Create contract with minimal fields
   const handleCreateContract = async () => {
     console.log('handleCreateContract called with:', { contractForm, clientId: client?.id });
-    
+
     // Check if stage is >= 40 (Waiting for mtng sum and on)
     // Use currentStage state which is fetched from DB for legacy leads
     const stage = currentStage !== null ? currentStage : 0;
-    
+
     if (stage < 40) {
       toast.error('Contracts can only be created from stage 40 (Waiting for mtng sum) onwards.');
       return;
     }
-    
+
     if (!contractForm.selectedTemplateId || !client?.id || !contractForm.contactId || !contractForm.selectedCurrency) {
       console.log('handleCreateContract: Missing required data, returning early');
       return;
@@ -2880,7 +3063,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       let contactEmail = '';
       let contactPhone = '';
       let contactMobile = '';
-      
+
       if (contractForm.contactId === 0) {
         // Main contact
         contactName = client.name || 'Main Contact';
@@ -2898,11 +3081,11 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
       // Get the selected template to use its default pricing
       const selectedTemplate = contractTemplates.find(t => t.id === contractForm.selectedTemplateId);
-      
+
       // Initialize customPricing with correct currency based on selected currency
       const isIsraeliCurrency = contractForm.selectedCurrency.iso_code === 'ILS' || contractForm.selectedCurrency.iso_code === 'NIS' || contractForm.selectedCurrency.name === '₪';
       const currency = contractForm.selectedCurrency.name;
-      
+
       // Initialize pricing tiers - use template defaults if available, otherwise use system defaults
       const pricingTiers: { [key: string]: number } = {};
       const tierStructure = [
@@ -2914,7 +3097,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         { key: '10-15', label: 'For 10-15 applicants', count: 10 },
         { key: '16+', label: 'For 16 applicants or more', count: 16 }
       ];
-      
+
       // Use template default pricing tiers based on currency selection
       // USD/GBP/EUR share the same pricing tiers, NIS has separate tiers
       if (contractForm.selectedCurrency.iso_code === 'ILS' || contractForm.selectedCurrency.iso_code === 'NIS') {
@@ -2934,7 +3117,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           Object.assign(pricingTiers, selectedTemplate.default_pricing_tiers);
         }
       }
-      
+
       // If no template pricing tiers, use system defaults
       if (Object.keys(pricingTiers).length === 0) {
         tierStructure.forEach(tier => {
@@ -2943,7 +3126,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           pricingTiers[tier.key] = pricePerApplicant;
         });
       }
-      
+
       // Calculate initial totals
       const currentTierKey = getCurrentTierKey(contractForm.applicantCount);
       const currentPricePerApplicant = pricingTiers[currentTierKey];
@@ -2951,21 +3134,21 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       const discount = 0;
       const discountAmount = 0;
       const finalAmount = total;
-      
+
       // Calculate archivalFee before paymentPlan
       // 850 for USD/GBP/EUR, 1650 for NIS
       let archivalFee = 0;
       if (archivalResearch === 'with' && contractForm.selectedCurrency) {
         const isoCode = contractForm.selectedCurrency.iso_code?.toUpperCase();
         const currencyName = contractForm.selectedCurrency.name;
-        
+
         // Check for NIS (1650)
         if (isoCode === 'ILS' || isoCode === 'NIS' || currencyName === '₪') {
           archivalFee = 1650;
         }
         // Check for USD/GBP/EUR (850)
-        else if (isoCode === 'USD' || isoCode === 'GBP' || isoCode === 'EUR' 
-                 || currencyName === '$' || currencyName === '£' || currencyName === '€') {
+        else if (isoCode === 'USD' || isoCode === 'GBP' || isoCode === 'EUR'
+          || currencyName === '$' || currencyName === '£' || currencyName === '€') {
           archivalFee = 850;
         }
       }
@@ -3008,10 +3191,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           { percent: 25, due_date: addDays(60), value: payment25, value_vat: Math.round(payment25 * vatRate), payment_order: 'Final Payment', notes: '', currency },
         ];
       }
-      
+
       // Check if template is from legacy table (misc_contracttemplate) - these have numeric IDs, not UUIDs
       const isLegacyTemplate = selectedTemplate?.sourceTable === 'misc_contracttemplate';
-      
+
       const initialCustomPricing = {
         applicant_count: contractForm.applicantCount,
         pricing_tiers: pricingTiers,
@@ -3029,30 +3212,31 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
       // Check if this is a legacy lead
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-      
+
       console.log('handleCreateContract: Debug info:', {
         clientId: client?.id,
         clientLeadType: client?.lead_type,
         isLegacyLead,
         clientIdType: typeof client?.id
       });
-      
-      // Check if there's already a contract for this lead (only one contract per lead allowed)
-      if (!isLegacyLead) {
+
+      // Check if there's already a contract for this specific contact (one contract per contact allowed)
+      if (!isLegacyLead && contractForm.contactId !== null && contractForm.contactId !== 0) {
         const { data: existingContracts, error: checkError } = await supabase
           .from('contracts')
           .select('id')
           .eq('client_id', client.id)
+          .eq('contact_id', contractForm.contactId)
           .limit(1);
-        
+
         if (checkError) {
           console.error('Error checking existing contracts:', checkError);
         } else if (existingContracts && existingContracts.length > 0) {
-          toast.error('Only one contract per lead is allowed. Please delete the existing contract first.');
+          toast.error('This contact already has a contract. Please delete the existing contract first.');
           return;
         }
       }
-      
+
       // Create contract data with contact association
       const contractData: any = {
         // For legacy templates, template_id must be NULL since contracts.template_id is UUID type
@@ -3068,7 +3252,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         client_country: contractForm.selectedCurrency.name,
         custom_pricing: initialCustomPricing, // Save initial customPricing with legacy_template_id if needed
       };
-      
+
       // Set the appropriate ID field based on lead type
       if (isLegacyLead) {
         const legacyId = client.id.toString().replace('legacy_', '');
@@ -3082,7 +3266,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         contractData.legacy_id = null; // Set to null for new leads
       }
       console.log('handleCreateContract: Inserting contract data:', contractData);
-      
+
       // Create the contract record
       const { data: contract, error } = await supabase
         .from('contracts')
@@ -3094,20 +3278,26 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
       if (error) throw error;
 
-      // Assign the contract to all contacts (since only one contract per lead is allowed)
+      // Assign the contract only to the selected contact
       const contractInfo = {
-          id: contract.id, 
-          name: contractTemplates.find(t => t.id === contractForm.selectedTemplateId)?.name || 'Contract',
-          status: 'draft',
-          signed_at: undefined
+        id: contract.id,
+        name: contractTemplates.find(t => t.id === contractForm.selectedTemplateId)?.name || 'Contract',
+        status: 'draft',
+        signed_at: undefined
       };
-      
+
       setContactContracts(prev => {
         const updated = { ...prev };
-        // Assign contract to all contacts
-        contacts.forEach(contact => {
-          updated[contact.id] = contractInfo;
-        });
+        // Only assign contract to the specific contact that was selected
+        if (contractForm.contactId !== null && contractForm.contactId !== 0) {
+          updated[contractForm.contactId] = contractInfo;
+        } else {
+          // If contactId is 0 or null, assign to main contact
+          const mainContact = contacts.find(c => c.isMain);
+          if (mainContact) {
+            updated[mainContact.id] = contractInfo;
+          }
+        }
         return updated;
       });
 
@@ -3135,15 +3325,15 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   const handleDeleteContract = async (contractId: string) => {
     try {
       console.log('handleDeleteContract called with contractId:', contractId);
-      
+
       // Check if this is a legacy contract
       const isLegacyContract = contractId.startsWith('legacy_');
-      
+
       if (isLegacyContract) {
         // For legacy contracts, update lead_leadcontact to clear contract fields
         const legacyContractId = contractId.replace('legacy_', '');
         console.log('Deleting legacy contract, legacyContractId:', legacyContractId);
-        
+
         const { error } = await supabase
           .from('lead_leadcontact')
           .update({
@@ -3180,7 +3370,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       });
 
       toast.success('Contract deleted successfully');
-      
+
       // Refresh client data
       if (onClientUpdate) {
         await onClientUpdate();
@@ -3195,7 +3385,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   const handleSignContract = async (contractId: string) => {
     try {
       console.log('handleSignContract called with contractId:', contractId);
-      
+
       // First, get the current contract data
       const { data: currentContract, error: fetchError } = await supabase
         .from('contracts')
@@ -3213,7 +3403,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       // Update contract status to signed
       const { data: contract, error } = await supabase
         .from('contracts')
-        .update({ 
+        .update({
           status: 'signed',
           signed_at: new Date().toISOString()
         })
@@ -3240,28 +3430,28 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
   const handleViewContract = async (contractId?: string) => {
     console.log('🔍 handleViewContract called with contractId:', contractId);
-    
+
     // Check if this is a legacy contract
     if (contractId && contractId.startsWith('legacy_')) {
       console.log('🔍 Legacy contract detected');
-      
+
       // For legacy contracts, find the contract data and display it in a modal
       const legacyContractId = contractId.replace('legacy_', '');
       console.log('🔍 Legacy contract ID:', legacyContractId);
-      
+
       // Find the contract data in contactContracts
-      const contractData = Object.values(contactContracts).find(contract => 
+      const contractData = Object.values(contactContracts).find(contract =>
         contract && contract.id === contractId
       );
-      
+
       console.log('🔍 Found contract data:', contractData);
-      
-        if (contractData && contractData.isLegacy) {
+
+      if (contractData && contractData.isLegacy) {
         console.log('🔍 Setting up legacy contract modal');
-        
+
         // Use public_token from contractData if available, otherwise fetch from database
         let publicToken = (contractData as any).public_token;
-        
+
         // If not in contractData, fetch from database
         if (!publicToken) {
           const { data: contractWithToken, error: tokenError } = await supabase
@@ -3269,36 +3459,37 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             .select('public_token')
             .eq('id', legacyContractId)
             .maybeSingle();
-          
+
           if (tokenError) {
             console.error('Error fetching public_token:', tokenError);
           } else {
             publicToken = contractWithToken?.public_token || undefined;
           }
         }
-        
+
         // Determine if contract is signed or draft
-        const hasSignedContract = contractData.signedContractHtml && 
-          contractData.signedContractHtml.trim() !== '' && 
+        const hasSignedContract = contractData.signedContractHtml &&
+          contractData.signedContractHtml.trim() !== '' &&
           contractData.signedContractHtml !== '\\N';
         const hasDraftContract = contractData.contractHtml && contractData.contractHtml.trim() !== '';
-        
+
         console.log('🔍 Contract status check:', { hasSignedContract, hasDraftContract, publicToken });
-        
+
         if (hasSignedContract || hasDraftContract) {
           // Set the contract data for viewing in modal
           const contractContent = hasSignedContract ? contractData.signedContractHtml : contractData.contractHtml;
           console.log('🔍 Contract content being set:', contractContent?.substring(0, 500) + '...');
-          
+
           setViewingContract({
             id: contractId,
             mode: hasSignedContract ? 'view' : 'edit', // If signed, view only; if draft, editable
             contractHtml: contractContent,
             signedContractHtml: contractData.signedContractHtml,
             status: hasSignedContract ? 'signed' : 'draft',
-            public_token: publicToken
+            public_token: publicToken,
+            signed_at: contractData.signed_at
           });
-          
+
           console.log('🔍 Set viewingContract with mode:', hasSignedContract ? 'view' : 'edit', 'and status:', hasSignedContract ? 'signed' : 'draft', 'and public_token:', publicToken);
           return;
         } else {
@@ -3308,13 +3499,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         }
       }
     }
-    
+
     // For new contracts, use the existing navigation logic
     if (client.lead_number) {
       // Check if this is a sub-lead and if the contract belongs to the master lead
       const isSubLead = client.lead_number.includes('/');
       let targetLeadNumber = client.lead_number;
-      
+
       if (isSubLead && contractId) {
         // Fetch the contract to check which client_id it belongs to
         const { data: contractData } = await supabase
@@ -3322,18 +3513,18 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           .select('client_id')
           .eq('id', contractId)
           .maybeSingle();
-        
+
         if (contractData?.client_id) {
           // Extract master lead number
           const masterLeadNumber = client.lead_number.split('/')[0];
-          
+
           // Fetch master lead to get its UUID
           const { data: masterLead } = await supabase
             .from('leads')
             .select('id, lead_number')
             .eq('lead_number', masterLeadNumber)
             .maybeSingle();
-          
+
           // If contract belongs to master lead, use master lead number in URL
           if (masterLead && masterLead.id === contractData.client_id && masterLead.lead_number) {
             targetLeadNumber = masterLead.lead_number;
@@ -3341,7 +3532,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           }
         }
       }
-      
+
       // Navigate to contract using just contractId - simpler link
       if (contractId) {
         navigate(`/contract/${contractId}`);
@@ -3372,7 +3563,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               <h2 className="text-2xl font-bold">Contact Information</h2>
               <p className="text-sm text-gray-500">Manage client contacts and contracts</p>
             </div>
-            
+
 
           </div>
 
@@ -3385,19 +3576,96 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 >
                   {/* Header */}
                   <div className="pl-6 pr-4 pt-2 pb-2 w-full bg-gradient-to-r from-purple-600 to-blue-600 dark:!bg-[#0f172a] rounded-tl-2xl rounded-tr-2xl rounded-br-2xl shadow-sm">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        <h4 className="text-lg font-semibold text-white">
-                          {contact.name && contact.name !== '---' ? contact.name : 'Contact'}
-                        </h4>
-                        {contact.isMain && (
-                          <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-white text-[#3b28c7] whitespace-nowrap">
-                            Main
-                          </span>
-                        )}
+                    <div className="flex flex-col gap-2">
+                      {/* First row: Name and action buttons */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex flex-col gap-2 flex-1 min-w-0">
+                          <h4 className="text-lg font-semibold text-white break-words line-clamp-2">
+                            {contact.name && contact.name !== '---' ? contact.name : 'Contact'}
+                          </h4>
+                          {contact.isMain && (
+                            <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-white text-[#3b28c7] whitespace-nowrap self-start">
+                              Main
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {/* Edit and Delete buttons - icon only */}
+                          {((contact.isMain && !isEditingMainContact) || (!contact.isMain && !contact.isEditing)) && (
+                            <>
+                              <button
+                                className="btn btn-ghost btn-sm btn-circle text-white hover:bg-white/20 border-white/30"
+                                onClick={async () => {
+                                  if (contact.isMain) {
+                                    console.log('🔍 Edit button clicked - current contact data:', contact);
+                                    const editedData = {
+                                      name: (contact.name && contact.name !== '---') ? contact.name : '',
+                                      mobile: (contact.mobile && contact.mobile !== '---') ? contact.mobile : '',
+                                      phone: (contact.phone && contact.phone !== '---') ? contact.phone : '',
+                                      email: (contact.email && contact.email !== '---') ? contact.email : '',
+                                      country_id: contact.country_id || null
+                                    };
+                                    setEditedMainContact(editedData);
+                                    setIsEditingMainContact(true);
+                                    // Sync country search term
+                                    const countryName = contact.country_id ? countries.find(c => c.id === contact.country_id)?.name || '' : '';
+                                    setMainContactCountrySearchTerm(countryName);
+                                  } else {
+                                    setContacts(contacts.map(c => c.id === contact.id ? { ...c, isEditing: true } : c));
+                                    // Sync country search term for this contact
+                                    const countryName = contact.country_id ? countries.find(c => c.id === contact.country_id)?.name || '' : '';
+                                    setContactCountrySearchTerms({ ...contactCountrySearchTerms, [contact.id]: countryName });
+                                  }
+                                }}
+                                title="Edit contact"
+                              >
+                                <PencilSquareIcon className="w-4 h-4" />
+                              </button>
+                              {!contact.isMain && (
+                                <button
+                                  className="btn btn-ghost btn-sm btn-circle text-white hover:bg-red-500/30 border-white/30"
+                                  onClick={() => {
+                                    if (window.confirm('Are you sure you want to delete this contact?')) {
+                                      handleDeleteContact(contact.id);
+                                    }
+                                  }}
+                                  title="Delete contact"
+                                >
+                                  <TrashIcon className="w-4 h-4" />
+                                </button>
+                              )}
+                            </>
+                          )}
+                          {/* Save and Cancel buttons in edit mode - icon only */}
+                          {((contact.isMain && isEditingMainContact) || contact.isEditing) && (
+                            <>
+                              <button
+                                className="btn btn-ghost btn-sm btn-circle text-white hover:bg-green-500/30 border-white/30"
+                                onClick={async () => {
+                                  if (contact.isMain) {
+                                    await handleSaveMainContact();
+                                  } else {
+                                    await handleSaveContact(contact.id, contact);
+                                  }
+                                }}
+                                title="Save changes"
+                              >
+                                <CheckIcon className="w-4 h-4" />
+                              </button>
+                              <button
+                                className="btn btn-ghost btn-sm btn-circle text-white hover:bg-white/20 border-white/30"
+                                onClick={() => contact.isMain ? handleCancelMainContact() : handleCancelContact(contact)}
+                                title="Cancel editing"
+                              >
+                                <XMarkIcon className="w-4 h-4" />
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        {!contact.isMain && (
+                      {/* Second row: Set as Main button (only for non-main contacts) */}
+                      {!contact.isMain && (
+                        <div className="flex items-center">
                           <button
                             className="btn btn-xs btn-ghost text-white hover:bg-white/20 border-white/30 whitespace-nowrap"
                             onClick={() => {
@@ -3409,79 +3677,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           >
                             Set as Main
                           </button>
-                        )}
-                        {/* Edit and Delete buttons - icon only */}
-                        {((contact.isMain && !isEditingMainContact) || (!contact.isMain && !contact.isEditing)) && (
-                          <>
-                            <button
-                              className="btn btn-ghost btn-sm btn-circle text-white hover:bg-white/20 border-white/30"
-                              onClick={async () => {
-                                if (contact.isMain) {
-                                  console.log('🔍 Edit button clicked - current contact data:', contact);
-                                  const editedData = {
-                                    name: (contact.name && contact.name !== '---') ? contact.name : '',
-                                    mobile: (contact.mobile && contact.mobile !== '---') ? contact.mobile : '',
-                                    phone: (contact.phone && contact.phone !== '---') ? contact.phone : '',
-                                    email: (contact.email && contact.email !== '---') ? contact.email : '',
-                                    country_id: contact.country_id || null
-                                  };
-                                  setEditedMainContact(editedData);
-                                  setIsEditingMainContact(true);
-                                  // Sync country search term
-                                  const countryName = contact.country_id ? countries.find(c => c.id === contact.country_id)?.name || '' : '';
-                                  setMainContactCountrySearchTerm(countryName);
-                                } else {
-                                  setContacts(contacts.map(c => c.id === contact.id ? { ...c, isEditing: true } : c));
-                                  // Sync country search term for this contact
-                                  const countryName = contact.country_id ? countries.find(c => c.id === contact.country_id)?.name || '' : '';
-                                  setContactCountrySearchTerms({ ...contactCountrySearchTerms, [contact.id]: countryName });
-                                }
-                              }}
-                              title="Edit contact"
-                            >
-                              <PencilSquareIcon className="w-4 h-4" />
-                            </button>
-                            {!contact.isMain && (
-                              <button
-                                className="btn btn-ghost btn-sm btn-circle text-white hover:bg-red-500/30 border-white/30"
-                                onClick={() => {
-                                  if (window.confirm('Are you sure you want to delete this contact?')) {
-                                    handleDeleteContact(contact.id);
-                                  }
-                                }}
-                                title="Delete contact"
-                              >
-                                <TrashIcon className="w-4 h-4" />
-                              </button>
-                            )}
-                          </>
-                        )}
-                        {/* Save and Cancel buttons in edit mode - icon only */}
-                        {((contact.isMain && isEditingMainContact) || contact.isEditing) && (
-                          <>
-                            <button
-                              className="btn btn-ghost btn-sm btn-circle text-white hover:bg-green-500/30 border-white/30"
-                              onClick={async () => {
-                                if (contact.isMain) {
-                                  await handleSaveMainContact();
-                                } else {
-                                  await handleSaveContact(contact.id, contact);
-                                }
-                              }}
-                              title="Save changes"
-                            >
-                              <CheckIcon className="w-4 h-4" />
-                            </button>
-                            <button
-                              className="btn btn-ghost btn-sm btn-circle text-white hover:bg-white/20 border-white/30"
-                              onClick={() => contact.isMain ? handleCancelMainContact() : handleCancelContact(contact)}
-                              title="Cancel editing"
-                            >
-                              <XMarkIcon className="w-4 h-4" />
-                            </button>
-                          </>
-                        )}
-                      </div>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -3581,7 +3778,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                             </div>
                           ) : contact.isEditing ? (
                             <div className="flex gap-2">
-                              <div 
+                              <div
                                 className="relative w-40"
                                 ref={(el) => {
                                   if (el) {
@@ -3654,12 +3851,12 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               onClick={() => {
                                 // Show modal for US (+1), Australia (+61), UK (+44), and South Africa (+27) numbers
                                 const normalizedPhone = contact.mobile.replace(/[\s\-\(\)]/g, '');
-                                const isSupportedCountry = 
+                                const isSupportedCountry =
                                   normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10) || // US/Canada
                                   normalizedPhone.startsWith('+61') || (normalizedPhone.startsWith('61') && normalizedPhone.length >= 10) || // Australia
                                   normalizedPhone.startsWith('+44') || (normalizedPhone.startsWith('44') && normalizedPhone.length >= 10) || // UK
                                   normalizedPhone.startsWith('+27') || (normalizedPhone.startsWith('27') && normalizedPhone.length >= 10); // South Africa
-                                
+
                                 if (isSupportedCountry) {
                                   setCallPhoneNumber(contact.mobile);
                                   setCallContactName(contact.name || '');
@@ -3750,7 +3947,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                             </div>
                           ) : contact.isEditing ? (
                             <div className="flex gap-2">
-                              <div 
+                              <div
                                 className="relative w-40"
                                 ref={(el) => {
                                   if (el) {
@@ -3823,12 +4020,12 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               onClick={() => {
                                 // Show modal for US (+1), Australia (+61), UK (+44), and South Africa (+27) numbers
                                 const normalizedPhone = contact.phone.replace(/[\s\-\(\)]/g, '');
-                                const isSupportedCountry = 
+                                const isSupportedCountry =
                                   normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10) || // US/Canada
                                   normalizedPhone.startsWith('+61') || (normalizedPhone.startsWith('61') && normalizedPhone.length >= 10) || // Australia
                                   normalizedPhone.startsWith('+44') || (normalizedPhone.startsWith('44') && normalizedPhone.length >= 10) || // UK
                                   normalizedPhone.startsWith('+27') || (normalizedPhone.startsWith('27') && normalizedPhone.length >= 10); // South Africa
-                                
+
                                 if (isSupportedCountry) {
                                   setCallPhoneNumber(contact.phone);
                                   setCallContactName(contact.name || '');
@@ -3915,7 +4112,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                       className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
                                       onClick={() => handleMainContactCountrySelect(country.id, country.name)}
                                     >
-                                  {country.name}
+                                      {country.name}
                                     </button>
                                   ))}
                                 </div>
@@ -3927,8 +4124,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               )}
                             </div>
                           ) : contact.isEditing ? (
-                            <div 
-                              className="relative" 
+                            <div
+                              className="relative"
                               ref={(el) => {
                                 if (el) {
                                   contactCountryInputRefs.current[contact.id] = el;
@@ -3960,7 +4157,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                       className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
                                       onClick={() => handleContactCountrySelect(contact.id, country.id, country.name)}
                                     >
-                                  {country.name}
+                                      {country.name}
                                     </button>
                                   ))}
                                 </div>
@@ -3983,108 +4180,107 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
                       {/* Contract - Only show for main contact */}
                       {contact.isMain && (
-                      <div className="flex items-center justify-between py-3">
-                        <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Contract</label>
-                        <div className="flex-1 ml-4">
-                          {contactContracts[contact.id] ? (
-                            <div className="flex flex-col gap-2 items-end">
-                              <div className="flex items-center justify-end gap-2">
-                                <span className="text-sm font-medium text-gray-700">
-                                  {contactContracts[contact.id]?.name}
-                                </span>
-                                <span className={`badge badge-sm ${
-                                  contactContracts[contact.id]?.status === 'signed' ? 'bg-purple-600 text-white border-none' : 'badge-warning'
-                                }`}>
-                                  {contactContracts[contact.id]?.status}
-                                </span>
-                              </div>
-                              <div className="flex gap-2">
-                                <button 
-                                  className="btn btn-outline btn-primary btn-sm justify-start w-auto min-w-0 px-2 self-start" 
-                                  onClick={() => handleViewContract(contactContracts[contact.id]?.id)}
-                                >
-                                  <DocumentTextIcon className="w-4 h-4" />
-                                  View Contract
-                                </button>
-                                {contactContracts[contact.id]?.status === 'draft' && (
-                                  <button 
-                                    className="btn btn-outline btn-primary btn-sm justify-start w-auto min-w-0 px-2 self-start" 
-                                    onClick={() => {
-                                      if (window.confirm('Are you sure you want to delete this contract? This action cannot be undone.')) {
-                                        handleDeleteContract(contactContracts[contact.id]?.id!);
-                                      }
-                                    }}
+                        <div className="flex items-center justify-between py-3">
+                          <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Contract</label>
+                          <div className="flex-1 ml-4">
+                            {contactContracts[contact.id] ? (
+                              <div className="flex flex-col gap-2 items-end">
+                                <div className="flex items-center justify-end gap-2">
+                                  <span className="text-sm font-medium text-gray-700">
+                                    {contactContracts[contact.id]?.name}
+                                  </span>
+                                  <span className={`badge badge-sm ${contactContracts[contact.id]?.status === 'signed' ? 'bg-purple-600 text-white border-none' : 'badge-warning'
+                                    }`}>
+                                    {contactContracts[contact.id]?.status}
+                                  </span>
+                                </div>
+                                <div className="flex gap-2">
+                                  <button
+                                    className="btn btn-outline btn-primary btn-sm justify-start w-auto min-w-0 px-2 self-start"
+                                    onClick={() => handleViewContract(contactContracts[contact.id]?.id)}
                                   >
-                                    <TrashIcon className="w-4 h-4" />
-                                    Delete Contract
+                                    <DocumentTextIcon className="w-4 h-4" />
+                                    View Contract
                                   </button>
-                                )}
+                                  {contactContracts[contact.id]?.status === 'draft' && (
+                                    <button
+                                      className="btn btn-outline btn-primary btn-sm justify-start w-auto min-w-0 px-2 self-start"
+                                      onClick={() => {
+                                        if (window.confirm('Are you sure you want to delete this contract? This action cannot be undone.')) {
+                                          handleDeleteContract(contactContracts[contact.id]?.id!);
+                                        }
+                                      }}
+                                    >
+                                      <TrashIcon className="w-4 h-4" />
+                                      Delete Contract
+                                    </button>
+                                  )}
+                                </div>
                               </div>
-                            </div>
-                          ) : (
-                            (() => {
-                              // Check if stage is >= 40 (Waiting for mtng sum and on)
-                              // Use currentStage state which is fetched from DB for legacy leads
-                              // Fallback to client.stage if currentStage is null
-                              let stage = currentStage;
-                              
-                              // If currentStage is null, try to parse client.stage as fallback
-                              if (stage === null || stage === undefined) {
-                                if (client?.stage !== null && client?.stage !== undefined && client?.stage !== '') {
-                                  const stageValue = client.stage;
-                                  const parsed = typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
-                                  if (!isNaN(parsed) && isFinite(parsed)) {
-                                    stage = parsed;
-                                    console.log('🔍 Using client.stage as fallback:', stage);
+                            ) : (
+                              (() => {
+                                // Check if stage is >= 40 (Waiting for mtng sum and on)
+                                // Use currentStage state which is fetched from DB for legacy leads
+                                // Fallback to client.stage if currentStage is null
+                                let stage = currentStage;
+
+                                // If currentStage is null, try to parse client.stage as fallback
+                                if (stage === null || stage === undefined) {
+                                  if (client?.stage !== null && client?.stage !== undefined && client?.stage !== '') {
+                                    const stageValue = client.stage;
+                                    const parsed = typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
+                                    if (!isNaN(parsed) && isFinite(parsed)) {
+                                      stage = parsed;
+                                      console.log('🔍 Using client.stage as fallback:', stage);
+                                    }
                                   }
                                 }
-                              }
-                              
-                              // Default to 0 if still null/undefined
-                              const finalStage = stage !== null && stage !== undefined ? stage : 0;
-                              const canCreateContract = finalStage >= 40;
-                              
-                              console.log('🔍 Contract button check:', {
-                                currentStage,
-                                clientStage: client?.stage,
-                                finalStage,
-                                canCreateContract,
-                                clientId: client.id,
-                                leadType: client?.lead_type,
-                                isLegacyLead: client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_')
-                              });
-                              
-                              if (!canCreateContract) {
+
+                                // Default to 0 if still null/undefined
+                                const finalStage = stage !== null && stage !== undefined ? stage : 0;
+                                const canCreateContract = finalStage >= 40;
+
+                                console.log('🔍 Contract button check:', {
+                                  currentStage,
+                                  clientStage: client?.stage,
+                                  finalStage,
+                                  canCreateContract,
+                                  clientId: client.id,
+                                  leadType: client?.lead_type,
+                                  isLegacyLead: client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_')
+                                });
+
+                                if (!canCreateContract) {
+                                  return (
+                                    <div className="text-xs text-gray-500 text-right">
+                                      Unavailable
+                                    </div>
+                                  );
+                                }
+
                                 return (
-                                  <div className="text-xs text-gray-500 text-right">
-                                    Unavailable
-                                  </div>
+                                  <button
+                                    className="btn btn-outline btn-primary btn-sm justify-start"
+                                    onClick={() => {
+                                      setContractForm(prev => ({ ...prev, contactId: contact.id }));
+                                      setShowContractCreation(true);
+                                    }}
+                                  >
+                                    <PlusIcon className="w-4 h-4" />
+                                    Create Contract
+                                  </button>
                                 );
-                              }
-                              
-                              return (
-                            <button 
-                              className="btn btn-outline btn-primary btn-sm justify-start" 
-                              onClick={() => {
-                                setContractForm(prev => ({ ...prev, contactId: contact.id }));
-                                setShowContractCreation(true);
-                              }}
-                            >
-                              <PlusIcon className="w-4 h-4" />
-                              Create Contract
-                            </button>
-                              );
-                            })()
-                          )}
+                              })()
+                            )}
+                          </div>
                         </div>
-                      </div>
                       )}
                     </div>
                   </div>
                 </div>
               );
             })}
-            
+
             {/* Add New Contact Card */}
             <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden border-dashed border-gray-300">
               <div className="p-6">
@@ -4106,9 +4302,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             </div>
           </div>
         </div>
-        
+
       </div>
-      
+
 
 
       {/* Contract Creation Modal */}
@@ -4116,8 +4312,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         <>
           <div className="fixed inset-0 bg-black/30 transition-opacity duration-300 z-[9999]" onClick={() => {
             setShowContractCreation(false);
-      setTemplateSearchQuery(''); // Reset search when closing
-      setShowTemplateDropdown(false); // Close dropdown when closing
+            setTemplateSearchQuery(''); // Reset search when closing
+            setShowTemplateDropdown(false); // Close dropdown when closing
             setTemplateSearchQuery(''); // Reset search when closing
           }} />
           <div className="fixed top-0 right-0 h-screen w-full max-w-md bg-white shadow-2xl flex flex-col animate-slideInRight z-[10000] overflow-hidden">
@@ -4137,7 +4333,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 </p>
               )}
             </div>
-            
+
             {/* Scrollable Content Area */}
             <div className="flex-1 overflow-y-auto p-8 pt-6 space-y-6">
               {/* Applicant Count */}
@@ -4199,10 +4395,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   const isIsraeli = contractForm.selectedCurrency.iso_code === 'ILS' || contractForm.selectedCurrency.iso_code === 'NIS';
                   let perApplicant = 0;
                   let currencySymbol = contractForm.selectedCurrency.name; // Use currency symbol from selected currency
-                  
+
                   // Get pricing tiers based on selected currency
                   let pricingTiers: { [key: string]: number } | null = null;
-                  
+
                   if (isIsraeli) {
                     // NIS currency - use NIS pricing tiers
                     if (selectedTemplate?.default_pricing_tiers_nis) {
@@ -4220,7 +4416,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       pricingTiers = selectedTemplate.default_pricing_tiers;
                     }
                   }
-                  
+
                   if (pricingTiers) {
                     // Use template's pricing tiers
                     const tierKey = getCurrentTierKey(contractForm.applicantCount);
@@ -4230,7 +4426,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                     const priceTier = getPricePerApplicant(contractForm.applicantCount, isIsraeli);
                     perApplicant = isIsraeli && 'priceWithVat' in priceTier ? priceTier.priceWithVat : priceTier.price;
                   }
-                  
+
                   const total = perApplicant * contractForm.applicantCount;
                   const discount = 0;
                   const discountAmount = 0;
@@ -4242,18 +4438,18 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   if (archivalResearch === 'with' && contractForm.selectedCurrency) {
                     const isoCode = contractForm.selectedCurrency.iso_code?.toUpperCase();
                     const currencyName = contractForm.selectedCurrency.name;
-                    
+
                     // Check for NIS (1650)
                     if (isoCode === 'ILS' || isoCode === 'NIS' || currencyName === '₪') {
                       archivalFee = 1650;
                     }
                     // Check for USD/GBP/EUR (850)
-                    else if (isoCode === 'USD' || isoCode === 'GBP' || isoCode === 'EUR' 
-                             || currencyName === '$' || currencyName === '£' || currencyName === '€') {
+                    else if (isoCode === 'USD' || isoCode === 'GBP' || isoCode === 'EUR'
+                      || currencyName === '$' || currencyName === '£' || currencyName === '€') {
                       archivalFee = 850;
                     }
                   }
-                  
+
                   return (
                     <div className="space-y-2">
                       <div className="flex justify-between">
@@ -4298,7 +4494,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               {/* Template Selection */}
               <div className="relative">
                 <label className="block text-sm font-medium text-gray-700 mb-2">Contract Template</label>
-                
+
                 {/* Searchable Input with Dropdown */}
                 <div className="relative">
                   <input
@@ -4331,23 +4527,23 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       setTimeout(() => setShowTemplateDropdown(false), 200);
                     }}
                   />
-                  
+
                   {/* Dropdown Arrow */}
                   <button
                     type="button"
                     className="absolute right-2 top-1/2 -translate-y-1/2 btn btn-ghost btn-sm"
                     onClick={() => setShowTemplateDropdown(!showTemplateDropdown)}
                   >
-                    <svg 
-                      className={`w-4 h-4 transition-transform ${showTemplateDropdown ? 'rotate-180' : ''}`} 
-                      fill="none" 
-                      stroke="currentColor" 
+                    <svg
+                      className={`w-4 h-4 transition-transform ${showTemplateDropdown ? 'rotate-180' : ''}`}
+                      fill="none"
+                      stroke="currentColor"
                       viewBox="0 0 24 24"
                     >
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                     </svg>
                   </button>
-                  
+
                   {/* Dropdown Menu */}
                   {showTemplateDropdown && (
                     <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
@@ -4358,37 +4554,36 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           return template.name.toLowerCase().includes(searchLower);
                         })
                         .length === 0 ? (
-                          <div className="p-3 text-sm text-gray-500">
-                            No templates found matching "{templateSearchQuery}"
-                          </div>
-                        ) : (
-                          contractTemplates
-                            .filter(template => {
-                              if (!templateSearchQuery.trim()) return true;
-                              const searchLower = templateSearchQuery.toLowerCase();
-                              return template.name.toLowerCase().includes(searchLower);
-                            })
-                            .map(template => (
-                              <div
-                                key={template.id}
-                                className={`px-4 py-2 cursor-pointer hover:bg-gray-100 ${
-                                  contractForm.selectedTemplateId === template.id ? 'bg-blue-50' : ''
+                        <div className="p-3 text-sm text-gray-500">
+                          No templates found matching "{templateSearchQuery}"
+                        </div>
+                      ) : (
+                        contractTemplates
+                          .filter(template => {
+                            if (!templateSearchQuery.trim()) return true;
+                            const searchLower = templateSearchQuery.toLowerCase();
+                            return template.name.toLowerCase().includes(searchLower);
+                          })
+                          .map(template => (
+                            <div
+                              key={template.id}
+                              className={`px-4 py-2 cursor-pointer hover:bg-gray-100 ${contractForm.selectedTemplateId === template.id ? 'bg-blue-50' : ''
                                 }`}
-                                onMouseDown={(e) => {
-                                  e.preventDefault(); // Prevent input blur
-                                  setContractForm(prev => ({ ...prev, selectedTemplateId: template.id }));
-                                  setTemplateSearchQuery('');
-                                  setShowTemplateDropdown(false);
-                                }}
-                              >
-                                {template.name}
-                              </div>
-                            ))
-                        )}
+                              onMouseDown={(e) => {
+                                e.preventDefault(); // Prevent input blur
+                                setContractForm(prev => ({ ...prev, selectedTemplateId: template.id }));
+                                setTemplateSearchQuery('');
+                                setShowTemplateDropdown(false);
+                              }}
+                            >
+                              {template.name}
+                            </div>
+                          ))
+                      )}
                     </div>
                   )}
                 </div>
-                
+
                 {/* Clear button if template is selected */}
                 {contractForm.selectedTemplateId && (
                   <button
@@ -4731,365 +4926,365 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
             {/* Content */}
             <div className="flex-1 p-6 overflow-y-auto">
-                <div>
-                  <h4 className="text-lg font-semibold text-gray-800 mb-4">
-                    {viewingContract.status === 'signed' 
-                      ? 'Signed Contract (Read Only)' 
-                      : viewingContract.mode === 'edit' 
-                        ? 'Contract Draft (Editable)' 
-                        : 'Contract Draft'
-                    }
-                  </h4>
-                  {viewingContract.mode === 'edit' ? (
-                    <div className="border border-gray-300 rounded-lg p-4 flex flex-col">
-                      <div className="bg-white rounded-lg flex flex-col">
-                        {/* Rich Text Toolbar */}
-                        <div className="border-b border-gray-200 p-2 bg-gray-50">
-                          <div className="flex flex-wrap gap-2">
-                            <button
-                              onClick={() => executeCommand('bold')}
-                              className="btn btn-sm btn-ghost"
-                              title="Bold"
-                            >
-                              <strong>B</strong>
-                            </button>
-                            <button
-                              onClick={() => executeCommand('italic')}
-                              className="btn btn-sm btn-ghost"
-                              title="Italic"
-                            >
-                              <em>I</em>
-                            </button>
-                            <button
-                              onClick={() => executeCommand('underline')}
-                              className="btn btn-sm btn-ghost"
-                              title="Underline"
-                            >
-                              <u>U</u>
-                            </button>
-                            <button
-                              onClick={() => executeCommand('strikeThrough')}
-                              className="btn btn-sm btn-ghost"
-                              title="Strikethrough"
-                            >
-                              <s>S</s>
-                            </button>
-                            <div className="divider divider-horizontal mx-1"></div>
-                            <button
-                              onClick={() => executeCommand('formatBlock', 'p')}
-                              className="btn btn-sm btn-ghost"
-                              title="Paragraph"
-                            >
-                              P
-                            </button>
-                            <button
-                              onClick={() => executeCommand('formatBlock', 'h1')}
-                              className="btn btn-sm btn-ghost"
-                              title="Heading 1"
-                            >
-                              H1
-                            </button>
-                            <button
-                              onClick={() => executeCommand('formatBlock', 'h2')}
-                              className="btn btn-sm btn-ghost"
-                              title="Heading 2"
-                            >
-                              H2
-                            </button>
-                            <button
-                              onClick={() => executeCommand('formatBlock', 'h3')}
-                              className="btn btn-sm btn-ghost"
-                              title="Heading 3"
-                            >
-                              H3
-                            </button>
-                            <div className="divider divider-horizontal mx-1"></div>
-                            <button
-                              onClick={() => executeCommand('insertUnorderedList')}
-                              className="btn btn-sm btn-ghost"
-                              title="Bullet List"
-                            >
-                              • List
-                            </button>
-                            <button
-                              onClick={() => executeCommand('insertOrderedList')}
-                              className="btn btn-sm btn-ghost"
-                              title="Numbered List"
-                            >
-                              1. List
-                            </button>
-                            <div className="divider divider-horizontal mx-1"></div>
-                            <button
-                              onClick={() => executeCommand('justifyLeft')}
-                              className="btn btn-sm btn-ghost"
-                              title="Align Left"
-                            >
-                              ←
-                            </button>
-                            <button
-                              onClick={() => executeCommand('justifyCenter')}
-                              className="btn btn-sm btn-ghost"
-                              title="Align Center"
-                            >
-                              ↔
-                            </button>
-                            <button
-                              onClick={() => executeCommand('justifyRight')}
-                              className="btn btn-sm btn-ghost"
-                              title="Align Right"
-                            >
-                              →
-                            </button>
-                            <button
-                              onClick={() => executeCommand('justifyFull')}
-                              className="btn btn-sm btn-ghost"
-                              title="Justify"
-                            >
-                              ≡
-                            </button>
-                            <div className="divider divider-horizontal mx-1"></div>
-                            <button
-                              onClick={insertTextField}
-                              className="btn btn-sm btn-primary"
-                              title="Add Text Field"
-                            >
-                              <PlusIcon className="w-4 h-4 mr-1" />
-                              Add Field
-                            </button>
-                          </div>
-                        </div>
-                        <div 
-                          className="flex-1 prose prose-lg max-w-none p-4 overflow-y-auto"
-                          style={{ maxHeight: 'calc(100vh - 300px)' }}
-                        >
-                          {viewingContract?.contractHtml && (
-                            <div 
-                              ref={contractEditorRef}
-                              className="prose prose-lg max-w-none"
-                              contentEditable={viewingContract.mode === 'edit'}
-                              suppressContentEditableWarning={true}
-                              dangerouslySetInnerHTML={{ 
-                                __html: viewingContract.mode === 'edit' 
-                                  ? processHtmlForEditing(viewingContract.contractHtml)
-                                  : (viewingContract.status === 'signed' && viewingContract.signedContractHtml
-                                      ? processSignedContractHtml(viewingContract.signedContractHtml)
-                                      : viewingContract.contractHtml)
-                              }} 
-                            />
-                          )}
+              <div>
+                <h4 className="text-lg font-semibold text-gray-800 mb-4">
+                  {viewingContract.status === 'signed'
+                    ? 'Signed Contract (Read Only)'
+                    : viewingContract.mode === 'edit'
+                      ? 'Contract Draft (Editable)'
+                      : 'Contract Draft'
+                  }
+                </h4>
+                {viewingContract.mode === 'edit' ? (
+                  <div className="border border-gray-300 rounded-lg p-4 flex flex-col">
+                    <div className="bg-white rounded-lg flex flex-col">
+                      {/* Rich Text Toolbar */}
+                      <div className="border-b border-gray-200 p-2 bg-gray-50">
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={() => executeCommand('bold')}
+                            className="btn btn-sm btn-ghost"
+                            title="Bold"
+                          >
+                            <strong>B</strong>
+                          </button>
+                          <button
+                            onClick={() => executeCommand('italic')}
+                            className="btn btn-sm btn-ghost"
+                            title="Italic"
+                          >
+                            <em>I</em>
+                          </button>
+                          <button
+                            onClick={() => executeCommand('underline')}
+                            className="btn btn-sm btn-ghost"
+                            title="Underline"
+                          >
+                            <u>U</u>
+                          </button>
+                          <button
+                            onClick={() => executeCommand('strikeThrough')}
+                            className="btn btn-sm btn-ghost"
+                            title="Strikethrough"
+                          >
+                            <s>S</s>
+                          </button>
+                          <div className="divider divider-horizontal mx-1"></div>
+                          <button
+                            onClick={() => executeCommand('formatBlock', 'p')}
+                            className="btn btn-sm btn-ghost"
+                            title="Paragraph"
+                          >
+                            P
+                          </button>
+                          <button
+                            onClick={() => executeCommand('formatBlock', 'h1')}
+                            className="btn btn-sm btn-ghost"
+                            title="Heading 1"
+                          >
+                            H1
+                          </button>
+                          <button
+                            onClick={() => executeCommand('formatBlock', 'h2')}
+                            className="btn btn-sm btn-ghost"
+                            title="Heading 2"
+                          >
+                            H2
+                          </button>
+                          <button
+                            onClick={() => executeCommand('formatBlock', 'h3')}
+                            className="btn btn-sm btn-ghost"
+                            title="Heading 3"
+                          >
+                            H3
+                          </button>
+                          <div className="divider divider-horizontal mx-1"></div>
+                          <button
+                            onClick={() => executeCommand('insertUnorderedList')}
+                            className="btn btn-sm btn-ghost"
+                            title="Bullet List"
+                          >
+                            • List
+                          </button>
+                          <button
+                            onClick={() => executeCommand('insertOrderedList')}
+                            className="btn btn-sm btn-ghost"
+                            title="Numbered List"
+                          >
+                            1. List
+                          </button>
+                          <div className="divider divider-horizontal mx-1"></div>
+                          <button
+                            onClick={() => executeCommand('justifyLeft')}
+                            className="btn btn-sm btn-ghost"
+                            title="Align Left"
+                          >
+                            ←
+                          </button>
+                          <button
+                            onClick={() => executeCommand('justifyCenter')}
+                            className="btn btn-sm btn-ghost"
+                            title="Align Center"
+                          >
+                            ↔
+                          </button>
+                          <button
+                            onClick={() => executeCommand('justifyRight')}
+                            className="btn btn-sm btn-ghost"
+                            title="Align Right"
+                          >
+                            →
+                          </button>
+                          <button
+                            onClick={() => executeCommand('justifyFull')}
+                            className="btn btn-sm btn-ghost"
+                            title="Justify"
+                          >
+                            ≡
+                          </button>
+                          <div className="divider divider-horizontal mx-1"></div>
+                          <button
+                            onClick={insertTextField}
+                            className="btn btn-sm btn-primary"
+                            title="Add Text Field"
+                          >
+                            <PlusIcon className="w-4 h-4 mr-1" />
+                            Add Field
+                          </button>
                         </div>
                       </div>
-                    </div>
-                  ) : (
-                    <div className="bg-white p-6 rounded-lg h-full overflow-y-auto">
-                      <div className="prose prose-lg max-w-none">
-                        <div 
-                          className="font-sans text-base leading-relaxed text-gray-800"
-                          dangerouslySetInnerHTML={{ 
-                            __html: viewingContract.status === 'signed' && viewingContract.signedContractHtml
-                              ? processSignedContractHtml(viewingContract.signedContractHtml)
-                              : viewingContract.contractHtml || ''
-                          }}
-                        />
+                      <div
+                        className="flex-1 prose prose-lg max-w-none p-4 overflow-y-auto"
+                        style={{ maxHeight: 'calc(100vh - 300px)' }}
+                      >
+                        {viewingContract?.contractHtml && (
+                          <div
+                            ref={contractEditorRef}
+                            className="prose prose-lg max-w-none"
+                            contentEditable={viewingContract.mode === 'edit'}
+                            suppressContentEditableWarning={true}
+                            dangerouslySetInnerHTML={{
+                              __html: viewingContract.mode === 'edit'
+                                ? processHtmlForEditing(viewingContract.contractHtml)
+                                : (viewingContract.status === 'signed' && viewingContract.signedContractHtml
+                                  ? processSignedContractHtml(viewingContract.signedContractHtml, viewingContract.signed_at)
+                                  : viewingContract.contractHtml)
+                            }}
+                          />
+                        )}
                       </div>
                     </div>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <div className="bg-white p-6 rounded-lg h-full overflow-y-auto">
+                    <div className="prose prose-lg max-w-none">
+                      <div
+                        className="font-sans text-base leading-relaxed text-gray-800"
+                        dangerouslySetInnerHTML={{
+                          __html: viewingContract.status === 'signed' && viewingContract.signedContractHtml
+                            ? processSignedContractHtml(viewingContract.signedContractHtml, viewingContract.signed_at)
+                            : viewingContract.contractHtml || ''
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Footer */}
             <div className="flex justify-end gap-3 p-6 border-t border-gray-200 flex-shrink-0">
-                              {/* Share button for both edit and signed modes */}
-                <button
-                  className="btn btn-info"
-                  onClick={async () => {
-                    try {
-                      console.log('🔍 Creating share link for legacy contract');
-                      
-                      // Extract the legacy contract ID from the viewingContract.id
-                      const legacyContractId = viewingContract.id.replace('legacy_', '');
-                      console.log('🔍 Legacy contract ID for sharing:', legacyContractId);
-                      
-                      // Always fetch the token from database first (to get the latest value, even if state has it)
-                      // Convert legacyContractId to number for the database query (lead_leadcontact.id is bigint)
-                      const contractIdNum = parseInt(legacyContractId, 10);
-                      if (isNaN(contractIdNum)) {
-                        console.error('❌ Invalid contract ID:', legacyContractId);
-                        toast.error('Invalid contract ID');
-                        return;
-                      }
-                      
-                      console.log('🔍 Fetching public token from database with contractId:', contractIdNum);
-                      const { data: contractData, error: fetchError } = await supabase
+              {/* Share button for both edit and signed modes */}
+              <button
+                className="btn btn-info"
+                onClick={async () => {
+                  try {
+                    console.log('🔍 Creating share link for legacy contract');
+
+                    // Extract the legacy contract ID from the viewingContract.id
+                    const legacyContractId = viewingContract.id.replace('legacy_', '');
+                    console.log('🔍 Legacy contract ID for sharing:', legacyContractId);
+
+                    // Always fetch the token from database first (to get the latest value, even if state has it)
+                    // Convert legacyContractId to number for the database query (lead_leadcontact.id is bigint)
+                    const contractIdNum = parseInt(legacyContractId, 10);
+                    if (isNaN(contractIdNum)) {
+                      console.error('❌ Invalid contract ID:', legacyContractId);
+                      toast.error('Invalid contract ID');
+                      return;
+                    }
+
+                    console.log('🔍 Fetching public token from database with contractId:', contractIdNum);
+                    const { data: contractData, error: fetchError } = await supabase
+                      .from('lead_leadcontact')
+                      .select('public_token')
+                      .eq('id', contractIdNum)
+                      .maybeSingle();
+
+                    if (fetchError && fetchError.code !== 'PGRST116') {
+                      console.error('❌ Error fetching public token:', fetchError);
+                      toast.error('Failed to get share link.');
+                      return;
+                    }
+
+                    let publicToken = contractData?.public_token;
+
+                    // If no token exists in database, generate a new one (for both draft and signed contracts)
+                    if (!publicToken) {
+                      publicToken = crypto.randomUUID();
+                      console.log('🔍 Generated new public token:', publicToken);
+
+                      // Update the contract with the public token (use contractIdNum from above)
+                      const { error: updateError } = await supabase
                         .from('lead_leadcontact')
-                        .select('public_token')
-                        .eq('id', contractIdNum)
-                        .maybeSingle();
-                      
-                      if (fetchError && fetchError.code !== 'PGRST116') {
-                        console.error('❌ Error fetching public token:', fetchError);
-                        toast.error('Failed to get share link.');
+                        .update({ public_token: publicToken })
+                        .eq('id', contractIdNum);
+
+                      if (updateError) {
+                        console.error('❌ Error updating legacy contract with public token:', updateError);
+                        toast.error('Failed to create share link.');
                         return;
                       }
-                      
-                      let publicToken = contractData?.public_token;
-                      
-                      // If no token exists in database, generate a new one (for both draft and signed contracts)
-                      if (!publicToken) {
-                        publicToken = crypto.randomUUID();
-                        console.log('🔍 Generated new public token:', publicToken);
-                        
-                        // Update the contract with the public token (use contractIdNum from above)
-                        const { error: updateError } = await supabase
-                          .from('lead_leadcontact')
-                          .update({ public_token: publicToken })
-                          .eq('id', contractIdNum);
-                        
-                        if (updateError) {
-                          console.error('❌ Error updating legacy contract with public token:', updateError);
-                          toast.error('Failed to create share link.');
-                          return;
-                        }
-                        
-                        // Update the state with the new token so subsequent clicks use the same token
+
+                      // Update the state with the new token so subsequent clicks use the same token
+                      setViewingContract(prev => prev ? { ...prev, public_token: publicToken } : null);
+                    } else {
+                      console.log('🔍 Found existing public token:', publicToken);
+                      // Update state to ensure it's in sync
+                      if (!viewingContract.public_token || viewingContract.public_token !== publicToken) {
                         setViewingContract(prev => prev ? { ...prev, public_token: publicToken } : null);
-                      } else {
-                        console.log('🔍 Found existing public token:', publicToken);
-                        // Update state to ensure it's in sync
-                        if (!viewingContract.public_token || viewingContract.public_token !== publicToken) {
-                          setViewingContract(prev => prev ? { ...prev, public_token: publicToken } : null);
-                        }
                       }
-                      
-                      // Create the public URL - always use production domain
-                      const publicUrl = `${getFrontendBaseUrl()}/public-legacy-contract/${legacyContractId}/${publicToken}`;
-                      console.log('🔍 Public URL created:', publicUrl);
-                      
-                      // Copy to clipboard - use multiple fallback methods
-                      let copySuccess = false;
-                      
-                      // Method 1: Try modern clipboard API first (works in most modern browsers)
+                    }
+
+                    // Create the public URL - always use production domain
+                    const publicUrl = `${getFrontendBaseUrl()}/public-legacy-contract/${legacyContractId}/${publicToken}`;
+                    console.log('🔍 Public URL created:', publicUrl);
+
+                    // Copy to clipboard - use multiple fallback methods
+                    let copySuccess = false;
+
+                    // Method 1: Try modern clipboard API first (works in most modern browsers)
+                    try {
+                      if (navigator.clipboard && navigator.clipboard.writeText) {
+                        await navigator.clipboard.writeText(publicUrl);
+                        copySuccess = true;
+                        toast.success('Share link copied to clipboard!');
+                      }
+                    } catch (clipboardError1) {
+                      console.log('Modern clipboard API failed, trying fallback...', clipboardError1);
+                    }
+
+                    // Method 2: Fallback to execCommand if modern API failed
+                    if (!copySuccess) {
                       try {
-                        if (navigator.clipboard && navigator.clipboard.writeText) {
-                          await navigator.clipboard.writeText(publicUrl);
+                        const textarea = document.createElement('textarea');
+                        textarea.value = publicUrl;
+                        textarea.style.position = 'fixed';
+                        textarea.style.left = '0';
+                        textarea.style.top = '0';
+                        textarea.style.width = '2em';
+                        textarea.style.height = '2em';
+                        textarea.style.padding = '0';
+                        textarea.style.border = 'none';
+                        textarea.style.outline = 'none';
+                        textarea.style.boxShadow = 'none';
+                        textarea.style.background = 'transparent';
+                        textarea.setAttribute('readonly', '');
+                        document.body.appendChild(textarea);
+                        textarea.focus();
+                        textarea.select();
+                        textarea.setSelectionRange(0, 99999); // For mobile devices
+                        const successful = document.execCommand('copy');
+                        document.body.removeChild(textarea);
+
+                        if (successful) {
                           copySuccess = true;
                           toast.success('Share link copied to clipboard!');
                         }
-                      } catch (clipboardError1) {
-                        console.log('Modern clipboard API failed, trying fallback...', clipboardError1);
+                      } catch (clipboardError2) {
+                        console.error('❌ Clipboard fallback also failed:', clipboardError2);
                       }
-                      
-                      // Method 2: Fallback to execCommand if modern API failed
-                      if (!copySuccess) {
-                        try {
-                          const textarea = document.createElement('textarea');
-                          textarea.value = publicUrl;
-                          textarea.style.position = 'fixed';
-                          textarea.style.left = '0';
-                          textarea.style.top = '0';
-                          textarea.style.width = '2em';
-                          textarea.style.height = '2em';
-                          textarea.style.padding = '0';
-                          textarea.style.border = 'none';
-                          textarea.style.outline = 'none';
-                          textarea.style.boxShadow = 'none';
-                          textarea.style.background = 'transparent';
-                          textarea.setAttribute('readonly', '');
-                          document.body.appendChild(textarea);
-                          textarea.focus();
-                          textarea.select();
-                          textarea.setSelectionRange(0, 99999); // For mobile devices
-                          const successful = document.execCommand('copy');
-                          document.body.removeChild(textarea);
-                          
-                          if (successful) {
-                            copySuccess = true;
-                            toast.success('Share link copied to clipboard!');
-                          }
-                        } catch (clipboardError2) {
-                          console.error('❌ Clipboard fallback also failed:', clipboardError2);
-                        }
-                      }
-                      
-                      // Method 3: If both methods failed, show the URL in a way the user can easily copy
-                      if (!copySuccess) {
-                        // Create a temporary input field, show it briefly, and let user copy manually
-                        const tempInput = document.createElement('input');
-                        tempInput.type = 'text';
-                        tempInput.value = publicUrl;
-                        tempInput.style.position = 'fixed';
-                        tempInput.style.top = '50%';
-                        tempInput.style.left = '50%';
-                        tempInput.style.transform = 'translate(-50%, -50%)';
-                        tempInput.style.zIndex = '99999';
-                        tempInput.style.padding = '10px';
-                        tempInput.style.fontSize = '14px';
-                        tempInput.style.border = '2px solid #3b82f6';
-                        tempInput.style.borderRadius = '6px';
-                        tempInput.style.width = '80%';
-                        tempInput.style.maxWidth = '600px';
-                        document.body.appendChild(tempInput);
-                        tempInput.focus();
-                        tempInput.select();
-                        
-                        toast.success('Please copy the link from the input field above', { duration: 5000 });
-                        
-                        // Remove the input after 10 seconds
-                        setTimeout(() => {
-                          if (document.body.contains(tempInput)) {
-                            document.body.removeChild(tempInput);
-                          }
-                        }, 10000);
-                      }
-                      
-                    } catch (error) {
-                      console.error('❌ Error creating share link:', error);
-                      toast.error('Failed to create share link: ' + (error as Error).message);
                     }
-                  }}
-                >
+
+                    // Method 3: If both methods failed, show the URL in a way the user can easily copy
+                    if (!copySuccess) {
+                      // Create a temporary input field, show it briefly, and let user copy manually
+                      const tempInput = document.createElement('input');
+                      tempInput.type = 'text';
+                      tempInput.value = publicUrl;
+                      tempInput.style.position = 'fixed';
+                      tempInput.style.top = '50%';
+                      tempInput.style.left = '50%';
+                      tempInput.style.transform = 'translate(-50%, -50%)';
+                      tempInput.style.zIndex = '99999';
+                      tempInput.style.padding = '10px';
+                      tempInput.style.fontSize = '14px';
+                      tempInput.style.border = '2px solid #3b82f6';
+                      tempInput.style.borderRadius = '6px';
+                      tempInput.style.width = '80%';
+                      tempInput.style.maxWidth = '600px';
+                      document.body.appendChild(tempInput);
+                      tempInput.focus();
+                      tempInput.select();
+
+                      toast.success('Please copy the link from the input field above', { duration: 5000 });
+
+                      // Remove the input after 10 seconds
+                      setTimeout(() => {
+                        if (document.body.contains(tempInput)) {
+                          document.body.removeChild(tempInput);
+                        }
+                      }, 10000);
+                    }
+
+                  } catch (error) {
+                    console.error('❌ Error creating share link:', error);
+                    toast.error('Failed to create share link: ' + (error as Error).message);
+                  }
+                }}
+              >
                 <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
                 </svg>
                 Share
               </button>
-              
+
               {viewingContract.mode === 'edit' && (
-                  <button
-                    className="btn btn-success"
-                    disabled={isSavingContract}
-                    onClick={async () => {
+                <button
+                  className="btn btn-success"
+                  disabled={isSavingContract}
+                  onClick={async () => {
                     if (isSavingContract) {
                       console.log('⏸️ Save already in progress, ignoring click');
                       return;
                     }
-                    
+
                     setIsSavingContract(true);
                     try {
                       console.log('🔍 Saving edited legacy contract');
-                      
+
                       // Get the content from the contentEditable div using ref
                       if (!contractEditorRef.current) {
                         toast.error('Editor not found');
                         setIsSavingContract(false);
                         return;
                       }
-                      
+
                       // Get the current HTML from the editor (includes all user edits)
                       let htmlContent = contractEditorRef.current.innerHTML;
                       console.log('🔍 Content from editor (first 200 chars):', htmlContent.substring(0, 200));
-                      
+
                       // Get all input elements and their values from the original editor
                       const textInputs = Array.from(contractEditorRef.current.querySelectorAll('input.inline-input'));
                       const signatureInputs = Array.from(contractEditorRef.current.querySelectorAll('input.signature-input'));
                       const signaturePads = Array.from(contractEditorRef.current.querySelectorAll('.signature-pad'));
-                      
+
                       console.log('🔍 Found inputs:', { textInputs: textInputs.length, signatureInputs: signatureInputs.length, signaturePads: signaturePads.length });
-                      
+
                       // Create a temporary container to parse and modify the HTML
                       const tempContainer = document.createElement('div');
                       tempContainer.innerHTML = htmlContent;
-                      
+
                       // Replace text inputs - match by order
                       // Important: Always use {{text}} placeholder when saving to preserve editability
                       // Handle both wrapped inputs (in text-field-wrapper) and standalone inputs
@@ -5110,7 +5305,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           }
                         }
                       });
-                      
+
                       // Replace signature inputs - match by order
                       const tempSignatureInputs = Array.from(tempContainer.querySelectorAll('input.signature-input'));
                       tempSignatureInputs.forEach((tempInput, index) => {
@@ -5120,24 +5315,24 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           tempInput.parentNode?.replaceChild(textNode, tempInput);
                         }
                       });
-                      
+
                       // Replace signature pads with placeholder
                       const tempSignaturePads = tempContainer.querySelectorAll('.signature-pad');
                       tempSignaturePads.forEach((tempPad) => {
                         const textNode = document.createTextNode('{{sig}}');
                         tempPad.parentNode?.replaceChild(textNode, tempPad);
                       });
-                      
+
                       // Get the final processed HTML
                       htmlContent = tempContainer.innerHTML;
                       console.log('🔍 Processed HTML content (first 500 chars):', htmlContent.substring(0, 500));
                       console.log('🔍 Processed HTML length:', htmlContent.length);
-                      
+
                       // Extract the legacy contract ID from the viewingContract.id
                       const legacyContractId = viewingContract.id.replace('legacy_', '');
                       console.log('🔍 Legacy contract ID to update:', legacyContractId);
                       console.log('🔍 HTML content to save length:', htmlContent.length);
-                      
+
                       // Update the contract_html in lead_leadcontact table
                       console.log('🔍 Sending update request to database...');
                       const { data, error } = await supabase
@@ -5146,9 +5341,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         .eq('id', legacyContractId)
                         .select('id, contract_html, signed_contract_html, main')
                         .single();
-                      
+
                       console.log('🔍 Update response:', { data: data ? 'received' : 'null', error: error ? error.message : 'none' });
-                      
+
                       if (error) {
                         console.error('❌ Error updating legacy contract:', error);
                         console.error('❌ Error details:', JSON.stringify(error, null, 2));
@@ -5156,14 +5351,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         setIsSavingContract(false);
                         return;
                       }
-                      
+
                       if (!data) {
                         console.error('❌ No data returned from update');
                         toast.error('Failed to save contract changes - no data returned.');
                         setIsSavingContract(false);
                         return;
                       }
-                      
+
                       if (!data.contract_html) {
                         console.error('❌ No contract_html in response data');
                         console.error('❌ Response data:', JSON.stringify(data, null, 2));
@@ -5171,14 +5366,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         setIsSavingContract(false);
                         return;
                       }
-                      
+
                       console.log('✅ Legacy contract updated successfully');
                       console.log('🔍 Saved HTML (first 500 chars):', data.contract_html.substring(0, 500));
                       console.log('🔍 Saved HTML length:', data.contract_html.length);
                       console.log('🔍 Saved data:', { id: data.id, hasSignedContract: !!data.signed_contract_html });
-                      
+
                       const savedHtml = data.contract_html;
-                      
+
                       // Update the contactContracts state immediately to reflect the saved changes
                       setContactContracts(prev => {
                         const updated = { ...prev };
@@ -5187,8 +5382,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           const contactId = Number(contactIdStr);
                           const contract = updated[contactId];
                           if (contract && contract.id === viewingContract.id) {
-                            const hasSignedContract = data.signed_contract_html && 
-                              data.signed_contract_html.trim() !== '' && 
+                            const hasSignedContract = data.signed_contract_html &&
+                              data.signed_contract_html.trim() !== '' &&
                               data.signed_contract_html !== '\\N';
                             updated[contactId] = {
                               ...contract,
@@ -5202,9 +5397,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         });
                         return updated;
                       });
-                      
+
                       toast.success('Contract saved successfully!');
-                      
+
                       // Also update the viewingContract state so if the modal stays open, it shows the saved version
                       setViewingContract(prev => {
                         if (prev) {
@@ -5215,14 +5410,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         }
                         return prev;
                       });
-                      
+
                       setIsSavingContract(false);
-                      
+
                       // Close the modal after a short delay to show the success message
                       setTimeout(() => {
                         setViewingContract(null);
                       }, 1000);
-                      
+
                     } catch (error) {
                       console.error('❌ Error saving legacy contract:', error);
                       console.error('❌ Error stack:', (error as Error).stack);
@@ -5234,20 +5429,20 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   Save Changes
                 </button>
               )}
-              
+
               <button
                 className="btn btn-primary"
                 onClick={() => {
                   // Get the raw HTML content
-                  let rawHtmlContent = viewingContract.status === 'signed' && viewingContract.signedContractHtml 
-                    ? viewingContract.signedContractHtml 
+                  let rawHtmlContent = viewingContract.status === 'signed' && viewingContract.signedContractHtml
+                    ? viewingContract.signedContractHtml
                     : viewingContract.contractHtml || '';
-                  
+
                   // Process the HTML to ensure signatures are properly displayed
                   if (viewingContract.status === 'signed' && viewingContract.signedContractHtml) {
-                    rawHtmlContent = processSignedContractHtml(rawHtmlContent);
+                    rawHtmlContent = processSignedContractHtml(rawHtmlContent, viewingContract.signed_at);
                   }
-                  
+
                   // Create a complete HTML document with RTL support
                   const fullHtmlDocument = `<!DOCTYPE html>
 <html lang="he" dir="rtl">
@@ -5401,7 +5596,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   ${rawHtmlContent}
 </body>
 </html>`;
-                  
+
                   const blob = new Blob([fullHtmlDocument], { type: 'text/html' });
                   const url = URL.createObjectURL(blob);
                   const a = document.createElement('a');
@@ -5411,7 +5606,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   a.click();
                   document.body.removeChild(a);
                   URL.revokeObjectURL(url);
-                  
+
                   toast.success('Contract downloaded successfully!');
                 }}
               >
@@ -5423,10 +5618,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   onClick={() => {
                     // Get the raw HTML content
                     let rawHtmlContent = viewingContract.signedContractHtml || '';
-                    
+
                     // Process the HTML to ensure signatures are properly displayed
-                    rawHtmlContent = processSignedContractHtml(rawHtmlContent);
-                    
+                    rawHtmlContent = processSignedContractHtml(rawHtmlContent, viewingContract.signed_at);
+
                     // Create a new window with the contract content for printing
                     const printWindow = window.open('', '_blank');
                     if (printWindow) {
@@ -5583,7 +5778,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 </body>
 </html>`);
                       printWindow.document.close();
-                      
+
                       // Wait for content to load, then print
                       setTimeout(() => {
                         printWindow.print();
