@@ -14,9 +14,9 @@ type MainCategory = {
 type Filters = {
   fromDate: string;
   toDate: string;
-  collected: 'all' | 'yes' | 'no_with_proforma' | 'no_without_proforma';
-  categoryId: string;
-  order: string;
+  collected: string[]; // Multi-select
+  categoryId: string[]; // Changed to array for multi-select
+  order: string[]; // Changed to array for multi-select
   due: 'ignore' | 'due_only';
 };
 
@@ -47,7 +47,8 @@ type PaymentRow = {
 
 const collectedOptions = [
   { value: 'all', label: 'All' },
-  { value: 'yes', label: 'Yes' },
+  { value: 'yes_with_proforma', label: 'Yes - With Proforma' },
+  { value: 'yes_without_proforma', label: 'Yes - Without Proforma' },
   { value: 'no_with_proforma', label: 'No - With Proforma' },
   { value: 'no_without_proforma', label: 'No - Without Proforma' },
 ] as const;
@@ -201,9 +202,9 @@ const CollectionFinancesReport: React.FC = () => {
   const [filters, setFilters] = usePersistedFilters<Filters>('collectionFinancesReport_filters', {
     fromDate: todayIso,
     toDate: todayIso,
-    collected: 'all',
-    categoryId: '',
-    order: '',
+    collected: [], // Multi-select
+    categoryId: [], // Changed to empty array for multi-select
+    order: [], // Changed to empty array for multi-select
     due: 'ignore',
   }, {
     storage: 'sessionStorage',
@@ -222,6 +223,9 @@ const CollectionFinancesReport: React.FC = () => {
   const [searchQuery, setSearchQuery] = usePersistedState<string>('collectionFinancesReport_searchQuery', '', {
     storage: 'sessionStorage',
   });
+  const [showCollectedDropdown, setShowCollectedDropdown] = useState(false);
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
+  const [showOrderDropdown, setShowOrderDropdown] = useState(false);
 
   // Filter reports based on search query
   const filteredReports = useMemo(() => {
@@ -269,8 +273,86 @@ const CollectionFinancesReport: React.FC = () => {
     fetchHandlers();
   }, []);
 
+  // Close dropdowns when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (showCollectedDropdown && !target.closest('.dropdown')) {
+        setShowCollectedDropdown(false);
+      }
+      if (showCategoryDropdown && !target.closest('.dropdown')) {
+        setShowCategoryDropdown(false);
+      }
+      if (showOrderDropdown && !target.closest('.dropdown')) {
+        setShowOrderDropdown(false);
+      }
+    };
+
+    if (showCollectedDropdown || showCategoryDropdown || showOrderDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [showCollectedDropdown, showCategoryDropdown, showOrderDropdown]);
+
   const handleFilterChange = (field: keyof Filters, value: string) => {
     setFilters((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleCollectedToggle = (collectedValue: string) => {
+    setFilters(prev => {
+      const currentCollected = Array.isArray(prev.collected) ? prev.collected : [];
+      const newCollected = currentCollected.includes(collectedValue)
+        ? currentCollected.filter(c => c !== collectedValue)
+        : [...currentCollected, collectedValue];
+      return { ...prev, collected: newCollected };
+    });
+  };
+
+  const handleSelectAllCollected = () => {
+    setFilters(prev => ({ 
+      ...prev, 
+      collected: ['yes_with_proforma', 'yes_without_proforma', 'no_with_proforma', 'no_without_proforma'] 
+    }));
+  };
+
+  const handleClearAllCollected = () => {
+    setFilters(prev => ({ ...prev, collected: [] }));
+  };
+
+  const handleCategoryToggle = (categoryId: string) => {
+    setFilters(prev => {
+      const currentCategories = Array.isArray(prev.categoryId) ? prev.categoryId : [];
+      const newCategories = currentCategories.includes(categoryId)
+        ? currentCategories.filter(c => c !== categoryId)
+        : [...currentCategories, categoryId];
+      return { ...prev, categoryId: newCategories };
+    });
+  };
+
+  const handleSelectAllCategories = () => {
+    setFilters(prev => ({ ...prev, categoryId: categories.map(cat => cat.id) }));
+  };
+
+  const handleClearAllCategories = () => {
+    setFilters(prev => ({ ...prev, categoryId: [] }));
+  };
+
+  const handleOrderToggle = (orderValue: string) => {
+    setFilters(prev => {
+      const currentOrders = Array.isArray(prev.order) ? prev.order : [];
+      const newOrders = currentOrders.includes(orderValue)
+        ? currentOrders.filter(o => o !== orderValue)
+        : [...currentOrders, orderValue];
+      return { ...prev, order: newOrders };
+    });
+  };
+
+  const handleSelectAllOrders = () => {
+    setFilters(prev => ({ ...prev, order: ['1', '5', '9', '90', '99'] }));
+  };
+
+  const handleClearAllOrders = () => {
+    setFilters(prev => ({ ...prev, order: [] }));
   };
 
 const loadPayments = async () => {
@@ -372,31 +454,89 @@ const loadPayments = async () => {
       const withProforma = combined;
       const beforeFiltering = withProforma.length;
       const filtered = withProforma.filter((row) => {
-        // Category filter
-        if (filters.categoryId && row.mainCategoryId !== filters.categoryId) {
-          return false;
-        }
-        
-        // Collected filter
-        if (filters.collected !== 'all') {
-          if (filters.collected === 'yes') {
-            if (!row.collected) return false;
-          } else if (filters.collected === 'no_with_proforma') {
-            // Keep only uncollected rows with proforma
-            if (row.collected || !row.hasProforma) return false;
-          } else if (filters.collected === 'no_without_proforma') {
-            // Keep only uncollected rows without proforma
-            if (row.collected || row.hasProforma) return false;
+        // Category filter (multi-select)
+        if (Array.isArray(filters.categoryId) && filters.categoryId.length > 0) {
+          if (!row.mainCategoryId || !filters.categoryId.includes(row.mainCategoryId)) {
+            return false;
           }
         }
         
-        // Order filter
-        if (filters.order && filters.order !== '') {
-          if (row.orderCode !== filters.order) return false;
+        // Collected filter (multi-select)
+        if (Array.isArray(filters.collected) && filters.collected.length > 0) {
+          let matchesFilter = false;
+          
+          if (filters.collected.includes('yes_with_proforma')) {
+            // Collected with proforma
+            if (row.collected && row.hasProforma) {
+              matchesFilter = true;
+            }
+          }
+          if (filters.collected.includes('yes_without_proforma')) {
+            // Collected without proforma
+            if (row.collected && !row.hasProforma) {
+              matchesFilter = true;
+            }
+          }
+          if (filters.collected.includes('no_with_proforma')) {
+            // Uncollected with proforma
+            if (!row.collected && row.hasProforma) {
+              matchesFilter = true;
+            }
+          }
+          if (filters.collected.includes('no_without_proforma')) {
+            // Uncollected without proforma
+            if (!row.collected && !row.hasProforma) {
+              matchesFilter = true;
+            }
+          }
+          
+          if (!matchesFilter) return false;
         }
         
-        // Due date filter is now handled in the database queries above
-        // No client-side filtering needed
+        // Order filter (multi-select)
+        if (Array.isArray(filters.order) && filters.order.length > 0) {
+          if (!row.orderCode || !filters.order.includes(row.orderCode)) {
+            return false;
+          }
+        }
+        
+        // Date range filter - always apply client-side to check all dates including proforma dates
+        // This ensures "No - With Proforma" filter works correctly even when "Due date included" is selected
+        if (filters.fromDate || filters.toDate) {
+          // When "Due date included" is selected, database already filtered by due_date
+          // But we still need to check proforma dates for payments that might have been excluded
+          // When "Due date included" is NOT selected, check all dates
+          
+          // Check if ANY of the dates (due_date, collectedDate, or proformaDate) fall within the range
+          const datesToCheck = [
+            row.dueDate,
+            row.collectedDate,
+            row.proformaDate, // Include proforma date for "No - With Proforma" filter
+          ].filter(Boolean);
+          
+          // If no dates at all, include it (don't exclude payment plans with no date info)
+          if (datesToCheck.length === 0) {
+            // Include payments with no dates
+          } else {
+            // Check if at least one date falls within the range
+            const fromDate = filters.fromDate ? new Date(filters.fromDate + 'T00:00:00') : null;
+            const toDate = filters.toDate ? new Date(filters.toDate + 'T23:59:59') : null;
+            
+            const hasDateInRange = datesToCheck.some((dateStr) => {
+              if (!dateStr) return false;
+              const date = new Date(dateStr);
+              if (Number.isNaN(date.getTime())) return false;
+              
+              if (fromDate && date < fromDate) return false;
+              if (toDate && date > toDate) return false;
+              return true;
+            });
+            
+            if (!hasDateInRange) {
+              return false;
+            }
+          }
+        }
         
         return true;
       });
@@ -700,42 +840,224 @@ const loadPayments = async () => {
       )}
 
       <div className="card bg-base-100 shadow-lg p-6">
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 items-end">
           <div className="form-control">
-            <label className="label"><span className="label-text">From date</span></label>
+            <label className="label mb-2"><span className="label-text">From date:</span></label>
             <input type="date" className="input input-bordered" value={filters.fromDate} onChange={(e) => handleFilterChange('fromDate', e.target.value)} />
           </div>
           <div className="form-control">
-            <label className="label"><span className="label-text">To date</span></label>
+            <label className="label mb-2"><span className="label-text">To date:</span></label>
             <input type="date" className="input input-bordered" value={filters.toDate} onChange={(e) => handleFilterChange('toDate', e.target.value)} />
           </div>
           <div className="form-control">
-            <label className="label"><span className="label-text">Collected</span></label>
-            <select className="select select-bordered" value={filters.collected} onChange={(e) => handleFilterChange('collected', e.target.value as Filters['collected'])}>
-              {collectedOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
+            <label className="label mb-2"><span className="label-text">Collected:</span></label>
+            <div className="dropdown dropdown-bottom w-full">
+              <button
+                type="button"
+                className="btn btn-outline w-full justify-between"
+                onClick={() => setShowCollectedDropdown(!showCollectedDropdown)}
+              >
+                <span>
+                  {Array.isArray(filters.collected) && filters.collected.length > 0
+                    ? `${filters.collected.length} selected`
+                    : 'ALL'}
+                </span>
+                <svg
+                  className={`w-4 h-4 transition-transform ${showCollectedDropdown ? 'rotate-180' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              {showCollectedDropdown && (
+                <ul className="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-full z-[1] border border-gray-200 mt-1">
+                  <li>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost w-full justify-start"
+                      onClick={handleSelectAllCollected}
+                    >
+                      Select All
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost w-full justify-start"
+                      onClick={handleClearAllCollected}
+                    >
+                      Clear All
+                    </button>
+                  </li>
+                  <li className="divider my-1"></li>
+                  {collectedOptions.filter(opt => opt.value !== 'all').map(option => {
+                    const isSelected = Array.isArray(filters.collected) && filters.collected.includes(option.value);
+                    return (
+                      <li key={option.value}>
+                        <button
+                          type="button"
+                          className="w-full text-left"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleCollectedToggle(option.value);
+                          }}
+                        >
+                          <label className="label cursor-pointer justify-start gap-2 py-2 hover:bg-gray-100 rounded w-full">
+                            <input
+                              type="checkbox"
+                              className="checkbox checkbox-sm pointer-events-none"
+                              checked={isSelected}
+                              readOnly
+                            />
+                            <span className="label-text flex-1">{option.label}</span>
+                          </label>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           </div>
           <div className="form-control">
-            <label className="label"><span className="label-text">Category</span></label>
-            <select className="select select-bordered" value={filters.categoryId} onChange={(e) => handleFilterChange('categoryId', e.target.value)}>
-              <option value="">All</option>
-              {categories.map((cat) => (
-                <option key={cat.id} value={cat.id}>{cat.name}</option>
-              ))}
-            </select>
+            <label className="label mb-2"><span className="label-text">Category:</span></label>
+            <div className="dropdown dropdown-bottom w-full">
+              <button
+                type="button"
+                className="btn btn-outline w-full justify-between"
+                onClick={() => setShowCategoryDropdown(!showCategoryDropdown)}
+              >
+                <span>
+                  {Array.isArray(filters.categoryId) && filters.categoryId.length > 0
+                    ? `${filters.categoryId.length} selected`
+                    : 'ALL'}
+                </span>
+                <svg
+                  className={`w-4 h-4 transition-transform ${showCategoryDropdown ? 'rotate-180' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              {showCategoryDropdown && (
+                <div className="dropdown-content bg-base-100 shadow-lg rounded-box w-full z-[1] border border-gray-200 mt-1" style={{ maxHeight: '240px', overflowY: 'auto', overflowX: 'hidden' }}>
+                  <div className="p-2">
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost w-full justify-start mb-1"
+                      onClick={handleSelectAllCategories}
+                    >
+                      Select All
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost w-full justify-start mb-1"
+                      onClick={handleClearAllCategories}
+                    >
+                      Clear All
+                    </button>
+                    <div className="divider my-1"></div>
+                    {categories.map(cat => {
+                      const isSelected = Array.isArray(filters.categoryId) && filters.categoryId.includes(cat.id);
+                      return (
+                        <div key={cat.id} className="py-1">
+                          <label className="label cursor-pointer justify-start gap-2 py-2 hover:bg-gray-100 rounded w-full">
+                            <input
+                              type="checkbox"
+                              className="checkbox checkbox-sm"
+                              checked={isSelected}
+                              onChange={() => handleCategoryToggle(cat.id)}
+                            />
+                            <span className="label-text flex-1 break-words">{cat.name}</span>
+                          </label>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
           <div className="form-control">
-            <label className="label"><span className="label-text">Order</span></label>
-            <select className="select select-bordered" value={filters.order} onChange={(e) => handleFilterChange('order', e.target.value)}>
-              {orderOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
+            <label className="label mb-2"><span className="label-text">Order:</span></label>
+            <div className="dropdown dropdown-bottom w-full">
+              <button
+                type="button"
+                className="btn btn-outline w-full justify-between"
+                onClick={() => setShowOrderDropdown(!showOrderDropdown)}
+              >
+                <span>
+                  {Array.isArray(filters.order) && filters.order.length > 0
+                    ? `${filters.order.length} selected`
+                    : 'ALL'}
+                </span>
+                <svg
+                  className={`w-4 h-4 transition-transform ${showOrderDropdown ? 'rotate-180' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              {showOrderDropdown && (
+                <ul className="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-full z-[1] border border-gray-200 mt-1">
+                  <li>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost w-full justify-start"
+                      onClick={handleSelectAllOrders}
+                    >
+                      Select All
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost w-full justify-start"
+                      onClick={handleClearAllOrders}
+                    >
+                      Clear All
+                    </button>
+                  </li>
+                  <li className="divider my-1"></li>
+                  {orderOptions.filter(opt => opt.value !== '').map(option => {
+                    const isSelected = Array.isArray(filters.order) && filters.order.includes(option.value);
+                    return (
+                      <li key={option.value}>
+                        <button
+                          type="button"
+                          className="w-full text-left"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleOrderToggle(option.value);
+                          }}
+                        >
+                          <label className="label cursor-pointer justify-start gap-2 py-2 hover:bg-gray-100 rounded w-full">
+                            <input
+                              type="checkbox"
+                              className="checkbox checkbox-sm pointer-events-none"
+                              checked={isSelected}
+                              readOnly
+                            />
+                            <span className="label-text flex-1">{option.label}</span>
+                          </label>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           </div>
           <div className="form-control">
-            <label className="label"><span className="label-text">Due</span></label>
+            <label className="label mb-2"><span className="label-text">Due:</span></label>
             <select className="select select-bordered" value={filters.due} onChange={(e) => handleFilterChange('due', e.target.value as Filters['due'])}>
               {dueOptions.map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -868,7 +1190,7 @@ const loadPayments = async () => {
                     {row.collected ? (
                       <span className="inline-flex items-center gap-2 text-green-600 font-semibold">
                         <CheckCircleIcon className="w-5 h-5" />
-                        Collected
+                        {row.hasProforma ? 'Collected - With Proforma' : 'Collected - Without Proforma'}
                       </span>
                     ) : row.hasProforma ? (
                       <span className="inline-flex items-center gap-2 text-yellow-600 font-semibold">
@@ -977,34 +1299,22 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
     .from('payment_plans')
     .select('id, lead_id, value, value_vat, currency, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay');
 
-  // If "due date included" is selected, use the same logic as CollectionDueReport
+  // Always filter out cancelled plans
+  query = query.is('cancel_date', null);
+  
+  // If "due date included" is selected, we still need to fetch payments that might have proforma dates
+  // even if their due_date is outside the range, so we can filter by proforma date client-side
+  // The comprehensive date filtering (including proforma dates) is done in loadPayments
   if (filters.due === 'due_only') {
-    console.log(`🔍 [fetchModernPayments] Using 'due_only' filter mode`);
+    console.log(`🔍 [fetchModernPayments] Using 'due_only' filter mode - fetching ready_to_pay payments`);
     query = query
       .eq('ready_to_pay', true) // Sent to finance
-      .not('due_date', 'is', null) // Must have due_date
-      .is('cancel_date', null); // Exclude cancelled
+      .not('due_date', 'is', null); // Must have due_date
+      // Note: We don't filter by due_date range here - that's done client-side to include proforma dates
       // Note: Removed .eq('paid', false) to show both paid and unpaid payments
-    
-    // Filter by due_date in date range (same as CollectionDueReport)
-    if (filters.fromDate) {
-      const fromDateTime = `${filters.fromDate}T00:00:00`;
-      query = query.gte('due_date', fromDateTime);
-    }
-    if (filters.toDate) {
-      const toDateTime = `${filters.toDate}T23:59:59`;
-      query = query.lte('due_date', toDateTime);
-    }
-  } else {
-    // When "due date included" is NOT selected, filter by cancel_date and apply date range filtering
-    query = query.is('cancel_date', null);
-    
-    // For date range filtering, we need to handle payment plans where:
-    // 1. due_date falls within the range, OR
-    // 2. paid_at falls within the range (for collected payments)
-    // Since Supabase filtering by due_date excludes NULL values, we'll fetch all plans
-    // and apply comprehensive date filtering client-side to catch all relevant payment plans
   }
+  // When "due date included" is NOT selected, we fetch all non-cancelled plans
+  // Date filtering (including proforma dates) is done client-side in loadPayments
 
   const { data, error } = await query;
   if (error) throw error;
@@ -1066,104 +1376,15 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
   })));
 
   // When "due date included" is selected, all filtering is done in the query
-  // When NOT selected, we need to apply client-side date filtering
+  // When NOT selected, we only filter out cancelled plans here
+  // Date range filtering (including proforma dates) is done in loadPayments after proforma dates are extracted
   const dateFilteredPlans = filters.due === 'due_only' 
     ? (data || []) // All filtering already done in query (due_date range, ready_to_pay, paid, cancel_date)
     : (data || []).filter((plan: any) => {
-        // Filter out cancelled plans
+        // Only filter out cancelled plans here
+        // Date filtering will be done in loadPayments after proforma dates are extracted
         if (plan.cancel_date) {
-          if (plan.lead_id?.toString() === '199849') {
-            console.log(`❌ [fetchModernPayments] 199849 filtered out: cancel_date is set`, plan.cancel_date);
-          }
-          if (plan.lead_id?.toString() === '155026') {
-            console.log(`❌ [fetchModernPayments] 155026 filtered out: cancel_date is set`, plan.cancel_date);
-          }
           return false;
-        }
-        
-        // Apply date range filtering
-        if (!filters.fromDate && !filters.toDate) {
-          if (plan.lead_id?.toString() === '155026') {
-            console.log(`✅ [fetchModernPayments] 155026 included: No date filter applied`);
-          }
-          return true;
-        }
-        
-        const dueDate = plan.due_date ? new Date(plan.due_date) : null;
-        const paidAt = plan.paid_at ? new Date(plan.paid_at) : null;
-        const fromDate = filters.fromDate ? new Date(filters.fromDate + 'T00:00:00') : null;
-        const toDate = filters.toDate ? new Date(filters.toDate + 'T23:59:59') : null;
-        
-        // Debug: Log date range for 155026
-        if (plan.lead_id?.toString() === '155026') {
-          console.log(`🔍 [fetchModernPayments] 155026 date filtering check:`, {
-            due_date: plan.due_date,
-            dueDate: dueDate ? dueDate.toISOString() : null,
-            paid_at: plan.paid_at,
-            paidAt: paidAt ? paidAt.toISOString() : null,
-            fromDate: fromDate ? fromDate.toISOString() : null,
-            toDate: toDate ? toDate.toISOString() : null,
-            filters_fromDate: filters.fromDate,
-            filters_toDate: filters.toDate,
-          });
-        }
-        
-        // Check if due_date is in range (primary filter)
-        if (dueDate) {
-          if (fromDate && dueDate < fromDate) {
-            if (plan.lead_id?.toString() === '199849') {
-              console.log(`❌ [fetchModernPayments] 199849 filtered out: due_date ${plan.due_date} < fromDate ${filters.fromDate}`);
-            }
-            if (plan.lead_id?.toString() === '155026') {
-              console.log(`❌ [fetchModernPayments] 155026 filtered out: due_date ${plan.due_date} < fromDate ${filters.fromDate}`);
-            }
-            return false;
-          }
-          if (toDate && dueDate > toDate) {
-            if (plan.lead_id?.toString() === '199849') {
-              console.log(`❌ [fetchModernPayments] 199849 filtered out: due_date ${plan.due_date} > toDate ${filters.toDate}`);
-            }
-            if (plan.lead_id?.toString() === '155026') {
-              console.log(`❌ [fetchModernPayments] 155026 filtered out: due_date ${plan.due_date} (${dueDate.toISOString()}) > toDate ${filters.toDate} (${toDate.toISOString()})`);
-            }
-            return false;
-          }
-          if (plan.lead_id?.toString() === '155026') {
-            console.log(`✅ [fetchModernPayments] 155026 PASSED date filter: due_date ${plan.due_date} is within range ${filters.fromDate} to ${filters.toDate}`);
-          }
-          return true;
-        }
-        
-        // If due_date is NULL, check paid_at (for collected payments)
-        if (paidAt) {
-          if (fromDate && paidAt < fromDate) {
-            if (plan.lead_id?.toString() === '199849') {
-              console.log(`❌ [fetchModernPayments] 199849 filtered out: paid_at ${plan.paid_at} < fromDate ${filters.fromDate}`);
-            }
-            if (plan.lead_id?.toString() === '155026') {
-              console.log(`❌ [fetchModernPayments] 155026 filtered out: paid_at ${plan.paid_at} < fromDate ${filters.fromDate}`);
-            }
-            return false;
-          }
-          if (toDate && paidAt > toDate) {
-            if (plan.lead_id?.toString() === '199849') {
-              console.log(`❌ [fetchModernPayments] 199849 filtered out: paid_at ${plan.paid_at} > toDate ${filters.toDate}`);
-            }
-            if (plan.lead_id?.toString() === '155026') {
-              console.log(`❌ [fetchModernPayments] 155026 filtered out: paid_at ${plan.paid_at} (${paidAt.toISOString()}) > toDate ${filters.toDate} (${toDate.toISOString()})`);
-            }
-            return false;
-          }
-          if (plan.lead_id?.toString() === '155026') {
-            console.log(`✅ [fetchModernPayments] 155026 PASSED date filter: paid_at ${plan.paid_at} is within range ${filters.fromDate} to ${filters.toDate}`);
-          }
-          return true;
-        }
-        
-        // If both due_date and paid_at are NULL, include it (don't exclude payment plans with no date info)
-        // This handles cases where payment plans might not have dates set yet
-        if (plan.lead_id?.toString() === '155026') {
-          console.log(`✅ [fetchModernPayments] 155026 PASSED date filter: No date info, including by default`);
         }
         return true;
       });
@@ -1262,41 +1483,21 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
       'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)',
     );
 
-  // If "due date included" is selected, use the same logic as CollectionDueReport
+  // Always filter out cancelled plans
+  query = query.is('cancel_date', null);
+  
+  // If "due date included" is selected, we still need to fetch payments that might have proforma dates
+  // even if their due_date is outside the range, so we can filter by proforma date client-side
+  // The comprehensive date filtering (including proforma dates) is done in loadPayments
   if (filters.due === 'due_only') {
     // For legacy leads: if due_date exists, it means ready to pay (no need to check ready_to_pay flag)
-    query = query
-      .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL) - for legacy leads, due_date means ready to pay
-      .is('cancel_date', null); // Exclude cancelled payments
-      // Note: Removed .is('actual_date', null) to show both paid and unpaid payments
-    
-    // Filter by 'due_date' column for date range (this is what determines when payment is due)
-    // For legacy leads, only fetch payment rows if due_date is available (due_date means ready to pay)
-    if (filters.fromDate) {
-      const fromDateTime = `${filters.fromDate}T00:00:00`;
-      console.log('🔍 [fetchLegacyPayments] Filtering by due_date >=', fromDateTime, `(fromDate: ${filters.fromDate})`);
-      query = query.gte('due_date', fromDateTime);
-    }
-    if (filters.toDate) {
-      const toDateTime = `${filters.toDate}T23:59:59`;
-      console.log('🔍 [fetchLegacyPayments] Filtering by due_date <=', toDateTime, `(toDate: ${filters.toDate})`);
-      query = query.lte('due_date', toDateTime);
-    }
-    console.log(`🔍 [fetchLegacyPayments] Date range for query: ${filters.fromDate || 'no start'} to ${filters.toDate || 'no end'}`);
-  } else {
-    // When "due date included" is NOT selected, filter by 'date' column for date range
-    if (filters.fromDate) {
-      const fromDateTime = `${filters.fromDate}T00:00:00`;
-      console.log('🔍 [fetchLegacyPayments] Filtering by date >=', fromDateTime, `(fromDate: ${filters.fromDate})`);
-      query = query.gte('date', fromDateTime);
-    }
-    if (filters.toDate) {
-      const toDateTime = `${filters.toDate}T23:59:59`;
-      console.log('🔍 [fetchLegacyPayments] Filtering by date <=', toDateTime, `(toDate: ${filters.toDate})`);
-      query = query.lte('date', toDateTime);
-    }
-    console.log(`🔍 [fetchLegacyPayments] Date range for query (using 'date' column): ${filters.fromDate || 'no start'} to ${filters.toDate || 'no end'}`);
+    query = query.not('due_date', 'is', null); // Only fetch if due_date has a date (not NULL) - for legacy leads, due_date means ready to pay
+    // Note: We don't filter by due_date range here - that's done client-side to include proforma dates
+    // Note: Removed .is('actual_date', null) to show both paid and unpaid payments
+    console.log(`🔍 [fetchLegacyPayments] Using 'due_only' filter mode - fetching payments with due_date`);
   }
+  // When "due date included" is NOT selected, we fetch all non-cancelled plans
+  // Date filtering (including proforma dates) is done client-side in loadPayments
 
   const { data, error } = await query;
   if (error) {

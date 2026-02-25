@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
 import { getStageColour } from '../lib/stageUtils';
-import { PlayIcon, PaperAirplaneIcon, ExclamationTriangleIcon, PhoneIcon, EnvelopeIcon, ClockIcon, PencilSquareIcon, EyeIcon, FolderIcon, CurrencyDollarIcon, XMarkIcon, StarIcon } from '@heroicons/react/24/outline';
+import { PlayIcon, PaperAirplaneIcon, ExclamationTriangleIcon, PhoneIcon, EnvelopeIcon, ClockIcon, PencilSquareIcon, EyeIcon, FolderIcon, CurrencyDollarIcon, XMarkIcon, StarIcon, ArrowUturnLeftIcon, CheckCircleIcon, XCircleIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { updateLeadStageWithHistory, fetchStageActorInfo } from '../lib/leadStageManager';
@@ -39,6 +39,9 @@ interface Case {
   phone?: string | null; // Phone number
   mobile?: string | null; // Mobile number
   next_followup?: string | null; // Follow-up date
+  retention_handler_started?: boolean; // Whether the retention handler has started the case
+  active_handler_type?: number; // 2 = Case Handler active, 1 = Retention active (Default)
+  handlerName?: string | null; // Name of the case handler
 }
 
 // Helper function to get contrasting text color based on background
@@ -65,11 +68,13 @@ const RetainerHandlerCasesPage: React.FC = () => {
   const navigate = useNavigate();
   const [newCases, setNewCases] = useState<Case[]>([]);
   const [activeCases, setActiveCases] = useState<Case[]>([]);
+  const [nonActiveCases, setNonActiveCases] = useState<Case[]>([]);
   const [closedCases, setClosedCases] = useState<Case[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
+  const [allEmployees, setAllEmployees] = useState<any[]>([]);
 
   // State for row selection and action menu
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
@@ -277,7 +282,8 @@ const RetainerHandlerCasesPage: React.FC = () => {
         allCountriesResult,
         stagesResult,
         allCategoriesResult,
-        languageMappingResult
+        languageMappingResult,
+        allEmployeesResult
       ] = await Promise.all([
         // New leads: check retainer_handler_id (numeric)
         supabase
@@ -293,6 +299,9 @@ const RetainerHandlerCasesPage: React.FC = () => {
             balance,
             balance_currency,
             retainer_handler_id,
+            case_handler_id,
+            retention_handler_started,
+            active_handler_type,
             language,
             country_id,
             phone,
@@ -333,6 +342,9 @@ const RetainerHandlerCasesPage: React.FC = () => {
             phone,
             mobile,
             next_followup,
+            retention_handler_started,
+            active_handler_type,
+            case_handler_id,
             accounting_currencies!leads_lead_currency_id_fkey (
               name,
               iso_code
@@ -370,13 +382,19 @@ const RetainerHandlerCasesPage: React.FC = () => {
         // Fetch language mappings (static data)
         supabase
           .from('misc_language')
-          .select('id, name')
+          .select('id, name'),
+
+        // Fetch all employees to resolve names from IDs
+        supabase
+          .from('employees')
+          .select('id, display_name')
       ]);
 
       // Set countries data immediately
       if (allCountriesResult.data) {
         setAllCountries(allCountriesResult.data);
       }
+      setAllEmployees(allEmployeesResult.data || []);
 
       // Process static data
       const stages = stagesResult.data || [];
@@ -724,6 +742,13 @@ const RetainerHandlerCasesPage: React.FC = () => {
         return fallbackMap[currencyId] || '₪';
       };
 
+      // Helper function to get employee display name from ID
+      const getEmployeeDisplayName = (id: string | number | null | undefined) => {
+        if (!id) return null;
+        const employee = (allEmployeesResult.data || []).find((emp: any) => String(emp.id) === String(id));
+        return employee?.display_name || null;
+      };
+
       // Process new leads
       const processedNewLeads: Case[] = (newLeadsResult.data || []).map(lead => {
         const stageId = typeof lead.stage === 'string' ? parseInt(lead.stage, 10) : lead.stage;
@@ -770,7 +795,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
           applicants_count: null,
           value,
           currency,
-          stageId: stageId, // Store numeric stage ID for filtering
+          stageId: stageId,
           isFirstPaymentPaid: isFirstPaymentPaid,
           isNewLead: true,
           hasReadyToPay: hasReadyToPay,
@@ -781,7 +806,9 @@ const RetainerHandlerCasesPage: React.FC = () => {
           country_id: country_id,
           phone: phone,
           mobile: mobile,
-          next_followup: next_followup
+          next_followup: next_followup,
+          retention_handler_started: (lead as any).retention_handler_started === true,
+          active_handler_type: Number((lead as any).active_handler_type) === 1 ? 1 : 2, handlerName: getEmployeeDisplayName((lead as any).case_handler_id)
         };
       });
 
@@ -817,7 +844,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
           applicants_count: lead.no_of_applicants != null ? parseInt(String(lead.no_of_applicants), 10) || null : null,
           value,
           currency,
-          stageId: stageId, // Store numeric stage ID for filtering
+          stageId: stageId,
           isFirstPaymentPaid: isFirstPaymentPaid,
           isNewLead: false,
           hasReadyToPay: hasReadyToPay,
@@ -828,34 +855,50 @@ const RetainerHandlerCasesPage: React.FC = () => {
           country_id: country_id,
           phone: phone,
           mobile: mobile,
-          next_followup: next_followup
+          next_followup: next_followup,
+          retention_handler_started: (lead as any).retention_handler_started === true,
+          active_handler_type: Number((lead as any).active_handler_type) === 1 ? 1 : 2, handlerName: getEmployeeDisplayName((lead as any).case_handler_id)
         };
       });
 
       // Combine all cases
       const allProcessedCases = [...processedNewLeads, ...processedLegacyLeads];
 
-      // Separate into new, active, and closed cases
-      // New cases: stage <= 105 (up to and including "handler set")
+      // Separate into new, active, and non-active cases
+      // New cases: stage <= 105 AND retention_handler_started is false/null
       const newCasesList = allProcessedCases.filter(caseItem => {
         const stageId = (caseItem as any).stageId;
-        return stageId !== undefined && stageId !== null && stageId <= 105;
+        const started = (caseItem as any).retention_handler_started === true;
+        const activeHandlerType = (caseItem as any).active_handler_type;
+        return stageId !== undefined && stageId !== null && Number(stageId) <= 105 && !started && Number(activeHandlerType) === 1;
       });
 
-      // Closed cases: stage === 200 (case closed)
+      // Non-Active cases: active_handler_type === 2 AND stage !== 200
+      const nonActiveCasesList = allProcessedCases.filter(caseItem => {
+        const stageId = (caseItem as any).stageId;
+        const activeHandlerType = (caseItem as any).active_handler_type;
+        return Number(activeHandlerType) === 2 && Number(stageId) !== 200;
+      });
+
+      // Closed cases: stage === 200
       const closedCasesList = allProcessedCases.filter(caseItem => {
         const stageId = (caseItem as any).stageId;
-        return stageId === 200;
+        return Number(stageId) === 200;
       });
 
-      // Active cases: stage >= 110 (from "handler started" and beyond) and stage !== 200 (not closed)
+      // Active cases: (stage >= 110 OR (stage <= 105 AND retention_handler_started = true)) AND active_handler_type === 1 AND stage !== 200
       const activeCasesList = allProcessedCases.filter(caseItem => {
         const stageId = (caseItem as any).stageId;
-        return stageId !== undefined && stageId !== null && stageId >= 110 && stageId !== 200;
+        const started = (caseItem as any).retention_handler_started === true;
+        const activeHandlerType = (caseItem as any).active_handler_type;
+
+        if (stageId === undefined || stageId === null || Number(stageId) === 200 || Number(activeHandlerType) === 2) return false;
+        return Number(stageId) >= 110 || (Number(stageId) <= 105 && started);
       });
 
       setNewCases(newCasesList);
       setActiveCases(activeCasesList);
+      setNonActiveCases(nonActiveCasesList);
       setClosedCases(closedCasesList);
 
     } catch (err) {
@@ -879,7 +922,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
 
     // If Cmd/Ctrl is pressed, open lead in new tab
     if (isNewTab) {
-      const allCases = [...newCases, ...activeCases, ...closedCases];
+      const allCases = [...newCases, ...activeCases, ...nonActiveCases];
       const caseItem = allCases.find(c => c.id === caseId);
       if (caseItem) {
         const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
@@ -889,7 +932,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
     }
 
     // Normal behavior: select row
-    const allCases = [...newCases, ...activeCases, ...closedCases];
+    const allCases = [...newCases, ...activeCases, ...nonActiveCases];
     const caseItem = allCases.find(c => c.id === caseId);
     if (caseItem) {
       setSelectedCase(caseItem);
@@ -1221,6 +1264,84 @@ const RetainerHandlerCasesPage: React.FC = () => {
     } catch (error) {
       console.error('Error opening RMQ for closer/manager:', error);
       toast.error('Failed to open message window');
+    }
+  };
+
+  const handleRetentionStartCase = async (caseItem: Case, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      if (caseItem.isNewLead) {
+        const { error } = await supabase
+          .from('leads')
+          .update({
+            retention_handler_started: true,
+            active_handler_type: 1
+          })
+          .eq('id', caseItem.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('leads_lead')
+          .update({
+            retention_handler_started: true,
+            active_handler_type: 1
+          })
+          .eq('id', caseItem.id);
+        if (error) throw error;
+      }
+      toast.success('Case started by Retention Handler!');
+      await fetchRetainerHandlerCases();
+    } catch (error: any) {
+      console.error('Error starting retention case:', error);
+      toast.error('Failed to start case. Please try again.');
+    }
+  };
+
+  const handleRetentionReverseStartCase = async (caseItem: Case, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      if (caseItem.isNewLead) {
+        const { error } = await supabase
+          .from('leads')
+          .update({ retention_handler_started: false })
+          .eq('id', caseItem.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('leads_lead')
+          .update({ retention_handler_started: false })
+          .eq('id', caseItem.id);
+        if (error) throw error;
+      }
+      toast.success('Retention Case status reversed.');
+      await fetchRetainerHandlerCases();
+    } catch (error: any) {
+      console.error('Error reversing retention case start:', error);
+      toast.error('Failed to reverse case status. Please try again.');
+    }
+  };
+
+  const handleToggleActiveHandler = async (caseItem: Case, newType: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      if (caseItem.isNewLead) {
+        const { error } = await supabase
+          .from('leads')
+          .update({ active_handler_type: newType })
+          .eq('id', caseItem.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('leads_lead')
+          .update({ active_handler_type: newType })
+          .eq('id', caseItem.id);
+        if (error) throw error;
+      }
+      toast.success(newType === 2 ? 'Transferred to Handler' : 'Case marked as active for you');
+      await fetchRetainerHandlerCases();
+    } catch (error: any) {
+      console.error('Error toggling active handler:', error);
+      toast.error('Failed to update case. Please try again.');
     }
   };
 
@@ -1584,6 +1705,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
 
   const filteredNewCases = filterCases(newCases);
   const filteredActiveCases = filterCases(activeCases);
+  const filteredNonActiveCases = filterCases(nonActiveCases);
   const filteredClosedCases = filterCases(closedCases);
 
   // Calculate eligible cases for bulk actions
@@ -1645,7 +1767,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
   }, [selectedCase]);
 
   // Get unique categories from all cases
-  const allCases = [...newCases, ...activeCases, ...closedCases];
+  const allCases = [...newCases, ...activeCases, ...nonActiveCases];
   const uniqueCategories = Array.from(new Set(allCases.map(c => c.category))).sort();
 
   // Check if any filter is active
@@ -1657,7 +1779,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
     setSelectedCategory('');
   };
 
-  const renderTable = (cases: Case[], title: string, emptyMessage: string, isNewCases: boolean = false) => (
+  const renderTable = (cases: Case[], title: string, emptyMessage: string, isNewCases: boolean = false, isActiveCases: boolean = false) => (
     <div className="bg-white rounded-lg shadow-sm border">
       <div className="px-3 sm:px-6 py-2 sm:py-4 border-b">
         <h2 className="text-base sm:text-lg font-semibold text-gray-900">{title}</h2>
@@ -1698,6 +1820,9 @@ const RetainerHandlerCasesPage: React.FC = () => {
                 </th>
                 <th className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-right text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[120px]">
                   Stage
+                </th>
+                <th className="hidden lg:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-right text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[120px]">
+                  Handler
                 </th>
                 <th className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-right text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[100px]">
                   Actions
@@ -1816,6 +1941,9 @@ const RetainerHandlerCasesPage: React.FC = () => {
                       </span>
                     </div>
                   </td>
+                  <td className="hidden lg:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-right text-gray-900 text-xs sm:text-sm min-w-[120px]">
+                    {caseItem.handlerName || '—'}
+                  </td>
                   <td className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 min-w-[100px]">
                     <div className="flex items-center justify-end gap-2">
                       {/* Missing Payment Plan button - show if no payment plan exists */}
@@ -1839,6 +1967,46 @@ const RetainerHandlerCasesPage: React.FC = () => {
                           title="Start Case"
                         >
                           <PlayIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                        </button>
+                      )}
+                      {/* Start Retention Case button - show in new cases if retention_handler_started is false */}
+                      {isNewCases && !caseItem.retention_handler_started && (
+                        <button
+                          onClick={(e) => handleRetentionStartCase(caseItem, e)}
+                          className="btn btn-sm p-1.5 sm:p-2 rounded bg-emerald-500 hover:bg-emerald-600 text-white border-none"
+                          title="Start Retention Case — marks this case as started by Retention Handler"
+                        >
+                          <PlayIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                        </button>
+                      )}
+                      {/* Reverse Start Case button - show in active cases if retention_handler_started is true */}
+                      {isActiveCases && caseItem.retention_handler_started && (
+                        <button
+                          onClick={(e) => handleRetentionReverseStartCase(caseItem, e)}
+                          className="btn btn-sm p-1.5 sm:p-2 rounded bg-amber-500 hover:bg-amber-600 text-white border-none"
+                          title="Reverse Retention Start Case — moves this lead back to New Cases"
+                        >
+                          <ArrowUturnLeftIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                        </button>
+                      )}
+                      {/* Active -> Non-Active toggle (Transfer to Handler) */}
+                      {isActiveCases && (
+                        <button
+                          onClick={(e) => handleToggleActiveHandler(caseItem, 2, e)}
+                          className="btn btn-sm p-1.5 sm:p-2 rounded bg-rose-500 hover:bg-rose-600 text-white border-none"
+                          title="Transfer to Handler — moves this lead to Non-Active Cases"
+                        >
+                          <XCircleIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                        </button>
+                      )}
+                      {/* Non-Active -> Active toggle (Back to Me) */}
+                      {!isActiveCases && !isNewCases && caseItem.active_handler_type === 2 && (
+                        <button
+                          onClick={(e) => handleToggleActiveHandler(caseItem, 1, e)}
+                          className="btn btn-sm p-1.5 sm:p-2 rounded bg-emerald-500 hover:bg-emerald-600 text-white border-none"
+                          title="Back to Me — moves this lead back to Active Cases"
+                        >
+                          <CheckCircleIcon className="w-4 h-4 sm:w-5 sm:h-5" />
                         </button>
                       )}
                       {/* Sent to Finances button - show if not paid, has unpaid payments, and hasn't been marked as ready to pay */}
@@ -2004,7 +2172,17 @@ const RetainerHandlerCasesPage: React.FC = () => {
             filteredActiveCases,
             `Active Cases (${filteredActiveCases.length}${hasActiveFilters ? ` of ${activeCases.length}` : ''})`,
             hasActiveFilters ? "No matching active cases found." : "No active cases found.",
-            false // isNewCases = false
+            false, // isNewCases = false
+            true // isActiveCases = true
+          )}
+
+          {/* Non-Active Cases Table */}
+          {renderTable(
+            filteredNonActiveCases,
+            `Non-Active Cases (${filteredNonActiveCases.length}${hasActiveFilters ? ` of ${nonActiveCases.length}` : ''})`,
+            hasActiveFilters ? "No matching non-active cases found." : "No non-active cases found.",
+            false, // isNewCases = false
+            false // isActiveCases = false
           )}
 
           {/* Closed Cases Table */}
@@ -2012,7 +2190,8 @@ const RetainerHandlerCasesPage: React.FC = () => {
             filteredClosedCases,
             `Closed Cases (${filteredClosedCases.length}${hasActiveFilters ? ` of ${closedCases.length}` : ''})`,
             hasActiveFilters ? "No matching closed cases found." : "No closed cases found.",
-            false // isNewCases = false
+            false, // isNewCases = false
+            false // isActiveCases = false
           )}
         </div>
       </div>
@@ -2230,12 +2409,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
             <div className="flex-1 overflow-y-auto p-6">
               <FinanceTab
                 leads={[handlerLeadForFinance]}
-                uploadFiles={async () => { }}
-                uploadingLeadId={null}
-                uploadedFiles={{}}
-                isUploading={false}
-                handleFileInput={async () => { }}
-                refreshLeads={async () => {
+                onClientUpdate={async () => {
                   await fetchRetainerHandlerCases();
                 }}
               />

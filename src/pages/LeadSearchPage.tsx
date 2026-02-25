@@ -4436,18 +4436,18 @@ const LeadSearchPage: React.FC = () => {
       {/* Fixed Search Bar with Date Filters - Desktop: always visible, Mobile: appears when scrolled down */}
       {/* Desktop Version - Always visible */}
       <div className="hidden md:flex fixed top-16 left-0 right-0 z-[35] justify-center px-4 transition-all duration-300 ease-in-out">
-        <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/20 dark:border-gray-700/20 px-4 py-3 transition-all duration-300 ease-in-out flex items-center gap-2">
+        <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/20 dark:border-gray-700/20 px-6 py-4 transition-all duration-300 ease-in-out flex items-center gap-4">
           {/* From Date */}
           <input
             type="date"
-            className="input input-bordered input-sm w-32"
+            className="input input-bordered w-36"
             value={filters.fromDate}
             onChange={e => handleFilterChange('fromDate', e.target.value)}
           />
           {/* To Date */}
           <input
             type="date"
-            className="input input-bordered input-sm w-32"
+            className="input input-bordered w-36"
             value={filters.toDate}
             onChange={e => handleFilterChange('toDate', e.target.value)}
           />
@@ -4478,13 +4478,13 @@ const LeadSearchPage: React.FC = () => {
           </div>
           {/* Search Button - Icon Only */}
           <button
-            className="btn btn-primary btn-circle btn-sm"
+            className="btn btn-primary btn-circle"
             onClick={handleSearch}
             disabled={isSearching}
             title="Search"
           >
             {isSearching ? (
-              <span className="loading loading-spinner loading-sm"></span>
+              <span className="loading loading-spinner"></span>
             ) : (
               <MagnifyingGlassIcon className="w-5 h-5" />
             )}
