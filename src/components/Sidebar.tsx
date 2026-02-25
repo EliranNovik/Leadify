@@ -77,7 +77,7 @@ const desktopSidebarItems: SidebarItem[] = [
     subItems: [
       { icon: FolderPlusIcon, label: 'New Handler Cases', path: '/new-handler-cases' },
       { icon: FolderIcon, label: 'My Cases', path: '/my-cases' },
-      { icon: BriefcaseIcon, label: 'Retainer Cases', path: '/retainer-handler-cases' },
+      { icon: BriefcaseIcon, label: 'Retention Cases', path: '/retainer-handler-cases' },
       { icon: DocumentChartBarIcon, label: 'Case Manager', path: '/case-manager' },
     ],
   },
@@ -116,7 +116,7 @@ const mobileSidebarItems: SidebarItem[] = [
     subItems: [
       { icon: FolderPlusIcon, label: 'New Handler Cases', path: '/new-handler-cases' },
       { icon: FolderIcon, label: 'My Cases', path: '/my-cases' },
-      { icon: BriefcaseIcon, label: 'Retainer Cases', path: '/retainer-handler-cases' },
+      { icon: BriefcaseIcon, label: 'Retention Cases', path: '/retainer-handler-cases' },
       { icon: DocumentChartBarIcon, label: 'Case Manager', path: '/case-manager' },
     ],
   },
@@ -153,12 +153,12 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
 
       // Check if we have a current user to validate cache
       const currentUserId = authUser?.id;
-      
+
       if (cachedData && cachedTimestamp && cachedUserId) {
         const age = Date.now() - parseInt(cachedTimestamp, 10);
         // Only use cache if it's for the current user (or if we don't have current user yet, use it anyway)
         const isValidCache = age < CACHE_DURATION && (!currentUserId || cachedUserId === currentUserId);
-        
+
         if (isValidCache) {
           const data = JSON.parse(cachedData);
           return {
@@ -327,14 +327,14 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
             sessionStorage.removeItem(cacheUserIdKey);
           }
 
-        // Get current user's data with employee relationship
-        let userData = null;
-        let userError = null;
+          // Get current user's data with employee relationship
+          let userData = null;
+          let userError = null;
 
-        // Try by auth_id first
-        const { data: userDataByAuthId, error: errorByAuthId } = await supabase
-          .from('users')
-          .select(`
+          // Try by auth_id first
+          const { data: userDataByAuthId, error: errorByAuthId } = await supabase
+            .from('users')
+            .select(`
             id,
             full_name,
             email,
@@ -352,20 +352,20 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
               )
             )
           `)
-          .eq('auth_id', user.id)
-          .maybeSingle();
+            .eq('auth_id', user.id)
+            .maybeSingle();
 
-        if (errorByAuthId) {
-          console.error('Error fetching user by auth_id:', errorByAuthId);
-        } else if (userDataByAuthId) {
-          userData = userDataByAuthId;
-        }
+          if (errorByAuthId) {
+            console.error('Error fetching user by auth_id:', errorByAuthId);
+          } else if (userDataByAuthId) {
+            userData = userDataByAuthId;
+          }
 
-        // If not found by auth_id, try by email
-        if (!userData && user.email) {
-          const { data: userDataByEmail, error: errorByEmail } = await supabase
-            .from('users')
-            .select(`
+          // If not found by auth_id, try by email
+          if (!userData && user.email) {
+            const { data: userDataByEmail, error: errorByEmail } = await supabase
+              .from('users')
+              .select(`
               id,
               full_name,
               email,
@@ -383,128 +383,128 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                 )
               )
             `)
-            .eq('email', user.email)
-            .maybeSingle();
+              .eq('email', user.email)
+              .maybeSingle();
 
-          if (errorByEmail) {
-            console.error('Error fetching user by email:', errorByEmail);
-          } else if (userDataByEmail) {
-            userData = userDataByEmail;
+            if (errorByEmail) {
+              console.error('Error fetching user by email:', errorByEmail);
+            } else if (userDataByEmail) {
+              userData = userDataByEmail;
+            }
           }
-        }
 
-        if (userData) {
-          // Set superuser status
-          const isSuperUserValue = userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1;
-          setIsSuperUser(isSuperUserValue);
+          if (userData) {
+            // Set superuser status
+            const isSuperUserValue = userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1;
+            setIsSuperUser(isSuperUserValue);
 
-          let officialName = '';
-          let roleDisplay = 'User';
-          let deptName = 'General';
+            let officialName = '';
+            let roleDisplay = 'User';
+            let deptName = 'General';
 
-          if (userData.tenants_employee) {
-            // Handle both array and single object responses
-            const empData = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
+            if (userData.tenants_employee) {
+              // Handle both array and single object responses
+              const empData = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
 
-            if (empData) {
-              // Set official name (use official_name if available, fallback to display_name or full_name)
-              officialName = empData.official_name || empData.display_name || userData.full_name || user.email || '';
-              setUserOfficialName(officialName);
+              if (empData) {
+                // Set official name (use official_name if available, fallback to display_name or full_name)
+                officialName = empData.official_name || empData.display_name || userData.full_name || user.email || '';
+                setUserOfficialName(officialName);
 
-              // Set role with proper mapping
-              roleDisplay = getRoleDisplayName(empData.bonuses_role || '');
-              setUserRoleFromDB(roleDisplay);
+                // Set role with proper mapping
+                roleDisplay = getRoleDisplayName(empData.bonuses_role || '');
+                setUserRoleFromDB(roleDisplay);
 
-              // Set department
-              const deptData = Array.isArray(empData.tenant_departement) ? empData.tenant_departement[0] : empData.tenant_departement;
-              deptName = deptData?.name || '';
-              setUserDepartment(deptName); // Update immediately
+                // Set department
+                const deptData = Array.isArray(empData.tenant_departement) ? empData.tenant_departement[0] : empData.tenant_departement;
+                deptName = deptData?.name || '';
+                setUserDepartment(deptName); // Update immediately
+              } else {
+                // No employee data, use basic user info
+                officialName = userData.full_name || user.email || '';
+                setUserOfficialName(officialName);
+                setUserRoleFromDB('User');
+                setUserDepartment(''); // Clear department if no employee data
+              }
             } else {
-              // No employee data, use basic user info
+              // No employee relationship, use basic user info
               officialName = userData.full_name || user.email || '';
               setUserOfficialName(officialName);
               setUserRoleFromDB('User');
-              setUserDepartment(''); // Clear department if no employee data
+              setUserDepartment(''); // Clear department if no employee relationship
+            }
+
+            // Cache the data with user ID - update immediately so it's available for next render
+            try {
+              const dataToCache = {
+                userOfficialName: officialName,
+                userRoleFromDB: roleDisplay,
+                userDepartment: deptName,
+                isSuperUser: isSuperUserValue,
+              };
+              sessionStorage.setItem('sidebar_userData', JSON.stringify(dataToCache));
+              sessionStorage.setItem('sidebar_userData_timestamp', Date.now().toString());
+              sessionStorage.setItem('sidebar_userData_userId', user.id); // Store user ID with cache
+              console.log('✅ Sidebar: User data cached and state updated');
+            } catch (cacheError) {
+              console.error('Error caching sidebar user data:', cacheError);
             }
           } else {
-            // No employee relationship, use basic user info
-            officialName = userData.full_name || user.email || '';
+            // User not found in database, use auth user info
+            console.warn('User not found in database, using auth user info');
+            const officialName = user.email || '';
             setUserOfficialName(officialName);
             setUserRoleFromDB('User');
-            setUserDepartment(''); // Clear department if no employee relationship
-          }
+            setUserDepartment(''); // Clear department if user not found
 
-          // Cache the data with user ID - update immediately so it's available for next render
-          try {
-            const dataToCache = {
-              userOfficialName: officialName,
-              userRoleFromDB: roleDisplay,
-              userDepartment: deptName,
-              isSuperUser: isSuperUserValue,
-            };
-            sessionStorage.setItem('sidebar_userData', JSON.stringify(dataToCache));
-            sessionStorage.setItem('sidebar_userData_timestamp', Date.now().toString());
-            sessionStorage.setItem('sidebar_userData_userId', user.id); // Store user ID with cache
-            console.log('✅ Sidebar: User data cached and state updated');
-          } catch (cacheError) {
-            console.error('Error caching sidebar user data:', cacheError);
+            // Cache basic data with user ID
+            try {
+              const dataToCache = {
+                userOfficialName: officialName,
+                userRoleFromDB: 'User',
+                userDepartment: 'General',
+                isSuperUser: false,
+              };
+              sessionStorage.setItem('sidebar_userData', JSON.stringify(dataToCache));
+              sessionStorage.setItem('sidebar_userData_timestamp', Date.now().toString());
+              sessionStorage.setItem('sidebar_userData_userId', user.id); // Store user ID with cache
+            } catch (cacheError) {
+              console.error('Error caching sidebar user data:', cacheError);
+            }
           }
-        } else {
-          // User not found in database, use auth user info
-          console.warn('User not found in database, using auth user info');
-          const officialName = user.email || '';
-          setUserOfficialName(officialName);
+        } catch (error) {
+          console.error('Error fetching user info:', error);
+          // Retry up to 3 times with exponential backoff
+          if (retryCount < 3) {
+            const delay = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s
+            setTimeout(() => fetchUserInfo(retryCount + 1), delay);
+            return;
+          }
+        } finally {
+          setIsLoadingUserInfo(false);
+        }
+      };
+
+      fetchUserInfo();
+
+      // Listen for auth state changes to refetch user info
+      const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+          if (session?.user) {
+            // Refetch user info when session is refreshed or user signs in
+            fetchUserInfo();
+          }
+        } else if (event === 'SIGNED_OUT') {
+          // Clear user info and cache on sign out
+          sessionStorage.removeItem('sidebar_userData');
+          sessionStorage.removeItem('sidebar_userData_timestamp');
+          sessionStorage.removeItem('sidebar_userData_userId');
+          setUserOfficialName('');
           setUserRoleFromDB('User');
-          setUserDepartment(''); // Clear department if user not found
-
-          // Cache basic data with user ID
-          try {
-            const dataToCache = {
-              userOfficialName: officialName,
-              userRoleFromDB: 'User',
-              userDepartment: 'General',
-              isSuperUser: false,
-            };
-            sessionStorage.setItem('sidebar_userData', JSON.stringify(dataToCache));
-            sessionStorage.setItem('sidebar_userData_timestamp', Date.now().toString());
-            sessionStorage.setItem('sidebar_userData_userId', user.id); // Store user ID with cache
-          } catch (cacheError) {
-            console.error('Error caching sidebar user data:', cacheError);
-          }
+          setUserDepartment('');
+          setIsSuperUser(false);
         }
-      } catch (error) {
-        console.error('Error fetching user info:', error);
-        // Retry up to 3 times with exponential backoff
-        if (retryCount < 3) {
-          const delay = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s
-          setTimeout(() => fetchUserInfo(retryCount + 1), delay);
-          return;
-        }
-      } finally {
-        setIsLoadingUserInfo(false);
-      }
-    };
-
-    fetchUserInfo();
-
-    // Listen for auth state changes to refetch user info
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-        if (session?.user) {
-          // Refetch user info when session is refreshed or user signs in
-          fetchUserInfo();
-        }
-      } else if (event === 'SIGNED_OUT') {
-        // Clear user info and cache on sign out
-        sessionStorage.removeItem('sidebar_userData');
-        sessionStorage.removeItem('sidebar_userData_timestamp');
-        sessionStorage.removeItem('sidebar_userData_userId');
-        setUserOfficialName('');
-        setUserRoleFromDB('User');
-        setUserDepartment('');
-        setIsSuperUser(false);
-      }
-    });
+      });
 
       return () => {
         if (subscription) {

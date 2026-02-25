@@ -1944,11 +1944,17 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 return scheduler;
                             };
 
+                            const getRetentionHandlerId = (): string | number | null => {
+                                const id = (selectedClient as any).retainer_handler_id;
+                                return id ? Number(id) : null;
+                            };
+
                             // Get IDs once
                             const closerId = getCloserId();
                             const handlerId = getHandlerId();
                             const expertId = getExpertId();
                             const schedulerId = getSchedulerId();
+                            const retentionHandlerId = getRetentionHandlerId();
 
                             // Debug logging
                             console.log('[ClientHeader Roles] Employee IDs:', {
@@ -1956,12 +1962,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 handlerId,
                                 expertId,
                                 schedulerId,
+                                retentionHandlerId,
                                 employeesToUseLength: employeesToUse?.length,
                                 schedulerDisplay,
                                 closerDisplay,
                                 handlerDisplay,
                                 expertDisplay
                             });
+
+                            const retentionHandlerDisplay = getEmployeeDisplayNameFromId(retentionHandlerId);
 
                             // Helper to check if a role is empty
                             const isRoleEmpty = (id: string | number | null | undefined, display: string): boolean => {
@@ -2017,6 +2026,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             <div className="flex items-center gap-2 h-12">
                                                 <EmployeeAvatar employeeId={schedulerId} size="md" />
                                                 <p className="font-medium truncate text-sm leading-5">{formatRoleDisplay(schedulerDisplay)}</p>
+                                            </div>
+                                        </div>
+                                    )}
+                                    {!isRoleEmpty(retentionHandlerId, retentionHandlerDisplay) && (
+                                        <div className="flex flex-col items-start">
+                                            <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Retention Handler</p>
+                                            <div className="flex items-center gap-2 h-12">
+                                                <EmployeeAvatar employeeId={retentionHandlerId} size="md" />
+                                                <p className="font-medium truncate text-sm leading-5">{formatRoleDisplay(retentionHandlerDisplay)}</p>
                                             </div>
                                         </div>
                                     )}

@@ -143,7 +143,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
   // State management
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  
+
   // Persisted state for conversations and messages (survives modal close/reopen and tab switches)
   const [persistedConversations, setPersistedConversations] = usePersistedState<Conversation[]>('rmq_conversations', [], {
     storage: 'sessionStorage',
@@ -157,7 +157,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [persistedActiveTab, setPersistedActiveTab] = usePersistedState<'chats' | 'groups'>('rmq_activeTab', 'chats', {
     storage: 'sessionStorage',
   });
-  
+
   // Local state (synced with persisted state)
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
@@ -168,13 +168,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [searchQuery, setSearchQuery] = useState('');
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [activeTab, setActiveTab] = useState<'chats' | 'groups'>('chats');
-  
+
   // Cache timestamps and flags
   const conversationsLastFetchedRef = useRef<number>(0);
-  const MESSAGE_CACHE_DURATION = 30000; // 30 seconds - messages cache duration
-  const CONVERSATION_CACHE_DURATION = 60000; // 60 seconds - conversations cache duration
+  // Use a very long cache duration for persisted state (sessionStorage persists across modal close/open)
+  const MESSAGE_CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours - messages cache duration (persisted in sessionStorage)
+  const CONVERSATION_CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours - conversations cache duration
   const hasRestoredFromCacheRef = useRef<boolean>(false);
-  
+
   // Helper function to select conversation (updates both local and persisted state)
   const selectConversation = useCallback((conversation: Conversation | null) => {
     setSelectedConversation(conversation);
@@ -324,11 +325,34 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   // Track if images are being preloaded (to prevent scroll jumping)
   const [isPreloadingImages, setIsPreloadingImages] = useState(false);
+
+  // Video loading optimization - track which videos are ready to play
+  const videoReadyRef = useRef<Set<number>>(new Set());
   const imagesLoadedRef = useRef<Set<string>>(new Set());
   // Track which videos are currently loading
   const [loadingVideos, setLoadingVideos] = useState<Set<number>>(new Set());
-  // Track which videos have been loaded/attempted
-  const loadedVideosRef = useRef<Set<number>>(new Set());
+  // Track which videos have been loaded/attempted - persisted across modal close/open
+  // Store as array in sessionStorage, convert to Set when needed
+  const [loadedVideosArray, setLoadedVideosArray] = usePersistedState<number[]>('rmq_loadedVideos', [], {
+    storage: 'sessionStorage',
+  });
+  const loadedVideos = useMemo(() => new Set(loadedVideosArray), [loadedVideosArray]);
+  const loadedVideosRef = useRef<Set<number>>(loadedVideos);
+
+  // Sync ref with state
+  useEffect(() => {
+    loadedVideosRef.current = loadedVideos;
+  }, [loadedVideos]);
+
+  // Helper to update loaded videos
+  const addLoadedVideo = useCallback((messageId: number) => {
+    setLoadedVideosArray(prev => {
+      if (!prev.includes(messageId)) {
+        return [...prev, messageId];
+      }
+      return prev;
+    });
+  }, [setLoadedVideosArray]);
 
   // Helper functions
   const getRoleDisplayName = (role: string): string => {
@@ -2029,37 +2053,37 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
     };
   }, [isOpen, selectedConversation?.id]);
-  
+
   // Restore state from cache when modal opens
   useEffect(() => {
     if (!isOpen || !currentUser || hasRestoredFromCacheRef.current) return;
-    
+
     // Mark as restored to prevent multiple restorations
     hasRestoredFromCacheRef.current = true;
-    
+
     // Restore conversations from cache if available
     if (persistedConversations.length > 0) {
       setConversations(persistedConversations);
       console.log('[RMQ] Restored conversations from cache on modal open');
     }
-    
+
     // Restore active tab
     if (persistedActiveTab) {
       setActiveTab(persistedActiveTab);
     }
-    
+
     // Restore selected conversation if available
     if (persistedSelectedConversationId) {
       const cachedConv = persistedConversations.find(c => c.id === persistedSelectedConversationId);
       if (cachedConv) {
         selectConversation(cachedConv);
-        
+
         // Restore messages from cache if available
         const cachedMessages = persistedMessages[cachedConv.id];
         if (cachedMessages && cachedMessages.messages.length > 0) {
           setMessages(cachedMessages.messages);
           console.log(`[RMQ] Restored ${cachedMessages.messages.length} messages from cache for conversation ${cachedConv.id}`);
-          
+
           // Check for new messages in background
           setTimeout(() => {
             fetchMessages(cachedConv.id, false).catch(console.error);
@@ -2070,27 +2094,27 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         }
       }
     }
-    
+
     // Fetch conversations in background to update cache (non-blocking)
     setTimeout(() => {
       fetchConversations(false, false).catch(console.error);
     }, 200);
   }, [isOpen, currentUser]);
-  
+
   // Reset restoration flag when modal closes
   useEffect(() => {
     if (!isOpen) {
       hasRestoredFromCacheRef.current = false;
     }
   }, [isOpen]);
-  
+
   // Sync local state with persisted state when it changes
   useEffect(() => {
     if (selectedConversation) {
       setPersistedSelectedConversationId(selectedConversation.id);
     }
   }, [selectedConversation?.id, setPersistedSelectedConversationId]);
-  
+
   useEffect(() => {
     setPersistedActiveTab(activeTab);
   }, [activeTab, setPersistedActiveTab]);
@@ -2305,7 +2329,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Restore from cache
       setConversations(persistedConversations);
       console.log('[RMQ] Restored conversations from cache');
-      
+
       // Fetch in background to update cache (non-blocking)
       setTimeout(() => {
         fetchConversations(showErrors, true).catch(console.error);
@@ -2590,14 +2614,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       const cachedData = persistedMessages[conversationId];
       const now = Date.now();
       const cacheAge = cachedData ? now - cachedData.lastFetched : Infinity;
-      const isCacheValid = cachedData && cacheAge < MESSAGE_CACHE_DURATION && !forceRefresh;
+      // For persisted state in sessionStorage, use longer cache or ignore age if data exists
+      const isCacheValid = cachedData && cachedData.messages.length > 0 && (cacheAge < MESSAGE_CACHE_DURATION || !forceRefresh);
 
       if (isCacheValid && cachedData.messages.length > 0) {
         // Restore from cache immediately
         setMessages(cachedData.messages);
         setIsLoadingMessages(false);
         console.log(`[RMQ] Restored ${cachedData.messages.length} messages from cache for conversation ${conversationId}`);
-        
+
         // Check for new messages in background (non-blocking)
         setTimeout(async () => {
           try {
@@ -2653,7 +2678,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               // Merge with cached messages
               const allMessages = [...cachedData.messages, ...processedNewMessages];
               setMessages(allMessages);
-              
+
               // Update cache
               const lastMessage = allMessages[allMessages.length - 1];
               setPersistedMessages(prev => ({
@@ -2670,10 +2695,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             console.error('[RMQ] Error checking for new messages:', err);
           }
         }, 100);
-        
+
         // Preload images and videos in background
         preloadImages(cachedData.messages, false);
-        
+
         // Load newest videos
         setTimeout(() => {
           const videoMessages = cachedData.messages.filter(m => isVideoMessage(m));
@@ -2682,16 +2707,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             videosToLoad.forEach((msg, index) => {
               setTimeout(() => {
                 const videoElement = document.querySelector(`video[data-message-id="${msg.id}"]`) as HTMLVideoElement;
-                if (videoElement && videoElement.readyState === 0 && !loadedVideosRef.current.has(msg.id)) {
-                  loadedVideosRef.current.add(msg.id);
-                  setLoadingVideos(prev => new Set(prev).add(msg.id));
+                // Only check readyState - never use persisted IDs as a gate for fresh DOM elements
+                if (videoElement && videoElement.readyState === 0) {
                   videoElement.load();
                 }
               }, index * 200);
             });
           }
         }, 100);
-        
+
         return;
       }
 
@@ -2841,9 +2865,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           videosToLoad.forEach((msg, index) => {
             setTimeout(() => {
               const videoElement = document.querySelector(`video[data-message-id="${msg.id}"]`) as HTMLVideoElement;
-              if (videoElement && videoElement.readyState === 0 && !loadedVideosRef.current.has(msg.id)) {
-                loadedVideosRef.current.add(msg.id);
-                setLoadingVideos(prev => new Set(prev).add(msg.id));
+              // Only check readyState - never use persisted IDs as a gate for fresh DOM elements
+              if (videoElement && videoElement.readyState === 0) {
                 videoElement.load();
               }
             }, index * 200); // Stagger loading by 200ms
@@ -2915,8 +2938,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           )
         `)
         .not('employee_id', 'is', null)
-        .neq('id', currentUser.id)
-        .order('full_name', { ascending: true });
+        .neq('id', currentUser.id);
 
       if (error) {
         toast.error('Failed to load contacts');
@@ -3608,7 +3630,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             ? { ...msg, content: editingMessageText.trim(), edited_at: new Date().toISOString() }
             : msg
         );
-        
+
         // Update persisted cache
         if (selectedConversation) {
           setPersistedMessages(prevCache => ({
@@ -3620,7 +3642,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             }
           }));
         }
-        
+
         return updated;
       });
 
@@ -5031,20 +5053,48 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         messagesContainerRef.current;
 
     if (container) {
+      // Track if we've already scrolled for this resize cycle
+      let resizeScrollTimeout: NodeJS.Timeout | null = null;
+      let lastScrollTime = 0;
+      const SCROLL_THROTTLE_MS = 200; // Throttle scrolls to max once per 200ms
+
+      // Track initial load time to prevent ResizeObserver from interfering during initial load
+      const initialLoadTime = isInitialLoad ? Date.now() : 0;
+      const INITIAL_LOAD_GRACE_PERIOD = 2000; // 2 seconds grace period after initial load
+
       // Create observer to watch for height changes
       resizeObserver = new ResizeObserver(() => {
+        // Don't trigger scroll during initial load grace period
+        if (isInitialLoad && Date.now() - initialLoadTime < INITIAL_LOAD_GRACE_PERIOD) {
+          return;
+        }
+
+        // Clear any pending scroll
+        if (resizeScrollTimeout) {
+          clearTimeout(resizeScrollTimeout);
+          resizeScrollTimeout = null;
+        }
+
         // Only force scroll if we should auto-scroll AND user is not actively scrolling
         // Check both shouldAutoScroll and isUserScrolling to prevent interference
         if (shouldAutoScroll && !isUserScrolling) {
-          // Add a small delay to allow user scroll to complete
-          setTimeout(() => {
+          const now = Date.now();
+          // Throttle scrolls to prevent jumping
+          if (now - lastScrollTime < SCROLL_THROTTLE_MS) {
+            return;
+          }
+
+          // Add a debounced delay to allow content to settle
+          resizeScrollTimeout = setTimeout(() => {
             // Double-check user hasn't started scrolling in the meantime
             if (shouldAutoScroll && !isUserScrolling && !isLoadingMessages && !isPreloadingImages) {
+              lastScrollTime = Date.now();
               requestAnimationFrame(() => {
                 scrollToBottom('instant');
               });
             }
-          }, 50);
+            resizeScrollTimeout = null;
+          }, 150); // Increased delay to let images settle
         }
       });
 
@@ -5066,18 +5116,25 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       initialLoadRef.current = selectedConversation.id;
       hasScrolledForConversationRef.current = selectedConversation.id;
 
-      // FORCE INSTANT SCROLL TO BOTTOM
-      // We use requestAnimationFrame to wait for paint, then force scroll (only if not loading)
-      if (!isLoadingMessages && !isPreloadingImages) {
-        requestAnimationFrame(() => {
-          scrollToBottom('instant');
-        });
-      }
-
-      // Set state
+      // Set state first to prevent ResizeObserver from interfering
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
       setNewMessagesCount(0);
+
+      // FORCE INSTANT SCROLL TO BOTTOM after a short delay to let content render
+      // We use requestAnimationFrame to wait for paint, then force scroll (only if not loading)
+      if (!isLoadingMessages && !isPreloadingImages) {
+        // Use a small delay to let images start loading before scrolling
+        setTimeout(() => {
+          requestAnimationFrame(() => {
+            scrollToBottom('instant');
+            // After initial scroll, disable auto-scroll temporarily to prevent jumping
+            setTimeout(() => {
+              setShouldAutoScroll(true);
+            }, 500); // Re-enable after 500ms
+          });
+        }, 100);
+      }
     }
 
     // Cleanup observer on effect re-run or unmount
@@ -5099,12 +5156,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       initialLoadRef.current = null;
       hasScrolledForConversationRef.current = null;
 
-      // Clear messages immediately when conversation changes to ensure clean state
-      setMessages([]);
+      // Check persisted state first - restore immediately if available
+      const cachedData = persistedMessages[selectedConversation.id];
+      if (cachedData && cachedData.messages.length > 0) {
+        // Restore messages immediately without showing loading
+        setMessages(cachedData.messages);
+        setIsLoadingMessages(false);
+        console.log(`[RMQ] Immediately restored ${cachedData.messages.length} messages from persisted state for conversation ${selectedConversation.id}`);
 
-      // Fetch messages immediately - no delay needed
-      // fetchMessages will handle loading state
-      fetchMessages(selectedConversation.id);
+        // Fetch new messages in background (non-blocking)
+        fetchMessages(selectedConversation.id, false);
+      } else {
+        // No cached data, clear and fetch normally
+        setMessages([]);
+        setIsLoadingMessages(true);
+        fetchMessages(selectedConversation.id);
+      }
 
       // #region agent log
       fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:conversationChange', message: 'Flags reset and messages cleared, fetching messages', data: { newConversationId: selectedConversation.id, isOpen }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'F' }) }).catch(() => { });
@@ -5674,7 +5741,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           // Add message and sort by sent_at to ensure correct chronological order
           const updated = [...prev, enhancedMessage];
           const sorted = updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
-          
+
           // Update persisted cache with new message
           if (selectedConversation) {
             setPersistedMessages(prevCache => {
@@ -5689,7 +5756,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               };
             });
           }
-          
+
           return sorted;
         });
 
@@ -5730,10 +5797,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             }
             : conv
         ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
-        
+
         // Update persisted conversations cache
         setPersistedConversations(updated);
-        
+
         return updated;
       });
     };
@@ -5745,7 +5812,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Note: websocketService doesn't have an offMessage method, so we can't clean up
       // This is fine as the handler will be replaced on next render
     };
-  }, [selectedConversation, currentUser]);
+  }, [selectedConversation, currentUser, isLoadingMessages, isPreloadingImages]);
 
   // Join conversation room when conversation is selected
   useEffect(() => {
@@ -5888,15 +5955,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         };
       })
       .sort((a, b) => {
+        // Always sort by latest message first
         if (a.lastMessageAt && b.lastMessageAt) {
           return new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime();
         }
         if (a.lastMessageAt) return -1;
         if (b.lastMessageAt) return 1;
-
-        const aName = (a.user.tenants_employee?.display_name || a.user.full_name || '').toLowerCase();
-        const bName = (b.user.tenants_employee?.display_name || b.user.full_name || '').toLowerCase();
-        return aName.localeCompare(bName);
+        // Contacts with no messages go to the bottom in their natural fetch order
+        return 0;
       });
   }, [filteredUsers, conversations, currentUser, messages]);
 
@@ -5905,6 +5971,76 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     const totalUnread = conversations.reduce((sum, conv) => sum + (conv.unread_count || 0), 0);
     window.dispatchEvent(new CustomEvent('rmq:unread-count', { detail: { count: totalUnread } }));
   }, [conversations]);
+
+
+  // Global styles for glassy white video controls
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.textContent = `
+      /* Glassy white video controls styling */
+      video::-webkit-media-controls-panel {
+        background: rgba(255, 255, 255, 0.15) !important;
+        backdrop-filter: blur(15px) saturate(180%) !important;
+        -webkit-backdrop-filter: blur(15px) saturate(180%) !important;
+        border-radius: 12px !important;
+        padding: 10px 12px !important;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1) !important;
+      }
+      
+      video::-webkit-media-controls-play-button,
+      video::-webkit-media-controls-mute-button,
+      video::-webkit-media-controls-fullscreen-button {
+        filter: brightness(0) invert(1) !important;
+        color: white !important;
+        opacity: 0.95 !important;
+      }
+      
+      video::-webkit-media-controls-timeline {
+        background: rgba(255, 255, 255, 0.3) !important;
+        border-radius: 2px !important;
+        height: 4px !important;
+      }
+      
+      video::-webkit-media-controls-timeline::-webkit-slider-thumb {
+        background: white !important;
+        border: 2px solid rgba(255, 255, 255, 0.8) !important;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2) !important;
+      }
+      
+      video::-webkit-media-controls-current-time-display,
+      video::-webkit-media-controls-time-remaining-display {
+        color: white !important;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3) !important;
+        font-weight: 500 !important;
+      }
+      
+      video::-webkit-media-controls-volume-slider {
+        background: rgba(255, 255, 255, 0.3) !important;
+      }
+      
+      video::-webkit-media-controls-volume-slider::-webkit-slider-thumb {
+        background: white !important;
+        border: 2px solid rgba(255, 255, 255, 0.8) !important;
+      }
+      
+      /* Firefox video controls */
+      video::-moz-media-controls {
+        background: rgba(255, 255, 255, 0.15) !important;
+        backdrop-filter: blur(15px) saturate(180%) !important;
+        border-radius: 12px !important;
+      }
+      
+      /* Ensure controls are always visible when video is hovered or playing */
+      video:hover::-webkit-media-controls-panel,
+      video:focus::-webkit-media-controls-panel {
+        opacity: 1 !important;
+      }
+    `;
+    document.head.appendChild(style);
+    return () => {
+      document.head.removeChild(style);
+    };
+  }, []);
 
   // Don't render if not open
   if (!isOpen) return null;
@@ -6775,21 +6911,34 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         {isImageMessage(message) ? (
                           <div className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
                             <div
-                              className="relative cursor-pointer group"
+                              className="relative cursor-pointer group w-full"
                               onClick={() => openMediaModal(message)}
                             >
                               <img
                                 src={message.attachment_url}
                                 alt={message.attachment_name}
-                                className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
+                                className="w-full max-w-full max-h-80 md:max-h-[600px] rounded-lg object-contain bg-gray-100 dark:bg-gray-800"
                                 loading={index >= messages.length - 10 ? "eager" : "lazy"}
                                 decoding="async"
+                                onLoad={(e) => {
+                                  // Image loaded successfully - ensure it's visible
+                                  const img = e.target as HTMLImageElement;
+                                  img.style.opacity = '1';
+                                  img.style.display = 'block';
+                                  img.style.width = 'auto';
+                                  img.style.height = 'auto';
+                                  img.style.maxWidth = '100%';
+                                  img.style.maxHeight = '320px';
+                                }}
+                                onError={(e) => {
+                                  // Handle image load errors gracefully - show placeholder instead of hiding
+                                  const img = e.target as HTMLImageElement;
+                                  console.error('Image load error:', message.attachment_url);
+                                  // Set a placeholder or show error state
+                                  img.style.opacity = '0.5';
+                                }}
+                                style={{ opacity: 1, transition: 'opacity 0.2s ease-in-out', display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '320px' }}
                               />
-                              <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
-                                </svg>
-                              </div>
                             </div>
                             {/* Timestamp and read receipts at bottom of image */}
                             <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
@@ -6805,31 +6954,80 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           <div className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
                             <div
                               className="relative cursor-pointer group"
-                              onClick={() => openMediaModal(message)}
+                              onClick={(e) => {
+                                // Only open modal if clicking outside video controls
+                                const target = e.target as HTMLElement;
+                                // Check if click was on video element or video controls
+                                const isVideoElement = target.tagName === 'VIDEO';
+                                const isVideoControl = target.closest('video') !== null;
+
+                                // If click was on video or its controls, don't open modal
+                                // The video's onClick handler will stop propagation
+                                if (isVideoElement || isVideoControl) {
+                                  return; // Let video controls handle it
+                                }
+                                // Otherwise open modal
+                                openMediaModal(message);
+                              }}
                             >
                               <video
                                 data-message-id={message.id}
                                 src={message.attachment_url}
-                                className="max-w-full max-h-80 md:max-h-[600px] min-h-[200px] md:min-h-[300px] rounded-lg object-cover transition-transform group-hover:scale-105 bg-gray-100 dark:bg-gray-800"
+                                className="max-w-full max-h-80 md:max-h-[600px] min-h-[200px] md:min-h-[300px] rounded-lg object-cover bg-gray-100 dark:bg-gray-800 relative z-10"
                                 controls
-                                preload="metadata"
+                                preload="auto"
                                 playsInline
-                                onLoadStart={() => {
-                                  setLoadingVideos(prev => new Set(prev).add(message.id));
+                                style={{ pointerEvents: 'auto' }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const target = e.target as HTMLElement;
+                                  if (target.tagName === 'VIDEO') {
+                                    const video = e.target as HTMLVideoElement;
+                                    if (video.paused) {
+                                      video.play().catch(() => { });
+                                    } else {
+                                      video.pause();
+                                    }
+                                  }
                                 }}
-                                onLoadedMetadata={() => {
+                                onLoadedMetadata={(e) => {
+                                  const video = e.target as HTMLVideoElement;
+                                  addLoadedVideo(message.id);
+                                  // Hide loading immediately
                                   setLoadingVideos(prev => {
                                     const next = new Set(prev);
                                     next.delete(message.id);
                                     return next;
                                   });
-                                  // Try to show first frame
-                                  const target = document.querySelector(`video[data-message-id="${message.id}"]`) as HTMLVideoElement;
-                                  if (target && target.readyState >= 2) {
-                                    target.currentTime = 0.1;
-                                  }
+                                  video.setAttribute('data-ready', 'true');
                                 }}
-                                onSeeked={() => {
+                                onLoadedData={(e) => {
+                                  const video = e.target as HTMLVideoElement;
+                                  addLoadedVideo(message.id);
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                }}
+                                onCanPlay={(e) => {
+                                  addLoadedVideo(message.id);
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                }}
+                                onPlay={(e) => {
+                                  // Hide loading immediately when play starts
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                }}
+                                onPlaying={(e) => {
+                                  // Ensure loading is hidden
                                   setLoadingVideos(prev => {
                                     const next = new Set(prev);
                                     next.delete(message.id);
@@ -6838,8 +7036,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 }}
                                 onError={(e) => {
                                   console.error('Video load error:', e);
-                                  const target = e.target as HTMLVideoElement;
-                                  target.style.display = 'none';
+                                  const video = e.target as HTMLVideoElement;
+                                  video.style.display = 'none';
                                   setLoadingVideos(prev => {
                                     const next = new Set(prev);
                                     next.delete(message.id);
@@ -6847,32 +7045,33 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   });
                                 }}
                                 onMouseEnter={(e) => {
-                                  const target = e.target as HTMLVideoElement;
-                                  if (target.readyState === 0 && !loadedVideosRef.current.has(message.id)) {
-                                    loadedVideosRef.current.add(message.id);
-                                    setLoadingVideos(prev => new Set(prev).add(message.id));
-                                    target.load();
+                                  // Start loading full video data on hover for instant playback (lazy videos only)
+                                  const video = e.target as HTMLVideoElement;
+                                  if (index < messages.length - 3 && video.preload !== 'auto') {
+                                    video.preload = 'auto';
+                                    // Force reload to start downloading
+                                    if (video.readyState >= 1) {
+                                      video.load();
+                                    }
                                   }
                                 }}
                                 onTouchStart={(e) => {
-                                  const target = e.target as HTMLVideoElement;
-                                  if (target.readyState === 0 && !loadedVideosRef.current.has(message.id)) {
-                                    loadedVideosRef.current.add(message.id);
-                                    setLoadingVideos(prev => new Set(prev).add(message.id));
-                                    target.load();
+                                  // Start loading full video data on touch for mobile (lazy videos only)
+                                  const video = e.target as HTMLVideoElement;
+                                  if (index < messages.length - 3 && video.preload !== 'auto') {
+                                    video.preload = 'auto';
+                                    // Force reload to start downloading
+                                    if (video.readyState >= 1) {
+                                      video.load();
+                                    }
                                   }
                                 }}
                               />
                               {loadingVideos.has(message.id) && (
-                                <div className="absolute inset-0 bg-gray-100 dark:bg-gray-800 rounded-lg flex items-center justify-center">
+                                <div className="absolute inset-0 bg-gray-100 dark:bg-gray-800 rounded-lg flex items-center justify-center pointer-events-none z-0">
                                   <div className="loading loading-spinner loading-lg" style={{ color: '#3E28CD' }}></div>
                                 </div>
                               )}
-                              <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                                <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
-                                </svg>
-                              </div>
                             </div>
                             {/* Timestamp and read receipts at bottom of video */}
                             <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
@@ -8081,553 +8280,617 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               ) : (
                 <AnimatePresence initial={false}>
                   {messages.map((message, index) => {
-                  const isOwn = message.sender_id === currentUser?.id;
-                  const senderName = message.sender?.tenants_employee?.display_name ||
-                    message.sender?.full_name ||
-                    'Unknown User';
-                  const senderPhoto = message.sender?.tenants_employee?.photo_url;
+                    const isOwn = message.sender_id === currentUser?.id;
+                    const senderName = message.sender?.tenants_employee?.display_name ||
+                      message.sender?.full_name ||
+                      'Unknown User';
+                    const senderPhoto = message.sender?.tenants_employee?.photo_url;
 
-                  // Date separators removed - using floating indicator instead
+                    // Date separators removed - using floating indicator instead
 
-                  return (
-                    <motion.div
-                      key={message.id}
-                      initial={{ opacity: 0, y: 20, scale: 0.95 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.95 }}
-                      transition={{
-                        duration: 0.3,
-                        ease: [0.4, 0, 0.2, 1]
-                      }}
-                      data-message-id={message.id}
-                    >
-                      {/* Unread messages indicator - Mobile */}
-                      {firstUnreadMessageIdRef.current === message.id && (
-                        <div className="flex items-center gap-3 my-4 px-2">
-                          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
-                          <div className="flex items-center gap-2 px-3 py-1 bg-blue-500/10 rounded-full border border-blue-500/30">
-                            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-                            <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">New messages</span>
-                          </div>
-                          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
-                        </div>
-                      )}
-                      {/* Date Separator - Removed inline separators */}
-
-                      {/* Image, video and emoji messages - render outside bubble - Mobile */}
-                      {isImageMessage(message) ? (
-                        <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}>
-                          <div
-                            className="relative cursor-pointer group"
-                            onClick={() => openMediaModal(message)}
-                          >
-                            <img
-                              src={message.attachment_url}
-                              alt={message.attachment_name}
-                              className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
-                            />
-                            <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
-                              </svg>
+                    return (
+                      <motion.div
+                        key={message.id}
+                        initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        transition={{
+                          duration: 0.3,
+                          ease: [0.4, 0, 0.2, 1]
+                        }}
+                        data-message-id={message.id}
+                      >
+                        {/* Unread messages indicator - Mobile */}
+                        {firstUnreadMessageIdRef.current === message.id && (
+                          <div className="flex items-center gap-3 my-4 px-2">
+                            <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
+                            <div className="flex items-center gap-2 px-3 py-1 bg-blue-500/10 rounded-full border border-blue-500/30">
+                              <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                              <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">New messages</span>
                             </div>
+                            <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
                           </div>
-                          {/* Timestamp and read receipts at bottom of image - Mobile */}
-                          <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                            <span className="text-xs text-gray-500" style={{
-                              textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
-                            }}>
-                              {formatMessageTime(message.sent_at)}
-                            </span>
-                            {isOwn && renderReadReceipts(message)}
-                          </div>
-                        </div>
-                      ) : isVideoMessage(message) ? (
-                        <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}>
-                          <div
-                            className="relative cursor-pointer group"
-                            onClick={() => openMediaModal(message)}
-                          >
-                            <video
-                              data-message-id={message.id}
-                              src={message.attachment_url}
-                              className="max-w-full max-h-80 md:max-h-[600px] min-h-[200px] md:min-h-[300px] rounded-lg object-cover transition-transform group-hover:scale-105 bg-gray-100 dark:bg-gray-800"
-                              controls
-                              preload="metadata"
-                              playsInline
-                              onLoadStart={() => {
-                                setLoadingVideos(prev => new Set(prev).add(message.id));
-                              }}
-                              onLoadedMetadata={() => {
-                                setLoadingVideos(prev => {
-                                  const next = new Set(prev);
-                                  next.delete(message.id);
-                                  return next;
-                                });
-                                // Try to show first frame
-                                const target = document.querySelector(`video[data-message-id="${message.id}"]`) as HTMLVideoElement;
-                                if (target && target.readyState >= 2) {
-                                  target.currentTime = 0.1;
-                                }
-                              }}
-                              onSeeked={() => {
-                                setLoadingVideos(prev => {
-                                  const next = new Set(prev);
-                                  next.delete(message.id);
-                                  return next;
-                                });
-                              }}
-                              onError={(e) => {
-                                console.error('Video load error:', e);
-                                const target = e.target as HTMLVideoElement;
-                                target.style.display = 'none';
-                                setLoadingVideos(prev => {
-                                  const next = new Set(prev);
-                                  next.delete(message.id);
-                                  return next;
-                                });
-                              }}
-                              onMouseEnter={(e) => {
-                                const target = e.target as HTMLVideoElement;
-                                if (target.readyState === 0 && !loadedVideosRef.current.has(message.id)) {
-                                  loadedVideosRef.current.add(message.id);
-                                  setLoadingVideos(prev => new Set(prev).add(message.id));
-                                  target.load();
-                                }
-                              }}
-                              onTouchStart={(e) => {
-                                const target = e.target as HTMLVideoElement;
-                                if (target.readyState === 0 && !loadedVideosRef.current.has(message.id)) {
-                                  loadedVideosRef.current.add(message.id);
-                                  setLoadingVideos(prev => new Set(prev).add(message.id));
-                                  target.load();
-                                }
-                              }}
-                            />
-                            {loadingVideos.has(message.id) && (
-                              <div className="absolute inset-0 bg-gray-100 dark:bg-gray-800 rounded-lg flex items-center justify-center">
-                                <div className="loading loading-spinner loading-lg" style={{ color: '#3E28CD' }}></div>
-                              </div>
-                            )}
-                            <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
-                              </svg>
-                            </div>
-                          </div>
-                          {/* Timestamp and read receipts at bottom of video - Mobile */}
-                          <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                            <span className="text-xs text-gray-500" style={{
-                              textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
-                            }}>
-                              {formatMessageTime(message.sent_at)}
-                            </span>
-                            {isOwn && renderReadReceipts(message)}
-                          </div>
-                        </div>
-                      ) : isEmojiOnly(message.content || '') ? (
-                        <div
-                          className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}
-                          dir={getTextDirection(message.content || '')}
-                        >
-                          <div className="text-6xl">
-                            {renderMessageContent(message.content || '', isOwn)}
-                          </div>
-                          {/* Timestamp and read receipts at bottom of emoji - Mobile */}
-                          <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                            <span className="text-xs text-gray-500" style={{
-                              textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
-                            }}>
-                              {formatMessageTime(message.sent_at)}
-                            </span>
-                            {isOwn && renderReadReceipts(message)}
-                          </div>
-                        </div>
-                      ) : (
-                        <div
-                          className={`flex gap-2 group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
-                        >
+                        )}
+                        {/* Date Separator - Removed inline separators */}
 
-                          {/* Avatar for group chats - Mobile */}
-                          {!isOwn && selectedConversation.type !== 'direct' && (
-                            <div className="flex-shrink-0">
-                              {renderUserAvatar({
-                                userId: message.sender_id,
-                                name: senderName,
-                                photoUrl: message.sender?.tenants_employee?.photo_url,
-                                sizeClass: 'w-8 h-8',
-                                borderClass: 'border border-gray-200',
-                                textClass: 'text-xs',
-                                loading: 'lazy',
-                              })}
-                            </div>
-                          )}
-
-                          <div className={`max-w-[75%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
-                            {!isOwn && selectedConversation.type !== 'direct' && (
-                              <span
-                                className="text-xs font-medium mb-1 px-2 py-0.5 rounded-full inline-block"
-                                style={{
-                                  backgroundColor: 'rgba(255, 255, 255, 0.7)',
-                                  backdropFilter: 'blur(10px)',
-                                  WebkitBackdropFilter: 'blur(10px)',
-                                  color: '#374151',
-                                  border: '1px solid rgba(255, 255, 255, 0.3)',
-                                  textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)'
+                        {/* Image, video and emoji messages - render outside bubble - Mobile */}
+                        {isImageMessage(message) ? (
+                          <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}>
+                            <div
+                              className="relative cursor-pointer group w-full"
+                              onClick={() => openMediaModal(message)}
+                            >
+                              <img
+                                src={message.attachment_url}
+                                alt={message.attachment_name}
+                                className="w-full max-w-full max-h-80 md:max-h-[600px] rounded-lg object-contain bg-gray-100 dark:bg-gray-800"
+                                loading={index >= messages.length - 10 ? "eager" : "lazy"}
+                                decoding="async"
+                                onLoad={(e) => {
+                                  // Image loaded successfully - ensure it's visible
+                                  const img = e.target as HTMLImageElement;
+                                  img.style.opacity = '1';
+                                  img.style.display = 'block';
+                                  img.style.width = 'auto';
+                                  img.style.height = 'auto';
+                                  img.style.maxWidth = '100%';
+                                  img.style.maxHeight = '320px';
                                 }}
-                              >
-                                {senderName}
+                                onError={(e) => {
+                                  // Handle image load errors gracefully - show placeholder instead of hiding
+                                  const img = e.target as HTMLImageElement;
+                                  console.error('Image load error:', message.attachment_url);
+                                  // Set a placeholder or show error state
+                                  img.style.opacity = '0.5';
+                                }}
+                                style={{ opacity: 1, transition: 'opacity 0.2s ease-in-out', display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '320px' }}
+                              />
+                            </div>
+                            {/* Timestamp and read receipts at bottom of image - Mobile */}
+                            <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                              <span className="text-xs text-gray-500" style={{
+                                textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
+                              }}>
+                                {formatMessageTime(message.sent_at)}
                               </span>
-                            )}
-                            <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative group`}>
-                              {/* Message actions dropdown - Mobile - positioned directly next to message box */}
-                              {/* For sent messages (isOwn): left side, for received messages: right side */}
-                              <div className={`absolute ${isOwn ? '-left-8 top-1/2 -translate-y-1/2' : '-right-8 top-1/2 -translate-y-1/2'} opacity-0 group-hover:opacity-100 transition-opacity z-10`}>
-                                <div className="relative message-action-menu">
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setMessageActionMenu(messageActionMenu === message.id ? null : message.id);
-                                    }}
-                                    className="p-1.5 rounded-full bg-white/90 hover:bg-white shadow-md border border-gray-200 transition-colors"
-                                    title="Message options"
-                                  >
-                                    <EllipsisVerticalIcon className="w-4 h-4 text-gray-700" />
-                                  </button>
+                              {isOwn && renderReadReceipts(message)}
+                            </div>
+                          </div>
+                        ) : isVideoMessage(message) ? (
+                          <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}>
+                            <div
+                              className="relative cursor-pointer group"
+                              onClick={(e) => {
+                                // Only open modal if clicking outside video controls
+                                const target = e.target as HTMLElement;
+                                // Check if click was on video element or video controls
+                                const isVideoElement = target.tagName === 'VIDEO';
+                                const isVideoControl = target.closest('video') !== null;
 
-                                  {/* Dropdown menu */}
-                                  {messageActionMenu === message.id && (
-                                    <div className={`absolute ${isOwn ? 'left-0' : 'right-0'} bottom-full mb-1 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[140px] z-50`}>
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setMessageToForward(message);
-                                          setShowForwardModal(true);
-                                          setMessageActionMenu(null);
-                                        }}
-                                        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
-                                      >
-                                        <ArrowRightIcon className="w-4 h-4" />
-                                        Forward
-                                      </button>
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setMessageToReply(message);
-                                          setMessageActionMenu(null);
-                                          // Focus input field
-                                          setTimeout(() => {
-                                            if (mobileMessageInputRef.current) {
-                                              mobileMessageInputRef.current.focus();
-                                            }
-                                          }, 100);
-                                        }}
-                                        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
-                                      >
-                                        <ChatBubbleBottomCenterTextIcon className="w-4 h-4" />
-                                        Reply
-                                      </button>
-                                      {isOwn && (
-                                        <>
-                                          <button
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              setMessageToEdit(message);
-                                              setEditingMessageText(message.content || '');
-                                              setMessageActionMenu(null);
-                                              // Focus input field
-                                              setTimeout(() => {
-                                                if (mobileMessageInputRef.current) {
-                                                  mobileMessageInputRef.current.focus();
-                                                }
-                                              }, 100);
-                                            }}
-                                            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
-                                          >
-                                            <PencilIcon className="w-4 h-4" />
-                                            Edit
-                                          </button>
-                                          <button
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              handleDeleteMessage(message.id);
-                                              setMessageActionMenu(null);
-                                            }}
-                                            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors text-left"
-                                          >
-                                            <TrashIcon className="w-4 h-4" />
-                                            Delete
-                                          </button>
-                                        </>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-
-                              <div
-                                data-message-id={message.id}
-                                onClick={() => {
-                                  setShowReactionPicker(showReactionPicker === message.id ? null : message.id);
-                                  setReactingMessageId(message.id);
-                                }}
-                                className={`px-4 py-3 rounded-2xl text-base cursor-pointer hover:shadow-md transition-shadow relative ${isOwn
-                                  ? isEmojiOnly(message.content)
-                                    ? 'bg-base-100 text-base-content rounded-br-md'
-                                    : 'text-white rounded-br-md'
-                                  : 'border rounded-bl-md bg-white border-gray-200 text-base-content shadow-sm'
-                                  }`}
-                                style={isOwn && !isEmojiOnly(message.content)
-                                  ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' }
-                                  : {}
+                                // If click was on video or its controls, don't open modal
+                                // The video's onClick handler will stop propagation
+                                if (isVideoElement || isVideoControl) {
+                                  return; // Let video controls handle it
                                 }
-                              >
-                                {/* Reply preview - Mobile - only show if message actually has a reply with valid data */}
-                                {(() => {
-                                  const hasReplyId = !!message.reply_to_message_id;
-
-                                  // Handle both array and object cases from Supabase
-                                  let replyMessage: Message | null = null;
-                                  if (message.reply_to_message) {
-                                    // Supabase might return it as an array or object
-                                    if (Array.isArray(message.reply_to_message)) {
-                                      replyMessage = message.reply_to_message.length > 0 ? message.reply_to_message[0] : null;
+                                // Otherwise open modal
+                                openMediaModal(message);
+                              }}
+                            >
+                              <video
+                                data-message-id={message.id}
+                                src={message.attachment_url}
+                                className="max-w-full max-h-80 md:max-h-[600px] min-h-[200px] md:min-h-[300px] rounded-lg object-cover bg-gray-100 dark:bg-gray-800 relative z-10"
+                                controls
+                                preload="auto"
+                                playsInline
+                                style={{ pointerEvents: 'auto' }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const target = e.target as HTMLElement;
+                                  if (target.tagName === 'VIDEO') {
+                                    const video = e.target as HTMLVideoElement;
+                                    if (video.paused) {
+                                      video.play().catch(() => { });
                                     } else {
-                                      replyMessage = message.reply_to_message;
+                                      video.pause();
                                     }
                                   }
+                                }}
+                                onLoadedMetadata={(e) => {
+                                  const video = e.target as HTMLVideoElement;
+                                  addLoadedVideo(message.id);
+                                  // Hide loading immediately
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                  video.setAttribute('data-ready', 'true');
+                                }}
+                                onLoadedData={(e) => {
+                                  addLoadedVideo(message.id);
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                }}
+                                onCanPlay={(e) => {
+                                  addLoadedVideo(message.id);
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                }}
+                                onPlay={(e) => {
+                                  // Hide loading immediately when play starts
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                }}
+                                onPlaying={(e) => {
+                                  // Ensure loading is hidden
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                }}
+                                onError={(e) => {
+                                  console.error('Video load error:', e);
+                                  const video = e.target as HTMLVideoElement;
+                                  video.style.display = 'none';
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                }}
+                                onMouseEnter={(e) => {
+                                  // Start loading full video data on hover for instant playback (lazy videos only)
+                                  const video = e.target as HTMLVideoElement;
+                                  if (index < messages.length - 3 && video.preload !== 'auto') {
+                                    video.preload = 'auto';
+                                    // Force reload to start downloading
+                                    if (video.readyState >= 1) {
+                                      video.load();
+                                    }
+                                  }
+                                }}
+                                onTouchStart={(e) => {
+                                  // Start loading full video data on touch for mobile (lazy videos only)
+                                  const video = e.target as HTMLVideoElement;
+                                  if (index < messages.length - 3 && video.preload !== 'auto') {
+                                    video.preload = 'auto';
+                                    // Force reload to start downloading
+                                    if (video.readyState >= 1) {
+                                      video.load();
+                                    }
+                                  }
+                                }}
+                              />
+                              {loadingVideos.has(message.id) && (
+                                <div className="absolute inset-0 bg-gray-100 dark:bg-gray-800 rounded-lg flex items-center justify-center pointer-events-none z-0">
+                                  <div className="loading loading-spinner loading-lg" style={{ color: '#3E28CD' }}></div>
+                                </div>
+                              )}
+                            </div>
+                            {/* Timestamp and read receipts at bottom of video - Mobile */}
+                            <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                              <span className="text-xs text-gray-500" style={{
+                                textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
+                              }}>
+                                {formatMessageTime(message.sent_at)}
+                              </span>
+                              {isOwn && renderReadReceipts(message)}
+                            </div>
+                          </div>
+                        ) : isEmojiOnly(message.content || '') ? (
+                          <div
+                            className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}
+                            dir={getTextDirection(message.content || '')}
+                          >
+                            <div className="text-6xl">
+                              {renderMessageContent(message.content || '', isOwn)}
+                            </div>
+                            {/* Timestamp and read receipts at bottom of emoji - Mobile */}
+                            <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                              <span className="text-xs text-gray-500" style={{
+                                textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
+                              }}>
+                                {formatMessageTime(message.sent_at)}
+                              </span>
+                              {isOwn && renderReadReceipts(message)}
+                            </div>
+                          </div>
+                        ) : (
+                          <div
+                            className={`flex gap-2 group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
+                          >
 
-                                  const hasValidReplyData = replyMessage &&
-                                    (replyMessage.sender || replyMessage.content || replyMessage.attachment_url);
+                            {/* Avatar for group chats - Mobile */}
+                            {!isOwn && selectedConversation.type !== 'direct' && (
+                              <div className="flex-shrink-0">
+                                {renderUserAvatar({
+                                  userId: message.sender_id,
+                                  name: senderName,
+                                  photoUrl: message.sender?.tenants_employee?.photo_url,
+                                  sizeClass: 'w-8 h-8',
+                                  borderClass: 'border border-gray-200',
+                                  textClass: 'text-xs',
+                                  loading: 'lazy',
+                                })}
+                              </div>
+                            )}
 
-                                  return hasReplyId && hasValidReplyData && replyMessage ? (
-                                    <div className={`mb-2 p-2 rounded-lg border-l-4 ${isOwn ? 'bg-white/20 border-white/40' : 'bg-green-50 border-green-300'
-                                      }`}>
-                                      <div className="text-xs font-semibold opacity-80 mb-1">
-                                        {replyMessage.sender?.tenants_employee?.display_name ||
-                                          replyMessage.sender?.full_name ||
-                                          'Unknown'}
-                                      </div>
-                                      {/* Only show content if it exists, don't show "Media" placeholder */}
-                                      {replyMessage.content && (
-                                        <div className="text-xs opacity-70 line-clamp-2">
-                                          {replyMessage.content}
-                                        </div>
-                                      )}
-                                      {/* Show attachment indicator if no content but has attachment */}
-                                      {!replyMessage.content && replyMessage.attachment_url && (
-                                        <div className="text-xs opacity-70 italic">
-                                          {replyMessage.message_type === 'image' ? '📷 Image' :
-                                            replyMessage.message_type === 'voice' ? '🎤 Voice message' :
-                                              replyMessage.message_type === 'file' ? '📎 File' : '📎 Attachment'}
-                                        </div>
-                                      )}
-                                    </div>
-                                  ) : null;
-                                })()}
+                            <div className={`max-w-[75%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
+                              {!isOwn && selectedConversation.type !== 'direct' && (
+                                <span
+                                  className="text-xs font-medium mb-1 px-2 py-0.5 rounded-full inline-block"
+                                  style={{
+                                    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+                                    backdropFilter: 'blur(10px)',
+                                    WebkitBackdropFilter: 'blur(10px)',
+                                    color: '#374151',
+                                    border: '1px solid rgba(255, 255, 255, 0.3)',
+                                    textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)'
+                                  }}
+                                >
+                                  {senderName}
+                                </span>
+                              )}
+                              <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative group`}>
+                                {/* Message actions dropdown - Mobile - positioned directly next to message box */}
+                                {/* For sent messages (isOwn): left side, for received messages: right side */}
+                                <div className={`absolute ${isOwn ? '-left-8 top-1/2 -translate-y-1/2' : '-right-8 top-1/2 -translate-y-1/2'} opacity-0 group-hover:opacity-100 transition-opacity z-10`}>
+                                  <div className="relative message-action-menu">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setMessageActionMenu(messageActionMenu === message.id ? null : message.id);
+                                      }}
+                                      className="p-1.5 rounded-full bg-white/90 hover:bg-white shadow-md border border-gray-200 transition-colors"
+                                      title="Message options"
+                                    >
+                                      <EllipsisVerticalIcon className="w-4 h-4 text-gray-700" />
+                                    </button>
 
-                                {/* Message content */}
-                                {message.content && (
-                                  <div
-                                    className="break-words text-base whitespace-pre-wrap"
-                                    dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
-                                    style={{
-                                      textAlign: getTextDirection(message.content) === 'rtl' ? 'right' :
-                                        getTextDirection(message.content) === 'auto' ? 'start' : 'left',
-                                      ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
-                                      fontSize: '1rem',
-                                      lineHeight: '1.5',
-                                      wordBreak: 'break-word',
-                                      overflowWrap: 'break-word',
-                                      whiteSpace: 'pre-wrap',
-                                      unicodeBidi: 'plaintext' // Ensures proper bidirectional text handling
-                                    }}
-                                  >
-                                    {renderMessageContent(message.content, isOwn)}
-                                  </div>
-                                )}
-
-                                {/* File attachment */}
-                                {message.attachment_url && (
-                                  <div className={`mt-2 rounded-lg ${`border ${isOwn ? 'bg-white/10 border-white/20' : 'bg-gray-50 border-gray-200'}`
-                                    }`}>
-                                    {message.message_type === 'voice' ? (
-                                      // Mobile voice message player
-                                      <div className="p-2 flex items-center gap-2">
-                                        {/* Employee image for own messages (all conversation types) and group chats */}
-                                        {(isOwn || selectedConversation.type !== 'direct') && (
-                                          <div className="flex-shrink-0">
-                                            {renderUserAvatar({
-                                              userId: message.sender_id,
-                                              name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
-                                              photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
-                                              sizeClass: 'w-7 h-7',
-                                              borderClass: 'border border-base-300',
-                                              textClass: 'text-xs',
-                                              loading: 'lazy',
-                                            })}
-                                          </div>
-                                        )}
+                                    {/* Dropdown menu */}
+                                    {messageActionMenu === message.id && (
+                                      <div className={`absolute ${isOwn ? 'left-0' : 'right-0'} bottom-full mb-1 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[140px] z-50`}>
                                         <button
-                                          onClick={() => playVoiceMessage(message.id)}
-                                          className={`p-2 rounded-full transition-all flex-shrink-0 ${isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'text-white hover:opacity-80'
-                                            }`}
-                                          style={!isOwn ? { backgroundColor: '#3E28CD' } : {}}
-                                          onMouseEnter={(e) => {
-                                            if (!isOwn) {
-                                              e.currentTarget.style.opacity = '0.8';
-                                            }
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setMessageToForward(message);
+                                            setShowForwardModal(true);
+                                            setMessageActionMenu(null);
                                           }}
-                                          onMouseLeave={(e) => {
-                                            if (!isOwn) {
-                                              e.currentTarget.style.opacity = '1';
-                                            }
-                                          }}
-                                          title={playingVoiceId === message.id ? "Pause voice message" : "Play voice message"}
+                                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
                                         >
-                                          {playingVoiceId === message.id ? (
-                                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                                              <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
-                                            </svg>
-                                          ) : (
-                                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                                              <path d="M8 5v14l11-7z" />
-                                            </svg>
-                                          )}
+                                          <ArrowRightIcon className="w-4 h-4" />
+                                          Forward
                                         </button>
-                                        <div className="flex-1">
-                                          <div className="flex items-center gap-2">
-                                            {/* Waveform visualization */}
-                                            <div className="flex-1 flex items-end gap-0.5 h-6 px-1">
-                                              {(() => {
-                                                const waveform = message.voice_waveform?.waveform ||
-                                                  (Array.isArray(message.voice_waveform) ? message.voice_waveform : null) ||
-                                                  Array(50).fill(0).map(() => Math.random() * 0.5 + 0.3);
-                                                const isPlaying = playingVoiceId === message.id;
-                                                const progress = voiceProgress[message.id] || 0;
-
-                                                return waveform.map((value: number, index: number) => {
-                                                  const barHeight = Math.max(value * 100, 15); // Min 15% height
-                                                  const isActive = isPlaying && (index / waveform.length) * 100 <= progress;
-
-                                                  return (
-                                                    <div
-                                                      key={index}
-                                                      className="transition-all duration-75"
-                                                      style={{
-                                                        width: '1.5px',
-                                                        height: `${barHeight}%`,
-                                                        minHeight: '2px',
-                                                        borderRadius: '0.75px',
-                                                        backgroundColor: isOwn
-                                                          ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.4)')
-                                                          : chatBackgroundImageUrl
-                                                            ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.5)')
-                                                            : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
-                                                      }}
-                                                    />
-                                                  );
-                                                });
-                                              })()}
-                                            </div>
-                                            <span className="text-xs font-mono whitespace-nowrap" style={{
-                                              color: isOwn
-                                                ? 'rgba(255, 255, 255, 0.8)'
-                                                : chatBackgroundImageUrl
-                                                  ? 'rgba(255, 255, 255, 0.9)'
-                                                  : '#4b5563'
-                                            }}>
-                                              {formatVoiceDuration(message.voice_duration)}
-                                            </span>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    ) : (
-                                      // File attachment
-                                      <div className="flex items-center gap-2 p-3">
-                                        <div className={`p-2 rounded ${isOwn ? 'bg-white/20' : chatBackgroundImageUrl ? 'bg-white/10' : 'bg-gray-100'
-                                          }`}>
-                                          <PaperClipIcon className={`w-4 h-4 ${isOwn ? 'text-white' : chatBackgroundImageUrl ? 'text-white' : 'text-gray-600'
-                                            }`} />
-                                        </div>
-                                        <div className="flex-1 min-w-0">
-                                          <button
-                                            onClick={() => window.open(message.attachment_url, '_blank')}
-                                            className="text-xs font-medium hover:underline truncate block"
-                                            style={{ color: chatBackgroundImageUrl ? 'white' : 'inherit' }}
-                                          >
-                                            {message.attachment_name}
-                                          </button>
-                                          <p className="text-xs opacity-75" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
-                                            {Math.round((message.attachment_size || 0) / 1024)} KB
-                                          </p>
-                                        </div>
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setMessageToReply(message);
+                                            setMessageActionMenu(null);
+                                            // Focus input field
+                                            setTimeout(() => {
+                                              if (mobileMessageInputRef.current) {
+                                                mobileMessageInputRef.current.focus();
+                                              }
+                                            }, 100);
+                                          }}
+                                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                        >
+                                          <ChatBubbleBottomCenterTextIcon className="w-4 h-4" />
+                                          Reply
+                                        </button>
+                                        {isOwn && (
+                                          <>
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setMessageToEdit(message);
+                                                setEditingMessageText(message.content || '');
+                                                setMessageActionMenu(null);
+                                                // Focus input field
+                                                setTimeout(() => {
+                                                  if (mobileMessageInputRef.current) {
+                                                    mobileMessageInputRef.current.focus();
+                                                  }
+                                                }, 100);
+                                              }}
+                                              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                            >
+                                              <PencilIcon className="w-4 h-4" />
+                                              Edit
+                                            </button>
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleDeleteMessage(message.id);
+                                                setMessageActionMenu(null);
+                                              }}
+                                              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors text-left"
+                                            >
+                                              <TrashIcon className="w-4 h-4" />
+                                              Delete
+                                            </button>
+                                          </>
+                                        )}
                                       </div>
                                     )}
                                   </div>
-                                )}
+                                </div>
 
-                                {/* Timestamp inside message bubble - Mobile */}
-                                <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                                  <span className="text-xs" style={{
-                                    color: isOwn
-                                      ? 'rgba(255, 255, 255, 0.7)'
-                                      : '#6b7280'
-                                  }}>
-                                    {formatMessageTime(message.sent_at)}
-                                  </span>
-                                  {isOwn && renderReadReceipts(message)}
+                                <div
+                                  data-message-id={message.id}
+                                  onClick={() => {
+                                    setShowReactionPicker(showReactionPicker === message.id ? null : message.id);
+                                    setReactingMessageId(message.id);
+                                  }}
+                                  className={`px-4 py-3 rounded-2xl text-base cursor-pointer hover:shadow-md transition-shadow relative ${isOwn
+                                    ? isEmojiOnly(message.content)
+                                      ? 'bg-base-100 text-base-content rounded-br-md'
+                                      : 'text-white rounded-br-md'
+                                    : 'border rounded-bl-md bg-white border-gray-200 text-base-content shadow-sm'
+                                    }`}
+                                  style={isOwn && !isEmojiOnly(message.content)
+                                    ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' }
+                                    : {}
+                                  }
+                                >
+                                  {/* Reply preview - Mobile - only show if message actually has a reply with valid data */}
+                                  {(() => {
+                                    const hasReplyId = !!message.reply_to_message_id;
+
+                                    // Handle both array and object cases from Supabase
+                                    let replyMessage: Message | null = null;
+                                    if (message.reply_to_message) {
+                                      // Supabase might return it as an array or object
+                                      if (Array.isArray(message.reply_to_message)) {
+                                        replyMessage = message.reply_to_message.length > 0 ? message.reply_to_message[0] : null;
+                                      } else {
+                                        replyMessage = message.reply_to_message;
+                                      }
+                                    }
+
+                                    const hasValidReplyData = replyMessage &&
+                                      (replyMessage.sender || replyMessage.content || replyMessage.attachment_url);
+
+                                    return hasReplyId && hasValidReplyData && replyMessage ? (
+                                      <div className={`mb-2 p-2 rounded-lg border-l-4 ${isOwn ? 'bg-white/20 border-white/40' : 'bg-green-50 border-green-300'
+                                        }`}>
+                                        <div className="text-xs font-semibold opacity-80 mb-1">
+                                          {replyMessage.sender?.tenants_employee?.display_name ||
+                                            replyMessage.sender?.full_name ||
+                                            'Unknown'}
+                                        </div>
+                                        {/* Only show content if it exists, don't show "Media" placeholder */}
+                                        {replyMessage.content && (
+                                          <div className="text-xs opacity-70 line-clamp-2">
+                                            {replyMessage.content}
+                                          </div>
+                                        )}
+                                        {/* Show attachment indicator if no content but has attachment */}
+                                        {!replyMessage.content && replyMessage.attachment_url && (
+                                          <div className="text-xs opacity-70 italic">
+                                            {replyMessage.message_type === 'image' ? '📷 Image' :
+                                              replyMessage.message_type === 'voice' ? '🎤 Voice message' :
+                                                replyMessage.message_type === 'file' ? '📎 File' : '📎 Attachment'}
+                                          </div>
+                                        )}
+                                      </div>
+                                    ) : null;
+                                  })()}
+
+                                  {/* Message content */}
+                                  {message.content && (
+                                    <div
+                                      className="break-words text-base whitespace-pre-wrap"
+                                      dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
+                                      style={{
+                                        textAlign: getTextDirection(message.content) === 'rtl' ? 'right' :
+                                          getTextDirection(message.content) === 'auto' ? 'start' : 'left',
+                                        ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
+                                        fontSize: '1rem',
+                                        lineHeight: '1.5',
+                                        wordBreak: 'break-word',
+                                        overflowWrap: 'break-word',
+                                        whiteSpace: 'pre-wrap',
+                                        unicodeBidi: 'plaintext' // Ensures proper bidirectional text handling
+                                      }}
+                                    >
+                                      {renderMessageContent(message.content, isOwn)}
+                                    </div>
+                                  )}
+
+                                  {/* File attachment */}
+                                  {message.attachment_url && (
+                                    <div className={`mt-2 rounded-lg ${`border ${isOwn ? 'bg-white/10 border-white/20' : 'bg-gray-50 border-gray-200'}`
+                                      }`}>
+                                      {message.message_type === 'voice' ? (
+                                        // Mobile voice message player
+                                        <div className="p-2 flex items-center gap-2">
+                                          {/* Employee image for own messages (all conversation types) and group chats */}
+                                          {(isOwn || selectedConversation.type !== 'direct') && (
+                                            <div className="flex-shrink-0">
+                                              {renderUserAvatar({
+                                                userId: message.sender_id,
+                                                name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
+                                                photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
+                                                sizeClass: 'w-7 h-7',
+                                                borderClass: 'border border-base-300',
+                                                textClass: 'text-xs',
+                                                loading: 'lazy',
+                                              })}
+                                            </div>
+                                          )}
+                                          <button
+                                            onClick={() => playVoiceMessage(message.id)}
+                                            className={`p-2 rounded-full transition-all flex-shrink-0 ${isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'text-white hover:opacity-80'
+                                              }`}
+                                            style={!isOwn ? { backgroundColor: '#3E28CD' } : {}}
+                                            onMouseEnter={(e) => {
+                                              if (!isOwn) {
+                                                e.currentTarget.style.opacity = '0.8';
+                                              }
+                                            }}
+                                            onMouseLeave={(e) => {
+                                              if (!isOwn) {
+                                                e.currentTarget.style.opacity = '1';
+                                              }
+                                            }}
+                                            title={playingVoiceId === message.id ? "Pause voice message" : "Play voice message"}
+                                          >
+                                            {playingVoiceId === message.id ? (
+                                              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                                                <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+                                              </svg>
+                                            ) : (
+                                              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                                                <path d="M8 5v14l11-7z" />
+                                              </svg>
+                                            )}
+                                          </button>
+                                          <div className="flex-1">
+                                            <div className="flex items-center gap-2">
+                                              {/* Waveform visualization */}
+                                              <div className="flex-1 flex items-end gap-0.5 h-6 px-1">
+                                                {(() => {
+                                                  const waveform = message.voice_waveform?.waveform ||
+                                                    (Array.isArray(message.voice_waveform) ? message.voice_waveform : null) ||
+                                                    Array(50).fill(0).map(() => Math.random() * 0.5 + 0.3);
+                                                  const isPlaying = playingVoiceId === message.id;
+                                                  const progress = voiceProgress[message.id] || 0;
+
+                                                  return waveform.map((value: number, index: number) => {
+                                                    const barHeight = Math.max(value * 100, 15); // Min 15% height
+                                                    const isActive = isPlaying && (index / waveform.length) * 100 <= progress;
+
+                                                    return (
+                                                      <div
+                                                        key={index}
+                                                        className="transition-all duration-75"
+                                                        style={{
+                                                          width: '1.5px',
+                                                          height: `${barHeight}%`,
+                                                          minHeight: '2px',
+                                                          borderRadius: '0.75px',
+                                                          backgroundColor: isOwn
+                                                            ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.4)')
+                                                            : chatBackgroundImageUrl
+                                                              ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.5)')
+                                                              : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
+                                                        }}
+                                                      />
+                                                    );
+                                                  });
+                                                })()}
+                                              </div>
+                                              <span className="text-xs font-mono whitespace-nowrap" style={{
+                                                color: isOwn
+                                                  ? 'rgba(255, 255, 255, 0.8)'
+                                                  : chatBackgroundImageUrl
+                                                    ? 'rgba(255, 255, 255, 0.9)'
+                                                    : '#4b5563'
+                                              }}>
+                                                {formatVoiceDuration(message.voice_duration)}
+                                              </span>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        // File attachment
+                                        <div className="flex items-center gap-2 p-3">
+                                          <div className={`p-2 rounded ${isOwn ? 'bg-white/20' : chatBackgroundImageUrl ? 'bg-white/10' : 'bg-gray-100'
+                                            }`}>
+                                            <PaperClipIcon className={`w-4 h-4 ${isOwn ? 'text-white' : chatBackgroundImageUrl ? 'text-white' : 'text-gray-600'
+                                              }`} />
+                                          </div>
+                                          <div className="flex-1 min-w-0">
+                                            <button
+                                              onClick={() => window.open(message.attachment_url, '_blank')}
+                                              className="text-xs font-medium hover:underline truncate block"
+                                              style={{ color: chatBackgroundImageUrl ? 'white' : 'inherit' }}
+                                            >
+                                              {message.attachment_name}
+                                            </button>
+                                            <p className="text-xs opacity-75" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
+                                              {Math.round((message.attachment_size || 0) / 1024)} KB
+                                            </p>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {/* Timestamp inside message bubble - Mobile */}
+                                  <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                                    <span className="text-xs" style={{
+                                      color: isOwn
+                                        ? 'rgba(255, 255, 255, 0.7)'
+                                        : '#6b7280'
+                                    }}>
+                                      {formatMessageTime(message.sent_at)}
+                                    </span>
+                                    {isOwn && renderReadReceipts(message)}
+                                  </div>
                                 </div>
                               </div>
+
+                              {/* Reaction picker - Mobile */}
+                              {showReactionPicker === message.id && (
+                                <div className={`absolute ${isOwn ? 'bottom-6 right-0' : 'bottom-6 left-0'} bg-white border border-gray-200 rounded-lg shadow-lg p-2 flex gap-1 z-50`}>
+                                  {['👍', '❤️', '😂', '😮', '😢', '😡', '👏'].map((emoji) => (
+                                    <button
+                                      key={emoji}
+                                      onClick={() => handleAddReaction(message.id, emoji)}
+                                      className="p-2 hover:bg-base-200 rounded transition-colors"
+                                      title={`React with ${emoji}`}
+                                    >
+                                      <span className="text-lg">{emoji}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+
+
+                              {/* Reactions - Mobile */}
+                              {message.reactions && message.reactions.length > 0 && (
+                                <div className={`flex flex-wrap gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                                  {Object.entries(getReactionsByEmoji(message.reactions)).map(([emoji, reactions]) => (
+                                    <button
+                                      key={emoji}
+                                      onClick={() => {
+                                        if (hasUserReacted(message.reactions, emoji)) {
+                                          handleRemoveReaction(message.id, emoji);
+                                        } else {
+                                          handleAddReaction(message.id, emoji);
+                                        }
+                                      }}
+                                      className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs border transition-colors ${hasUserReacted(message.reactions, emoji)
+                                        ? 'bg-blue-100 border-blue-300 text-blue-700'
+                                        : 'bg-gray-100 border-gray-200 text-gray-600 hover:bg-gray-200'
+                                        }`}
+                                    >
+                                      <span>{emoji}</span>
+                                      <span>{reactions.length}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
                             </div>
-
-                            {/* Reaction picker - Mobile */}
-                            {showReactionPicker === message.id && (
-                              <div className={`absolute ${isOwn ? 'bottom-6 right-0' : 'bottom-6 left-0'} bg-white border border-gray-200 rounded-lg shadow-lg p-2 flex gap-1 z-50`}>
-                                {['👍', '❤️', '😂', '😮', '😢', '😡', '👏'].map((emoji) => (
-                                  <button
-                                    key={emoji}
-                                    onClick={() => handleAddReaction(message.id, emoji)}
-                                    className="p-2 hover:bg-base-200 rounded transition-colors"
-                                    title={`React with ${emoji}`}
-                                  >
-                                    <span className="text-lg">{emoji}</span>
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-
-
-                            {/* Reactions - Mobile */}
-                            {message.reactions && message.reactions.length > 0 && (
-                              <div className={`flex flex-wrap gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                                {Object.entries(getReactionsByEmoji(message.reactions)).map(([emoji, reactions]) => (
-                                  <button
-                                    key={emoji}
-                                    onClick={() => {
-                                      if (hasUserReacted(message.reactions, emoji)) {
-                                        handleRemoveReaction(message.id, emoji);
-                                      } else {
-                                        handleAddReaction(message.id, emoji);
-                                      }
-                                    }}
-                                    className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs border transition-colors ${hasUserReacted(message.reactions, emoji)
-                                      ? 'bg-blue-100 border-blue-300 text-blue-700'
-                                      : 'bg-gray-100 border-gray-200 text-gray-600 hover:bg-gray-200'
-                                      }`}
-                                  >
-                                    <span>{emoji}</span>
-                                    <span>{reactions.length}</span>
-                                  </button>
-                                ))}
-                              </div>
-                            )}
                           </div>
-                        </div>
-                      )}
-                    </motion.div>
-                  );
-                })}
+                        )}
+                      </motion.div>
+                    );
+                  })}
                 </AnimatePresence>
               )}
 
@@ -9522,29 +9785,79 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           </div>
 
           {/* Main Media Display */}
-          <div className="flex-1 flex items-center justify-center relative p-4 pb-8">
+          <div className="flex-1 flex items-center justify-center relative bg-black" style={{ minHeight: 0, overflow: 'hidden', width: '100%', height: 'calc(100vh - 120px)' }}>
+            <style>{`
+              /* Glassy video controls styling */
+              video::-webkit-media-controls-panel {
+                background: rgba(255, 255, 255, 0.1) !important;
+                backdrop-filter: blur(10px) !important;
+                -webkit-backdrop-filter: blur(10px) !important;
+                border-radius: 12px !important;
+                padding: 8px !important;
+              }
+              
+              video::-webkit-media-controls-play-button,
+              video::-webkit-media-controls-volume-slider,
+              video::-webkit-media-controls-timeline,
+              video::-webkit-media-controls-current-time-display,
+              video::-webkit-media-controls-time-remaining-display,
+              video::-webkit-media-controls-fullscreen-button {
+                filter: brightness(0) invert(1) !important;
+                color: white !important;
+              }
+              
+              video::-webkit-media-controls-mute-button {
+                filter: brightness(0) invert(1) !important;
+              }
+              
+              /* Firefox video controls */
+              video::-moz-media-controls {
+                background: rgba(255, 255, 255, 0.1) !important;
+                backdrop-filter: blur(10px) !important;
+                border-radius: 12px !important;
+              }
+            `}</style>
             {conversationMedia[selectedMediaIndex]?.message_type === 'image' ||
               (conversationMedia[selectedMediaIndex]?.attachment_type &&
                 conversationMedia[selectedMediaIndex]?.attachment_type.startsWith('image/')) ? (
               <img
                 src={conversationMedia[selectedMediaIndex]?.attachment_url}
                 alt={conversationMedia[selectedMediaIndex]?.attachment_name}
-                className="max-w-full max-h-[calc(100vh-200px)] object-contain"
+                className="max-w-full max-h-full object-contain"
+                style={{ width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '100%' }}
               />
             ) : conversationMedia[selectedMediaIndex]?.attachment_type?.startsWith('video/') ? (
-              <video
-                src={conversationMedia[selectedMediaIndex]?.attachment_url}
-                controls={true}
-                className="max-w-full max-h-[calc(100vh-200px)] bg-gray-900"
-                autoPlay={true}
-                playsInline={true}
-                preload="auto"
-                onError={(e) => {
-                  console.error('Video load error in modal:', e);
-                  const target = e.target as HTMLVideoElement;
-                  target.style.display = 'none';
-                }}
-              />
+              <div style={{
+                width: '100%',
+                height: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: '#000',
+                overflow: 'hidden',
+              }}>
+                <video
+                  src={conversationMedia[selectedMediaIndex]?.attachment_url}
+                  controls={true}
+                  autoPlay={true}
+                  playsInline={true}
+                  preload="auto"
+                  style={{
+                    objectFit: 'contain',
+                    width: '100%',
+                    height: '100%',
+                    maxWidth: '100%',
+                    maxHeight: '100%',
+                    display: 'block',
+                    backgroundColor: '#000',
+                  }}
+                  onError={(e) => {
+                    console.error('Video load error in modal:', e);
+                    const target = e.target as HTMLVideoElement;
+                    target.style.display = 'none';
+                  }}
+                />
+              </div>
             ) : (
               <div className="text-center text-white">
                 <div className="w-32 h-32 mx-auto mb-4 bg-white/10 rounded-full flex items-center justify-center">

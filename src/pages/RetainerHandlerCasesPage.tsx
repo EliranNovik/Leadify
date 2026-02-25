@@ -331,6 +331,8 @@ const RetainerHandlerCasesPage: React.FC = () => {
             currency_id,
             language_id,
             phone,
+            mobile,
+            next_followup,
             accounting_currencies!leads_lead_currency_id_fkey (
               name,
               iso_code
@@ -798,10 +800,11 @@ const RetainerHandlerCasesPage: React.FC = () => {
         const hasPaymentPlan = legacyLeadsHasPaymentPlanMap.get(String(lead.id)) || false;
         const language = lead.language_id ? languageMap.get(lead.language_id) || null : null;
         const country = legacyCountryMap.get(lead.id) || null;
-        const country_id = null; // Legacy leads don't have country_id directly, we'll need to look it up if needed
+        const country_id = null;
         const phone = (lead as any).phone || null;
-        const mobile = null; // Legacy leads don't have mobile field
-        const next_followup = followUpsMap.get(String(lead.id)) || null;
+        const mobile = (lead as any).mobile || null;
+        // Use legacy lead's own next_followup field as fallback, then check follow_ups table
+        const next_followup = followUpsMap.get(String(lead.id)) || (lead as any).next_followup || null;
 
         return {
           id: String(lead.id),
@@ -810,8 +813,8 @@ const RetainerHandlerCasesPage: React.FC = () => {
           category,
           stage,
           stage_colour: stageColour,
-          assigned_date: lead.cdate,
-          applicants_count: lead.no_of_applicants,
+          assigned_date: lead.cdate || '',
+          applicants_count: lead.no_of_applicants != null ? parseInt(String(lead.no_of_applicants), 10) || null : null,
           value,
           currency,
           stageId: stageId, // Store numeric stage ID for filtering
@@ -1864,7 +1867,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
       <div className="min-h-screen bg-white flex items-center justify-center">
         <div className="text-center">
           <div className="loading loading-spinner loading-lg text-primary"></div>
-          <p className="mt-4 text-gray-600">Loading retainer handler cases...</p>
+          <p className="mt-4 text-gray-600">Loading retention cases...</p>
         </div>
       </div>
     );
@@ -1898,7 +1901,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
         <div className="max-w-full mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             <div className="flex items-center gap-4">
-              <h1 className="text-2xl font-bold text-gray-900">Retainer Handler Cases</h1>
+              <h1 className="text-2xl font-bold text-gray-900">Retention Cases</h1>
             </div>
           </div>
         </div>

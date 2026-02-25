@@ -47,6 +47,7 @@
     "luxon": "^3.6.1",
     "node-fetch": "^2.7.0",
     "opus-media-recorder": "^0.8.0",
+    "plyr": "^3.8.4",
     "postcss": "^8.4.38",
     "puppeteer": "^24.15.0",
     "react": "^18.2.0",

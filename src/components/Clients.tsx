@@ -1205,7 +1205,7 @@ const Clients: React.FC<ClientsProps> = ({
   const floatingNavBarAlwaysOpen = localStorage.getItem('floatingNavBarAlwaysOpen') === 'true';
   const [isTabBarCollapsed, setIsTabBarCollapsed] = useState(!floatingNavBarAlwaysOpen);
   const tabBarCollapseTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  
+
   // Cleanup timeout on unmount
   useEffect(() => {
     return () => {
@@ -1214,7 +1214,7 @@ const Clients: React.FC<ClientsProps> = ({
       }
     };
   }, []);
-  
+
   const [isStagesOpen, setIsStagesOpen] = useState(false);
   const [isActionsOpen, setIsActionsOpen] = useState(false);
   const [isBalanceModalOpen, setIsBalanceModalOpen] = useState(false);
@@ -2130,20 +2130,20 @@ const Clients: React.FC<ClientsProps> = ({
 
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
-      
+
       // Check if click is inside any dropdown container OR list container
       const dropdownRefs = [badgeStageDropdownRef, desktopStageDropdownRef, mobileStageDropdownRef];
       const listRefs = [badgeStageListRef, desktopStageListRef, mobileStageListRef];
       const clickedInsideDropdown = dropdownRefs.some(ref => ref.current?.contains(target));
       const clickedInsideList = listRefs.some(ref => ref.current?.contains(target));
-      
+
       // Also check if click is inside the overlay div (the rounded-2xl container)
       const isInsideOverlay = target?.closest('.rounded-2xl') !== null;
-      
+
       // Check if clicking on the badge button itself (should not close when clicking to open)
-      const isBadgeButton = target.closest('button')?.classList.contains('badge') || 
-                           target.classList.contains('badge');
-      
+      const isBadgeButton = target.closest('button')?.classList.contains('badge') ||
+        target.classList.contains('badge');
+
       // Only close if click is outside all containers and not on the badge button
       if (!clickedInsideDropdown && !clickedInsideList && !isInsideOverlay && !isBadgeButton) {
         setStageDropdownAnchor(null);
@@ -2433,7 +2433,7 @@ const Clients: React.FC<ClientsProps> = ({
   // Navigation handlers for timeline and history
   const getLeadIdentifier = () => {
     if (!selectedClient) return null;
-    
+
     const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
     if (isLegacy) {
       const clientId = selectedClient.id?.toString();
@@ -2928,6 +2928,7 @@ const Clients: React.FC<ClientsProps> = ({
             currency_id,
             closer_id,
             case_handler_id,
+            retainer_handler_id,
             vat,
             meeting_scheduler_id,
             meeting_manager_id,
@@ -3102,6 +3103,7 @@ const Clients: React.FC<ClientsProps> = ({
             meeting_manager_id: data.meeting_manager_id || null,
             meeting_lawyer_id: data.meeting_lawyer_id || null,
             expert_id: data.expert_id || null,
+            retainer_handler_id: data.retainer_handler_id || null,
             description: data.description || null,
             description_last_edited_by: data.description_last_edited_by || null,
             description_last_edited_at: data.description_last_edited_at || null,
@@ -3698,6 +3700,7 @@ const Clients: React.FC<ClientsProps> = ({
                   meeting_manager_id: legacyLead.meeting_manager_id || null,
                   meeting_lawyer_id: legacyLead.meeting_lawyer_id || null,
                   expert_id: legacyLead.expert_id || null,
+                  retainer_handler_id: legacyLead.retainer_handler_id || null,
                   vat: (legacyLead as any).vat || null,
                   potential_total: legacyLead.potential_total || null,
                   description: legacyLead.description || null,
@@ -10829,7 +10832,7 @@ const Clients: React.FC<ClientsProps> = ({
               .select('id', { count: 'exact', head: true })
               .eq('master_id', masterId)
               .not('master_id', 'is', null);
-            
+
             if (error) {
               console.error('Error counting legacy sub-leads:', error);
             } else {
@@ -10849,14 +10852,14 @@ const Clients: React.FC<ClientsProps> = ({
                 .from('leads')
                 .select('id', { count: 'exact', head: true })
                 .eq('master_id', masterId);
-              
+
               if (error) {
                 console.error('Error counting new sub-leads:', error);
               } else {
                 count = subLeadsCount || 0;
-                console.log('🔍 Master sub-leads count (new, using master_id):', { 
-                  masterId, 
-                  masterLeadNumber, 
+                console.log('🔍 Master sub-leads count (new, using master_id):', {
+                  masterId,
+                  masterLeadNumber,
                   count,
                   selectedClientId: selectedClient?.id
                 });
@@ -10868,14 +10871,14 @@ const Clients: React.FC<ClientsProps> = ({
             // Fallback: Try to find master by lead_number
             console.log('🔍 No master_id found, trying to find master by lead_number:', masterLeadNumber);
             let masterLead: any = null;
-            
+
             // Try lead_number exact match
             const { data: masterByLeadNumber } = await supabase
               .from('leads')
               .select('id')
               .eq('lead_number', masterLeadNumber)
               .maybeSingle();
-            
+
             if (masterByLeadNumber) {
               masterLead = masterByLeadNumber;
             } else {
@@ -10885,7 +10888,7 @@ const Clients: React.FC<ClientsProps> = ({
                 .select('id')
                 .eq('lead_number', `${masterLeadNumber}/1`)
                 .maybeSingle();
-              
+
               if (masterByLeadNumberWithSuffix) {
                 masterLead = masterByLeadNumberWithSuffix;
               } else {
@@ -10895,7 +10898,7 @@ const Clients: React.FC<ClientsProps> = ({
                   .select('id')
                   .eq('manual_id', masterLeadNumber)
                   .maybeSingle();
-                
+
                 if (masterByManualId) {
                   masterLead = masterByManualId;
                 }
@@ -10907,20 +10910,20 @@ const Clients: React.FC<ClientsProps> = ({
                 .from('leads')
                 .select('id', { count: 'exact', head: true })
                 .eq('master_id', masterLead.id);
-              
+
               if (error) {
                 console.error('Error counting new sub-leads (fallback):', error);
               } else {
                 count = subLeadsCount || 0;
-                console.log('🔍 Master sub-leads count (new, fallback):', { 
-                  masterLeadId: masterLead.id, 
-                  masterLeadNumber, 
+                console.log('🔍 Master sub-leads count (new, fallback):', {
+                  masterLeadId: masterLead.id,
+                  masterLeadNumber,
                   count
                 });
               }
             } else {
-              console.warn('🔍 Could not find master lead for:', { 
-                masterLeadNumber, 
+              console.warn('🔍 Could not find master lead for:', {
+                masterLeadNumber,
                 selectedClientMasterId: selectedClient?.master_id,
                 selectedClientId: selectedClient?.id
               });
@@ -11886,7 +11889,7 @@ const Clients: React.FC<ClientsProps> = ({
         if (parentLeadData?.master_id && String(parentLeadData.master_id).trim() !== '') {
           // Parent is a sub-lead - use its master_id as the parent
           parentMasterId = Number(parentLeadData.master_id);
-          
+
           // Fetch the master lead's data to get its manual_id for masterBaseNumber
           const { data: masterLeadData, error: masterLeadError } = await supabase
             .from('leads_lead')
@@ -11913,7 +11916,7 @@ const Clients: React.FC<ClientsProps> = ({
         } else {
           // Parent is a master lead or standalone lead (no master_id) - use parent's ID as master_id
           parentMasterId = parentLegacyId;
-          
+
           // Calculate masterBaseNumber from parent's manual_id
           if (parentLeadData?.manual_id) {
             const parentManualId = String(parentLeadData.manual_id).trim();
@@ -11942,11 +11945,11 @@ const Clients: React.FC<ClientsProps> = ({
         if (parentLeadData?.master_id && String(parentLeadData.master_id).trim() !== '') {
           // Parent is a sub-lead - use the master_id as the parent
           parentMasterIdForNew = parentLeadData.master_id;
-          
+
           // Check if master_id is a UUID format (for new leads, id is UUID)
           const masterIdStr = String(parentLeadData.master_id).trim();
           const isUuidFormat = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(masterIdStr);
-          
+
           let masterLeadData: any = null;
           let masterLeadError: any = null;
 
@@ -11962,14 +11965,14 @@ const Clients: React.FC<ClientsProps> = ({
           } else {
             // master_id is numeric - try multiple strategies to find the master lead
             let result: any = { data: null, error: null };
-            
+
             // Strategy 1: Try by manual_id (exact match)
             result = await supabase
               .from('leads')
               .select('id, lead_number, manual_id')
               .eq('manual_id', masterIdStr)
               .maybeSingle();
-            
+
             if (result.error || !result.data) {
               // Strategy 2: Try by lead_number (exact match)
               result = await supabase
@@ -11978,7 +11981,7 @@ const Clients: React.FC<ClientsProps> = ({
                 .eq('lead_number', masterIdStr)
                 .maybeSingle();
             }
-            
+
             if (result.error || !result.data) {
               // Strategy 3: Try by lead_number base (without /X suffix)
               const numericId = masterIdStr.replace(/\/\d+$/, ''); // Remove /X suffix if present
@@ -11990,7 +11993,7 @@ const Clients: React.FC<ClientsProps> = ({
                   .maybeSingle();
               }
             }
-            
+
             if (result.error || !result.data) {
               // Strategy 4: Try by manual_id that starts with the numeric value
               result = await supabase
@@ -11999,7 +12002,7 @@ const Clients: React.FC<ClientsProps> = ({
                 .like('manual_id', `${masterIdStr}%`)
                 .maybeSingle();
             }
-            
+
             if (result.error || !result.data) {
               // Strategy 5: Try by lead_number that starts with the numeric value
               result = await supabase
@@ -12008,10 +12011,10 @@ const Clients: React.FC<ClientsProps> = ({
                 .like('lead_number', `${masterIdStr}%`)
                 .maybeSingle();
             }
-            
+
             masterLeadData = result.data;
             masterLeadError = result.error;
-            
+
             // If still not found, log for debugging
             if (!masterLeadData && !masterLeadError) {
               console.warn('Master lead not found with numeric master_id:', {
@@ -12021,7 +12024,7 @@ const Clients: React.FC<ClientsProps> = ({
               });
             }
           }
-          
+
           // Update parentMasterIdForNew to use the actual UUID id of the master lead
           if (masterLeadData?.id) {
             parentMasterIdForNew = masterLeadData.id;
@@ -12039,8 +12042,8 @@ const Clients: React.FC<ClientsProps> = ({
             // The parent is a sub-lead, so its lead_number should have the format "BASE/X"
             if (parentLeadData?.lead_number) {
               const parentLeadNumber = String(parentLeadData.lead_number).trim();
-              const baseFromParent = parentLeadNumber.includes('/') 
-                ? parentLeadNumber.split('/')[0] 
+              const baseFromParent = parentLeadNumber.includes('/')
+                ? parentLeadNumber.split('/')[0]
                 : parentLeadNumber;
               masterBaseNumber = baseFromParent;
               console.warn('Master lead not found, using base number from parent lead_number:', {
@@ -12050,8 +12053,8 @@ const Clients: React.FC<ClientsProps> = ({
               });
             } else if (parentLeadData?.manual_id) {
               const parentManualId = String(parentLeadData.manual_id).trim();
-              const baseFromParent = parentManualId.includes('/') 
-                ? parentManualId.split('/')[0] 
+              const baseFromParent = parentManualId.includes('/')
+                ? parentManualId.split('/')[0]
                 : parentManualId;
               masterBaseNumber = baseFromParent;
               console.warn('Master lead not found, using base number from parent manual_id:', {
@@ -12143,8 +12146,8 @@ const Clients: React.FC<ClientsProps> = ({
 
       // For legacy leads, master_id should be the parent's master_id (which is the parent's ID if it's a master lead)
       // For new leads, if parent was a sub-lead, use the master lead's ID; otherwise use extracted digits or base number
-      const masterIdValue = isLegacyParent 
-        ? parentMasterId 
+      const masterIdValue = isLegacyParent
+        ? parentMasterId
         : (parentMasterIdForNew !== null ? parentMasterIdForNew : (extractDigits(masterBaseNumber) ?? masterBaseNumber));
 
       // For sub-leads, use form's category_id first (user may have changed it), then fall back to master lead
@@ -12380,7 +12383,7 @@ const Clients: React.FC<ClientsProps> = ({
         // Fetch master lead's source_id and language_id for legacy leads
         let masterSourceId: number | null = null;
         let masterLanguageId: number | null = null;
-        
+
         // Fetch master lead data to get source_id and language_id
         const { data: masterLeadDataForLegacy, error: masterLeadErrorForLegacy } = await supabase
           .from('leads_lead')
@@ -12398,7 +12401,7 @@ const Clients: React.FC<ClientsProps> = ({
 
         // For language_id: Use user's selection if they chose one in the drawer, otherwise use master lead's language_id
         let finalLanguageId: number | null = masterLanguageId;
-        
+
         if (subLeadForm.language && subLeadForm.language.trim() !== '') {
           // User selected a language in the drawer - convert language name to language_id
           const { data: languageData, error: languageError } = await supabase
@@ -12515,16 +12518,16 @@ const Clients: React.FC<ClientsProps> = ({
         let existingContactId: number | null = null;
         let existingRelationshipId: number | null = null;
         let finalContactId: number | undefined = undefined;
-        
+
         if (!isLegacyParent) {
           // For new leads, check if trigger already created a contact
           const { data: existingRelationship } = await supabase
             .from('lead_leadcontact')
             .select('id, contact_id')
             .eq('newlead_id', insertedLeadId)
-          .limit(1)
+            .limit(1)
             .maybeSingle();
-          
+
           if (existingRelationship?.contact_id) {
             existingContactId = existingRelationship.contact_id;
             existingRelationshipId = existingRelationship.id;
@@ -12622,13 +12625,13 @@ const Clients: React.FC<ClientsProps> = ({
         // Check if a contact was already created by the database trigger
         // The trigger automatically creates a contact when a new lead is inserted
         let finalRelationshipId: number | null = null;
-        
+
         if (existingContactId) {
           // Update the existing contact created by the trigger with complete information
           console.log('🔍 Updating existing trigger-created contact with complete data:', existingContactId);
           finalContactId = existingContactId;
           finalRelationshipId = existingRelationshipId;
-          
+
           const updateData: Record<string, any> = {
             name: contactName,
             mobile: contactMobile,
@@ -12637,12 +12640,12 @@ const Clients: React.FC<ClientsProps> = ({
             country_id: contactCountryId,
             udate: currentDate
           };
-          
+
           const { error: updateError } = await supabase
             .from('leads_contact')
             .update(updateData)
             .eq('id', existingContactId);
-          
+
           if (updateError) {
             console.error('Error updating existing contact:', updateError);
             // Fall through to create new contact if update fails
@@ -12650,14 +12653,14 @@ const Clients: React.FC<ClientsProps> = ({
           } else {
             console.log('✅ Successfully updated existing contact with complete data');
           }
-          
+
           // Ensure the existing relationship is marked as main
           if (finalRelationshipId) {
             const { error: updateMainError } = await supabase
               .from('lead_leadcontact')
               .update({ main: 'true' })
               .eq('id', finalRelationshipId);
-            
+
             if (updateMainError) {
               console.error('Error updating relationship to main:', updateMainError);
             }
@@ -12665,36 +12668,36 @@ const Clients: React.FC<ClientsProps> = ({
         } else {
           // No existing contact found, create a new one
           console.log('🔍 Creating new contact (no trigger-created contact found)');
-          
-          // Insert the first contact - let the database sequence handle the ID
-        const contactInsertData: Record<string, any> = {
-          name: contactName,
-          mobile: contactMobile,
-          phone: contactPhone,
-          email: contactEmail,
-          country_id: contactCountryId,
-          cdate: currentDate,
-          udate: currentDate
-        };
 
-        // For new leads, add newlead_id; for legacy leads, don't add it
-        if (!isLegacyParent) {
-          contactInsertData.newlead_id = insertedLeadId;
-        }
+          // Insert the first contact - let the database sequence handle the ID
+          const contactInsertData: Record<string, any> = {
+            name: contactName,
+            mobile: contactMobile,
+            phone: contactPhone,
+            email: contactEmail,
+            country_id: contactCountryId,
+            cdate: currentDate,
+            udate: currentDate
+          };
+
+          // For new leads, add newlead_id; for legacy leads, don't add it
+          if (!isLegacyParent) {
+            contactInsertData.newlead_id = insertedLeadId;
+          }
 
           // Insert and get the created contact ID back
           const { data: insertedContact, error: contactError } = await supabase
-          .from('leads_contact')
+            .from('leads_contact')
             .insert([contactInsertData])
             .select('id')
             .single();
 
-        if (contactError) {
+          if (contactError) {
             // If duplicate key error, the trigger probably created the contact
             // Try to find it and use it instead
             if (contactError.code === '23505') {
               console.log('🔍 Duplicate key error - trigger may have created contact, searching for it...');
-              
+
               if (!isLegacyParent) {
                 // Try to find the contact created by the trigger
                 const { data: triggerContact } = await supabase
@@ -12703,12 +12706,12 @@ const Clients: React.FC<ClientsProps> = ({
                   .eq('newlead_id', insertedLeadId)
                   .limit(1)
                   .maybeSingle();
-                
+
                 if (triggerContact?.contact_id) {
                   console.log('🔍 Found trigger-created contact:', triggerContact.contact_id);
                   finalContactId = triggerContact.contact_id;
                   finalRelationshipId = triggerContact.id;
-                  
+
                   // Update the trigger-created contact with complete information
                   const updateData: Record<string, any> = {
                     name: contactName,
@@ -12718,12 +12721,12 @@ const Clients: React.FC<ClientsProps> = ({
                     country_id: contactCountryId,
                     udate: currentDate
                   };
-                  
+
                   const { error: updateError } = await supabase
                     .from('leads_contact')
                     .update(updateData)
                     .eq('id', finalContactId);
-                  
+
                   if (updateError) {
                     console.error('Error updating trigger-created contact:', updateError);
                   } else {
@@ -12736,12 +12739,12 @@ const Clients: React.FC<ClientsProps> = ({
                 console.error('Error creating contact (duplicate key for legacy lead):', contactError);
               }
             } else {
-          console.error('Error creating contact:', contactError);
+              console.error('Error creating contact:', contactError);
               // Continue even if contact creation fails - don't exit, let the function complete
             }
           } else if (insertedContact) {
             finalContactId = insertedContact.id;
-          
+
             // Check if a relationship already exists (trigger may have created it)
             let existingRel: any = null;
             if (!isLegacyParent) {
@@ -12752,10 +12755,10 @@ const Clients: React.FC<ClientsProps> = ({
                 .eq('contact_id', finalContactId)
                 .maybeSingle();
               existingRel = relData;
-        } else {
+            } else {
               const { data: relData } = await supabase
-            .from('lead_leadcontact')
-            .select('id')
+                .from('lead_leadcontact')
+                .select('id')
                 .eq('lead_id', insertedLeadId)
                 .eq('contact_id', finalContactId)
                 .maybeSingle();
@@ -12766,40 +12769,40 @@ const Clients: React.FC<ClientsProps> = ({
               // Relationship already exists, update it to mark as main
               console.log('🔍 Relationship already exists, updating it:', existingRel.id);
               finalRelationshipId = existingRel.id;
-              
+
               const { error: updateRelError } = await supabase
                 .from('lead_leadcontact')
                 .update({ main: 'true' })
                 .eq('id', existingRel.id);
-              
+
               if (updateRelError) {
                 console.error('Error updating relationship:', updateRelError);
               }
             } else {
               // Create the relationship - let the database sequence handle the ID
-          const relationshipData: Record<string, any> = {
+              const relationshipData: Record<string, any> = {
                 contact_id: finalContactId,
-            main: true
-          };
+                main: true
+              };
 
-          // For new leads, use newlead_id; for legacy leads, use lead_id
-          if (isLegacyParent) {
-            relationshipData.lead_id = insertedLeadId;
-          } else {
-            relationshipData.newlead_id = insertedLeadId;
-          }
+              // For new leads, use newlead_id; for legacy leads, use lead_id
+              if (isLegacyParent) {
+                relationshipData.lead_id = insertedLeadId;
+              } else {
+                relationshipData.newlead_id = insertedLeadId;
+              }
 
               const { data: insertedRelationship, error: relationshipError } = await supabase
-            .from('lead_leadcontact')
+                .from('lead_leadcontact')
                 .insert([relationshipData])
                 .select('id')
                 .single();
 
-          if (relationshipError) {
+              if (relationshipError) {
                 // If duplicate key error, try to find the existing relationship
                 if (relationshipError.code === '23505') {
                   console.log('🔍 Duplicate key error for relationship, searching for existing one...');
-                  
+
                   if (!isLegacyParent) {
                     const { data: relData } = await supabase
                       .from('lead_leadcontact')
@@ -12807,7 +12810,7 @@ const Clients: React.FC<ClientsProps> = ({
                       .eq('newlead_id', insertedLeadId)
                       .eq('contact_id', finalContactId)
                       .maybeSingle();
-                    
+
                     if (relData) {
                       finalRelationshipId = relData.id;
                       // Update it to mark as main
@@ -12823,7 +12826,7 @@ const Clients: React.FC<ClientsProps> = ({
                       .eq('lead_id', insertedLeadId)
                       .eq('contact_id', finalContactId)
                       .maybeSingle();
-                    
+
                     if (relData) {
                       finalRelationshipId = relData.id;
                       // Update it to mark as main
@@ -12834,7 +12837,7 @@ const Clients: React.FC<ClientsProps> = ({
                     }
                   }
                 } else {
-            console.error('Error creating contact relationship:', relationshipError);
+                  console.error('Error creating contact relationship:', relationshipError);
                 }
               } else if (insertedRelationship) {
                 finalRelationshipId = insertedRelationship.id;
@@ -12842,106 +12845,106 @@ const Clients: React.FC<ClientsProps> = ({
             }
           }
         }
-        
+
         // Use finalContactId for contract copying logic below
         // For 'sameContract' step, copy the contract to the new sub-lead
         if (subLeadStep === 'sameContract' && selectedContractId && finalContactId) {
-            try {
-              console.log('🔍 Copying contract to sub-lead:', { selectedContractId, insertedLeadId, finalContactId });
-              
-              // Check if this is a legacy contract (starts with 'legacy_')
-              const isLegacyContract = selectedContractId.startsWith('legacy_');
-              
-              if (isLegacyContract) {
-                // For legacy contracts, fetch from lead_leadcontact
-                const legacyContractId = selectedContractId.replace('legacy_', '');
-                const { data: legacyContract, error: legacyError } = await supabase
+          try {
+            console.log('🔍 Copying contract to sub-lead:', { selectedContractId, insertedLeadId, finalContactId });
+
+            // Check if this is a legacy contract (starts with 'legacy_')
+            const isLegacyContract = selectedContractId.startsWith('legacy_');
+
+            if (isLegacyContract) {
+              // For legacy contracts, fetch from lead_leadcontact
+              const legacyContractId = selectedContractId.replace('legacy_', '');
+              const { data: legacyContract, error: legacyError } = await supabase
+                .from('lead_leadcontact')
+                .select('contract_html, signed_contract_html, public_token')
+                .eq('id', legacyContractId)
+                .single();
+
+              if (legacyError) {
+                console.error('Error fetching legacy contract:', legacyError);
+                toast.error('Failed to copy contract. Please try again.');
+              } else if (legacyContract) {
+                // Copy the contract HTML to the new contact's lead_leadcontact record
+                // Find the relationship record we just created
+                const { data: relationshipRecord } = await supabase
                   .from('lead_leadcontact')
-                  .select('contract_html, signed_contract_html, public_token')
-                  .eq('id', legacyContractId)
+                  .select('id')
+                  .eq('contact_id', finalContactId)
+                  .eq(isLegacyParent ? 'lead_id' : 'newlead_id', insertedLeadId)
                   .single();
-                
-                if (legacyError) {
-                  console.error('Error fetching legacy contract:', legacyError);
-                  toast.error('Failed to copy contract. Please try again.');
-                } else if (legacyContract) {
-                  // Copy the contract HTML to the new contact's lead_leadcontact record
-                  // Find the relationship record we just created
-                  const { data: relationshipRecord } = await supabase
+
+                if (relationshipRecord) {
+                  const { error: updateError } = await supabase
                     .from('lead_leadcontact')
-                    .select('id')
-                    .eq('contact_id', finalContactId)
-                    .eq(isLegacyParent ? 'lead_id' : 'newlead_id', insertedLeadId)
-                    .single();
-                  
-                  if (relationshipRecord) {
-                    const { error: updateError } = await supabase
-                      .from('lead_leadcontact')
-                      .update({
-                        contract_html: legacyContract.contract_html,
-                        signed_contract_html: legacyContract.signed_contract_html,
-                        public_token: legacyContract.public_token
-                      })
-                      .eq('id', relationshipRecord.id);
-                    
-                    if (updateError) {
-                      console.error('Error copying legacy contract:', updateError);
-                      toast.error('Failed to copy contract. Please try again.');
-                    } else {
-                      console.log('✅ Legacy contract copied successfully');
-                    }
-                  }
-                }
-              } else {
-                // For new contracts, fetch from contracts table and create a copy
-                // Note: New contracts don't have contract_html or signed_contract_html columns
-                // They use templates and client_inputs instead
-                const { data: originalContract, error: contractError } = await supabase
-                  .from('contracts')
-                  .select('template_id, applicant_count, total_amount, status, signed_at, client_country, custom_pricing, client_inputs, contact_name, contact_email, contact_phone, contact_mobile')
-                  .eq('id', selectedContractId)
-                  .single();
-                
-                if (contractError) {
-                  console.error('Error fetching contract:', contractError);
-                  toast.error('Failed to copy contract. Please try again.');
-                } else if (originalContract) {
-                  // Create a new contract record for the sub-lead
-                  // For new contracts, we copy the template and client inputs, not HTML
-                  const newContractData: Record<string, any> = {
-                    client_id: insertedLeadId, // New sub-lead's ID
-                    contact_id: finalContactId, // New contact's ID
-                    template_id: originalContract.template_id,
-                    applicant_count: originalContract.applicant_count,
-                    total_amount: originalContract.total_amount,
-                    status: originalContract.status,
-                    signed_at: originalContract.signed_at,
-                    client_country: originalContract.client_country,
-                    custom_pricing: originalContract.custom_pricing,
-                    client_inputs: originalContract.client_inputs, // Copy client inputs (text fields, signatures, etc.)
-                    contact_name: originalContract.contact_name,
-                    contact_email: originalContract.contact_email,
-                    contact_phone: originalContract.contact_phone,
-                    contact_mobile: originalContract.contact_mobile,
-                    created_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString()
-                  };
-                  
-                  const { error: insertError } = await supabase
-                    .from('contracts')
-                    .insert([newContractData]);
-                  
-                  if (insertError) {
-                    console.error('Error copying contract:', insertError);
+                    .update({
+                      contract_html: legacyContract.contract_html,
+                      signed_contract_html: legacyContract.signed_contract_html,
+                      public_token: legacyContract.public_token
+                    })
+                    .eq('id', relationshipRecord.id);
+
+                  if (updateError) {
+                    console.error('Error copying legacy contract:', updateError);
                     toast.error('Failed to copy contract. Please try again.');
                   } else {
-                    console.log('✅ Contract copied successfully to sub-lead');
+                    console.log('✅ Legacy contract copied successfully');
                   }
                 }
               }
-            } catch (error) {
-              console.error('Error in contract copying logic:', error);
-              toast.error('Failed to copy contract. Please try again.');
+            } else {
+              // For new contracts, fetch from contracts table and create a copy
+              // Note: New contracts don't have contract_html or signed_contract_html columns
+              // They use templates and client_inputs instead
+              const { data: originalContract, error: contractError } = await supabase
+                .from('contracts')
+                .select('template_id, applicant_count, total_amount, status, signed_at, client_country, custom_pricing, client_inputs, contact_name, contact_email, contact_phone, contact_mobile')
+                .eq('id', selectedContractId)
+                .single();
+
+              if (contractError) {
+                console.error('Error fetching contract:', contractError);
+                toast.error('Failed to copy contract. Please try again.');
+              } else if (originalContract) {
+                // Create a new contract record for the sub-lead
+                // For new contracts, we copy the template and client inputs, not HTML
+                const newContractData: Record<string, any> = {
+                  client_id: insertedLeadId, // New sub-lead's ID
+                  contact_id: finalContactId, // New contact's ID
+                  template_id: originalContract.template_id,
+                  applicant_count: originalContract.applicant_count,
+                  total_amount: originalContract.total_amount,
+                  status: originalContract.status,
+                  signed_at: originalContract.signed_at,
+                  client_country: originalContract.client_country,
+                  custom_pricing: originalContract.custom_pricing,
+                  client_inputs: originalContract.client_inputs, // Copy client inputs (text fields, signatures, etc.)
+                  contact_name: originalContract.contact_name,
+                  contact_email: originalContract.contact_email,
+                  contact_phone: originalContract.contact_phone,
+                  contact_mobile: originalContract.contact_mobile,
+                  created_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString()
+                };
+
+                const { error: insertError } = await supabase
+                  .from('contracts')
+                  .insert([newContractData]);
+
+                if (insertError) {
+                  console.error('Error copying contract:', insertError);
+                  toast.error('Failed to copy contract. Please try again.');
+                } else {
+                  console.log('✅ Contract copied successfully to sub-lead');
+                }
+              }
+            }
+          } catch (error) {
+            console.error('Error in contract copying logic:', error);
+            toast.error('Failed to copy contract. Please try again.');
           }
         }
       }
@@ -13153,7 +13156,7 @@ const Clients: React.FC<ClientsProps> = ({
               const manualId = selectedClient.manual_id ? String(selectedClient.manual_id) : null;
               const leadNumber = selectedClient.lead_number ? String(selectedClient.lead_number) : null;
               const isSubLead = leadNumber && leadNumber.includes('/');
-              
+
               // For new leads with sub-leads, use manual_id in path and lead_number in query
               if (isSubLead && manualId && selectedClient.lead_type !== 'legacy') {
                 const route = `/clients/${encodeURIComponent(manualId)}?lead=${encodeURIComponent(leadNumber)}`;
@@ -13628,123 +13631,123 @@ const Clients: React.FC<ClientsProps> = ({
 
                 {/* Desktop View - Full layout with tab navigation */}
                 <div className="hidden md:flex items-center justify-center gap-4 flex-wrap">
-                    {/* Left side: Lead number, name, and duplicate contact badge */}
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="flex items-center gap-3 min-w-0 flex-wrap">
-                        <span className="text-lg font-bold text-base-content whitespace-nowrap">
-                          #{getDisplayLeadNumber(selectedClient)}
-                        </span>
-                        <span className="text-lg font-semibold text-base-content/90 truncate">
-                          {selectedClient.name || 'Unnamed Lead'}
-                        </span>
-                        {/* Duplicate Contact Badge - Icon and Number Only */}
-                        {duplicateContacts.length > 0 && (
-                          <div className="relative">
-                            {duplicateContacts.length === 1 ? (
+                  {/* Left side: Lead number, name, and duplicate contact badge */}
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex items-center gap-3 min-w-0 flex-wrap">
+                      <span className="text-lg font-bold text-base-content whitespace-nowrap">
+                        #{getDisplayLeadNumber(selectedClient)}
+                      </span>
+                      <span className="text-lg font-semibold text-base-content/90 truncate">
+                        {selectedClient.name || 'Unnamed Lead'}
+                      </span>
+                      {/* Duplicate Contact Badge - Icon and Number Only */}
+                      {duplicateContacts.length > 0 && (
+                        <div className="relative">
+                          {duplicateContacts.length === 1 ? (
+                            <button
+                              onClick={() => setIsDuplicateModalOpen(true)}
+                              className="btn btn-circle btn-warning btn-sm relative"
+                              title={`Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`}
+                            >
+                              <DocumentDuplicateIcon className="w-5 h-5" />
+                              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                                1
+                              </span>
+                            </button>
+                          ) : (
+                            <div className="relative">
                               <button
-                                onClick={() => setIsDuplicateModalOpen(true)}
+                                onClick={() => setIsDuplicateDropdownOpen(!isDuplicateDropdownOpen)}
                                 className="btn btn-circle btn-warning btn-sm relative"
-                                title={`Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`}
+                                title={`${duplicateContacts.length} Duplicate Contacts`}
                               >
                                 <DocumentDuplicateIcon className="w-5 h-5" />
                                 <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                                  1
+                                  {duplicateContacts.length > 9 ? '9+' : duplicateContacts.length}
                                 </span>
                               </button>
-                            ) : (
-                              <div className="relative">
-                                <button
-                                  onClick={() => setIsDuplicateDropdownOpen(!isDuplicateDropdownOpen)}
-                                  className="btn btn-circle btn-warning btn-sm relative"
-                                  title={`${duplicateContacts.length} Duplicate Contacts`}
-                                >
-                                  <DocumentDuplicateIcon className="w-5 h-5" />
-                                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                                    {duplicateContacts.length > 9 ? '9+' : duplicateContacts.length}
-                                  </span>
-                                </button>
-                                {isDuplicateDropdownOpen && (
-                                  <div className="absolute top-full left-0 mt-2 bg-base-100 rounded-lg shadow-xl border border-base-300 z-50 min-w-[300px] max-h-96 overflow-y-auto">
-                                    {duplicateContacts.map((dup, idx) => (
-                                      <div
-                                        key={`${dup.contactId}-${dup.leadId}-${idx}`}
-                                        className="p-3 border-b border-base-300 hover:bg-base-200 cursor-pointer"
-                                        onClick={() => {
-                                          navigate(`/clients/${dup.leadNumber}`);
-                                          setIsDuplicateDropdownOpen(false);
-                                        }}
-                                      >
-                                        <div className="font-semibold text-base-content">{dup.contactName}</div>
-                                        <div className="text-sm text-base-content/80">Lead {dup.leadNumber}: {dup.leadName}</div>
-                                        <div className="flex items-center gap-2 mt-1 flex-wrap">
-                                          {dup.stage && (
-                                            <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
-                                              Stage: {dup.stage}
-                                            </span>
-                                          )}
-                                          {dup.category && (
-                                            <span className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded">
-                                              {dup.category}
-                                            </span>
-                                          )}
-                                        </div>
-                                        <div className="text-xs text-base-content/70 mt-1">
-                                          Matches: {dup.matchingFields.join(', ')}
-                                        </div>
+                              {isDuplicateDropdownOpen && (
+                                <div className="absolute top-full left-0 mt-2 bg-base-100 rounded-lg shadow-xl border border-base-300 z-50 min-w-[300px] max-h-96 overflow-y-auto">
+                                  {duplicateContacts.map((dup, idx) => (
+                                    <div
+                                      key={`${dup.contactId}-${dup.leadId}-${idx}`}
+                                      className="p-3 border-b border-base-300 hover:bg-base-200 cursor-pointer"
+                                      onClick={() => {
+                                        navigate(`/clients/${dup.leadNumber}`);
+                                        setIsDuplicateDropdownOpen(false);
+                                      }}
+                                    >
+                                      <div className="font-semibold text-base-content">{dup.contactName}</div>
+                                      <div className="text-sm text-base-content/80">Lead {dup.leadNumber}: {dup.leadName}</div>
+                                      <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                        {dup.stage && (
+                                          <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
+                                            Stage: {dup.stage}
+                                          </span>
+                                        )}
+                                        {dup.category && (
+                                          <span className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded">
+                                            {dup.category}
+                                          </span>
+                                        )}
                                       </div>
-                                    ))}
-                                    <div className="p-3 border-t border-gray-200 bg-gray-50">
-                                      <button
-                                        onClick={() => {
-                                          setIsDuplicateModalOpen(true);
-                                          setIsDuplicateDropdownOpen(false);
-                                        }}
-                                        className="w-full text-sm font-semibold text-orange-600 hover:text-orange-700"
-                                      >
-                                        View All Details
-                                      </button>
+                                      <div className="text-xs text-base-content/70 mt-1">
+                                        Matches: {dup.matchingFields.join(', ')}
+                                      </div>
                                     </div>
+                                  ))}
+                                  <div className="p-3 border-t border-gray-200 bg-gray-50">
+                                    <button
+                                      onClick={() => {
+                                        setIsDuplicateModalOpen(true);
+                                        setIsDuplicateDropdownOpen(false);
+                                      }}
+                                      className="w-full text-sm font-semibold text-orange-600 hover:text-orange-700"
+                                    >
+                                      View All Details
+                                    </button>
                                   </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
+                  </div>
 
-                    {/* Middle: Case is not active Badge with reason */}
-                    {(() => {
-                      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                      // Only show unactivated badge for new leads (not legacy leads)
-                      const isUnactivated = !isLegacy && (selectedClient.status === 'inactive');
-                      if (!isUnactivated) return null;
+                  {/* Middle: Case is not active Badge with reason */}
+                  {(() => {
+                    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                    // Only show unactivated badge for new leads (not legacy leads)
+                    const isUnactivated = !isLegacy && (selectedClient.status === 'inactive');
+                    if (!isUnactivated) return null;
 
-                      // Get unactivation reason
-                      let unactivationReason = selectedClient.unactivation_reason;
-                      if (isLegacy && !unactivationReason) {
-                        const reasonId = (selectedClient as any).reason_id;
-                        if (reasonId) {
-                          const reasonFromId = getUnactivationReasonFromId(reasonId);
-                          if (reasonFromId) {
-                            unactivationReason = reasonFromId;
-                          }
+                    // Get unactivation reason
+                    let unactivationReason = selectedClient.unactivation_reason;
+                    if (isLegacy && !unactivationReason) {
+                      const reasonId = (selectedClient as any).reason_id;
+                      if (reasonId) {
+                        const reasonFromId = getUnactivationReasonFromId(reasonId);
+                        if (reasonFromId) {
+                          unactivationReason = reasonFromId;
                         }
                       }
+                    }
 
-                      return (
-                        <div className="flex items-center gap-2 flex-shrink-0">
-                          <div className="badge badge-lg px-4 py-2 bg-red-100 text-red-800 border border-red-300 font-semibold">
-                            Case unactivated
-                            {unactivationReason && (
-                              <span className="ml-2 text-xs font-normal">
-                                ({unactivationReason})
-                              </span>
-                            )}
-                          </div>
+                    return (
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <div className="badge badge-lg px-4 py-2 bg-red-100 text-red-800 border border-red-300 font-semibold">
+                          Case unactivated
+                          {unactivationReason && (
+                            <span className="ml-2 text-xs font-normal">
+                              ({unactivationReason})
+                            </span>
+                          )}
                         </div>
-                      );
-                    })()}
+                      </div>
+                    );
+                  })()}
 
                 </div>
               </div>
@@ -14073,87 +14076,87 @@ const Clients: React.FC<ClientsProps> = ({
                 }}
                 className="relative py-2 px-2 -my-2 -mx-2"
               >
-              {isTabBarCollapsed ? (
-                // Collapsed state: Single circle with active tab icon
-                <button
-                  className="bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-full shadow-2xl border-2 border-white/20 w-14 h-14 flex items-center justify-center transition-all duration-300 ease-in-out hover:scale-110"
-                  title="Hover to expand"
-                  style={{
-                    animation: 'fadeInScale 0.3s ease-in-out'
-                  }}
-                >
-                  <div className="relative inline-flex items-center justify-center">
-                    {(() => {
-                      const activeTabData = tabs.find(tab => tab.id === activeTab);
-                      const ActiveIcon = activeTabData?.icon || InformationCircleIcon;
-                      return <ActiveIcon className="w-6 h-6" style={{ animation: 'fadeInScale 0.5s ease-in-out 0.1s both' }} />;
-                    })()}
-                    {(() => {
-                      const activeTabData = tabs.find(tab => tab.id === activeTab);
-                      if (activeTabData?.id === 'interactions' && activeTabData?.badge) {
-                        return (
-                          <div
-                            className="absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap bg-white/20 text-white"
-                            style={{ animation: 'fadeInScale 0.4s ease-in-out 0.2s both', minWidth: '1.25rem' }}
-                          >
-                            {activeTabData.badge}
-                          </div>
-                        );
-                      }
-                      return null;
-                    })()}
-                  </div>
-                </button>
-              ) : (
-                // Expanded state: Full tab bar
-                <div className="flex items-center gap-2 transition-all duration-300 ease-in-out">
-                  <div
-                    ref={desktopTabsRef}
-                    className="bg-white/10 dark:bg-gray-800/10 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/15 dark:border-gray-700/15 px-4 py-3 overflow-x-auto scrollbar-hide transition-all duration-300 ease-in-out"
+                {isTabBarCollapsed ? (
+                  // Collapsed state: Single circle with active tab icon
+                  <button
+                    className="bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-full shadow-2xl border-2 border-white/20 w-14 h-14 flex items-center justify-center transition-all duration-300 ease-in-out hover:scale-110"
+                    title="Hover to expand"
                     style={{
-                      borderRadius: '9999px',
-                      maxWidth: '95vw',
-                      animation: 'expandWidth 0.3s ease-in-out'
+                      animation: 'fadeInScale 0.3s ease-in-out'
                     }}
                   >
-                    <div className="flex items-center gap-2" style={{ scrollBehavior: 'smooth' }}>
-                      {tabs.map((tab, index) => (
-                        <button
-                          key={tab.id}
-                          className={`relative flex flex-col items-center justify-center gap-1 px-4 py-3 rounded-full font-semibold text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
-                            ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg'
-                            : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50/50 dark:hover:bg-gray-700/50'
-                            }`}
-                          style={{
-                            animation: `fadeInSlide 0.3s ease-out ${index * 0.03}s both`
-                          }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveTab(tab.id);
-                          }}
-                        >
-                          <div className="relative inline-flex items-center justify-center">
-                            <tab.icon className={`w-5 h-5 flex-shrink-0 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
-                            {tab.id === 'interactions' && tab.badge && (
-                              <div className={`absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap ${activeTab === tab.id
-                                ? 'bg-white/20 text-white'
-                                : 'bg-purple-100 text-purple-700'
-                                }`} style={{ minWidth: '1.25rem' }}>
-                                {tab.badge}
-                              </div>
-                            )}
-                          </div>
-                          <span className={`saira-light font-bold text-xs ${activeTab === tab.id ? 'text-white' : 'text-gray-600'}`}>{tab.label}</span>
-                          {activeTab === tab.id && (
-                            <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
-                          )}
-                        </button>
-                      ))}
+                    <div className="relative inline-flex items-center justify-center">
+                      {(() => {
+                        const activeTabData = tabs.find(tab => tab.id === activeTab);
+                        const ActiveIcon = activeTabData?.icon || InformationCircleIcon;
+                        return <ActiveIcon className="w-6 h-6" style={{ animation: 'fadeInScale 0.5s ease-in-out 0.1s both' }} />;
+                      })()}
+                      {(() => {
+                        const activeTabData = tabs.find(tab => tab.id === activeTab);
+                        if (activeTabData?.id === 'interactions' && activeTabData?.badge) {
+                          return (
+                            <div
+                              className="absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap bg-white/20 text-white"
+                              style={{ animation: 'fadeInScale 0.4s ease-in-out 0.2s both', minWidth: '1.25rem' }}
+                            >
+                              {activeTabData.badge}
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
                     </div>
-                  </div>
+                  </button>
+                ) : (
+                  // Expanded state: Full tab bar
+                  <div className="flex items-center gap-2 transition-all duration-300 ease-in-out">
+                    <div
+                      ref={desktopTabsRef}
+                      className="bg-white/10 dark:bg-gray-800/10 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/15 dark:border-gray-700/15 px-4 py-3 overflow-x-auto scrollbar-hide transition-all duration-300 ease-in-out"
+                      style={{
+                        borderRadius: '9999px',
+                        maxWidth: '95vw',
+                        animation: 'expandWidth 0.3s ease-in-out'
+                      }}
+                    >
+                      <div className="flex items-center gap-2" style={{ scrollBehavior: 'smooth' }}>
+                        {tabs.map((tab, index) => (
+                          <button
+                            key={tab.id}
+                            className={`relative flex flex-col items-center justify-center gap-1 px-4 py-3 rounded-full font-semibold text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
+                              ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg'
+                              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50/50 dark:hover:bg-gray-700/50'
+                              }`}
+                            style={{
+                              animation: `fadeInSlide 0.3s ease-out ${index * 0.03}s both`
+                            }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveTab(tab.id);
+                            }}
+                          >
+                            <div className="relative inline-flex items-center justify-center">
+                              <tab.icon className={`w-5 h-5 flex-shrink-0 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
+                              {tab.id === 'interactions' && tab.badge && (
+                                <div className={`absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap ${activeTab === tab.id
+                                  ? 'bg-white/20 text-white'
+                                  : 'bg-purple-100 text-purple-700'
+                                  }`} style={{ minWidth: '1.25rem' }}>
+                                  {tab.badge}
+                                </div>
+                              )}
+                            </div>
+                            <span className={`saira-light font-bold text-xs ${activeTab === tab.id ? 'text-white' : 'text-gray-600'}`}>{tab.label}</span>
+                            {activeTab === tab.id && (
+                              <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
 
-                </div>
-              )}
+                  </div>
+                )}
               </div>
             </div>
           </div>

@@ -6,6 +6,9 @@ export default defineConfig({
   define: {
     global: 'globalThis',
   },
+  optimizeDeps: {
+    include: ['plyr'],
+  },
   server: {
     allowedHosts: [
       'localhost',

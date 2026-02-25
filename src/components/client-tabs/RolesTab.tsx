@@ -225,7 +225,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
         { id: 'expert', title: 'Expert', assignee: '---', fieldName: 'expert', legacyFieldName: 'expert_id' },
         { id: 'closer', title: 'Closer', assignee: '---', fieldName: 'closer', legacyFieldName: 'closer_id' },
         { id: 'handler', title: 'Handler', assignee: '---', fieldName: 'handler', legacyFieldName: 'case_handler_id' },
-        { id: 'retainer_handler', title: 'Retainer Handler', assignee: '---', fieldName: 'retainer_handler', legacyFieldName: 'retainer_handler_id' },
+        { id: 'retainer_handler', title: 'Retention Handler', assignee: '---', fieldName: 'retainer_handler', legacyFieldName: 'retainer_handler_id' },
       ];
     }
 
@@ -341,7 +341,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
       },
       {
         id: 'retainer_handler',
-        title: 'Retainer Handler',
+        title: 'Retention Handler',
         assignee: isLegacyLead
           ? getEmployeeDisplayName((client as any).retainer_handler_id, employeesToUse)
           : getEmployeeDisplayName((client as any).retainer_handler_id, employeesToUse) || '---',
@@ -525,26 +525,28 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
 
   const handleSaveRoles = async () => {
     try {
+      // Use the best available employee list (prop takes priority, falls back to local state)
+      const employeesToSearch = (allEmployeesProp && allEmployeesProp.length > 0) ? allEmployeesProp : allEmployees;
+
       // Helper function to convert display name back to employee ID
       const getEmployeeIdFromDisplayName = (displayName: string) => {
         if (displayName === '---' || !displayName || displayName.trim() === '') return null;
 
         // Try exact match first
-        let employee = allEmployees.find((emp: any) =>
+        let employee = employeesToSearch.find((emp: any) =>
           emp.display_name && emp.display_name.trim() === displayName.trim()
         );
 
         // If not found, try case-insensitive match
         if (!employee) {
-          employee = allEmployees.find((emp: any) =>
+          employee = employeesToSearch.find((emp: any) =>
             emp.display_name && emp.display_name.trim().toLowerCase() === displayName.trim().toLowerCase()
           );
         }
 
         if (!employee) {
           console.warn(`Employee not found for display name: "${displayName}"`);
-          console.log('Available employees:', allEmployees.map((e: any) => e.display_name).filter(Boolean));
-          console.log('All employees data:', allEmployees);
+          console.log('Available employees:', employeesToSearch.map((e: any) => e.display_name).filter(Boolean));
           return null;
         }
 
