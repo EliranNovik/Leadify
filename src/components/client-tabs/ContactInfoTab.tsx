@@ -1,4 +1,5 @@
-import React, { useState, useEffect, Fragment, useMemo, useRef } from 'react';
+import React, { useState, useEffect, Fragment, useMemo, useRef, startTransition } from 'react';
+import { usePersistedState } from '../../hooks/usePersistedState';
 import { ClientTabProps } from '../../types/client';
 import { UserIcon, PhoneIcon, EnvelopeIcon, PlusIcon, MinusIcon, DocumentTextIcon, XMarkIcon, PencilSquareIcon, CheckIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
@@ -378,8 +379,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   });
 
 
-  const [contactContracts, setContactContracts] = useState<{ [id: number]: { id: string; name: string; status: string; signed_at?: string; isLegacy?: boolean; contractHtml?: string; signedContractHtml?: string; public_token?: string } | null }>({});
+  // Persist contracts in sessionStorage so they don't reload when switching tabs
+  const [contactContracts, setContactContracts] = usePersistedState<{ [id: number]: { id: string; name: string; status: string; signed_at?: string; isLegacy?: boolean; contractHtml?: string; signedContractHtml?: string; public_token?: string } | null }>(
+    `contactContracts_${client?.id}`,
+    {},
+    { storage: 'sessionStorage' }
+  );
   const [contractTemplates, setContractTemplates] = useState<ContractTemplate[]>([]);
+
   const [viewingContract, setViewingContract] = useState<{ id: string; mode: 'view' | 'edit'; contractHtml?: string; signedContractHtml?: string; status?: string; public_token?: string; signed_at?: string } | null>(null);
 
   // State for 'View as Client' mode in contract modal
@@ -769,22 +776,71 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     return mainContact?.id ?? null;
   }, [contacts]);
 
+  // Track if we've already fetched contracts for this client to prevent double-fetching
+  const contractsFetchedRef = useRef<Set<string>>(new Set());
+  
   // Fetch contracts for each contact
   useEffect(() => {
-    if (!client?.id || contacts.length === 0) return;
+    if (!client?.id || contacts.length === 0) {
+      return;
+    }
+    
+    const clientKey = `${client.id}_${contacts.map(c => c.id).sort().join(',')}`;
+    
+    // Check if we already have contracts loaded for this client (from persisted state)
+    const hasContracts = Object.keys(contactContracts).length > 0;
+    const allContactsCovered = contacts.every(contact => contact.id in contactContracts);
+    
+    // If we've already fetched for this exact client+contacts combo, skip
+    if (contractsFetchedRef.current.has(clientKey)) {
+      // Just ensure all contacts are in the map (don't fetch again)
+      if (!allContactsCovered) {
+        setContactContracts(prev => {
+          const updated = { ...prev };
+          let needsUpdate = false;
+          contacts.forEach(contact => {
+            if (!(contact.id in updated)) {
+              updated[contact.id] = null;
+              needsUpdate = true;
+            }
+          });
+          return needsUpdate ? updated : prev;
+        });
+      }
+      return;
+    }
+    
+    // If we have contracts from persisted state and all contacts are covered, mark as fetched and skip
+    if (hasContracts && allContactsCovered) {
+      contractsFetchedRef.current.add(clientKey);
+      return;
+    }
+    
+    // Mark as fetching to prevent duplicate fetches
+    contractsFetchedRef.current.add(clientKey);
+    
+    // Only initialize missing contacts, don't clear existing ones
+    setContactContracts(prev => {
+      const updated = { ...prev };
+      let needsUpdate = false;
+      contacts.forEach(contact => {
+        if (!(contact.id in updated)) {
+          updated[contact.id] = null;
+          needsUpdate = true;
+        }
+      });
+      return needsUpdate ? updated : prev;
+    });
+    
     let mounted = true;
     (async () => {
       try {
-        console.log('🔍 Fetching contracts for client:', client.id, 'main contact ID:', mainContactId);
-
         // Check if this is a legacy lead
         const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-        console.log('🔍 Is legacy lead:', isLegacyLead);
 
         if (isLegacyLead) {
           // For legacy leads, fetch contracts from lead_leadcontact table
           const legacyId = client.id.toString().replace('legacy_', '');
-          console.log('🔍 Legacy ID:', legacyId);
 
           // Fetch legacy contracts from lead_leadcontact table (include public_token)
           const { data: legacyContracts, error: legacyError } = await supabase
@@ -800,8 +856,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             `)
             .eq('lead_id', legacyId);
 
-          console.log('🔍 Legacy contracts query result:', { data: legacyContracts, error: legacyError });
-
           if (legacyError) {
             console.error('❌ Error fetching legacy contracts:', legacyError);
           }
@@ -812,8 +866,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             .select('*')
             .eq('legacy_id', legacyId)
             .order('created_at', { ascending: false });
-
-          console.log('🔍 New contracts query result:', { data: newContracts, error: newError });
 
           if (newError) {
             console.error('❌ Error fetching new contracts for legacy lead:', newError);
@@ -830,19 +882,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
             // Process legacy contracts - assign to the specific contact they belong to
             if (legacyContracts) {
-              console.log('🔍 Processing legacy contracts:', legacyContracts);
               legacyContracts.forEach((legacyContract: any) => {
-                console.log('🔍 Processing legacy contract:', legacyContract);
                 const hasContractHtml = legacyContract.contract_html && legacyContract.contract_html.trim() !== '';
                 const hasSignedContract = legacyContract.signed_contract_html &&
                   legacyContract.signed_contract_html.trim() !== '' &&
                   legacyContract.signed_contract_html !== '\\N';
 
-                console.log('🔍 Contract status check:', { hasContractHtml, hasSignedContract, contact_id: legacyContract.contact_id });
-
                 if (hasContractHtml || hasSignedContract) {
                   const status = hasSignedContract ? 'signed' : 'draft';
-                  console.log('🔍 Setting contract status to:', status);
 
                   // Assign to the specific contact this contract belongs to
                   const targetContactId = legacyContract.contact_id;
@@ -862,7 +909,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           signedContractHtml: legacyContract.signed_contract_html,
                           public_token: legacyContract.public_token
                         };
-                        console.log('🔍 Added legacy contract to contact:', targetContactId, contactContractsMap[targetContactId]);
                       }
                     }
                   }
@@ -872,7 +918,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
             // Process new contracts - assign to the specific contact they belong to
             if (newContracts) {
-              console.log('🔍 Processing new contracts:', newContracts);
               newContracts.forEach((contract: any) => {
                 const targetContactId = contract.contact_id;
                 if (targetContactId) {
@@ -888,22 +933,36 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         signed_at: contract.signed_at,
                         isLegacy: false
                       };
-                      console.log('🔍 Added new contract to contact:', targetContactId, contactContractsMap[targetContactId]);
                     }
                   }
                 }
               });
             }
 
-            console.log('🔍 Final contact contracts map:', contactContractsMap);
-            setContactContracts(contactContractsMap);
-
-            // Set most recent contract for backward compatibility
-            const allContracts = [...(legacyContracts || []), ...(newContracts || [])];
-            if (allContracts.length > 0) {
-              setMostRecentContract(allContracts[0]);
-            } else {
-              setMostRecentContract(null);
+            // Batch state updates to prevent flickering using startTransition
+            // Merge with existing contracts to preserve any that might have been set
+            if (mounted) {
+              startTransition(() => {
+                setContactContracts(prev => {
+                  const merged = { ...prev };
+                  // Update with fetched contracts, but preserve any existing contracts that aren't being replaced
+                  Object.keys(contactContractsMap).forEach(contactId => {
+                    const contactIdNum = Number(contactId);
+                    // Only update if we have a new contract or if we're explicitly setting to null
+                    if (contactContractsMap[contactIdNum] !== null || !prev[contactIdNum]) {
+                      merged[contactIdNum] = contactContractsMap[contactIdNum];
+                    }
+                  });
+                  return merged;
+                });
+                // Set most recent contract for backward compatibility
+                const allContracts = [...(legacyContracts || []), ...(newContracts || [])];
+                if (allContracts.length > 0) {
+                  setMostRecentContract(allContracts[0]);
+                } else {
+                  setMostRecentContract(null);
+                }
+              });
             }
           }
         } else {
@@ -917,9 +976,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             .eq('client_id', client.id) // Only fetch contracts for this specific lead
             .order('created_at', { ascending: false });
 
-          if (error) throw error;
+          if (error) {
+            console.error('Error fetching contracts:', error);
+            throw error;
+          }
 
           if (mounted && data) {
+
             // Initialize all contacts with no contract
             const contactContractsMap: { [id: number]: { id: string; name: string; status: string; signed_at?: string } | null } = {};
             contacts.forEach(contact => {
@@ -927,58 +990,95 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             });
 
             // Assign contracts to their specific contacts based on contact_id
-            data.forEach((contract: any) => {
+            // Since contracts are ordered by created_at descending, we assign the first (most recent) contract for each contact
+            data.forEach((contract: any, index: number) => {
+
               const targetContactId = contract.contact_id;
+              let assigned = false;
+
               if (targetContactId) {
                 const targetContact = contacts.find(c => c.id === targetContactId);
+                
                 if (targetContact) {
-                  // Only assign if this contact doesn't already have a contract, or if this is more recent/signed
+                  // Assign the first contract we encounter for this contact (most recent due to ordering)
+                  // If a signed contract comes later, it will replace a draft (but since we order by created_at desc, signed should come first if it exists)
                   const existingContract = contactContractsMap[targetContactId];
-                  const shouldAssign = !existingContract ||
-                    (contract.signed_at && !existingContract.signed_at) ||
-                    (contract.created_at && existingContract.signed_at && new Date(contract.created_at) > new Date(existingContract.signed_at || ''));
+                  const shouldAssign = !existingContract || 
+                    (contract.signed_at && !existingContract.signed_at); // Prefer signed over draft
 
                   if (shouldAssign) {
+                    const contractName = contractTemplates.find(t => t.id === contract.template_id)?.name || 'Contract';
                     contactContractsMap[targetContactId] = {
                       id: contract.id,
-                      name: contractTemplates.find(t => t.id === contract.template_id)?.name || 'Contract',
+                      name: contractName,
                       status: contract.status,
                       signed_at: contract.signed_at
                     };
-                    console.log('🔍 Assigned contract to contact:', targetContactId, contactContractsMap[targetContactId]);
+                    assigned = true;
                   }
                 }
-              } else {
-                // If contact_id is null, assign to main contact (backward compatibility)
+              }
+
+              // If contact_id is null OR contact_id doesn't match any contact, assign to main contact (backward compatibility)
+              if (!assigned) {
                 const mainContact = contacts.find(c => c.isMain);
-                if (mainContact && !contactContractsMap[mainContact.id]) {
-                  contactContractsMap[mainContact.id] = {
-                    id: contract.id,
-                    name: contractTemplates.find(t => t.id === contract.template_id)?.name || 'Contract',
-                    status: contract.status,
-                    signed_at: contract.signed_at
-                  };
-                  console.log('🔍 Assigned contract without contact_id to main contact:', mainContact.id);
+                
+                if (mainContact) {
+                  const existingContract = contactContractsMap[mainContact.id];
+                  const shouldAssign = !existingContract || 
+                    (contract.signed_at && !existingContract.signed_at); // Prefer signed over draft
+
+                  if (shouldAssign) {
+                    const contractName = contractTemplates.find(t => t.id === contract.template_id)?.name || 'Contract';
+                    contactContractsMap[mainContact.id] = {
+                      id: contract.id,
+                      name: contractName,
+                      status: contract.status,
+                      signed_at: contract.signed_at
+                    };
+                    assigned = true;
+                  }
                 }
               }
             });
 
-            setContactContracts(contactContractsMap);
-
-            // Set most recent contract for backward compatibility
-            if (data.length > 0) {
-              setMostRecentContract(data[0]);
-            } else {
-              setMostRecentContract(null);
+            // Batch state updates to prevent flickering using startTransition
+            // Merge with existing contracts to preserve any that might have been set
+            if (mounted) {
+              startTransition(() => {
+                setContactContracts(prev => {
+                  const merged = { ...prev };
+                  // Update with fetched contracts, but preserve any existing contracts that aren't being replaced
+                  Object.keys(contactContractsMap).forEach(contactId => {
+                    const contactIdNum = Number(contactId);
+                    // Only update if we have a new contract or if we're explicitly setting to null
+                    if (contactContractsMap[contactIdNum] !== null || !prev[contactIdNum]) {
+                      merged[contactIdNum] = contactContractsMap[contactIdNum];
+                    }
+                  });
+                  return merged;
+                });
+                // Set most recent contract for backward compatibility
+                if (data.length > 0) {
+                  setMostRecentContract(data[0]);
+                } else {
+                  setMostRecentContract(null);
+                }
+              });
             }
           }
         }
       } catch (error) {
         console.error('❌ Error fetching contracts:', error);
+        // Remove from fetched set on error so we can retry
+        if (client?.id && contacts.length > 0) {
+          const clientKey = `${client.id}_${contacts.map(c => c.id).sort().join(',')}`;
+          contractsFetchedRef.current.delete(clientKey);
+        }
       }
     })();
     return () => { mounted = false; };
-  }, [client?.id, mainContactId, contractTemplates]); // Re-fetch when main contact changes
+  }, [client?.id, mainContactId]); // Re-fetch when client or main contact changes (contracts are persisted in sessionStorage)
 
   // Fetch country codes and countries from database
   useEffect(() => {
@@ -1146,16 +1246,12 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   // Update contacts when client data changes
   useEffect(() => {
     const fetchContacts = async () => {
-      console.log('🔍 Fetching contacts for client:', client?.id);
-
       // Check if this is a legacy lead
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-      console.log('🔍 Is legacy lead:', isLegacyLead);
 
       if (isLegacyLead) {
         // For legacy leads, fetch contacts from leads_contact and lead_leadcontact tables
         const legacyId = client.id.toString().replace('legacy_', '');
-        console.log('🔍 Legacy ID for contacts:', legacyId);
 
         try {
           // Process contacts from lead_leadcontact and leads_contact tables
@@ -1176,19 +1272,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             `)
             .eq('lead_id', legacyId);
 
-          console.log('🔍 Lead contacts query result:', { data: leadContacts, error: leadContactsError });
-
           if (leadContactsError) {
             console.error('❌ Error fetching legacy lead contacts:', leadContactsError);
             return;
           }
 
           if (leadContacts && leadContacts.length > 0) {
-            console.log('🔍 Processing lead contacts:', leadContacts);
-
             // Get all contact IDs
             const contactIds = leadContacts.map((lc: any) => lc.contact_id).filter(Boolean);
-            console.log('🔍 Contact IDs found:', contactIds);
 
             if (contactIds.length > 0) {
               // Fetch contact details from leads_contact table
@@ -1197,7 +1288,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 .select('id, name, mobile, phone, email, notes, address, additional_phones, additional_emails, country_id')
                 .in('id', contactIds);
 
-              console.log('🔍 Contacts query result:', { data: contacts, error: contactsError });
 
               if (contactsError) {
                 console.error('❌ Error fetching contact details:', contactsError);
@@ -1252,7 +1342,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 // If we need to mark the first contact as main, update the database
                 if (shouldTreatFirstAsMain && leadContacts.length > 0) {
                   const firstLeadContact = leadContacts[0];
-                  console.log('🔍 Auto-marking single contact as main in database:', firstLeadContact.contact_id);
 
                   // Update the database to mark this contact as main
                   const { error: updateError } = await supabase
@@ -1273,11 +1362,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 }
 
                 leadContacts.forEach((leadContact: any, index: number) => {
-                  console.log('🔍 Processing lead contact:', leadContact);
 
                   const contact = contacts.find((c: any) => c.id === leadContact.contact_id);
                   if (contact) {
-                    console.log('🔍 Contact details found:', contact);
 
                     // Check if this is marked as main in the lead_leadcontact table
                     // After database update, this will reflect the updated value
@@ -1300,7 +1387,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       isMain: isMainContact,
                     };
 
-                    console.log('🔍 Created contact entry:', contactEntry);
                     contactEntries.push(contactEntry);
                   }
                 });
@@ -1310,7 +1396,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
           // If no contacts were found in the database, create a fallback main contact from client data
           if (contactEntries.length === 0) {
-            console.log('🔍 No contacts found in database, creating fallback main contact');
             const fallbackContact: ContactEntry = {
               id: 1,
               name: client.name || '---',
@@ -1321,7 +1406,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             };
             contactEntries.push(fallbackContact);
           } else {
-            console.log('🔍 Found', contactEntries.length, 'contacts in database, no fallback needed');
           }
 
           // Remove duplicates by ID before sorting, merging data to keep the most complete version
@@ -1357,7 +1441,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             return a.id - b.id;
           });
 
-          console.log('🔍 Final contacts list (deduplicated):', uniqueContacts);
           setContacts(uniqueContacts);
 
         } catch (error) {
@@ -1377,7 +1460,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         // For new leads, fetch contacts from leads_contact and lead_leadcontact tables using newlead_id
         try {
           const newLeadId = client.id; // UUID for new leads
-          console.log('🔍 New lead ID for contacts:', newLeadId);
 
           // Process contacts from lead_leadcontact and leads_contact tables
           const contactEntries: ContactEntry[] = [];
@@ -1393,7 +1475,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             `)
             .eq('newlead_id', newLeadId);
 
-          console.log('🔍 New lead contacts query result:', { data: leadContacts, error: leadContactsError });
 
           if (leadContactsError) {
             console.error('❌ Error fetching new lead contacts:', leadContactsError);
@@ -1424,7 +1505,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 .select('id, name, mobile, phone, email, notes, address, additional_phones, additional_emails, country_id')
                 .in('id', contactIds);
 
-              console.log('🔍 Contacts query result:', { data: contacts, error: contactsError });
 
               if (contactsError) {
                 console.error('❌ Error fetching contact details:', contactsError);
@@ -1488,7 +1568,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 // If we need to mark the first contact as main, update the database
                 if (shouldTreatFirstAsMain && leadContacts.length > 0) {
                   const firstLeadContact = leadContacts[0];
-                  console.log('🔍 Auto-marking single contact as main in database:', firstLeadContact.contact_id);
 
                   // Update the database to mark this contact as main
                   const { error: updateError } = await supabase
@@ -1509,11 +1588,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 }
 
                 leadContacts.forEach((leadContact: any, index: number) => {
-                  console.log('🔍 Processing lead contact:', leadContact);
 
                   const contact = contacts.find((c: any) => c.id === leadContact.contact_id);
                   if (contact) {
-                    console.log('🔍 Contact details found:', contact);
 
                     // Mark as main if:
                     // 1. This is the one we determined should be main (mainContactId), OR
@@ -1534,7 +1611,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       isMain: isMainContact,
                     };
 
-                    console.log('🔍 Created contact entry:', contactEntry);
                     contactEntries.push(contactEntry);
                   }
                 });
@@ -1756,7 +1832,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               }
             }
           } else {
-            console.log('🔍 Found', contactEntries.length, 'contacts in database, no fallback needed');
           }
 
           // Remove duplicates by ID before sorting, merging data to keep the most complete version
@@ -1792,7 +1867,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             return a.id - b.id;
           });
 
-          console.log('🔍 Final contacts list (deduplicated):', uniqueContacts);
           setContacts(uniqueContacts);
 
         } catch (error) {
@@ -5375,7 +5449,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       const savedHtml = data.contract_html;
 
                       // Update the contactContracts state immediately to reflect the saved changes
+                      console.log('🔍 [CONTRACT DEBUG] Saving legacy contract - Updating state for contract:', viewingContract.id);
                       setContactContracts(prev => {
+                        console.log('🔍 [CONTRACT DEBUG] Saving legacy contract - Current contracts before update:', prev);
                         const updated = { ...prev };
                         // Find which contact has this contract and update it
                         Object.keys(updated).forEach(contactIdStr => {
@@ -5391,10 +5467,11 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               signedContractHtml: data.signed_contract_html || contract.signedContractHtml,
                               status: hasSignedContract ? 'signed' : 'draft',
                             };
-                            console.log('✅ Updated contactContracts state for contact:', contactId);
-                            console.log('✅ Updated contract HTML length:', savedHtml.length);
+                            console.log('🔍 [CONTRACT DEBUG] ✅ Updated contactContracts state for contact:', contactId, updated[contactId]);
+                            console.log('🔍 [CONTRACT DEBUG] ✅ Updated contract HTML length:', savedHtml.length);
                           }
                         });
+                        console.log('🔍 [CONTRACT DEBUG] Saving legacy contract - Updated contracts:', updated);
                         return updated;
                       });
 

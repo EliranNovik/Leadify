@@ -5517,64 +5517,64 @@ const ContractPage: React.FC = () => {
                     </div> */}
 
                     {/* Share button */}
-                    <button
+                      <button
                       className="btn btn-circle btn-ghost"
-                      onClick={handleShareContractLink}
-                      title="Copy public contract link"
-                    >
+                        onClick={handleShareContractLink}
+                        title="Copy public contract link"
+                      >
                       <ShareIcon className="w-6 h-6 text-black" />
-                    </button>
+                      </button>
 
                     {!editing && status === 'draft' && (
-                      <button
+                        <button
                         className="btn btn-circle btn-ghost"
-                        onClick={() => {
-                          setEditing(true);
-                          // Focus editor after entering edit mode
-                          setTimeout(() => {
-                            if (editor) {
-                              editor.commands.focus();
-                            }
-                          }, 100);
-                        }}
+                          onClick={() => {
+                            setEditing(true);
+                            // Focus editor after entering edit mode
+                            setTimeout(() => {
+                              if (editor) {
+                                editor.commands.focus();
+                              }
+                            }, 100);
+                          }}
                         title="Edit"
-                      >
+                        >
                         <PencilIcon className="w-6 h-6 text-black" />
-                      </button>
+                        </button>
                     )}
 
                     {editing && (
                       <>
-                        <button
+                          <button
                           className="btn btn-circle btn-success"
-                          onClick={handleSaveEdit}
+                            onClick={handleSaveEdit}
                           title="Save"
-                        >
-                          <CheckIcon className="w-6 h-6" />
-                        </button>
-                        <button
+                          >
+                            <CheckIcon className="w-6 h-6" />
+                          </button>
+                          <button
                           className="btn btn-circle btn-error"
-                          onClick={async () => {
-                            setEditing(false);
-                            // Reload contract content to discard changes without full page reload
-                            if (contract?.id && editor) {
-                              const { data: contractData } = await supabase
-                                .from('contracts')
-                                .select('*, contract_templates(*)')
-                                .eq('id', contract.id)
-                                .single();
-                              if (contractData) {
-                                // Update contract state - this will trigger the useEffect to reprocess content
-                                setContract(contractData);
-                                // Force content reprocessing by incrementing renderKey
-                                setRenderKey(prev => prev + 1);
+                            onClick={async () => {
+                              setEditing(false);
+                              // Reload contract content to discard changes without full page reload
+                              if (contract?.id && editor) {
+                                const { data: contractData } = await supabase
+                                  .from('contracts')
+                                  .select('*, contract_templates(*)')
+                                  .eq('id', contract.id)
+                                  .single();
+                                if (contractData) {
+                                  // Update contract state - this will trigger the useEffect to reprocess content
+                                  setContract(contractData);
+                                  // Force content reprocessing by incrementing renderKey
+                                  setRenderKey(prev => prev + 1);
+                                }
                               }
-                            }
-                          }}
+                            }}
                           title="Cancel"
-                        >
-                          <XMarkIcon className="w-6 h-6" />
-                        </button>
+                          >
+                            <XMarkIcon className="w-6 h-6" />
+                          </button>
                       </>
                     )}
                   </div>
@@ -5749,7 +5749,7 @@ const ContractPage: React.FC = () => {
 
                     {/* Call and Email Icons - Directly under value badge */}
                     <div className="flex items-center gap-2 pt-2">
-                      {/* Call Icon */}
+                    {/* Call Icon */}
                       <button
                         onClick={async () => {
                           if (!client) return;
@@ -5777,7 +5777,7 @@ const ContractPage: React.FC = () => {
                         <PhoneIcon className="w-6 h-6 text-black" />
                       </button>
 
-                      {/* Email Icon */}
+                    {/* Email Icon */}
                       <button
                         onClick={async () => {
                           if (!client) return;
@@ -6429,39 +6429,39 @@ const ContractPage: React.FC = () => {
                 )}
               </div>
             </div>
-          </div>
+              </div>
 
           {/* Desktop: Keep original styling */}
           <div className="hidden sm:block">
             <div className="backdrop-blur-md bg-white/95 rounded-2xl shadow-lg border border-white/20 px-4 py-3">
               <div className="flex items-center justify-between gap-4 flex-wrap">
-                {/* Desktop: Created Date, Change Template Button, Delete Button */}
+              {/* Desktop: Created Date, Change Template Button, Delete Button */}
                 <div className="flex items-center gap-4 flex-wrap">
-                  <div className="flex items-center gap-2">
-                    <CalendarIcon className="w-4 h-4 text-gray-500" />
-                    <p className="text-xs sm:text-sm text-gray-600">
-                      {new Date(contract.created_at).toLocaleDateString()}
-                    </p>
-                  </div>
-                  {status === 'draft' && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowChangeTemplateModal(true);
-                      }}
+                <div className="flex items-center gap-2">
+                  <CalendarIcon className="w-4 h-4 text-gray-500" />
+                  <p className="text-xs sm:text-sm text-gray-600">
+                    {new Date(contract.created_at).toLocaleDateString()}
+                  </p>
+                </div>
+                {status === 'draft' && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowChangeTemplateModal(true);
+                    }}
                       className="btn btn-circle btn-ghost"
                       title="Change Template"
-                    >
-                      <ClipboardDocumentIcon className="w-5 h-5 text-black" />
-                    </button>
-                  )}
-                  <button
-                    onClick={handleDeleteContract}
-                    className="btn btn-circle btn-error"
-                    title="Delete Contract"
                   >
-                    <TrashIcon className="w-5 h-5" />
+                      <ClipboardDocumentIcon className="w-5 h-5 text-black" />
                   </button>
+                )}
+                <button
+                  onClick={handleDeleteContract}
+                    className="btn btn-circle btn-error"
+                  title="Delete Contract"
+                >
+                    <TrashIcon className="w-5 h-5" />
+                </button>
                 </div>
               </div>
             </div>

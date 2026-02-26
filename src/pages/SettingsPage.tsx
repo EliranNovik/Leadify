@@ -355,6 +355,9 @@ const SettingsPage: React.FC = () => {
 
     localStorage.setItem('theme', theme);
 
+    // Dispatch custom event to notify components of theme change
+    window.dispatchEvent(new CustomEvent('themechange', { detail: { theme, isAlt } }));
+
     // Debug log to help troubleshoot theme issues
     console.log('Theme applied:', theme, {
       isDark,

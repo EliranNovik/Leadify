@@ -134,6 +134,8 @@ interface RMQMessage {
 // Mock notifications removed - now using only RMQ messages
 
 const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat, isMenuOpen, onOpenEmailThread, onOpenWhatsApp, onOpenMessaging }) => {
+  // Check if alternative (green) theme is active - make it reactive
+  const [isAltTheme, setIsAltTheme] = useState(() => document.documentElement.classList.contains('theme-alt'));
   const location = useLocation();
   const navigate = useNavigate();
   const { sendNotificationForNewMessage } = usePushNotifications();
@@ -231,6 +233,42 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const resolvingStageIdsRef = useRef<Promise<void> | null>(null);
 
   const unreadCount = rmqUnreadCount + (isSuperUser ? whatsappLeadsUnreadCount : 0) + assignmentNotifications.length + (isSuperUser ? emailLeadUnreadCount : 0);
+
+  // Reactive theme detection
+  useEffect(() => {
+    const checkTheme = () => {
+      const hasThemeAlt = document.documentElement.classList.contains('theme-alt');
+      setIsAltTheme(hasThemeAlt);
+    };
+
+    checkTheme();
+    const observer = new MutationObserver(checkTheme);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class']
+    });
+
+    const handleThemeChange = (e: CustomEvent) => {
+      setTimeout(checkTheme, 50);
+    };
+    window.addEventListener('themechange', handleThemeChange as EventListener);
+
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'theme') {
+        setTimeout(checkTheme, 100);
+      }
+    };
+    window.addEventListener('storagechange', handleStorageChange);
+
+    const interval = setInterval(checkTheme, 500);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('themechange', handleThemeChange as EventListener);
+      window.removeEventListener('storagechange', handleStorageChange);
+      clearInterval(interval);
+    };
+  }, []);
 
   // Mobile detection
   const [isMobile, setIsMobile] = useState(false);
@@ -5924,7 +5962,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
 
     return (
-      <div className="w-8 h-8 rounded-full bg-purple-500 flex items-center justify-center text-white text-sm font-bold">
+      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold ${isAltTheme ? 'bg-green-600' : 'bg-purple-500'}`}>
         {senderName.charAt(0).toUpperCase()}
       </div>
     );
@@ -6494,11 +6532,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   };
 
   // External user header - simplified view
-  if (isLoadingExternal) {
-    return null; // Show nothing while loading
-  }
-
-  if (isExternalUser) {
+  // Removed blocking check - auth is already verified, don't block rendering
+  // External user check will complete in background, but won't block rendering
+  if (isExternalUser && !isLoadingExternal) {
     return (
       <>
         <div className="navbar bg-base-100 px-2 md:px-0 h-16 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
@@ -6506,7 +6542,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           <div className="flex-1 justify-start flex items-center gap-4">
             <div className="h-16 flex items-center gap-3">
               <Link to="/" className="flex items-center gap-2">
-                <span className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
+                <span className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
               </Link>
               <button
                 onClick={handleSignOut}
@@ -6788,7 +6824,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           <div className="h-16 flex items-center">
             <Link to="/" className="hidden md:flex items-center gap-2">
 
-              <span className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
+              <span className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
             </Link>
           </div>
           {/* Quick Actions Dropdown - Desktop only */}
@@ -6801,7 +6837,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 setShowQuickActionsDropdown(!showQuickActionsDropdown);
                 setShowMobileQuickActionsDropdown(false); // Close mobile dropdown if open
               }}
-              className="btn btn-sm transition-all duration-300 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white flex items-center gap-2 px-3 rounded-full border-0"
+              className={`btn btn-sm transition-all duration-300 bg-gradient-to-tr ${isAltTheme ? 'from-green-500 via-emerald-600 to-lime-600' : 'from-pink-500 via-purple-500 to-purple-600'} text-white flex items-center gap-2 px-3 rounded-full border-0`}
               title="Quick Actions"
             >
               <BoltIcon className="w-5 h-5 text-white" />
@@ -7512,7 +7548,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             title="Open AI Assistant"
             onClick={handleAIClick}
           >
-            <FaRobot className="w-7 h-7 text-primary" />
+            <FaRobot className={`w-7 h-7 ${isAltTheme ? 'text-green-600' : 'text-primary'}`} />
           </button>
 
           {/* WhatsApp Button */}
@@ -7537,7 +7573,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               title="Open RMQ Messages"
               onClick={onOpenMessaging}
             >
-              <ChatBubbleLeftRightIcon className="w-7 h-7 text-purple-600" />
+              <ChatBubbleLeftRightIcon className={`w-7 h-7 ${isAltTheme ? 'text-green-600' : 'text-purple-600'}`} />
             </button>
             {rmqUnreadCount > 0 && (
               <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
@@ -7553,7 +7589,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               title="Open Email Thread"
               onClick={onOpenEmailThread}
             >
-              <EnvelopeIcon className="w-7 h-7 text-blue-600" />
+              <EnvelopeIcon className={`w-7 h-7 ${isAltTheme ? 'text-green-600' : 'text-blue-600'}`} />
             </button>
             {emailUnreadCount > 0 && (
               <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
@@ -7707,14 +7743,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   {/* Email Leads Messages Section - Only for superusers */}
                   {isSuperUser && emailLeadMessages.length > 0 && (
                     <div className="border-b border-gray-200">
-                      <div className="p-3 bg-blue-50 border-b border-blue-100">
+                      <div className={`p-3 border-b ${isAltTheme ? 'bg-green-50 border-green-100' : 'bg-blue-50 border-blue-100'}`}>
                         <div className="flex items-center gap-2">
-                          <EnvelopeIcon className="w-4 h-4 text-blue-600" />
-                          <span className="text-sm font-semibold text-blue-800">Email Leads</span>
+                          <EnvelopeIcon className={`w-4 h-4 ${isAltTheme ? 'text-green-600' : 'text-blue-600'}`} />
+                          <span className={`text-sm font-semibold ${isAltTheme ? 'text-green-800' : 'text-blue-800'}`}>Email Leads</span>
                         </div>
                       </div>
                       {emailLeadMessages.map((message) => (
-                        <div key={message.id} className="border-b border-blue-100">
+                        <div key={message.id} className={`border-b ${isAltTheme ? 'border-green-100' : 'border-blue-100'}`}>
                           <div
                             role="button"
                             tabIndex={0}
@@ -7725,12 +7761,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                                 handleEmailLeadClick();
                               }
                             }}
-                            className="w-full p-4 text-left hover:bg-blue-50 transition-colors duration-200 cursor-pointer"
+                            className={`w-full p-4 text-left transition-colors duration-200 cursor-pointer ${isAltTheme ? 'hover:bg-green-50' : 'hover:bg-blue-50'}`}
                           >
                             <div className="flex gap-3">
                               <div className="flex-shrink-0">
-                                <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-                                  <EnvelopeIcon className="w-4 h-4 text-blue-600" />
+                                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${isAltTheme ? 'bg-green-100' : 'bg-blue-100'}`}>
+                                  <EnvelopeIcon className={`w-4 h-4 ${isAltTheme ? 'text-green-600' : 'text-blue-600'}`} />
                                 </div>
                               </div>
                               <div className="flex-1 min-w-0">
@@ -7754,20 +7790,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                                   </p>
                                 )}
                                 {message.message_count > 1 && (
-                                  <p className="text-xs text-blue-600 mt-1">
+                                  <p className={`text-xs mt-1 ${isAltTheme ? 'text-green-600' : 'text-blue-600'}`}>
                                     {message.message_count} messages
                                   </p>
                                 )}
                               </div>
                             </div>
                           </div>
-                          <div className="px-4 py-2 border-t border-blue-100 flex justify-end">
+                          <div className={`px-4 py-2 border-t flex justify-end ${isAltTheme ? 'border-green-100' : 'border-blue-100'}`}>
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
                                 handleEmailLeadMessageRead(message);
                               }}
-                              className="text-xs font-medium text-blue-700 hover:text-blue-900"
+                              className={`text-xs font-medium ${isAltTheme ? 'text-green-700 hover:text-green-900' : 'text-blue-700 hover:text-blue-900'}`}
                             >
                               Dismiss
                             </button>
@@ -7780,17 +7816,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   {/* RMQ Messages Section */}
                   {currentUser && (
                     <div className="border-b border-gray-200">
-                      <div className="p-3 bg-purple-50 border-b border-purple-100">
+                      <div className={`p-3 border-b ${isAltTheme ? 'bg-green-50 border-green-100' : 'bg-purple-50 border-purple-100'}`}>
                         <div className="flex items-center gap-2">
-                          <ChatBubbleLeftRightIcon className="w-4 h-4 text-purple-600" />
-                          <span className="text-sm font-semibold text-purple-800">RMQ Messages</span>
+                          <ChatBubbleLeftRightIcon className={`w-4 h-4 ${isAltTheme ? 'text-green-600' : 'text-purple-600'}`} />
+                          <span className={`text-sm font-semibold ${isAltTheme ? 'text-green-800' : 'text-purple-800'}`}>RMQ Messages</span>
                         </div>
                       </div>
                       {rmqMessages.length > 0 ? (
                         rmqMessages.map((message) => (
                           <div
                             key={message.id}
-                            className="border-b border-purple-100 cursor-pointer"
+                            className={`border-b cursor-pointer ${isAltTheme ? 'border-green-100' : 'border-purple-100'}`}
                           >
                             <div
                               role="button"
@@ -7802,7 +7838,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                                   handleRmqMessageClick(message);
                                 }
                               }}
-                              className="w-full p-4 text-left hover:bg-purple-50 transition-colors duration-200"
+                              className={`w-full p-4 text-left transition-colors duration-200 ${isAltTheme ? 'hover:bg-green-50' : 'hover:bg-purple-50'}`}
                             >
                               <div className="flex gap-3">
                                 <div className="flex-shrink-0">
@@ -7818,14 +7854,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                                 </div>
                               </div>
                             </div>
-                            <div className="px-4 pb-3 border-t border-purple-100 flex items-center justify-between text-[11px] text-gray-500">
+                            <div className={`px-4 pb-3 border-t flex items-center justify-between text-[11px] text-gray-500 ${isAltTheme ? 'border-green-100' : 'border-purple-100'}`}>
                               <span>{formatMessageTime(message.sent_at)}</span>
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   dismissRmqMessage(message.id);
                                 }}
-                                className="text-xs font-medium text-purple-700 hover:text-purple-900"
+                                className={`text-xs font-medium ${isAltTheme ? 'text-green-700 hover:text-green-900' : 'text-purple-700 hover:text-purple-900'}`}
                               >
                                 Dismiss
                               </button>
@@ -7844,16 +7880,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   {/* Lead Assignment Notifications */}
                   {assignmentNotifications.length > 0 && (
                     <div className="border-b border-gray-200">
-                      <div className="p-3 bg-purple-50 border-b border-purple-100">
+                      <div className={`p-3 border-b ${isAltTheme ? 'bg-green-50 border-green-100' : 'bg-purple-50 border-purple-100'}`}>
                         <div className="flex items-center gap-2">
-                          <UserGroupIcon className="w-4 h-4 text-purple-600" />
-                          <span className="text-sm font-semibold text-purple-800">Lead Assignments</span>
+                          <UserGroupIcon className={`w-4 h-4 ${isAltTheme ? 'text-green-600' : 'text-purple-600'}`} />
+                          <span className={`text-sm font-semibold ${isAltTheme ? 'text-green-800' : 'text-purple-800'}`}>Lead Assignments</span>
                         </div>
                       </div>
                       {assignmentNotifications.map(notification => (
                         <div
                           key={notification.key}
-                          className="border-b border-purple-100 cursor-pointer"
+                          className={`border-b cursor-pointer ${isAltTheme ? 'border-green-100' : 'border-purple-100'}`}
                         >
                           <div
                             role="button"
@@ -7865,11 +7901,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                                 handleAssignmentOpen(notification);
                               }
                             }}
-                            className="w-full text-left p-4 hover:bg-purple-50 transition-colors duration-200"
+                            className={`w-full text-left p-4 transition-colors duration-200 ${isAltTheme ? 'hover:bg-green-50' : 'hover:bg-purple-50'}`}
                           >
                             <div className="flex items-start gap-3">
-                              <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center">
-                                <UserIcon className="w-4 h-4 text-purple-700" />
+                              <div className={`w-8 h-8 rounded-full flex items-center justify-center ${isAltTheme ? 'bg-green-100' : 'bg-purple-100'}`}>
+                                <UserIcon className={`w-4 h-4 ${isAltTheme ? 'text-green-700' : 'text-purple-700'}`} />
                               </div>
                               <div className="flex-1 min-w-0">
                                 <p className="text-sm text-gray-800 leading-relaxed">
@@ -7877,11 +7913,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                                   <span className="font-semibold">{notification.roleLabel}</span> to lead{' '}
                                   <span className="font-semibold">{notification.leadNumber}</span>.
                                 </p>
-                                <p className="text-xs text-purple-600 mt-2">Tap to open lead</p>
+                                <p className={`text-xs mt-2 ${isAltTheme ? 'text-green-600' : 'text-purple-600'}`}>Tap to open lead</p>
                               </div>
                             </div>
                           </div>
-                          <div className="px-4 pb-3 border-t border-purple-100 flex justify-end">
+                          <div className={`px-4 pb-3 border-t flex justify-end ${isAltTheme ? 'border-green-100' : 'border-purple-100'}`}>
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -7919,7 +7955,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[9999]">
           <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
             <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center">
+              <div className={`w-10 h-10 rounded-full flex items-center justify-center ${isAltTheme ? 'bg-green-600' : 'bg-primary'}`}>
                 <svg className="w-6 h-6 text-white" viewBox="0 0 24 24">
                   <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
                 </svg>
@@ -8036,6 +8072,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         /* Remove hover effects in dark mode - use very high specificity */
         .dark .notification-dropdown div.hover\:bg-green-50:hover,
         .dark .notification-dropdown div.hover\:bg-blue-50:hover,
+        .dark .notification-dropdown div.hover\:bg-green-50:hover,
         .dark .notification-dropdown div.hover\:bg-purple-50:hover,
         .dark .notification-dropdown button.hover\:bg-green-50:hover,
         .dark .notification-dropdown button.hover\:bg-blue-50:hover,

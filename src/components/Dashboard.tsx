@@ -70,6 +70,50 @@ const Dashboard: React.FC = () => {
   const { user: authUser, isInitialized } = useAuthContext();
   const { isExternalUser, isLoading: isLoadingExternal, userName: externalUserName, userImage: externalUserImage } = useExternalUser();
 
+  // Check if alternative (green) theme is active - make it reactive
+  const [isAltTheme, setIsAltTheme] = useState(() => document.documentElement.classList.contains('theme-alt'));
+
+  useEffect(() => {
+    const checkTheme = () => {
+      const hasThemeAlt = document.documentElement.classList.contains('theme-alt');
+      setIsAltTheme(hasThemeAlt);
+    };
+
+    // Check on mount
+    checkTheme();
+
+    // Watch for theme changes via MutationObserver
+    const observer = new MutationObserver(checkTheme);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class']
+    });
+
+    // Listen to custom theme change event
+    const handleThemeChange = (e: CustomEvent) => {
+      setTimeout(checkTheme, 50);
+    };
+    window.addEventListener('themechange', handleThemeChange as EventListener);
+
+    // Also listen to storage changes
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'theme') {
+        setTimeout(checkTheme, 100);
+      }
+    };
+    window.addEventListener('storagechange', handleStorageChange);
+
+    // Poll every 500ms as fallback
+    const interval = setInterval(checkTheme, 500);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('themechange', handleThemeChange as EventListener);
+      window.removeEventListener('storagechange', handleStorageChange);
+      clearInterval(interval);
+    };
+  }, []);
+
   // EARLY RETURN: Check for external user immediately to prevent flash of regular dashboard
   // This must be before any other logic to ensure external users see their dashboard instantly
   if (isExternalUser) {
@@ -4714,15 +4758,31 @@ const Dashboard: React.FC = () => {
   const getMobilePeriodInfo = (period: MobilePeriodType) => {
     switch (period) {
       case 'today':
-        return { label: 'Today', gradient: 'from-indigo-500 to-purple-600', dotColor: 'bg-indigo-500' };
+        return { 
+          label: 'Today', 
+          gradient: isAltTheme ? 'from-green-500 to-emerald-600' : 'from-indigo-500 to-purple-600', 
+          dotColor: isAltTheme ? 'bg-green-500' : 'bg-indigo-500' 
+        };
       case 'last30d':
-        return { label: 'Last 30d', gradient: 'from-purple-500 to-indigo-600', dotColor: 'bg-purple-500' };
+        return { 
+          label: 'Last 30d', 
+          gradient: isAltTheme ? 'from-emerald-500 to-green-600' : 'from-purple-500 to-indigo-600', 
+          dotColor: isAltTheme ? 'bg-emerald-500' : 'bg-purple-500' 
+        };
       case 'currentMonth':
-        return { label: selectedMonth, gradient: 'from-blue-500 to-cyan-600', dotColor: 'bg-blue-500' };
+        return { 
+          label: selectedMonth, 
+          gradient: isAltTheme ? 'from-green-500 to-lime-600' : 'from-blue-500 to-cyan-600', 
+          dotColor: isAltTheme ? 'bg-green-500' : 'bg-blue-500' 
+        };
       case 'target':
         return { label: 'Target', gradient: 'from-emerald-500 to-teal-600', dotColor: 'bg-emerald-500' };
       default:
-        return { label: 'Today', gradient: 'from-indigo-500 to-purple-600', dotColor: 'bg-indigo-500' };
+        return { 
+          label: 'Today', 
+          gradient: isAltTheme ? 'from-green-500 to-emerald-600' : 'from-indigo-500 to-purple-600', 
+          dotColor: isAltTheme ? 'bg-green-500' : 'bg-indigo-500' 
+        };
     }
   };
 
@@ -5126,7 +5186,7 @@ const Dashboard: React.FC = () => {
       case 'important':
         return <ExclamationTriangleIcon className="w-5 h-5 text-yellow-500" />;
       case 'reminder':
-        return <ClockIcon className="w-5 h-5 text-blue-500" />;
+        return <ClockIcon className={`w-5 h-5 ${isAltTheme ? 'text-green-500' : 'text-blue-500'}`} />;
       default:
         return null;
     }
@@ -6016,7 +6076,7 @@ const Dashboard: React.FC = () => {
       <div className="flex md:grid md:grid-cols-4 gap-3 md:gap-6 mb-8 w-full mt-6 md:mt-0 overflow-x-auto scrollbar-hide pb-2 md:pb-0 overflow-y-visible">
         {/* Meetings Today */}
         <div
-          className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white relative overflow-visible p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ml-4 md:ml-0"
+          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr ${isAltTheme ? 'from-green-500 via-emerald-600 to-lime-600' : 'from-pink-500 via-purple-500 to-purple-600'} text-white relative overflow-visible p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ml-4 md:ml-0`}
           onClick={() => setExpanded(expanded === 'meetings' ? null : 'meetings')}
         >
           {/* Meetings in Next Hour Badge - Desktop: top, Mobile: bottom */}
@@ -6108,7 +6168,7 @@ const Dashboard: React.FC = () => {
 
         {/* Follow ups */}
         <div
-          className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto"
+          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr ${isAltTheme ? 'from-emerald-600 via-green-600 to-green-500' : 'from-purple-600 via-blue-600 to-blue-500'} text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto`}
           onClick={() => setExpanded(expanded === 'overdue' ? null : 'overdue')}
         >
           <div className="flex items-center gap-2 md:gap-4">
@@ -6126,7 +6186,7 @@ const Dashboard: React.FC = () => {
 
         {/* New Messages */}
         <div
-          className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto"
+          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr ${isAltTheme ? 'from-green-500 via-emerald-500 to-lime-400' : 'from-blue-500 via-cyan-500 to-teal-400'} text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto`}
           onClick={() => setExpanded(expanded === 'messages' ? null : 'messages')}
         >
           <div className="flex items-center gap-2 md:gap-4">
@@ -6144,7 +6204,7 @@ const Dashboard: React.FC = () => {
 
         {/* Action Required */}
         <div
-          className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto"
+          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr ${isAltTheme ? 'from-green-600 via-emerald-600 to-lime-600' : 'from-[#4b2996] via-[#6c4edb] to-[#3b28c7]'} text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto`}
           onClick={() => setIsAISuggestionsModalOpen(true)}
         >
           <div className="flex items-center gap-2 md:gap-4">
@@ -6185,14 +6245,14 @@ const Dashboard: React.FC = () => {
                         <div className="mb-3 flex items-center gap-2">
                           <span className="text-xs font-semibold text-gray-400 tracking-widest">{meeting.lead}</span>
                           <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                          <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{meeting.name}</h3>
+                          <h3 className={`text-lg font-extrabold text-gray-900 transition-colors truncate flex-1 ${isAltTheme ? 'group-hover:text-green-600' : 'group-hover:text-primary'}`}>{meeting.name}</h3>
                         </div>
                         <div className="space-y-2 divide-y divide-gray-100">
                           {/* User Role (Guest 1 or Guest 2) */}
                           {meeting.userRole && (
                             <div className="flex justify-between items-center py-1">
                               <span className="text-xs font-semibold text-gray-500">Your Role</span>
-                              <span className="text-sm font-bold text-primary">{meeting.userRole}</span>
+                              <span className={`text-sm font-bold ${isAltTheme ? 'text-green-600' : 'text-primary'}`}>{meeting.userRole}</span>
                             </div>
                           )}
                           {/* Time */}
@@ -6364,7 +6424,7 @@ const Dashboard: React.FC = () => {
             if (isLoading) {
               return (
                 <div className="flex justify-center items-center py-12">
-                  <span className="loading loading-spinner loading-lg text-primary"></span>
+                  <span className={`loading loading-spinner loading-lg ${isAltTheme ? 'text-green-600' : 'text-primary'}`}></span>
                 </div>
               );
             }
@@ -6495,7 +6555,7 @@ const Dashboard: React.FC = () => {
                                       }}
                                       title="Edit follow-up date"
                                     >
-                                      <PencilSquareIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                                      <PencilSquareIcon className="w-4 h-4" style={{ color: isAltTheme ? '#505d57' : '#3E28CD' }} />
                                     </button>
                                     <button
                                       className="btn btn-xs btn-ghost text-error"
@@ -6505,7 +6565,7 @@ const Dashboard: React.FC = () => {
                                       }}
                                       title="Delete follow-up"
                                     >
-                                      <TrashIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                                      <TrashIcon className="w-4 h-4" style={{ color: isAltTheme ? '#505d57' : '#3E28CD' }} />
                                     </button>
                                   </div>
                                 )}
@@ -6557,13 +6617,13 @@ const Dashboard: React.FC = () => {
                                   <span className="text-sm font-bold px-2 py-1 rounded bg-green-600 text-white">Today</span>
                                 )}
                                 {followUpTab === 'tomorrow' && (
-                                  <span className="text-sm font-bold px-2 py-1 rounded bg-blue-600 text-white">Tomorrow</span>
+                                  <span className={`text-sm font-bold px-2 py-1 rounded text-white ${isAltTheme ? 'bg-green-600' : 'bg-blue-600'}`}>Tomorrow</span>
                                 )}
                                 {followUpTab === 'future' && (
-                                  <span className="text-sm font-bold px-2 py-1 rounded bg-purple-600 text-white">Future</span>
+                                  <span className={`text-sm font-bold px-2 py-1 rounded text-white ${isAltTheme ? 'bg-green-600' : 'bg-purple-600'}`}>Future</span>
                                 )}
                               </div>
-                              <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate">{lead.name}</h3>
+                              <h3 className={`text-xl font-extrabold text-gray-900 transition-colors truncate ${isAltTheme ? 'group-hover:text-green-600' : 'group-hover:text-primary'}`}>{lead.name}</h3>
                             </div>
                             <div className="flex justify-between items-center py-1">
                               <span className="text-sm font-semibold text-gray-500">Stage</span>
@@ -6651,7 +6711,7 @@ const Dashboard: React.FC = () => {
                                       }}
                                       title="Edit follow-up date"
                                     >
-                                      <PencilSquareIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                                      <PencilSquareIcon className="w-4 h-4" style={{ color: isAltTheme ? '#505d57' : '#3E28CD' }} />
                                     </button>
                                     <button
                                       className="btn btn-xs btn-ghost text-error"
@@ -6661,7 +6721,7 @@ const Dashboard: React.FC = () => {
                                       }}
                                       title="Delete follow-up"
                                     >
-                                      <TrashIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                                      <TrashIcon className="w-4 h-4" style={{ color: isAltTheme ? '#505d57' : '#3E28CD' }} />
                                     </button>
                                   </div>
                                 )}
@@ -6706,7 +6766,7 @@ const Dashboard: React.FC = () => {
                               {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
                             </span>
                             <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                            <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
+                            <h3 className={`text-xl font-extrabold text-gray-900 transition-colors truncate flex-1 ${isAltTheme ? 'group-hover:text-green-600' : 'group-hover:text-primary'}`}>{lead.name}</h3>
                             {followUpTab === 'today' && (
                               <span className="text-sm font-bold px-2 py-1 rounded bg-green-600 text-white">Today</span>
                             )}
@@ -6855,7 +6915,7 @@ const Dashboard: React.FC = () => {
                               {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
                             </span>
                             <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                            <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
+                            <h3 className={`text-xl font-extrabold text-gray-900 transition-colors truncate flex-1 ${isAltTheme ? 'group-hover:text-green-600' : 'group-hover:text-primary'}`}>{lead.name}</h3>
                             {followUpTab === 'today' && (
                               <span className="text-sm font-bold px-2 py-1 rounded bg-green-600 text-white">Today</span>
                             )}
@@ -6999,8 +7059,8 @@ const Dashboard: React.FC = () => {
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-3">
                       <span className={`text-xs px-3 py-1.5 rounded-full font-medium shadow-sm animate-pulse ${message.type === 'email'
-                        ? 'bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 text-white'
-                        : 'bg-gradient-to-r from-blue-500 via-cyan-500 to-teal-400 text-white'
+                        ? (isAltTheme ? 'bg-gradient-to-r from-green-500 via-emerald-500 to-lime-600 text-white' : 'bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 text-white')
+                        : (isAltTheme ? 'bg-gradient-to-r from-green-500 via-emerald-500 to-lime-400 text-white' : 'bg-gradient-to-r from-blue-500 via-cyan-500 to-teal-400 text-white')
                         }`}>
                         {message.type === 'email' ? 'Email' : 'WhatsApp'}
                       </span>
@@ -7021,7 +7081,7 @@ const Dashboard: React.FC = () => {
                   <p className="text-gray-700 text-sm line-clamp-2 mb-4 leading-relaxed">{message.content}</p>
                   <div className="flex items-center justify-between pt-3 border-t border-gray-100">
                     <span className="text-xs text-gray-600 font-medium">From: {message.sender}</span>
-                    <span className="text-xs text-primary font-medium group-hover:text-primary/80 transition-colors">
+                    <span className={`text-xs font-medium transition-colors ${isAltTheme ? 'text-green-600 group-hover:text-green-700' : 'text-primary group-hover:text-primary/80'}`}>
                       View conversation →
                     </span>
                   </div>
@@ -7087,7 +7147,7 @@ const Dashboard: React.FC = () => {
             {/* Header with gradient background */}
             <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-8 gap-4">
               <div className="flex items-center gap-3">
-                <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-600 shadow-lg">
+                <div className={`flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr ${isAltTheme ? 'from-green-600 to-emerald-600' : 'from-purple-600 to-indigo-600'} shadow-lg`}>
                   <ChartBarIcon className="w-8 h-8 text-white" />
                 </div>
                 <div>
@@ -7100,7 +7160,9 @@ const Dashboard: React.FC = () => {
                   {scoreboardTabs.map(tab => (
                     <a
                       key={tab}
-                      className={`tab text-sm font-semibold px-4 py-2 rounded-lg transition-all ${scoreTab === tab ? 'tab-active bg-white text-purple-600 shadow-sm border border-purple-200' : 'text-gray-600 hover:bg-gray-50'}`}
+                      className={`tab text-sm font-semibold px-4 py-2 rounded-lg transition-all ${scoreTab === tab 
+                        ? (isAltTheme ? 'tab-active bg-white text-green-600 shadow-sm border border-green-200' : 'tab-active bg-white text-purple-600 shadow-sm border border-purple-200')
+                        : 'text-gray-600 hover:bg-gray-50'}`}
                       onClick={() => setScoreTab(tab)}
                     >
                       {tab}
@@ -7115,8 +7177,8 @@ const Dashboard: React.FC = () => {
             {/* <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-8">
                 <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1">
                   <div className="flex items-center justify-between mb-3">
-                    <div className="p-2 bg-purple-50 rounded-lg">
-                      <UserGroupIcon className="w-5 h-5 text-purple-600" />
+                    <div className={`p-2 rounded-lg ${isAltTheme ? 'bg-green-50' : 'bg-purple-50'}`}>
+                      <UserGroupIcon className={`w-5 h-5 ${isAltTheme ? 'text-green-600' : 'text-purple-600'}`} />
                     </div>
                     {leadsLoading ? (
                       <span className="text-2xl font-bold text-gray-900">Loading...</span>
@@ -7129,7 +7191,7 @@ const Dashboard: React.FC = () => {
                     {leadsLoading ? (
                       "Calculating..."
                     ) : (
-                      <span className={`font-medium ${isLeadGrowthPositive ? 'text-green-600' : 'text-purple-600'}`}>
+                      <span className={`font-medium ${isLeadGrowthPositive ? 'text-green-600' : (isAltTheme ? 'text-green-600' : 'text-purple-600')}`}>
                         {isLeadGrowthPositive ? '+' : ''}{leadGrowthPercentage.toFixed(1)}% from last month
                       </span>
                     )}
@@ -7138,8 +7200,8 @@ const Dashboard: React.FC = () => {
                 
                 <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1">
                   <div className="flex items-center justify-between mb-3">
-                    <div className="p-2 bg-purple-50 rounded-lg">
-                      <CheckCircleIcon className="w-5 h-5 text-purple-600" />
+                    <div className={`p-2 rounded-lg ${isAltTheme ? 'bg-green-50' : 'bg-purple-50'}`}>
+                      <CheckCircleIcon className={`w-5 h-5 ${isAltTheme ? 'text-green-600' : 'text-purple-600'}`} />
                     </div>
                     {conversionLoading ? (
                       <span className="text-2xl font-bold text-gray-900">Loading...</span>
@@ -7152,7 +7214,7 @@ const Dashboard: React.FC = () => {
                     {conversionLoading ? (
                       "Calculating..."
                     ) : (
-                      <span className="font-medium text-purple-600">
+                      <span className={`font-medium ${isAltTheme ? 'text-green-600' : 'text-purple-600'}`}>
                         {conversionRate.toFixed(1)}% of new leads this month
                       </span>
                     )}
@@ -7161,8 +7223,8 @@ const Dashboard: React.FC = () => {
                 
                 <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1">
                   <div className="flex items-center justify-between mb-3">
-                    <div className="p-2 bg-purple-50 rounded-lg">
-                      <ArrowTrendingUpIcon className="w-5 h-5 text-purple-600" />
+                    <div className={`p-2 rounded-lg ${isAltTheme ? 'bg-green-50' : 'bg-purple-50'}`}>
+                      <ArrowTrendingUpIcon className={`w-5 h-5 ${isAltTheme ? 'text-green-600' : 'text-purple-600'}`} />
                     </div>
                     {revenueLoading ? (
                       <span className="text-2xl font-bold text-gray-900">Loading...</span>
@@ -7175,7 +7237,7 @@ const Dashboard: React.FC = () => {
                     {revenueLoading ? (
                       "Calculating..."
                     ) : (
-                      <span className={`font-medium ${isAboveTarget ? 'text-green-600' : 'text-purple-600'}`}>
+                      <span className={`font-medium ${isAboveTarget ? 'text-green-600' : (isAltTheme ? 'text-green-600' : 'text-purple-600')}`}>
                         {isAboveTarget ? '+' : ''}{revenuePercentage.toFixed(1)}% from ₪2M target
                       </span>
                     )}
@@ -7186,7 +7248,7 @@ const Dashboard: React.FC = () => {
                       <div className="w-full bg-gray-200 rounded-full h-2">
                         <div 
                           className={`h-2 rounded-full transition-all duration-500 ${
-                            isAboveTarget ? 'bg-green-500' : 'bg-purple-500'
+                            isAboveTarget ? 'bg-green-500' : (isAltTheme ? 'bg-green-500' : 'bg-purple-500')
                           }`}
                           style={{ width: `${Math.min(revenuePercentage, 100)}%` }}
                         ></div>
@@ -7201,8 +7263,8 @@ const Dashboard: React.FC = () => {
                 
                 <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1">
                   <div className="flex items-center justify-between mb-3">
-                    <div className="p-2 bg-purple-50 rounded-lg">
-                      <DocumentTextIcon className="w-5 h-5 text-purple-600" />
+                    <div className={`p-2 rounded-lg ${isAltTheme ? 'bg-green-50' : 'bg-purple-50'}`}>
+                      <DocumentTextIcon className={`w-5 h-5 ${isAltTheme ? 'text-green-600' : 'text-purple-600'}`} />
                     </div>
                     {contractsLoading ? (
                       <span className="text-2xl font-bold text-gray-900">Loading...</span>
@@ -7227,8 +7289,8 @@ const Dashboard: React.FC = () => {
             {scoreTab === 'Tables' && (
               <div className="space-y-6">
                 <div className="flex items-center gap-3 mb-6">
-                  <div className="p-2 bg-gradient-to-br from-purple-100 to-indigo-100 rounded-lg border border-purple-200">
-                    <ChartBarIcon className="w-5 h-5 text-purple-600" />
+                  <div className={`p-2 bg-gradient-to-br ${isAltTheme ? 'from-green-100 to-emerald-100 rounded-lg border border-green-200' : 'from-purple-100 to-indigo-100 rounded-lg border border-purple-200'}`}>
+                    <ChartBarIcon className={`w-5 h-5 ${isAltTheme ? 'text-green-600' : 'text-purple-600'}`} />
                   </div>
                   <h3 className="text-lg font-semibold text-slate-800">Department Performance</h3>
                 </div>
@@ -7236,21 +7298,21 @@ const Dashboard: React.FC = () => {
                 <div>
                   <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden -mx-2 md:mx-0">
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between px-2 md:p-3 py-2 md:py-3 border-b border-slate-200 bg-slate-50 gap-2">
-                      <div className="text-xs md:text-sm font-semibold text-[#3b28c7]">Agreement signed</div>
+                      <div className={`text-xs md:text-sm font-semibold ${isAltTheme ? 'text-green-600' : 'text-[#3b28c7]'}`}>Agreement signed</div>
                       <div className="flex flex-wrap items-center gap-1 md:gap-2">
                         <span className="text-xs md:text-sm font-semibold text-slate-700 mr-1 md:mr-2">Filter by:</span>
-                        <button className={`btn btn-xs ${showTodayCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>
+                        <button className={`btn btn-xs ${showTodayCols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>
                           {todayFilterMode === 'week' ? 'Week' : 'Today'}
                         </button>
                         <button
-                          className={`btn btn-xs ${todayFilterMode === 'week' ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`}
+                          className={`btn btn-xs ${todayFilterMode === 'week' ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`}
                           onClick={() => setTodayFilterMode(v => v === 'week' ? 'today' : 'week')}
                           title={todayFilterMode === 'week' ? 'Switch back to Today' : 'Show Week data'}
                         >
                           Week
                         </button>
-                        <button className={`btn btn-xs ${showLast30Cols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
-                        <button className={`btn btn-xs ${showLastMonthCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
+                        <button className={`btn btn-xs ${showLast30Cols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
+                        <button className={`btn btn-xs ${showLastMonthCols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
                         <div className="border-l border-slate-300 h-4 md:h-6 mx-1 md:mx-2"></div>
                         <details className="dropdown dropdown-end">
                           <summary className="btn btn-xs btn-ghost text-slate-700">
@@ -7269,7 +7331,7 @@ const Dashboard: React.FC = () => {
                                       details.removeAttribute('open');
                                     }
                                   }}
-                                  className={`block w-full p-2 text-sm hover:bg-gray-100 ${selectedMonth === month ? 'bg-primary text-primary-content' : ''}`}
+                                  className={`block w-full p-2 text-sm hover:bg-gray-100 ${selectedMonth === month ? (isAltTheme ? 'bg-green-600 text-white' : 'bg-primary text-primary-content') : ''}`}
                                 >
                                   {month}
                                 </a>
@@ -7306,7 +7368,7 @@ const Dashboard: React.FC = () => {
                     </div>
                     {departmentPerformanceLoading ? (
                       <div className="flex justify-center items-center py-12">
-                        <span className="loading loading-spinner loading-lg text-primary"></span>
+                        <span className={`loading loading-spinner loading-lg ${isAltTheme ? 'text-green-600' : 'text-primary'}`}></span>
                       </div>
                     ) : renderColumnsView('agreement')}
                   </div>
@@ -7316,21 +7378,21 @@ const Dashboard: React.FC = () => {
                 <div className="mt-4 md:mt-6">
                   <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden -mx-2 md:mx-0">
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between px-2 md:p-3 py-2 md:py-3 border-b border-slate-200 bg-slate-50 gap-2">
-                      <div className="text-xs md:text-sm font-semibold text-[#3b28c7]">Invoiced</div>
+                      <div className={`text-xs md:text-sm font-semibold ${isAltTheme ? 'text-green-600' : 'text-[#3b28c7]'}`}>Invoiced</div>
                       <div className="flex flex-wrap items-center gap-1 md:gap-2">
                         <span className="text-xs md:text-sm font-semibold text-slate-700 mr-1 md:mr-2">Filter by:</span>
-                        <button className={`btn btn-xs ${showTodayCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>
+                        <button className={`btn btn-xs ${showTodayCols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>
                           {todayFilterMode === 'week' ? 'Week' : 'Today'}
                         </button>
                         <button
-                          className={`btn btn-xs ${todayFilterMode === 'week' ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`}
+                          className={`btn btn-xs ${todayFilterMode === 'week' ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`}
                           onClick={() => setTodayFilterMode(v => v === 'week' ? 'today' : 'week')}
                           title={todayFilterMode === 'week' ? 'Switch back to Today' : 'Show Week data'}
                         >
                           Week
                         </button>
-                        <button className={`btn btn-xs ${showLast30Cols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
-                        <button className={`btn btn-xs ${showLastMonthCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
+                        <button className={`btn btn-xs ${showLast30Cols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
+                        <button className={`btn btn-xs ${showLastMonthCols ? (isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary text-white') : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
                         <div className="border-l border-slate-300 h-4 md:h-6 mx-1 md:mx-2"></div>
                         <details className="dropdown dropdown-end">
                           <summary className="btn btn-xs btn-ghost text-slate-700">
@@ -7349,7 +7411,7 @@ const Dashboard: React.FC = () => {
                                       details.removeAttribute('open');
                                     }
                                   }}
-                                  className={`block w-full p-2 text-sm hover:bg-gray-100 ${selectedMonth === month ? 'bg-primary text-primary-content' : ''}`}
+                                  className={`block w-full p-2 text-sm hover:bg-gray-100 ${selectedMonth === month ? (isAltTheme ? 'bg-green-600 text-white' : 'bg-primary text-primary-content') : ''}`}
                                 >
                                   {month}
                                 </a>
@@ -7386,7 +7448,7 @@ const Dashboard: React.FC = () => {
                     </div>
                     {invoicedDataLoading ? (
                       <div className="flex justify-center items-center py-12">
-                        <span className="loading loading-spinner loading-lg text-primary"></span>
+                        <span className={`loading loading-spinner loading-lg ${isAltTheme ? 'text-green-600' : 'text-primary'}`}></span>
                       </div>
                     ) : renderColumnsView('invoiced')}
                   </div>
@@ -7399,7 +7461,7 @@ const Dashboard: React.FC = () => {
               <div className="bg-gradient-to-br from-gray-50 to-white rounded-2xl border border-gray-200 p-8 shadow-lg">
                 <div className="flex items-center justify-between mb-8">
                   <div className="flex items-center gap-3">
-                    <div className="p-3 bg-gradient-to-r from-purple-600 to-indigo-600 rounded-xl shadow-lg">
+                    <div className={`p-3 bg-gradient-to-r ${isAltTheme ? 'from-green-600 to-emerald-600' : 'from-purple-600 to-indigo-600'} rounded-xl shadow-lg`}>
                       <ChartBarIcon className="w-6 h-6 text-white" />
                     </div>
                     <div>
@@ -7410,11 +7472,11 @@ const Dashboard: React.FC = () => {
                   <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-200">
                     <div className="flex items-center gap-6">
                       <div className="flex items-center gap-2">
-                        <div className="w-4 h-4 bg-gradient-to-r from-purple-600 to-purple-700 rounded-full shadow-sm"></div>
+                        <div className={`w-4 h-4 bg-gradient-to-r ${isAltTheme ? 'from-green-600 to-green-700' : 'from-purple-600 to-purple-700'} rounded-full shadow-sm`}></div>
                         <span className="text-sm font-medium text-gray-700">Signed</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <div className="w-4 h-4 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full shadow-sm"></div>
+                        <div className={`w-4 h-4 bg-gradient-to-r ${isAltTheme ? 'from-emerald-500 to-green-500' : 'from-cyan-500 to-blue-500'} rounded-full shadow-sm`}></div>
                         <span className="text-sm font-medium text-gray-700">Due</span>
                       </div>
                     </div>

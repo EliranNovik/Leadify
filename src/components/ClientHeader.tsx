@@ -670,20 +670,38 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     };
 
     // Helper function to get currency name from accounting_currencies table
-    const getCurrencyName = (currencyId: string | number | null | undefined): string => {
-        if (!currencyId || currencyId === null || currencyId === undefined) {
-            return '₪'; // Default fallback
+    // Always uses accounting_currencies.name column, never hardcoded values
+    const getCurrencyName = (currencyId: string | number | null | undefined, accountingCurrencies?: any): string => {
+        // Default to currency_id 1 if not set
+        const finalCurrencyId = currencyId ?? 1;
+
+        // First, try to use accounting_currencies join data if provided
+        if (accountingCurrencies) {
+            const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
+            if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
+                return currencyRecord.name.trim();
+            }
         }
 
-        // If currencies haven't loaded yet, return default
+        // If currencies haven't loaded yet, return empty string (will be handled by fallback)
         if (!allCurrencies || allCurrencies.length === 0) {
-            return '₪'; // Default fallback until currencies load
+            return '';
         }
 
         // Convert currencyId to number for comparison (handle bigint)
-        const currencyIdNum = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+        const currencyIdNum = typeof finalCurrencyId === 'string' ? parseInt(finalCurrencyId, 10) : Number(finalCurrencyId);
         if (isNaN(currencyIdNum)) {
-            return '₪'; // Default fallback
+            // If invalid, try to get currency_id 1
+            const defaultCurrency = allCurrencies.find((curr: any) => {
+                if (!curr || !curr.id) return false;
+                const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
+                const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
+                return !isNaN(currIdNum) && currIdNum === 1;
+            });
+            if (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '') {
+                return defaultCurrency.name.trim();
+            }
+            return '';
         }
 
         // Find currency in loaded currencies - compare as numbers
@@ -698,8 +716,20 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             return currency.name.trim();
         }
 
-        // Fallback to default if currency not found
-        return '₪';
+        // Fallback: try to get currency_id 1
+        const defaultCurrency = allCurrencies.find((curr: any) => {
+            if (!curr || !curr.id) return false;
+            const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
+            const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
+            return !isNaN(currIdNum) && currIdNum === 1;
+        });
+
+        if (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '') {
+            return defaultCurrency.name.trim();
+        }
+
+        // Ultimate fallback: return empty string (should not happen if currencies are loaded)
+        return '';
     };
 
     // Lead Number
@@ -1147,41 +1177,52 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         {(() => {
                             const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
 
-                            // 1. Currency Resolution - Always try currency_id first, then fallback to proposal_currency/balance_currency, then default to currency_id 1
+                            // Currency Resolution
+                            // For new leads: Always use currency_id -> accounting_currencies.name (default to 1), never use proposal_currency/balance_currency
+                            // For legacy leads: Use currency_id first, then fallback to balance_currency
                             let currency = ''; // Will be set below
 
-                            // Priority 1: Try currency_id (most reliable)
-                            if (selectedClient?.currency_id) {
-                                const currencyFromId = getCurrencyName(selectedClient.currency_id);
-                                if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
-                                    currency = currencyFromId;
+                            // First, try to get from accounting_currencies join data (most reliable)
+                            const accountingCurrencies = (selectedClient as any)?.accounting_currencies;
+                            if (accountingCurrencies) {
+                                const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
+                                if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
+                                    currency = currencyRecord.name.trim();
                                 }
                             }
 
-                            // Priority 2: For legacy leads, also check currency_id from legacy field
-                            if (isLegacyLead && (selectedClient as any)?.currency_id && !currency) {
-                                const currencyFromId = getCurrencyName((selectedClient as any).currency_id);
-                                if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
-                                    currency = currencyFromId;
+                            if (!isLegacyLead) {
+                                // For new leads: Always use currency_id -> accounting_currencies.name (default to 1)
+                                const currencyId = (selectedClient as any)?.currency_id ?? 1;
+                                const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                                if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
+                                    currency = getCurrencyName(numericCurrencyId, accountingCurrencies);
+                                    // Fallback to currency_id 1 if empty
+                                    if (!currency || currency.trim() === '') {
+                                        currency = getCurrencyName(1);
+                                    }
+                                } else {
+                                    // If currency_id is invalid, default to currency_id 1
+                                    currency = getCurrencyName(1);
                                 }
-                            }
+                            } else {
+                                // For legacy leads: use currency_id first, then fallback to balance_currency
+                                if (!currency && selectedClient?.currency_id) {
+                                    const currencyFromId = getCurrencyName(selectedClient.currency_id, accountingCurrencies);
+                                    if (currencyFromId && currencyFromId.trim() !== '') {
+                                        currency = currencyFromId;
+                                    }
+                                }
 
-                            // Priority 3: Fallback to proposal_currency or balance_currency if currency_id didn't work
-                            if (!currency) {
-                                currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '';
-                            }
+                                // Fallback to balance_currency for legacy leads only
+                                if (!currency || currency.trim() === '') {
+                                    currency = selectedClient?.balance_currency || '';
+                                }
 
-                            // Priority 4: Default to currency_id 1 (use name column from accounting_currencies)
-                            if (!currency || currency.trim() === '') {
-                                const defaultCurrency = allCurrencies.find((curr: any) => {
-                                    if (!curr || !curr.id) return false;
-                                    const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
-                                    const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
-                                    return !isNaN(currIdNum) && currIdNum === 1;
-                                });
-                                currency = (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '')
-                                    ? defaultCurrency.name.trim()
-                                    : '₪'; // Ultimate fallback if currency_id 1 not found
+                                // Final fallback: default to currency_id 1
+                                if (!currency || currency.trim() === '') {
+                                    currency = getCurrencyName(1);
+                                }
                             }
 
                             // 2. Base Amount (Gross)
@@ -1270,41 +1311,52 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         {(() => {
                             const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
 
-                            // 1. Currency Resolution - Always try currency_id first, then fallback to proposal_currency/balance_currency, then default to currency_id 1
+                            // Currency Resolution
+                            // For new leads: Always use currency_id -> accounting_currencies.name (default to 1), never use proposal_currency/balance_currency
+                            // For legacy leads: Use currency_id first, then fallback to balance_currency
                             let currency = ''; // Will be set below
 
-                            // Priority 1: Try currency_id (most reliable)
-                            if (selectedClient?.currency_id) {
-                                const currencyFromId = getCurrencyName(selectedClient.currency_id);
-                                if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
-                                    currency = currencyFromId;
+                            // First, try to get from accounting_currencies join data (most reliable)
+                            const accountingCurrencies = (selectedClient as any)?.accounting_currencies;
+                            if (accountingCurrencies) {
+                                const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
+                                if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
+                                    currency = currencyRecord.name.trim();
                                 }
                             }
 
-                            // Priority 2: For legacy leads, also check currency_id from legacy field
-                            if (isLegacyLead && (selectedClient as any)?.currency_id && !currency) {
-                                const currencyFromId = getCurrencyName((selectedClient as any).currency_id);
-                                if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
-                                    currency = currencyFromId;
+                            if (!isLegacyLead) {
+                                // For new leads: Always use currency_id -> accounting_currencies.name (default to 1)
+                                const currencyId = (selectedClient as any)?.currency_id ?? 1;
+                                const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                                if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
+                                    currency = getCurrencyName(numericCurrencyId, accountingCurrencies);
+                                    // Fallback to currency_id 1 if empty
+                                    if (!currency || currency.trim() === '') {
+                                        currency = getCurrencyName(1);
+                                    }
+                                } else {
+                                    // If currency_id is invalid, default to currency_id 1
+                                    currency = getCurrencyName(1);
                                 }
-                            }
+                            } else {
+                                // For legacy leads: use currency_id first, then fallback to balance_currency
+                                if (!currency && selectedClient?.currency_id) {
+                                    const currencyFromId = getCurrencyName(selectedClient.currency_id, accountingCurrencies);
+                                    if (currencyFromId && currencyFromId.trim() !== '') {
+                                        currency = currencyFromId;
+                                    }
+                                }
 
-                            // Priority 3: Fallback to proposal_currency or balance_currency if currency_id didn't work
-                            if (!currency) {
-                                currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '';
-                            }
+                                // Fallback to balance_currency for legacy leads only
+                                if (!currency || currency.trim() === '') {
+                                    currency = selectedClient?.balance_currency || '';
+                                }
 
-                            // Priority 4: Default to currency_id 1 (use name column from accounting_currencies)
-                            if (!currency || currency.trim() === '') {
-                                const defaultCurrency = allCurrencies.find((curr: any) => {
-                                    if (!curr || !curr.id) return false;
-                                    const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
-                                    const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
-                                    return !isNaN(currIdNum) && currIdNum === 1;
-                                });
-                                currency = (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '')
-                                    ? defaultCurrency.name.trim()
-                                    : '₪'; // Ultimate fallback if currency_id 1 not found
+                                // Final fallback: default to currency_id 1
+                                if (!currency || currency.trim() === '') {
+                                    currency = getCurrencyName(1);
+                                }
                             }
 
                             // 2. Base Amount (Gross)
@@ -1922,47 +1974,49 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 </div>
 
                                 {/* Group 2: Handler Team (CENTER) */}
-                                <div className="flex items-center gap-12 mx-auto scale-110 relative px-6 py-4">
-                                    <div className="absolute inset-0 bg-white dark:bg-gray-800 rounded-full shadow-lg border border-gray-200 dark:border-gray-700" style={{ width: 'calc(100% + 1.5rem)', height: 'calc(100% + 0.5rem)', top: '-0.25rem', left: '-0.75rem' }}></div>
-                                    {!isRoleEmpty(handlerId, handlerDisplay) && (
-                                        <div className="flex flex-col items-center relative z-10">
-                                            <div className="flex flex-col items-center relative">
-                                                <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-2">Handler</p>
-                                                <div className="flex items-center justify-center h-16 relative">
-                                                    <div className={`relative ${selectedClient.active_handler_type === 2 ? 'rounded-full ring-2 ring-emerald-500 p-0.5' : ''}`}>
-                                                        <EmployeeAvatar employeeId={handlerId} size="lg" />
-                                                        {selectedClient.active_handler_type === 2 && (
-                                                            <div className="absolute -top-1 -right-1 bg-emerald-500 rounded-full p-0.5 ring-2 ring-white shadow-md">
-                                                                <CheckCircleIcon className="w-4 h-4 text-white" />
-                                                            </div>
-                                                        )}
+                                {(!isRoleEmpty(handlerId, handlerDisplay) || !isRoleEmpty(retentionHandlerId, retentionHandlerDisplay)) && (
+                                    <div className="flex items-center gap-12 mx-auto scale-110 relative px-6 py-4">
+                                        <div className="absolute inset-0 bg-white dark:bg-gray-800 rounded-full shadow-lg border border-gray-200 dark:border-gray-700" style={{ width: 'calc(100% + 1.5rem)', height: 'calc(100% + 0.5rem)', top: '-0.25rem', left: '-0.75rem' }}></div>
+                                        {!isRoleEmpty(handlerId, handlerDisplay) && (
+                                            <div className="flex flex-col items-center relative z-10">
+                                                <div className="flex flex-col items-center relative">
+                                                    <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-2">Handler</p>
+                                                    <div className="flex items-center justify-center h-16 relative">
+                                                        <div className={`relative ${selectedClient.active_handler_type === 2 ? 'rounded-full ring-2 ring-emerald-500 p-0.5' : ''}`}>
+                                                            <EmployeeAvatar employeeId={handlerId} size="lg" />
+                                                            {selectedClient.active_handler_type === 2 && (
+                                                                <div className="absolute -top-1 -right-1 bg-emerald-500 rounded-full p-0.5 ring-2 ring-white shadow-md">
+                                                                    <CheckCircleIcon className="w-4 h-4 text-white" />
+                                                                </div>
+                                                            )}
+                                                        </div>
                                                     </div>
+                                                    <p className="font-bold truncate text-sm leading-5 mt-2 text-gray-600 dark:text-gray-400">{formatRoleDisplay(handlerDisplay)}</p>
                                                 </div>
-                                                <p className="font-bold truncate text-sm leading-5 mt-2 text-gray-600 dark:text-gray-400">{formatRoleDisplay(handlerDisplay)}</p>
                                             </div>
-                                        </div>
-                                    )}
-                                    {!isRoleEmpty(retentionHandlerId, retentionHandlerDisplay) && (
-                                        <div className="flex flex-col items-center relative z-10">
-                                            <div className="flex flex-col items-center relative">
-                                                <div className="flex flex-col items-center mb-2">
-                                                    <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4">R-Handler</p>
-                                                </div>
-                                                <div className="flex items-center justify-center h-16 relative">
-                                                    <div className={`relative ${selectedClient.active_handler_type === 1 ? 'rounded-full ring-2 ring-emerald-500 p-0.5' : ''}`}>
-                                                        <EmployeeAvatar employeeId={retentionHandlerId} size="lg" />
-                                                        {selectedClient.active_handler_type === 1 && (
-                                                            <div className="absolute -top-1 -right-1 bg-emerald-500 rounded-full p-0.5 ring-2 ring-white shadow-md">
-                                                                <CheckCircleIcon className="w-4 h-4 text-white" />
-                                                            </div>
-                                                        )}
+                                        )}
+                                        {!isRoleEmpty(retentionHandlerId, retentionHandlerDisplay) && (
+                                            <div className="flex flex-col items-center relative z-10">
+                                                <div className="flex flex-col items-center relative">
+                                                    <div className="flex flex-col items-center mb-2">
+                                                        <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4">R-Handler</p>
                                                     </div>
+                                                    <div className="flex items-center justify-center h-16 relative">
+                                                        <div className={`relative ${selectedClient.active_handler_type === 1 ? 'rounded-full ring-2 ring-emerald-500 p-0.5' : ''}`}>
+                                                            <EmployeeAvatar employeeId={retentionHandlerId} size="lg" />
+                                                            {selectedClient.active_handler_type === 1 && (
+                                                                <div className="absolute -top-1 -right-1 bg-emerald-500 rounded-full p-0.5 ring-2 ring-white shadow-md">
+                                                                    <CheckCircleIcon className="w-4 h-4 text-white" />
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                    <p className="font-bold truncate text-sm leading-5 mt-2 text-gray-600 dark:text-gray-400">{formatRoleDisplay(retentionHandlerDisplay)}</p>
                                                 </div>
-                                                <p className="font-bold truncate text-sm leading-5 mt-2 text-gray-600 dark:text-gray-400">{formatRoleDisplay(retentionHandlerDisplay)}</p>
                                             </div>
-                                        </div>
-                                    )}
-                                </div>
+                                        )}
+                                    </div>
+                                )}
 
                                 {/* Group 3: Quick Action Buttons (Right) */}
                                 <div className="hidden md:flex items-center gap-3 flex-wrap justify-end min-w-[200px]">

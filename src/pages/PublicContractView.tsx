@@ -507,6 +507,45 @@ const PublicContractView: React.FC = () => {
             const { data: clientData } = clientResult;
 
             if (clientData) {
+              // Check if contact_name is missing or is a placeholder (like "Contact 1", "Contact 2", etc.)
+              const contactName = contractData.contact_name?.trim() || '';
+              const isPlaceholder = !contactName || 
+                /^contact\s*\d+$/i.test(contactName) || 
+                contactName.toLowerCase().startsWith('contact ');
+
+              // If contact_name is missing or is a placeholder, try to fetch the actual contact name
+              if (isPlaceholder && contractData.contact_id && contractData.client_id) {
+                try {
+                  // Fetch the contact from leads_contact table
+                  const { data: contactData } = await supabase
+                    .from('leads_contact')
+                    .select('name')
+                    .eq('id', contractData.contact_id)
+                    .eq('newlead_id', contractData.client_id)
+                    .maybeSingle();
+
+                  if (contactData?.name && contactData.name.trim() !== '') {
+                    // Update contract with the fetched contact name
+                    setContract(prev => prev ? { ...prev, contact_name: contactData.name.trim() } : prev);
+                  } else {
+                    // If contact not found, fall back to main contact (client name)
+                    // This handles the case where contact_id doesn't match any contact
+                    if (clientData.name && clientData.name.trim() !== '') {
+                      setContract(prev => prev ? { ...prev, contact_name: clientData.name.trim() } : prev);
+                    }
+                  }
+                } catch (err) {
+                  console.error('Error fetching contact name:', err);
+                  // Fall back to client name if fetch fails
+                  if (clientData.name && clientData.name.trim() !== '') {
+                    setContract(prev => prev ? { ...prev, contact_name: clientData.name.trim() } : prev);
+                  }
+                }
+              } else if (isPlaceholder && clientData.name && clientData.name.trim() !== '') {
+                // If no contact_id but we have client name, use it as fallback
+                setContract(prev => prev ? { ...prev, contact_name: clientData.name.trim() } : prev);
+              }
+
               if (contractData.legacy_id) {
                 // Legacy lead processing
                 setClient({
@@ -2201,7 +2240,11 @@ const PublicContractView: React.FC = () => {
                 Decker Pex Levi Law Offices
               </p>
               <h1 className="text-sm md:text-lg font-semibold text-gray-800 drop-shadow-sm text-center">
-                {contract?.contact_name || client?.name || 'Client'}
+                {(contract?.contact_name && contract.contact_name.trim() !== '') 
+                  ? contract.contact_name 
+                  : (client?.name && client.name.trim() !== '') 
+                    ? client.name 
+                    : 'Client'}
               </h1>
             </div>
 

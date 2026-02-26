@@ -2645,112 +2645,112 @@ const HandlerManagementPage: React.FC = () => {
           />
           {/* Modal */}
           <div className="fixed top-20 right-4 bg-white rounded-lg shadow-2xl border border-gray-200 z-50 w-[1200px] max-h-[80vh] flex flex-col">
-            <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-              <div>
-                <h3 className="text-lg font-bold text-gray-900">Assign Selected Leads</h3>
-                <p className="text-sm text-gray-600 mt-1">{selectedLeads.size} lead{selectedLeads.size !== 1 ? 's' : ''} selected</p>
-              </div>
-              <button
-                onClick={() => {
-                  setShowSelectedLeadsAssignBox(false);
-                  setSelectedLeadsHandlerSearch('');
-                  setIsSelectionMode(false);
-                  setSelectedLeads(new Set());
-                }}
-                className="btn btn-sm btn-circle btn-ghost"
-              >
-                <XMarkIcon className="w-5 h-5" />
-              </button>
+          <div className="p-4 border-b border-gray-200 flex items-center justify-between">
+            <div>
+              <h3 className="text-lg font-bold text-gray-900">Assign Selected Leads</h3>
+              <p className="text-sm text-gray-600 mt-1">{selectedLeads.size} lead{selectedLeads.size !== 1 ? 's' : ''} selected</p>
             </div>
-            <div className="p-4 flex-1 overflow-y-auto">
-              <div className="mb-4">
-                <input
-                  type="text"
-                  placeholder="Search employee..."
-                  className="input input-bordered w-full"
-                  value={selectedLeadsHandlerSearch}
-                  onChange={(e) => setSelectedLeadsHandlerSearch(e.target.value)}
-                  autoFocus
-                />
-              </div>
-              <div className="space-y-2 max-h-96 overflow-y-auto">
-                {handlers.filter(handler =>
-                  handler.display_name.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase()) ||
-                  handler.department?.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase())
-                ).length === 0 ? (
-                  <p className="text-center text-gray-500 py-8">No employees found</p>
-                ) : (
-                  handlers
-                    .filter(handler =>
-                      handler.display_name.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase()) ||
-                      handler.department?.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase())
-                    )
-                    .map(handler => (
-                      <button
-                        key={handler.id}
-                        className="w-full p-3 hover:bg-gray-50 rounded-lg border border-gray-200 flex items-center gap-3 text-left"
-                        onClick={async () => {
-                          if (assigningSelectedLeads) return;
+            <button
+              onClick={() => {
+                setShowSelectedLeadsAssignBox(false);
+                setSelectedLeadsHandlerSearch('');
+                setIsSelectionMode(false);
+                setSelectedLeads(new Set());
+              }}
+              className="btn btn-sm btn-circle btn-ghost"
+            >
+              <XMarkIcon className="w-5 h-5" />
+            </button>
+          </div>
+          <div className="p-4 flex-1 overflow-y-auto">
+            <div className="mb-4">
+              <input
+                type="text"
+                placeholder="Search employee..."
+                className="input input-bordered w-full"
+                value={selectedLeadsHandlerSearch}
+                onChange={(e) => setSelectedLeadsHandlerSearch(e.target.value)}
+                autoFocus
+              />
+            </div>
+            <div className="space-y-2 max-h-96 overflow-y-auto">
+              {handlers.filter(handler =>
+                handler.display_name.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase()) ||
+                handler.department?.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase())
+              ).length === 0 ? (
+                <p className="text-center text-gray-500 py-8">No employees found</p>
+              ) : (
+                handlers
+                  .filter(handler =>
+                    handler.display_name.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase()) ||
+                    handler.department?.toLowerCase().includes(selectedLeadsHandlerSearch.toLowerCase())
+                  )
+                  .map(handler => (
+                    <button
+                      key={handler.id}
+                      className="w-full p-3 hover:bg-gray-50 rounded-lg border border-gray-200 flex items-center gap-3 text-left"
+                      onClick={async () => {
+                        if (assigningSelectedLeads) return;
 
-                          setAssigningSelectedLeads(true);
-                          try {
-                            const selectedLeadsArray = Array.from(selectedLeads);
-                            let successCount = 0;
-                            let errorCount = 0;
+                        setAssigningSelectedLeads(true);
+                        try {
+                          const selectedLeadsArray = Array.from(selectedLeads);
+                          let successCount = 0;
+                          let errorCount = 0;
 
-                            for (const leadId of selectedLeadsArray) {
-                              try {
-                                const lead = unassignedLeads.find(l => l.id === leadId);
-                                if (!lead) {
-                                  errorCount++;
-                                  continue;
-                                }
-
-                                await assignHandler(leadId, handler.id);
-                                successCount++;
-                              } catch (error) {
-                                console.error('Error assigning lead:', error);
+                          for (const leadId of selectedLeadsArray) {
+                            try {
+                              const lead = unassignedLeads.find(l => l.id === leadId);
+                              if (!lead) {
                                 errorCount++;
+                                continue;
                               }
+
+                              await assignHandler(leadId, handler.id);
+                              successCount++;
+                            } catch (error) {
+                              console.error('Error assigning lead:', error);
+                              errorCount++;
                             }
-
-                            if (errorCount === 0) {
-                              toast.success(`Successfully assigned ${successCount} lead(s) to ${handler.display_name}`);
-                            } else {
-                              toast.success(`Assigned ${successCount} lead(s), ${errorCount} failed`);
-                            }
-
-                            // Clear selection and close box
-                            setSelectedLeads(new Set());
-                            setShowSelectedLeadsAssignBox(false);
-                            setSelectedLeadsHandlerSearch('');
-                            setIsSelectionMode(false);
-
-                            // Refresh data
-                            await fetchData();
-                          } catch (error: any) {
-                            console.error('Error assigning leads:', error);
-                            toast.error('Failed to assign leads');
-                          } finally {
-                            setAssigningSelectedLeads(false);
                           }
-                        }}
-                        disabled={assigningSelectedLeads}
-                      >
-                        <EmployeeAvatar employeeId={handler.id} size="md" />
+
+                          if (errorCount === 0) {
+                            toast.success(`Successfully assigned ${successCount} lead(s) to ${handler.display_name}`);
+                          } else {
+                            toast.success(`Assigned ${successCount} lead(s), ${errorCount} failed`);
+                          }
+
+                          // Clear selection and close box
+                          setSelectedLeads(new Set());
+                          setShowSelectedLeadsAssignBox(false);
+                          setSelectedLeadsHandlerSearch('');
+                          setIsSelectionMode(false);
+
+                          // Refresh data
+                          await fetchData();
+                        } catch (error: any) {
+                          console.error('Error assigning leads:', error);
+                          toast.error('Failed to assign leads');
+                        } finally {
+                          setAssigningSelectedLeads(false);
+                        }
+                      }}
+                      disabled={assigningSelectedLeads}
+                    >
+                      <EmployeeAvatar employeeId={handler.id} size="md" />
                         <div className="flex-1 min-w-[150px]">
-                          <p className="font-medium text-gray-900">{handler.display_name}</p>
-                          {handler.department && (
-                            <p className="text-sm text-gray-500">{handler.department}</p>
-                          )}
-                        </div>
+                        <p className="font-medium text-gray-900">{handler.display_name}</p>
+                        {handler.department && (
+                          <p className="text-sm text-gray-500">{handler.department}</p>
+                        )}
+                      </div>
                         <div className="flex-shrink-0 flex items-center gap-4">
                           <div className="text-center min-w-[100px]">
                             <p className="text-xs text-gray-500">First Payment</p>
-                            <p className="text-sm font-semibold text-gray-900">
+                          <p className="text-sm font-semibold text-gray-900">
                               {formatCurrency(handler.firstPaymentDue || 0, 'NIS')}
-                            </p>
-                          </div>
+                          </p>
+                        </div>
                           <div className="text-center min-w-[120px]">
                             <p className="text-xs text-gray-500">Intermediate Payment</p>
                             <p className="text-sm font-semibold text-gray-900">
@@ -2770,30 +2770,30 @@ const HandlerManagementPage: React.FC = () => {
                             </p>
                           </div>
                           <div className="text-center min-w-[80px]">
-                            <p className="text-xs text-gray-500">New Cases</p>
-                            <p className="text-sm font-semibold text-gray-900">{handler.newCasesCount ?? 0}</p>
-                          </div>
-                          <div className="text-center min-w-[90px]">
-                            <p className="text-xs text-gray-500">Active Cases</p>
-                            <p className="text-sm font-semibold" style={{ color: 'rgb(25, 49, 31)' }}>
-                              {handler.activeCasesCount ?? 0}
-                            </p>
-                          </div>
+                          <p className="text-xs text-gray-500">New Cases</p>
+                          <p className="text-sm font-semibold text-gray-900">{handler.newCasesCount ?? 0}</p>
                         </div>
-                      </button>
-                    ))
-                )}
+                          <div className="text-center min-w-[90px]">
+                          <p className="text-xs text-gray-500">Active Cases</p>
+                          <p className="text-sm font-semibold" style={{ color: 'rgb(25, 49, 31)' }}>
+                            {handler.activeCasesCount ?? 0}
+                          </p>
+                        </div>
+                      </div>
+                    </button>
+                  ))
+              )}
+            </div>
+          </div>
+          {assigningSelectedLeads && (
+            <div className="p-4 border-t border-gray-200 bg-gray-50">
+              <div className="flex items-center justify-center gap-2 text-gray-600">
+                <span className="loading loading-spinner loading-sm"></span>
+                <span className="text-sm">Assigning leads...</span>
               </div>
             </div>
-            {assigningSelectedLeads && (
-              <div className="p-4 border-t border-gray-200 bg-gray-50">
-                <div className="flex items-center justify-center gap-2 text-gray-600">
-                  <span className="loading loading-spinner loading-sm"></span>
-                  <span className="text-sm">Assigning leads...</span>
-                </div>
-              </div>
-            )}
-          </div>
+          )}
+        </div>
         </>
       )}
     </div>

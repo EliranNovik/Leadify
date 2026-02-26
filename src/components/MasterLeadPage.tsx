@@ -257,8 +257,8 @@ const MasterLeadPage: React.FC = () => {
       return;
     }
 
-    const decodedLeadNumber = decodeURIComponent(lead_number);
-    const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
+      const decodedLeadNumber = decodeURIComponent(lead_number);
+      const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
 
     // Set loading to true immediately - will be set to false only if we have matching persisted data
     setLoading(true);
@@ -531,7 +531,7 @@ const MasterLeadPage: React.FC = () => {
           const lookupKey = lead.id;
           const contractData = contractsDataMap.get(lookupKey);
           return {
-            ...lead,
+          ...lead,
             agreement: contractData ? contractData.id : '---',
             agreementIsLegacy: contractData ? contractData.isLegacy : undefined
           };
@@ -563,7 +563,7 @@ const MasterLeadPage: React.FC = () => {
           const lookupKey = lead.id.replace('legacy_', '');
           const contractData = contractsDataMap.get(lookupKey);
           return {
-            ...lead,
+          ...lead,
             agreement: contractData ? contractData.id : '---',
             agreementIsLegacy: contractData ? contractData.isLegacy : undefined
           };
@@ -1111,10 +1111,10 @@ const MasterLeadPage: React.FC = () => {
                                 <div className="flex flex-col gap-1">
                                   {subLead.category && subLead.category !== 'Unknown' && (
                                     <span className="line-clamp-1 break-words text-sm">{subLead.category}</span>
-                                  )}
-                                  {subLead.topic && (
+                            )}
+                            {subLead.topic && (
                                     <span className="line-clamp-1 break-words text-sm text-base-content/70">{subLead.topic}</span>
-                                  )}
+                            )}
                                 </div>
                               </div>
                             ) : null}

@@ -45,7 +45,7 @@ export const preCheckExternalUser = async (userId?: string): Promise<void> => {
         try {
             // Get auth user
             const { data: { user }, error: authError } = await supabase.auth.getUser();
-            
+
             if (authError || !user) {
                 return null;
             }
@@ -57,8 +57,8 @@ export const preCheckExternalUser = async (userId?: string): Promise<void> => {
 
             // Check cache again (might have been updated by another call)
             const now = Date.now();
-            if (cachedExternalUser && 
-                cachedExternalUser.userId === user.id && 
+            if (cachedExternalUser &&
+                cachedExternalUser.userId === user.id &&
                 (now - cachedExternalUser.timestamp) < CACHE_DURATION) {
                 return cachedExternalUser;
             }
@@ -69,15 +69,15 @@ export const preCheckExternalUser = async (userId?: string): Promise<void> => {
                 .select('extern')
                 .eq('auth_id', user.id)
                 .maybeSingle();
-            
+
             if (!quickError && userDataQuick) {
                 const externValue = userDataQuick.extern;
-                const isExternal = externValue === true || 
-                                 externValue === 'true' || 
-                                 externValue === 1 || 
-                                 externValue === '1' ||
-                                 (typeof externValue === 'string' && externValue.toLowerCase() === 'true');
-                
+                const isExternal = externValue === true ||
+                    externValue === 'true' ||
+                    externValue === 1 ||
+                    externValue === '1' ||
+                    (typeof externValue === 'string' && externValue.toLowerCase() === 'true');
+
                 // Create initial cache entry
                 cachedExternalUser = {
                     isExternalUser: isExternal,
@@ -123,26 +123,26 @@ export const preCheckExternalUser = async (userId?: string): Promise<void> => {
                                     }
                                 })() : Promise.resolve({ data: null, error: null })
                             ]);
-                            
+
                             const fullUserData = userQuery.data;
                             const employeeData = employeeQuery.data;
-                            
+
                             let finalUserName: string | null = user.email || null;
                             let finalUserImage: string | null = null;
-                            
+
                             if (fullUserData) {
                                 // Priority 1: full_name from users table
                                 if (fullUserData.full_name?.trim()) {
                                     finalUserName = fullUserData.full_name.trim();
                                 }
-                                
+
                                 // Priority 2: Employee official_name or display_name
                                 if (employeeData?.tenants_employee) {
-                                    const emp = Array.isArray(employeeData.tenants_employee) 
-                                        ? employeeData.tenants_employee[0] 
+                                    const emp = Array.isArray(employeeData.tenants_employee)
+                                        ? employeeData.tenants_employee[0]
                                         : employeeData.tenants_employee;
                                     if (emp?.photo_url) finalUserImage = emp.photo_url;
-                                    
+
                                     if (!finalUserName || finalUserName === user.email) {
                                         if (emp?.official_name?.trim()) {
                                             finalUserName = emp.official_name.trim();
@@ -151,7 +151,7 @@ export const preCheckExternalUser = async (userId?: string): Promise<void> => {
                                         }
                                     }
                                 }
-                                
+
                                 // Priority 3: first_name + last_name
                                 if (!finalUserName || finalUserName === user.email) {
                                     if (fullUserData.first_name && fullUserData.last_name) {
@@ -159,7 +159,7 @@ export const preCheckExternalUser = async (userId?: string): Promise<void> => {
                                     }
                                 }
                             }
-                            
+
                             // Update cache with full data
                             cachedExternalUser = {
                                 isExternalUser: true,
@@ -173,7 +173,7 @@ export const preCheckExternalUser = async (userId?: string): Promise<void> => {
                         }
                     })();
                 }
-                
+
                 return cachedExternalUser;
             }
 
@@ -184,15 +184,15 @@ export const preCheckExternalUser = async (userId?: string): Promise<void> => {
                     .select('extern')
                     .ilike('email', user.email)
                     .maybeSingle();
-                
+
                 if (!emailQuickError && emailDataQuick) {
                     const externValue = emailDataQuick.extern;
-                    const isExternal = externValue === true || 
-                                     externValue === 'true' || 
-                                     externValue === 1 || 
-                                     externValue === '1' ||
-                                     (typeof externValue === 'string' && externValue.toLowerCase() === 'true');
-                    
+                    const isExternal = externValue === true ||
+                        externValue === 'true' ||
+                        externValue === 1 ||
+                        externValue === '1' ||
+                        (typeof externValue === 'string' && externValue.toLowerCase() === 'true');
+
                     cachedExternalUser = {
                         isExternalUser: isExternal,
                         userName: user.email || null,
@@ -200,7 +200,7 @@ export const preCheckExternalUser = async (userId?: string): Promise<void> => {
                         timestamp: now,
                         userId: user.id
                     };
-                    
+
                     return cachedExternalUser;
                 }
             }
@@ -228,7 +228,7 @@ export const useExternalUser = () => {
             const storageKey = `sb-${supabaseUrl.split('//')[1]?.split('.')[0]}-auth-token`;
             const cached = localStorage.getItem(storageKey);
             let currentUserId: string | null = null;
-            
+
             if (cached) {
                 try {
                     const parsed = JSON.parse(cached);
@@ -237,7 +237,7 @@ export const useExternalUser = () => {
                     // Ignore parse errors
                 }
             }
-            
+
             // If we have cached external user data and it matches current user, use it immediately
             if (cachedExternalUser && currentUserId) {
                 const now = Date.now();
@@ -250,7 +250,7 @@ export const useExternalUser = () => {
                     };
                 }
             }
-            
+
             // If we have cached data but no current user ID yet, still use it if it's recent (within 5 minutes)
             // This handles the case where auth hasn't loaded yet but we have recent cache
             // This is critical to prevent flash of regular dashboard for external users
@@ -259,7 +259,7 @@ export const useExternalUser = () => {
                 const age = now - cachedExternalUser.timestamp;
                 // Use cache if it's recent (5 minutes) - this prevents flash on initial load
                 if (age < 300000) { // 5 minutes for initial load
-                    console.log('✅ useExternalUser: Using cached data (no user ID yet), age:', age, 'ms');
+                    // Using cached data (no user ID yet)
                     return {
                         isExternalUser: cachedExternalUser.isExternalUser,
                         userName: cachedExternalUser.userName,
@@ -268,7 +268,7 @@ export const useExternalUser = () => {
                     };
                 }
             }
-            
+
             // Also check if we have ANY recent cache (even without user ID match)
             // This is a fallback for when user ID doesn't match but cache is very recent
             if (cachedExternalUser) {
@@ -277,7 +277,7 @@ export const useExternalUser = () => {
                 // If cache is very recent (within 30 seconds), use it even without user ID match
                 // This handles edge cases where user ID might have changed slightly
                 if (age < 30000) { // 30 seconds
-                    console.log('✅ useExternalUser: Using very recent cache (fallback), age:', age, 'ms');
+                    // Using very recent cache (fallback)
                     return {
                         isExternalUser: cachedExternalUser.isExternalUser,
                         userName: cachedExternalUser.userName,
@@ -308,9 +308,8 @@ export const useExternalUser = () => {
             try {
                 // Get auth user first (fast)
                 const { data: { user }, error: authError } = await supabase.auth.getUser();
-                
+
                 if (authError || !user) {
-                    console.error('Error getting auth user:', authError);
                     setIsExternalUser(false);
                     setIsLoading(false);
                     return;
@@ -318,25 +317,19 @@ export const useExternalUser = () => {
 
                 // Check cache first - this is fast and prevents flash
                 const now = Date.now();
-                if (cachedExternalUser && 
-                    cachedExternalUser.userId === user.id && 
+                if (cachedExternalUser &&
+                    cachedExternalUser.userId === user.id &&
                     (now - cachedExternalUser.timestamp) < CACHE_DURATION) {
                     // Use cached data immediately - update state if it changed
-                    // This ensures the UI updates immediately if cache says external user
                     setIsExternalUser(cachedExternalUser.isExternalUser);
                     setUserName(cachedExternalUser.userName);
                     setUserImage(cachedExternalUser.userImage);
                     setIsLoading(false);
-                    // If cached data says external, we're done - don't fetch again
-                    // This prevents the regular dashboard from flashing
-                    if (cachedExternalUser.isExternalUser) {
-                        console.log('✅ useExternalUser: Using cached external user data, skipping fetch');
-                        return;
-                    }
-                    // If cached data says not external, continue to verify (in case status changed)
+                    // If we have valid cache, we're done - don't fetch again
+                    return;
                 }
 
-                // If check is in progress, wait for it
+                // If check is in progress for this user, wait for it
                 if (checkInProgress && checkPromise) {
                     const result = await checkPromise;
                     if (result && result.userId === user.id) {
@@ -348,45 +341,85 @@ export const useExternalUser = () => {
                     }
                 }
 
-                // Optimize: Only fetch extern field first to determine if external (fastest check)
-                // Then fetch other data if needed
-                const { data: userDataQuick, error: quickError } = await supabase
-                    .from('users')
-                    .select('extern')
-                    .eq('auth_id', user.id)
-                    .maybeSingle();
-                
-                // Log for debugging external user issues
-                if (quickError) {
-                    console.warn('Quick extern check error (will try fallback):', quickError);
+                // Only fetch if we don't have valid cache and no check is in progress
+                // This ensures only ONE check happens per user ID across all components
+                if (checkInProgress) {
+                    // Another component is already checking - wait for it
+                    if (checkPromise) {
+                        const result = await checkPromise;
+                        if (result && result.userId === user.id) {
+                            setIsExternalUser(result.isExternalUser);
+                            setUserName(result.userName);
+                            setUserImage(result.userImage);
+                            setIsLoading(false);
+                        }
+                    }
+                    return;
                 }
-                
-                if (!quickError && userDataQuick) {
-                    // Handle various formats of extern field: true, 'true', 1, '1', etc.
-                    const externValue = userDataQuick.extern;
-                    const isExternal = externValue === true || 
-                                     externValue === 'true' || 
-                                     externValue === 1 || 
-                                     externValue === '1' ||
-                                     (typeof externValue === 'string' && externValue.toLowerCase() === 'true');
-                    console.log('External user check result:', { 
-                        userId: user.id, 
-                        extern: externValue, 
-                        isExternal,
-                        type: typeof externValue 
-                    });
-                    setIsExternalUser(isExternal);
-                    setIsLoading(false); // Set loading false immediately after extern check
-                    
-                    // Update cache immediately with extern status
-                    cachedExternalUser = {
-                        isExternalUser: isExternal,
-                        userName: user.email || null,
-                        userImage: null,
-                        timestamp: now,
-                        userId: user.id
-                    };
-                    
+
+                // Set check in progress flag BEFORE making any queries
+                // This ensures only ONE check happens per user ID across all components
+                if (checkInProgress && checkPromise) {
+                    // Another component is already checking - wait for it
+                    const result = await checkPromise;
+                    if (result && result.userId === user.id) {
+                        setIsExternalUser(result.isExternalUser);
+                        setUserName(result.userName);
+                        setUserImage(result.userImage);
+                        setIsLoading(false);
+                        return;
+                    }
+                }
+
+                // Start the check - set flag and create promise
+                checkInProgress = true;
+                checkPromise = (async () => {
+                    try {
+                        // Optimize: Only fetch extern field first to determine if external (fastest check)
+                        const { data: userDataQuick, error: quickError } = await supabase
+                            .from('users')
+                            .select('extern')
+                            .eq('auth_id', user.id)
+                            .maybeSingle();
+
+                        if (!quickError && userDataQuick) {
+                            // Handle various formats of extern field: true, 'true', 1, '1', etc.
+                            const externValue = userDataQuick.extern;
+                            const isExternal = externValue === true ||
+                                externValue === 'true' ||
+                                externValue === 1 ||
+                                externValue === '1' ||
+                                (typeof externValue === 'string' && externValue.toLowerCase() === 'true');
+
+                            // Update cache immediately
+                            const result = {
+                                isExternalUser: isExternal,
+                                userName: user.email || null,
+                                userImage: null,
+                                timestamp: Date.now(),
+                                userId: user.id
+                            };
+
+                            cachedExternalUser = result;
+                            return result;
+                        }
+                        return null;
+                    } finally {
+                        checkInProgress = false;
+                        checkPromise = null;
+                    }
+                })();
+
+                const quickResult = await checkPromise;
+
+                if (quickResult) {
+                    setIsExternalUser(quickResult.isExternalUser);
+                    setUserName(quickResult.userName);
+                    setUserImage(quickResult.userImage);
+                    setIsLoading(false);
+
+                    const isExternal = quickResult.isExternalUser;
+
                     // Fetch full user data in background (non-blocking)
                     if (isExternal) {
                         // Only fetch full data if external user
@@ -421,26 +454,26 @@ export const useExternalUser = () => {
                                 }
                             })() : Promise.resolve({ data: null, error: null })
                         ]);
-                        
+
                         const fullUserData = userQuery.data;
                         const employeeData = employeeQuery.data;
-                        
+
                         let finalUserName: string | null = user.email || null;
                         let finalUserImage: string | null = null;
-                        
+
                         if (fullUserData) {
                             // Priority 1: full_name from users table
                             if (fullUserData.full_name?.trim()) {
                                 finalUserName = fullUserData.full_name.trim();
                             }
-                            
+
                             // Priority 2: Employee official_name or display_name
                             if (employeeData?.tenants_employee) {
-                                const emp = Array.isArray(employeeData.tenants_employee) 
-                                    ? employeeData.tenants_employee[0] 
+                                const emp = Array.isArray(employeeData.tenants_employee)
+                                    ? employeeData.tenants_employee[0]
                                     : employeeData.tenants_employee;
                                 if (emp?.photo_url) finalUserImage = emp.photo_url;
-                                
+
                                 // Only use employee name if full_name wasn't found
                                 if (!finalUserName || finalUserName === user.email) {
                                     if (emp?.official_name?.trim()) {
@@ -450,7 +483,7 @@ export const useExternalUser = () => {
                                     }
                                 }
                             }
-                            
+
                             // Priority 3: first_name + last_name (only if full_name not available)
                             if (!finalUserName || finalUserName === user.email) {
                                 if (fullUserData.first_name && fullUserData.last_name) {
@@ -458,10 +491,10 @@ export const useExternalUser = () => {
                                 }
                             }
                         }
-                        
+
                         setUserName(finalUserName);
                         setUserImage(finalUserImage);
-                        
+
                         // Update cache with full data
                         cachedExternalUser = {
                             isExternalUser: true,
@@ -473,7 +506,7 @@ export const useExternalUser = () => {
                     }
                     return;
                 }
-                
+
                 // Fallback to email if auth_id fails
                 if (user.email) {
                     const { data: emailDataQuick, error: emailQuickError } = await supabase
@@ -481,25 +514,20 @@ export const useExternalUser = () => {
                         .select('extern')
                         .ilike('email', user.email)
                         .maybeSingle();
-                    
+
                     if (emailQuickError) {
                         console.warn('Email extern check error (will try full query):', emailQuickError);
                     }
-                    
+
                     if (!emailQuickError && emailDataQuick) {
                         // Handle various formats of extern field: true, 'true', 1, '1', etc.
                         const externValue = emailDataQuick.extern;
-                        const isExternal = externValue === true || 
-                                         externValue === 'true' || 
-                                         externValue === 1 || 
-                                         externValue === '1' ||
-                                         (typeof externValue === 'string' && externValue.toLowerCase() === 'true');
-                        console.log('External user check result (email fallback):', { 
-                            email: user.email, 
-                            extern: externValue, 
-                            isExternal,
-                            type: typeof externValue 
-                        });
+                        const isExternal = externValue === true ||
+                            externValue === 'true' ||
+                            externValue === 1 ||
+                            externValue === '1' ||
+                            (typeof externValue === 'string' && externValue.toLowerCase() === 'true');
+                        // External user check completed (email fallback) - result cached
                         setIsExternalUser(isExternal);
                         setIsLoading(false);
                         cachedExternalUser = {
@@ -509,7 +537,7 @@ export const useExternalUser = () => {
                             timestamp: now,
                             userId: user.id
                         };
-                        
+
                         // Fetch full user data in background if external
                         if (isExternal) {
                             (async () => {
@@ -535,26 +563,26 @@ export const useExternalUser = () => {
                                             .maybeSingle()
                                             .catch(() => ({ data: null, error: null }))
                                     ]);
-                                    
+
                                     const fullUserData = userQuery.data;
                                     const employeeData = employeeQuery.data;
-                                    
+
                                     let finalUserName: string | null = user.email || null;
                                     let finalUserImage: string | null = null;
-                                    
+
                                     if (fullUserData) {
                                         // Priority 1: full_name from users table
                                         if (fullUserData.full_name?.trim()) {
                                             finalUserName = fullUserData.full_name.trim();
                                         }
-                                        
+
                                         // Priority 2: Employee official_name or display_name
                                         if (employeeData?.tenants_employee) {
-                                            const emp = Array.isArray(employeeData.tenants_employee) 
-                                                ? employeeData.tenants_employee[0] 
+                                            const emp = Array.isArray(employeeData.tenants_employee)
+                                                ? employeeData.tenants_employee[0]
                                                 : employeeData.tenants_employee;
                                             if (emp?.photo_url) finalUserImage = emp.photo_url;
-                                            
+
                                             // Only use employee name if full_name wasn't found
                                             if (!finalUserName || finalUserName === user.email) {
                                                 if (emp?.official_name?.trim()) {
@@ -564,7 +592,7 @@ export const useExternalUser = () => {
                                                 }
                                             }
                                         }
-                                        
+
                                         // Priority 3: first_name + last_name (only if full_name not available)
                                         if (!finalUserName || finalUserName === user.email) {
                                             if (fullUserData.first_name && fullUserData.last_name) {
@@ -572,10 +600,10 @@ export const useExternalUser = () => {
                                             }
                                         }
                                     }
-                                    
+
                                     setUserName(finalUserName);
                                     setUserImage(finalUserImage);
-                                    
+
                                     cachedExternalUser = {
                                         isExternalUser: true,
                                         userName: finalUserName,
@@ -600,9 +628,9 @@ export const useExternalUser = () => {
                             .select('extern, first_name, last_name, full_name, employee_id')
                             .eq('auth_id', user.id)
                             .maybeSingle();
-                        
+
                         if (!error && data) return { data, error: null };
-                        
+
                         // Fallback to email if auth_id fails
                         if (user.email) {
                             const { data: emailData, error: emailError } = await supabase
@@ -617,7 +645,7 @@ export const useExternalUser = () => {
                         return { data: null, error: err };
                     }
                 })() : Promise.resolve({ data: null, error: null });
-                
+
                 const employeeQueryPromise = user.email ? (async () => {
                     try {
                         const { data, error } = await supabase
@@ -638,7 +666,7 @@ export const useExternalUser = () => {
                         return { data: null, error: null };
                     }
                 })() : Promise.resolve({ data: null, error: null });
-                
+
                 const [userQuery, employeeQuery] = await Promise.all([
                     userQueryPromise,
                     employeeQueryPromise
@@ -658,35 +686,28 @@ export const useExternalUser = () => {
                 if (userData) {
                     // Handle various formats of extern field: true, 'true', 1, '1', etc.
                     const externValue = userData.extern;
-                    finalIsExternal = externValue === true || 
-                                    externValue === 'true' || 
-                                    externValue === 1 || 
-                                    externValue === '1' ||
-                                    (typeof externValue === 'string' && externValue.toLowerCase() === 'true');
-                    console.log('External user check result (full query):', { 
-                        userId: user.id,
-                        email: user.email,
-                        extern: externValue, 
-                        isExternal: finalIsExternal,
-                        type: typeof externValue,
-                        rawValue: JSON.stringify(externValue)
-                    });
+                    finalIsExternal = externValue === true ||
+                        externValue === 'true' ||
+                        externValue === 1 ||
+                        externValue === '1' ||
+                        (typeof externValue === 'string' && externValue.toLowerCase() === 'true');
+                    // External user check completed (full query) - result cached
 
                     // Priority 1: full_name from users table
                     if (userData.full_name?.trim()) {
                         finalUserName = userData.full_name.trim();
                     }
-                    
+
                     // Priority 2: Employee official_name or display_name
                     if (employeeData?.tenants_employee) {
-                        const emp = Array.isArray(employeeData.tenants_employee) 
-                            ? employeeData.tenants_employee[0] 
+                        const emp = Array.isArray(employeeData.tenants_employee)
+                            ? employeeData.tenants_employee[0]
                             : employeeData.tenants_employee;
-                        
+
                         if (emp?.photo_url) {
                             finalUserImage = emp.photo_url;
                         }
-                        
+
                         // Only use employee name if full_name wasn't found
                         if (!finalUserName || finalUserName === user.email) {
                             if (emp?.official_name?.trim()) {

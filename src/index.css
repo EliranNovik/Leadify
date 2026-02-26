@@ -263,48 +263,57 @@ html,
 
 /* --- DARK MODE STYLING --- */
 /* Apply gradient background to root elements in dark mode */
-html.dark {
+html.dark:not(.theme-alt) {
   background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%);
 }
 
-html.dark body {
+html.dark:not(.theme-alt) body {
   background: transparent;
   color: #ffffff;
 }
 
 /* Page containers - transparent to show gradient */
-html.dark .bg-base-100,
-html.dark .bg-white,
-html.dark .min-h-screen,
-html.dark .h-screen {
+html.dark:not(.theme-alt) .bg-base-100,
+html.dark:not(.theme-alt) .bg-white,
+html.dark:not(.theme-alt) .min-h-screen,
+html.dark:not(.theme-alt) .h-screen {
   background: transparent !important;
   color: #ffffff !important;
 }
 
 /* Ensure main content is visible */
-html.dark main {
+html.dark:not(.theme-alt) main {
   background: transparent !important;
 }
 
+/* Alternative theme - force white background */
+html.theme-alt,
+html.theme-alt body,
+html.theme-alt .bg-base-100,
+html.theme-alt main {
+  background: #ffffff !important;
+  color: #1a1a1a !important;
+}
+
 /* Secondary containers with glassmorphism */
-html.dark .bg-gray-50,
-html.dark .bg-gray-100,
-html.dark .bg-base-200,
-html.dark .bg-base-300,
-html.dark .bg-slate-50,
-html.dark .bg-slate-100 {
+html.dark:not(.theme-alt) .bg-gray-50,
+html.dark:not(.theme-alt) .bg-gray-100,
+html.dark:not(.theme-alt) .bg-base-200,
+html.dark:not(.theme-alt) .bg-base-300,
+html.dark:not(.theme-alt) .bg-slate-50,
+html.dark:not(.theme-alt) .bg-slate-100 {
   background: rgba(255, 255, 255, 0.05) !important;
   color: #ffffff !important;
   border: 1px solid rgba(255, 255, 255, 0.1) !important;
 }
 
 /* Cards and rounded elements with glassmorphism styling */
-html.dark .card,
-html.dark .glass-card,
-html.dark .suggestion-card,
-html.dark .rounded-2xl,
-html.dark .rounded-xl,
-html.dark .rounded-lg {
+html.dark:not(.theme-alt) .card,
+html.dark:not(.theme-alt) .glass-card,
+html.dark:not(.theme-alt) .suggestion-card,
+html.dark:not(.theme-alt) .rounded-2xl,
+html.dark:not(.theme-alt) .rounded-xl,
+html.dark:not(.theme-alt) .rounded-lg {
   background: rgba(255, 255, 255, 0.1) !important;
   color: #ffffff !important;
   border: 1px solid rgba(255, 255, 255, 0.2) !important;
@@ -314,9 +323,9 @@ html.dark .rounded-lg {
 }
 
 /* Card hover effects */
-html.dark .card:hover,
-html.dark .glass-card:hover,
-html.dark .suggestion-card:hover {
+html.dark:not(.theme-alt) .card:hover,
+html.dark:not(.theme-alt) .glass-card:hover,
+html.dark:not(.theme-alt) .suggestion-card:hover {
   transform: translateY(-2px) !important;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4) !important;
   border-color: rgba(255, 255, 255, 0.3) !important;
@@ -340,26 +349,26 @@ html.dark .navbar {
 }
 
 /* Modern input fields */
-html.dark input,
-html.dark textarea,
-html.dark select {
+html.dark:not(.theme-alt) input,
+html.dark:not(.theme-alt) textarea,
+html.dark:not(.theme-alt) select {
   background: rgba(255, 255, 255, 0.1) !important;
   color: #ffffff !important;
   border: 1px solid rgba(255, 255, 255, 0.2) !important;
   border-radius: 12px !important;
 }
 
-html.dark input:focus,
-html.dark textarea:focus,
-html.dark select:focus {
+html.dark:not(.theme-alt) input:focus,
+html.dark:not(.theme-alt) textarea:focus,
+html.dark:not(.theme-alt) select:focus {
   background: rgba(255, 255, 255, 0.15) !important;
   border: 2px solid rgba(255, 255, 255, 0.4) !important;
   outline: none !important;
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1) !important;
 }
 
-html.dark input::placeholder,
-html.dark textarea::placeholder {
+html.dark:not(.theme-alt) input::placeholder,
+html.dark:not(.theme-alt) textarea::placeholder {
   color: rgba(255, 255, 255, 0.6) !important;
 }
 
@@ -853,6 +862,7 @@ input[type="number"].no-arrows {
   -moz-appearance: textfield;
 }
 
+
 /* Hide ClientInformationBox header on mobile when using side-by-side layout */
 @media (max-width: 768px) {
   .hide-client-header-mobile>div.text-black>div:first-child {
@@ -879,8 +889,14 @@ input[type="number"].no-arrows {
   border-color: rgba(255, 255, 255, 0.1);
 }
 
+/* Sidebar frosted glass - Alternative theme (green) */
+html.theme-alt .sidebar-frosted-glass {
+  background-color: #505d57 !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
 /* Sidebar frosted glass - Dark mode */
-html.dark .sidebar-frosted-glass {
+html.dark:not(.theme-alt) .sidebar-frosted-glass {
   background: rgba(15, 23, 42, 0.7) !important;
   backdrop-filter: blur(20px) !important;
   -webkit-backdrop-filter: blur(20px) !important;
@@ -961,6 +977,196 @@ html.dark .z-\[9999\] .fixed.inset-0.bg-black\/50 {
 body:has(.manual-price-offer-modal-open) .tooltip::before,
 body:has(.manual-price-offer-modal-open) .tooltip::after {
   display: none !important;
+}
+
+/* ============================================
+   ALTERNATIVE (GREEN) THEME - Component Level
+   ============================================
+   These rules ensure green colors override when theme-alt is active
+   Only for Dashboard, Sidebar, and Header components
+   ============================================ */
+
+/* Custom color variables for alternative theme - RGB(80, 93, 87) = #505d57 */
+:root {
+  --alt-green-50: #e8ebe9;
+  --alt-green-100: #d1d7d3;
+  --alt-green-200: #a3afa7;
+  --alt-green-300: #75877b;
+  --alt-green-400: #636f65;
+  --alt-green-500: #505d57;
+  --alt-green-600: #3d4743;
+  --alt-green-700: #2a312f;
+  --alt-green-800: #1a1f1d;
+  --alt-green-900: #0d0f0e;
+}
+
+/* Force green colors to override when theme-alt is active */
+html.theme-alt .bg-green-50 { background-color: var(--alt-green-50) !important; }
+html.theme-alt .bg-green-100 { background-color: var(--alt-green-100) !important; }
+html.theme-alt .bg-green-200 { background-color: var(--alt-green-200) !important; }
+html.theme-alt .bg-green-300 { background-color: var(--alt-green-300) !important; }
+html.theme-alt .bg-green-400 { background-color: var(--alt-green-400) !important; }
+html.theme-alt .bg-green-500 { background-color: var(--alt-green-500) !important; }
+html.theme-alt .bg-green-600 { background-color: var(--alt-green-600) !important; }
+html.theme-alt .bg-green-700 { background-color: var(--alt-green-700) !important; }
+html.theme-alt .bg-green-800 { background-color: var(--alt-green-800) !important; }
+html.theme-alt .bg-green-900 { background-color: var(--alt-green-900) !important; }
+html.theme-alt .text-green-50 { color: var(--alt-green-50) !important; }
+html.theme-alt .text-green-100 { color: var(--alt-green-100) !important; }
+html.theme-alt .text-green-200 { color: var(--alt-green-200) !important; }
+html.theme-alt .text-green-300 { color: var(--alt-green-300) !important; }
+html.theme-alt .text-green-400 { color: var(--alt-green-400) !important; }
+html.theme-alt .text-green-500 { color: var(--alt-green-500) !important; }
+html.theme-alt .text-green-600 { color: var(--alt-green-600) !important; }
+html.theme-alt .text-green-700 { color: var(--alt-green-700) !important; }
+html.theme-alt .text-green-800 { color: var(--alt-green-800) !important; }
+html.theme-alt .text-green-900 { color: var(--alt-green-900) !important; }
+html.theme-alt .border-green-50 { border-color: var(--alt-green-50) !important; }
+html.theme-alt .border-green-100 { border-color: var(--alt-green-100) !important; }
+html.theme-alt .border-green-200 { border-color: var(--alt-green-200) !important; }
+html.theme-alt .border-green-300 { border-color: var(--alt-green-300) !important; }
+html.theme-alt .border-green-400 { border-color: var(--alt-green-400) !important; }
+html.theme-alt .border-green-500 { border-color: var(--alt-green-500) !important; }
+html.theme-alt .border-green-600 { border-color: var(--alt-green-600) !important; }
+html.theme-alt .border-green-700 { border-color: var(--alt-green-700) !important; }
+html.theme-alt .border-green-800 { border-color: var(--alt-green-800) !important; }
+html.theme-alt .border-green-900 { border-color: var(--alt-green-900) !important; }
+/* Emerald and lime colors - use same base color */
+html.theme-alt .bg-emerald-500,
+html.theme-alt .bg-emerald-600 { background-color: var(--alt-green-500) !important; }
+html.theme-alt .text-emerald-500,
+html.theme-alt .text-emerald-600 { color: var(--alt-green-500) !important; }
+html.theme-alt .bg-lime-400,
+html.theme-alt .bg-lime-600 { background-color: var(--alt-green-400) !important; }
+html.theme-alt .text-lime-400,
+html.theme-alt .text-lime-600 { color: var(--alt-green-400) !important; }
+/* Gradient colors - override Tailwind gradient utilities */
+html.theme-alt [class*="from-green-500"] { 
+  --tw-gradient-from: var(--alt-green-500) !important;
+  --tw-gradient-to: transparent !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+html.theme-alt [class*="from-green-600"] { 
+  --tw-gradient-from: var(--alt-green-600) !important;
+  --tw-gradient-to: transparent !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+html.theme-alt [class*="via-green-600"] { 
+  --tw-gradient-to: var(--alt-green-600) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--alt-green-600), var(--tw-gradient-to) !important;
+}
+html.theme-alt [class*="via-emerald-600"],
+html.theme-alt [class*="via-emerald-500"] { 
+  --tw-gradient-to: var(--alt-green-500) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--alt-green-500), var(--tw-gradient-to) !important;
+}
+html.theme-alt [class*="to-green-500"] { 
+  --tw-gradient-to: var(--alt-green-500) !important;
+}
+html.theme-alt [class*="to-green-600"] { 
+  --tw-gradient-to: var(--alt-green-600) !important;
+}
+html.theme-alt [class*="to-emerald-600"] { 
+  --tw-gradient-to: var(--alt-green-500) !important;
+}
+html.theme-alt [class*="to-lime-400"],
+html.theme-alt [class*="to-lime-600"] { 
+  --tw-gradient-to: var(--alt-green-400) !important;
+}
+/* Specific gradient combinations for summary boxes */
+html.theme-alt .bg-gradient-to-tr.from-green-500.via-emerald-600.to-lime-600 {
+  background-image: linear-gradient(to top right, var(--alt-green-500), var(--alt-green-500), var(--alt-green-400)) !important;
+}
+html.theme-alt .bg-gradient-to-tr.from-emerald-600.via-green-600.to-green-500 {
+  background-image: linear-gradient(to top right, var(--alt-green-500), var(--alt-green-500), var(--alt-green-500)) !important;
+}
+html.theme-alt .bg-gradient-to-tr.from-green-500.via-emerald-500.to-lime-400 {
+  background-image: linear-gradient(to top right, var(--alt-green-500), var(--alt-green-500), var(--alt-green-400)) !important;
+}
+html.theme-alt .bg-gradient-to-tr.from-green-600.via-emerald-600.to-lime-600 {
+  background-image: linear-gradient(to top right, var(--alt-green-600), var(--alt-green-500), var(--alt-green-400)) !important;
+}
+html.theme-alt .bg-gradient-to-tr.from-green-600.to-emerald-600 {
+  background-image: linear-gradient(to top right, var(--alt-green-600), var(--alt-green-500)) !important;
+}
+html.theme-alt .bg-gradient-to-r.from-green-500.via-emerald-500.to-lime-600,
+html.theme-alt .bg-gradient-to-r.from-green-500.via-emerald-500.to-lime-400 {
+  background-image: linear-gradient(to right, var(--alt-green-500), var(--alt-green-500), var(--alt-green-400)) !important;
+}
+html.theme-alt .bg-gradient-to-r.from-green-600.to-emerald-600 {
+  background-image: linear-gradient(to right, var(--alt-green-600), var(--alt-green-500)) !important;
+}
+html.theme-alt .bg-gradient-to-br.from-green-100.to-emerald-100 {
+  background-image: linear-gradient(to bottom right, var(--alt-green-100), var(--alt-green-100)) !important;
+}
+html.theme-alt .bg-gradient-to-r.from-green-600.to-green-700 {
+  background-image: linear-gradient(to right, var(--alt-green-600), var(--alt-green-700)) !important;
+}
+html.theme-alt .bg-gradient-to-r.from-emerald-500.to-green-500 {
+  background-image: linear-gradient(to right, var(--alt-green-500), var(--alt-green-500)) !important;
+}
+/* Override RMQ logo color when theme-alt is active */
+html.theme-alt [style*="color: #3b28c7"],
+html.theme-alt [style*="color:#3b28c7"],
+html.theme-alt [style*="color: '#3b28c7'"],
+html.theme-alt [style*="color:'#3b28c7'"],
+html.theme-alt [style*="color: #3E28CD"],
+html.theme-alt [style*="color:#3E28CD"],
+html.theme-alt [style*="color: '#3E28CD'"],
+html.theme-alt [style*="color:'#3E28CD'"] {
+  color: var(--alt-green-500) !important;
+}
+/* Ensure icons in dashboard boxes remain white - override any purple styling */
+html.theme-alt .text-white {
+  color: white !important;
+}
+/* Override any purple icon colors in dashboard boxes */
+html.theme-alt .bg-white\/20 svg,
+html.theme-alt .bg-white\/20 path {
+  color: white !important;
+  fill: white !important;
+  stroke: white !important;
+}
+/* Input fields and search bars - force white background in alternative theme */
+html.theme-alt input[type="text"],
+html.theme-alt input[type="search"],
+html.theme-alt input[type="email"],
+html.theme-alt input[type="password"],
+html.theme-alt input[type="number"],
+html.theme-alt input[type="date"],
+html.theme-alt input[type="time"],
+html.theme-alt input[type="datetime-local"],
+html.theme-alt textarea,
+html.theme-alt select,
+html.theme-alt .input,
+html.theme-alt .input-bordered,
+html.theme-alt input.input,
+html.theme-alt input.input-bordered,
+html.theme-alt textarea.input,
+html.theme-alt textarea.input-bordered,
+html.theme-alt select.input,
+html.theme-alt select.input-bordered {
+  background-color: white !important;
+  background: white !important;
+  border-color: #d1d5db !important;
+  color: #1f2937 !important;
+}
+html.theme-alt input[type="text"]:focus,
+html.theme-alt input[type="search"]:focus,
+html.theme-alt input[type="email"]:focus,
+html.theme-alt input[type="password"]:focus,
+html.theme-alt input[type="number"]:focus,
+html.theme-alt input[type="date"]:focus,
+html.theme-alt input[type="time"]:focus,
+html.theme-alt input[type="datetime-local"]:focus,
+html.theme-alt textarea:focus,
+html.theme-alt select:focus,
+html.theme-alt .input:focus,
+html.theme-alt .input-bordered:focus {
+  background-color: white !important;
+  background: white !important;
+  border-color: #9ca3af !important;
+  outline-color: #9ca3af !important;
 }
 
 /* --- Print styles for ProformaViewPage --- */

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useLocation, Link } from 'react-router-dom';
 import { FaRobot } from 'react-icons/fa';
 import { useAdminRole } from '../hooks/useAdminRole';
@@ -133,6 +133,43 @@ const mobileSidebarItems: SidebarItem[] = [
 ];
 
 const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, userRole = 'User', isOpen = false, onClose, onOpenAIChat, mobileOnly = false }) => {
+  // Check if alternative (green) theme is active - make it reactive
+  const [isAltTheme, setIsAltTheme] = useState(() => document.documentElement.classList.contains('theme-alt'));
+
+  useEffect(() => {
+    const checkTheme = () => {
+      const hasThemeAlt = document.documentElement.classList.contains('theme-alt');
+      setIsAltTheme(hasThemeAlt);
+    };
+
+    checkTheme();
+    const observer = new MutationObserver(checkTheme);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class']
+    });
+
+    const handleThemeChange = (e: CustomEvent) => {
+      setTimeout(checkTheme, 50);
+    };
+    window.addEventListener('themechange', handleThemeChange as EventListener);
+
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'theme') {
+        setTimeout(checkTheme, 100);
+      }
+    };
+    window.addEventListener('storagechange', handleStorageChange);
+
+    const interval = setInterval(checkTheme, 500);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('themechange', handleThemeChange as EventListener);
+      window.removeEventListener('storagechange', handleStorageChange);
+      clearInterval(interval);
+    };
+  }, []);
   const location = useLocation();
   const { isAdmin } = useAdminRole();
   const { isExternalUser, isLoading: isLoadingExternal } = useExternalUser();
@@ -633,12 +670,9 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
   }, [isSuperUser]);
 
   // Hide sidebar completely for external users - check after all hooks are called
-  // Wait for external user check to complete to prevent flash
-  if (isLoadingExternal) {
-    return null; // Show nothing while checking external user status
-  }
-
-  if (isExternalUser) {
+  // Removed blocking check - auth is already verified, don't block rendering
+  // External user check will complete in background, but won't block rendering
+  if (isExternalUser && !isLoadingExternal) {
     return null; // No sidebar for external users
   }
 
@@ -668,9 +702,9 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                         <Link
                           to={item.path}
                           className={`sidebar-link flex items-center gap-4 px-4 py-3 transition-all duration-200 cursor-pointer group/sidebar-link hover:bg-white/10 hover:text-white relative
-                        ${isActive ? 'sidebar-link--active text-cyan-200 font-bold border-l-4 border-cyan-300' : 'text-white/80'}`}
+                        ${isActive ? (isAltTheme ? 'sidebar-link--active text-green-200 font-bold border-l-4 border-green-300' : 'sidebar-link--active text-cyan-200 font-bold border-l-4 border-cyan-300') : 'text-white/80'}`}
                         >
-                          <Icon className={`w-6 h-6 min-w-[1.5rem] ${isActive ? 'text-cyan-300' : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
+                          <Icon className={`w-6 h-6 min-w-[1.5rem] ${isActive ? (isAltTheme ? 'text-green-300' : 'text-cyan-300') : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
                           <span className={`ml-2 text-base font-medium transition-opacity duration-200 whitespace-nowrap ${isSidebarHovered ? 'opacity-100' : 'opacity-0'}`}>
                             {item.label}
                           </span>
@@ -680,11 +714,11 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                         <>
                           <button
                             className={`sidebar-link flex items-center gap-4 px-4 py-3 transition-all duration-200 cursor-pointer w-full group/sidebar-link hover:bg-white/10 hover:text-white
-                          ${isActive ? 'sidebar-link--active text-cyan-200 font-bold border-l-4 border-cyan-300' : 'text-white/80'}`}
+                          ${isActive ? (isAltTheme ? 'sidebar-link--active text-green-200 font-bold border-l-4 border-green-300' : 'sidebar-link--active text-cyan-200 font-bold border-l-4 border-cyan-300') : 'text-white/80'}`}
                             onClick={() => setExpandedMenu(isExpanded ? null : item.label)}
                             type="button"
                           >
-                            <Icon className={`w-6 h-6 min-w-[1.5rem] ${isActive ? 'text-cyan-300' : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
+                            <Icon className={`w-6 h-6 min-w-[1.5rem] ${isActive ? (isAltTheme ? 'text-green-300' : 'text-cyan-300') : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
                             <span className={`ml-2 text-base font-medium transition-opacity duration-200 whitespace-nowrap ${isSidebarHovered ? 'opacity-100' : 'opacity-0'}`}>
                               {item.label}
                             </span>
@@ -700,10 +734,10 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                                     key={subIdx}
                                     to={sub.path!}
                                     className={`sidebar-sublink flex items-center gap-3 px-3 py-2 transition-all duration-200 cursor-pointer hover:bg-white/10 hover:text-white
-                                  ${isSubActive ? 'sidebar-sublink--active text-cyan-200 font-semibold border-l-4 border-cyan-300' : 'text-white/80'}`}
+                                  ${isSubActive ? (isAltTheme ? 'sidebar-sublink--active text-green-200 font-semibold border-l-4 border-green-300' : 'sidebar-sublink--active text-cyan-200 font-semibold border-l-4 border-cyan-300') : 'text-white/80'}`}
                                     onClick={() => setExpandedMenu(item.label)}
                                   >
-                                    <SubIcon className={`w-5 h-5 min-w-[1.25rem] ${isSubActive ? 'text-cyan-300' : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
+                                    <SubIcon className={`w-5 h-5 min-w-[1.25rem] ${isSubActive ? (isAltTheme ? 'text-green-300' : 'text-cyan-300') : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
                                     <span className={`text-base font-medium transition-opacity duration-200 whitespace-nowrap ${isSidebarHovered ? 'opacity-100' : 'opacity-0'}`}>{sub.label}</span>
                                   </Link>
                                 );
@@ -723,7 +757,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                 {/* Sign out button */}
                 <div className="relative group">
                   <button
-                    className="bg-white/10 text-white rounded-lg p-2 flex items-center justify-center shadow border border-white/20 hover:border-cyan-300 hover:bg-cyan-400/20 transition-colors duration-200"
+                    className={`bg-white/10 text-white rounded-lg p-2 flex items-center justify-center shadow border border-white/20 ${isAltTheme ? 'hover:border-green-300 hover:bg-green-400/20' : 'hover:border-cyan-300 hover:bg-cyan-400/20'} transition-colors duration-200`}
                     title="Sign out"
                     onClick={handleSignOut}
                   >
@@ -805,7 +839,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                             to={item.path}
                             onClick={onClose}
                             className={`group flex items-center p-3 rounded-lg transition-all duration-200
-                            ${isActive ? 'bg-[#3b28c7] text-white font-bold' : 'text-base-content'}`}
+                            ${isActive ? (isAltTheme ? 'bg-green-600 text-white font-bold' : 'bg-[#3b28c7] text-white font-bold') : 'text-base-content'}`}
                           >
                             <Icon className={`w-6 h-6 min-w-[1.5rem] ${isActive ? 'text-white' : 'text-black'}`} />
                             <span className={`ml-3 font-medium ${isActive ? 'text-white' : 'text-black'}`}>{item.label}</span>
@@ -842,7 +876,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                                         to={sub.path!}
                                         onClick={onClose}
                                         className={`group flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 cursor-pointer ${item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
-                                          ? (isSubActive ? 'bg-purple-600 text-white font-bold shadow' : 'text-black')
+                                          ? (isSubActive ? (isAltTheme ? 'bg-green-600 text-white font-bold shadow' : 'bg-purple-600 text-white font-bold shadow') : 'text-black')
                                           : (isSubActive ? 'bg-white text-black font-bold shadow' : 'text-black')
                                           }`}
                                       >
@@ -874,7 +908,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                       if (onClose) onClose();
                     }}
                   >
-                    <FaRobot className="w-6 h-6 min-w-[1.5rem] text-primary" />
+                    <FaRobot className={`w-6 h-6 min-w-[1.5rem] ${isAltTheme ? 'text-green-600' : 'text-primary'}`} />
                     <span className="ml-3 font-medium text-black">AI Assistant</span>
                   </button>
                 </li>

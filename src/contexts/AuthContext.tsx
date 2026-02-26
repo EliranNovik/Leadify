@@ -2,6 +2,22 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import { supabase, sessionManager, isAuthError, handleSessionExpiration } from '../lib/supabase';
 import { preCheckExternalUser } from '../hooks/useExternalUser';
 
+// Helper to check if error is a network/transient error (not a real auth failure)
+const isNetworkError = (error: any): boolean => {
+  if (!error) return false;
+  const errorMsg = String(error.message || error).toLowerCase();
+  return (
+    errorMsg.includes('network') ||
+    errorMsg.includes('timeout') ||
+    errorMsg.includes('fetch') ||
+    errorMsg.includes('connection') ||
+    errorMsg.includes('failed to fetch') ||
+    (error.status !== undefined && error.status === 0) || // Network error status
+    error.code === 'ECONNABORTED' ||
+    error.code === 'ETIMEDOUT'
+  );
+};
+
 // Get Supabase URL for localStorage key checking
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 
@@ -270,52 +286,119 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [updateAuthState]);
 
   // Session expiration monitoring - only when user exists
-  // Removed immediate check on mount and visibility change to avoid UI auth checks on refresh
+  // LESS AGGRESSIVE - trust Supabase's auto-refresh and only check occasionally
   useEffect(() => {
     if (!authState.user) return;
+
+    let consecutiveFailures = 0;
+    const MAX_CONSECUTIVE_FAILURES = 3; // Require 3 consecutive failures before logging out
 
     const checkSessionExpiration = async () => {
       try {
         // Get current session first to verify it still exists
-        const { data: { session } } = await supabase.auth.getSession();
+        const { data: { session }, error } = await supabase.auth.getSession();
 
-        // If session is gone, user was already signed out
-        if (!session?.user) {
-          return; // Don't clear state if session check fails - might be network issue
+        // If there's an error, check if it's a network error
+        if (error) {
+          const errorMsg = String(error.message || error).toLowerCase();
+          const isNetworkErr = errorMsg.includes('network') || errorMsg.includes('timeout') || errorMsg.includes('fetch');
+          
+          if (isNetworkErr) {
+            // Network error - don't treat as auth failure
+            consecutiveFailures = 0; // Reset on network errors
+            return;
+          }
         }
 
-        const isExpired = await sessionManager.checkAndHandleExpiration();
-        if (isExpired) {
-          // Only clear if we're sure the session is expired
-          setAuthState(prev => {
-            // Double-check we still have a user before clearing
-            if (!prev.user) return prev;
-            return {
-              user: null,
-              userFullName: null,
-              userInitials: null,
-              isLoading: false,
-              isInitialized: true
-            };
-          });
+        // If session exists, reset failure count
+        if (session?.user) {
+          consecutiveFailures = 0;
+          return; // Session is valid
+        }
+
+        // No session - check if we have stored tokens (for mobile persistence)
+        if (!session && typeof window !== 'undefined') {
+          try {
+            let hasStoredTokens = false;
+            for (let i = 0; i < localStorage.length; i++) {
+              const key = localStorage.key(i);
+              if (key && (key.includes('supabase.auth.token') || (key.includes('sb-') && key.includes('-auth-token')))) {
+                hasStoredTokens = true;
+                break;
+              }
+            }
+            
+            // If we have stored tokens, don't treat as expired yet
+            // Supabase might still be restoring the session
+            if (hasStoredTokens) {
+              consecutiveFailures = 0; // Reset - session might be restoring
+              return;
+            }
+          } catch (e) {
+            // localStorage access failed - don't treat as auth failure
+            console.warn('Could not check localStorage:', e);
+          }
+        }
+
+        // No session and no stored tokens - increment failure count
+        consecutiveFailures++;
+        
+        // Only clear state after multiple consecutive failures
+        // This prevents false positives from transient network issues
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          console.log(`Session check failed ${consecutiveFailures} times consecutively, clearing auth state`);
+          
+          // Double-check one more time before clearing
+          const { data: { session: finalCheck } } = await supabase.auth.getSession();
+          if (!finalCheck?.user) {
+            // Only clear if we're sure the session is expired
+            setAuthState(prev => {
+              // Double-check we still have a user before clearing
+              if (!prev.user) return prev;
+              return {
+                user: null,
+                userFullName: null,
+                userInitials: null,
+                isLoading: false,
+                isInitialized: true
+              };
+            });
+          } else {
+            // Session was restored - reset failure count
+            consecutiveFailures = 0;
+          }
         }
       } catch (error) {
         console.error('Error checking session expiration:', error);
-        // Don't clear state on error - might be network issue
-        // Only handle if it's a clear auth error
-        if (isAuthError(error)) {
-          try {
-            await handleSessionExpiration();
-          } catch (handleError) {
-            // Silently fail - don't disrupt user experience
+        
+        // Check if it's a network error
+        const errorMsg = String(error instanceof Error ? error.message : error).toLowerCase();
+        const isNetworkErr = errorMsg.includes('network') || errorMsg.includes('timeout') || errorMsg.includes('fetch');
+        
+        // Don't clear state on network errors
+        if (isNetworkErr) {
+          consecutiveFailures = 0; // Reset on network errors
+          return;
+        }
+        
+        // Only handle if it's a clear auth error (not network error)
+        if (isAuthError(error) && !isNetworkErr) {
+          consecutiveFailures++;
+          // Only redirect after multiple failures
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+            try {
+              await handleSessionExpiration();
+            } catch (handleError) {
+              // Silently fail - don't disrupt user experience
+            }
           }
         }
       }
     };
 
-    // Only check periodically, not immediately on mount
-    // Check every 60 seconds (less frequent to reduce load and false positives)
-    const interval = setInterval(checkSessionExpiration, 60000);
+    // Check less frequently - every 5 minutes instead of 60 seconds
+    // This reduces false positives and gives Supabase more time to auto-refresh
+    const interval = setInterval(checkSessionExpiration, 300000); // 5 minutes
 
     return () => clearInterval(interval);
   }, [authState.user]);
@@ -355,6 +438,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           updateAuthState(cachedSession, true);
           // Fetch user details in background (non-blocking)
           fetchUserDetails(cachedSession.user).catch(() => {});
+        } else {
+          // Even if no cached session, check localStorage for tokens
+          // This helps with mobile browsers that might have cleared the cached session
+          // but still have tokens stored
+          if (typeof window !== 'undefined') {
+            try {
+              let hasStoredTokens = false;
+              for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && (key.includes('supabase.auth.token') || (key.includes('sb-') && key.includes('-auth-token')))) {
+                  hasStoredTokens = true;
+                  break;
+                }
+              }
+              
+              if (hasStoredTokens) {
+                console.log('[AuthContext] Found stored tokens, waiting for Supabase to restore session...');
+                // Don't set user yet, but also don't redirect - let INITIAL_SESSION handle it
+                // This prevents premature redirects on mobile
+              }
+            } catch (e) {
+              // localStorage access failed - might be private mode
+              console.warn('[AuthContext] Could not check localStorage:', e);
+            }
+          }
         }
 
         // Set up auth state change listener - INITIAL_SESSION should fire immediately

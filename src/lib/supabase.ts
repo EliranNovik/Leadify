@@ -95,27 +95,44 @@ export const handleSessionExpiration = async () => {
 };
 
 // Helper function to check if an error is an authentication error
+// IMPORTANT: This should NOT return true for network errors
 export const isAuthError = (error: any): boolean => {
   if (!error) return false;
+  
+  // First check if it's a network error - these are NOT auth errors
+  if (isNetworkError(error)) {
+    return false;
+  }
   
   // Check for Supabase auth errors
   if (error.message) {
     const errorMsg = error.message.toLowerCase();
+    // Exclude network-related messages that might contain "token" or "session"
     if (
-      errorMsg.includes('jwt') ||
-      errorMsg.includes('token') ||
-      errorMsg.includes('expired') ||
-      errorMsg.includes('unauthorized') ||
-      errorMsg.includes('authentication') ||
-      errorMsg.includes('session')
+      !errorMsg.includes('network') &&
+      !errorMsg.includes('timeout') &&
+      !errorMsg.includes('fetch') &&
+      !errorMsg.includes('connection') &&
+      (
+        errorMsg.includes('jwt') ||
+        errorMsg.includes('token expired') ||
+        errorMsg.includes('token invalid') ||
+        errorMsg.includes('unauthorized') ||
+        errorMsg.includes('authentication failed') ||
+        errorMsg.includes('session expired') ||
+        errorMsg.includes('invalid session')
+      )
     ) {
       return true;
     }
   }
   
-  // Check for HTTP status codes
+  // Check for HTTP status codes (but not network errors with status 0)
   if (error.status === 401 || error.status === 403) {
-    return true;
+    // Double-check it's not a network error
+    if (error.status !== 0) {
+      return true;
+    }
   }
   
   // Check for Supabase error codes
@@ -127,75 +144,140 @@ export const isAuthError = (error: any): boolean => {
 };
 
 // Wrapper function for Supabase queries that automatically handles auth errors
+// LESS AGGRESSIVE - only redirects on confirmed auth failures, not network errors
 export const safeSupabaseQuery = async <T>(
-  queryFn: () => Promise<{ data: T | null; error: any }>
+  queryFn: () => Promise<{ data: T | null; error: any }>,
+  retryCount = 0
 ): Promise<{ data: T | null; error: any }> => {
+  const MAX_RETRIES = 2;
+  
   try {
     const result = await queryFn();
     
     // Check if the error is an authentication error
-    if (result.error && isAuthError(result.error)) {
-      console.error('Authentication error detected in query:', result.error);
-      // Handle session expiration immediately
-      await handleSessionExpiration();
-      return { data: null, error: result.error };
+    if (result.error) {
+      // If it's a network error, retry before treating as auth failure
+      if (isNetworkError(result.error) && retryCount < MAX_RETRIES) {
+        console.warn(`Network error in query, retrying (${retryCount + 1}/${MAX_RETRIES}):`, result.error);
+        await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
+        return safeSupabaseQuery(queryFn, retryCount + 1);
+      }
+      
+      // Only handle expiration for confirmed auth errors (not network errors)
+      if (isAuthError(result.error) && !isNetworkError(result.error)) {
+        console.error('Authentication error detected in query:', result.error);
+        // Don't immediately redirect - let the component handle it
+        // This prevents false positives from transient errors
+        return { data: null, error: result.error };
+      }
+      
+      // Network errors - return error but don't redirect
+      return result;
     }
     
     return result;
   } catch (error: any) {
+    // If it's a network error, retry before treating as auth failure
+    if (isNetworkError(error) && retryCount < MAX_RETRIES) {
+      console.warn(`Network error in query catch, retrying (${retryCount + 1}/${MAX_RETRIES}):`, error);
+      await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
+      return safeSupabaseQuery(queryFn, retryCount + 1);
+    }
+    
     // Check if the caught error is an authentication error
-    if (isAuthError(error)) {
+    if (isAuthError(error) && !isNetworkError(error)) {
       console.error('Authentication error caught in query:', error);
-      await handleSessionExpiration();
+      // Don't immediately redirect - let the component handle it
       return { data: null, error };
     }
+    
     // Re-throw non-auth errors
     throw error;
   }
 };
 
+// Helper to check if error is a network/transient error (not a real auth failure)
+const isNetworkError = (error: any): boolean => {
+  if (!error) return false;
+  const errorMsg = String(error.message || error).toLowerCase();
+  return (
+    errorMsg.includes('network') ||
+    errorMsg.includes('timeout') ||
+    errorMsg.includes('fetch') ||
+    errorMsg.includes('connection') ||
+    errorMsg.includes('failed to fetch') ||
+    error.status === 0 || // Network error status
+    error.code === 'ECONNABORTED' ||
+    error.code === 'ETIMEDOUT'
+  );
+};
+
 // Simplified session manager - let Supabase handle auto-refresh
 export const sessionManager = {
-  async getSession() {
+  async getSession(retryCount = 0): Promise<any> {
+    const MAX_RETRIES = 2;
+    
     try {
       // Simply get the session - Supabase handles refresh automatically
       const { data: { session }, error } = await supabase.auth.getSession();
+      
       if (error) {
-        console.error('Error getting session:', error);
-        // If it's an auth error, handle expiration
-        if (isAuthError(error)) {
-          await handleSessionExpiration();
+        // If it's a network error, retry before giving up
+        if (isNetworkError(error) && retryCount < MAX_RETRIES) {
+          console.warn(`Network error getting session, retrying (${retryCount + 1}/${MAX_RETRIES}):`, error);
+          await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1))); // Exponential backoff
+          return this.getSession(retryCount + 1);
         }
+        
+        console.error('Error getting session:', error);
+        
+        // Only handle expiration for confirmed auth errors (not network errors)
+        // Don't immediately redirect - let the caller decide
+        if (isAuthError(error) && !isNetworkError(error)) {
+          // This is a real auth error, but don't redirect here - let checkAndHandleExpiration decide
+          return null;
+        }
+        
+        // For network errors, return null but don't treat as auth failure
         return null;
       }
+      
       return session;
     } catch (error) {
-      console.error('Error getting session:', error);
-      // If it's an auth error, handle expiration
-      if (isAuthError(error)) {
-        await handleSessionExpiration();
+      // If it's a network error, retry before giving up
+      if (isNetworkError(error) && retryCount < MAX_RETRIES) {
+        console.warn(`Network error in getSession catch, retrying (${retryCount + 1}/${MAX_RETRIES}):`, error);
+        await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
+        return this.getSession(retryCount + 1);
       }
+      
+      console.error('Error getting session:', error);
+      
+      // Only treat as auth error if it's confirmed (not network error)
+      if (isAuthError(error) && !isNetworkError(error)) {
+        return null;
+      }
+      
+      // Network errors - return null but don't treat as auth failure
       return null;
     }
   },
 
   isSessionExpired(session: any): boolean {
-    if (!session?.expires_at) return false; // If no expiration, assume valid
-    
-    try {
-      const expiresAt = typeof session.expires_at === 'number' 
-        ? session.expires_at * 1000 
-        : new Date(session.expires_at).getTime();
-      
-      // Only consider expired if past expiration time (no buffer)
-      return Date.now() >= expiresAt;
-    } catch (e) {
-      // If we can't parse, assume valid (let Supabase handle it)
-      return false;
+    // Trust Supabase's auto-refresh mechanism
+    // Don't manually check expiration - Supabase handles this
+    // Only return true if session is explicitly null/undefined
+    if (!session || !session.user) {
+      return true;
     }
+    
+    // If Supabase says the session exists, trust it
+    // Supabase will automatically refresh tokens before they expire
+    // Manual expiration checks can cause false positives
+    return false;
   },
   
-  // Check session and handle expiration immediately
+  // Check session and handle expiration - LESS AGGRESSIVE
   async checkAndHandleExpiration(): Promise<boolean> {
     try {
       // Check if another tab is redirecting
@@ -205,7 +287,7 @@ export const sessionManager = {
           const until = parseInt(redirectingUntil, 10);
           if (Date.now() < until) {
             // Another tab is redirecting, don't do anything
-            return true;
+            return false; // Don't treat as expired - another tab is handling it
           } else {
             // Stale flag, clear it
             localStorage.removeItem(REDIRECTING_KEY);
@@ -213,33 +295,60 @@ export const sessionManager = {
         }
       }
       
+      // Get session with retry logic for network errors
       const session = await this.getSession();
-      if (!session) {
-        // No session - check if we should redirect
-        // Only redirect if we're not already on login page
-        if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
-          await handleSessionExpiration();
+      
+      // If no session, check if there's a stored session in localStorage
+      // This helps with mobile browsers that might have cleared session but still have tokens
+      if (!session && typeof window !== 'undefined') {
+        try {
+          // Check if there are any Supabase auth tokens in localStorage
+          let hasStoredTokens = false;
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && (key.includes('supabase.auth.token') || (key.includes('sb-') && key.includes('-auth-token')))) {
+              hasStoredTokens = true;
+              break;
+            }
+          }
+          
+          // If we have stored tokens but no session, try to refresh
+          // This helps with mobile persistence issues
+          if (hasStoredTokens) {
+            console.log('Found stored tokens but no session, attempting to refresh...');
+            // Give Supabase a chance to restore the session
+            // Don't immediately redirect - let Supabase's auto-refresh handle it
+            return false; // Don't treat as expired yet
+          }
+        } catch (e) {
+          // localStorage access failed (might be private mode or disabled)
+          console.warn('Could not check localStorage for tokens:', e);
         }
-        return true; // Session expired
       }
       
-      if (this.isSessionExpired(session)) {
-        // Session expired - check if we should redirect
-        if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
-          await handleSessionExpiration();
-        }
-        return true; // Session expired
+      // If we have a session, it's valid (Supabase handles expiration)
+      if (session?.user) {
+        return false; // Session is valid
       }
       
-      return false; // Session valid
+      // No session and no stored tokens - only then consider expired
+      // But don't immediately redirect - let AuthContext handle it more gracefully
+      return true; // Session expired, but let caller decide what to do
     } catch (e) {
       console.error('Error in checkAndHandleExpiration:', e);
-      // Only redirect if it's an auth error and we're not on login page
-      if (isAuthError(e) && typeof window !== 'undefined' && window.location.pathname !== '/login') {
-        await handleSessionExpiration();
+      
+      // For network errors, don't treat as expired
+      if (isNetworkError(e)) {
+        return false; // Network error, don't treat as expired
+      }
+      
+      // Only redirect if it's a confirmed auth error and we're not on login page
+      if (isAuthError(e) && !isNetworkError(e) && typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        // Real auth error - but still let caller decide
         return true;
       }
-      return false; // Non-auth error, don't redirect
+      
+      return false; // Non-auth error, don't treat as expired
     }
   }
 };

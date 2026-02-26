@@ -2,6 +2,7 @@ import React, { useState, forwardRef, useImperativeHandle, useEffect } from 'rea
 import { SparklesIcon, ArrowRightIcon, CheckCircleIcon, ExclamationCircleIcon, ClockIcon, ArrowPathIcon, MegaphoneIcon } from '@heroicons/react/24/outline';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+import { useTheme } from '../hooks/useTheme';
 
 interface Suggestion {
   id: string;
@@ -157,6 +158,7 @@ const allSuggestions: Suggestion[] = [
 
 const AISuggestions = forwardRef((props, ref) => {
   const navigate = useNavigate();
+  const { isAltTheme } = useTheme();
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [aiMessage, setAiMessage] = useState('');
@@ -362,7 +364,7 @@ const AISuggestions = forwardRef((props, ref) => {
         </div>
         <div className="flex justify-start mt-auto flex-shrink-0">
           <button 
-            className="btn btn-sm px-4 bg-gradient-to-r from-[#3b28c7] to-[#6a5cff] text-white font-semibold shadow-none border-none hover:from-[#2a1e8a] hover:to-[#3b28c7] transition-all cursor-pointer"
+            className={`btn btn-sm px-4 bg-gradient-to-r ${isAltTheme ? 'from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700' : 'from-[#3b28c7] to-[#6a5cff] hover:from-[#2a1e8a] hover:to-[#3b28c7]'} text-white font-semibold shadow-none border-none transition-all cursor-pointer`}
             onClick={(e) => {
               e.stopPropagation();
               handleActionClick(suggestion);

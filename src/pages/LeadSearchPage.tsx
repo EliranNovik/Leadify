@@ -4,6 +4,7 @@ import { supabase, type Lead } from '../lib/supabase';
 import { MagnifyingGlassIcon, Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
+import { useTheme } from '../hooks/useTheme';
 
 // Static dropdown options - moved outside component to prevent re-creation on every render
 const REASON_OPTIONS = ["Inquiry", "Follow-up", "Complaint", "Consultation", "Other"];
@@ -162,7 +163,7 @@ const SearchableInput = ({
     <div className="relative">
       <input
         type="text"
-        className="input input-bordered w-full"
+        className="input w-full"
         placeholder={placeholder}
         value={value}
         onChange={e => {
@@ -179,7 +180,7 @@ const SearchableInput = ({
         }}
       />
       {showDropdown && options.length > 0 && (
-        <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+        <div className="absolute z-10 w-full mt-1 bg-white rounded-md shadow-lg max-h-60 overflow-y-auto">
           {options.map((option, index) => (
             <div
               key={index}
@@ -343,7 +344,7 @@ const MultiSelectInput = ({
       <div className="relative">
         <input
           type="text"
-          className="input input-bordered w-full"
+          className="input w-full"
           placeholder={safeValues.length === 0 ? placeholder : "Add more..."}
           value={inputValue}
           onChange={handleInputChange}
@@ -354,7 +355,7 @@ const MultiSelectInput = ({
           }}
         />
         {showDropdown && filteredOptions.length > 0 && (
-          <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+          <div className="absolute z-10 w-full mt-1 bg-white rounded-md shadow-lg max-h-60 overflow-y-auto">
             {filteredOptions.map((option, index) => (
               <div
                 key={index}
@@ -445,7 +446,7 @@ const ColumnSelector = ({
       <div className="relative">
         <button
           type="button"
-          className="input input-bordered w-full text-left flex items-center justify-between"
+          className="input w-full text-left flex items-center justify-between"
           onClick={onShowDropdown}
         >
           <span>Select columns for table view...</span>
@@ -455,7 +456,7 @@ const ColumnSelector = ({
         </button>
 
         {showDropdown && (
-          <div className="absolute z-20 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto">
+          <div className="absolute z-20 w-full mt-1 bg-white rounded-md shadow-lg max-h-96 overflow-y-auto">
             <div className="p-2">
               {Object.entries(groupedColumns).map(([category, columns]) => (
                 <div key={category} className="mb-4">
@@ -602,7 +603,7 @@ const MainCategoryInput = ({
       <div className="relative">
         <input
           type="text"
-          className="input input-bordered w-full"
+          className="input w-full"
           placeholder={safeValues.length === 0 ? placeholder : "Add more..."}
           value={inputValue}
           onChange={handleInputChange}
@@ -613,7 +614,7 @@ const MainCategoryInput = ({
           }}
         />
         {showDropdown && filteredOptions.length > 0 && (
-          <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+          <div className="absolute z-10 w-full mt-1 bg-white rounded-md shadow-lg max-h-60 overflow-y-auto">
             {filteredOptions.map((option, index) => (
               <div
                 key={index}
@@ -906,6 +907,7 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
 };
 
 const LeadSearchPage: React.FC = () => {
+  const { isAltTheme } = useTheme();
   // State for sticky search button on mobile
   const [showStickySearchButton, setShowStickySearchButton] = useState(false);
   const scrollThreshold = 100; // Show sticky button after scrolling 100px
@@ -4354,9 +4356,8 @@ const LeadSearchPage: React.FC = () => {
       'hover:-translate-y-1',
       'cursor-pointer',
       'group',
-      'border',
-      // Grey background with red border for inactive leads (both legacy and new)
-      isInactive ? 'bg-gray-100 border-red-400' : 'bg-base-100 border-base-200',
+      // Grey background for inactive leads (both legacy and new)
+      isInactive ? 'bg-gray-100' : 'bg-base-100',
     ].join(' ');
 
     // Ensure category is always shown as "Subcategory (Main Category)" when possible
@@ -4436,27 +4437,27 @@ const LeadSearchPage: React.FC = () => {
       {/* Fixed Search Bar with Date Filters - Desktop: always visible, Mobile: appears when scrolled down */}
       {/* Desktop Version - Always visible */}
       <div className="hidden md:flex fixed top-16 left-0 right-0 z-[35] justify-center px-4 transition-all duration-300 ease-in-out">
-        <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/20 dark:border-gray-700/20 px-6 py-4 transition-all duration-300 ease-in-out flex items-center gap-4">
+        <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl px-6 py-4 transition-all duration-300 ease-in-out flex items-center gap-4">
           {/* From Date */}
           <input
             type="date"
-            className="input input-bordered w-36"
+            className="input w-36"
             value={filters.fromDate}
             onChange={e => handleFilterChange('fromDate', e.target.value)}
           />
           {/* To Date */}
           <input
             type="date"
-            className="input input-bordered w-36"
+            className="input w-36"
             value={filters.toDate}
             onChange={e => handleFilterChange('toDate', e.target.value)}
           />
           {/* View Mode Toggle - Cards/Table */}
-          <div className="flex items-center gap-1 bg-base-200 rounded-full p-1">
+          <div className="flex items-center gap-1 rounded-full p-1">
             <button
               className={`btn btn-sm btn-circle transition-all duration-300 ${
                 viewMode === 'cards' 
-                  ? 'btn-primary shadow-md' 
+                  ? (isAltTheme ? 'bg-[#505d57] text-white shadow-md hover:bg-[#3d4743]' : 'btn-primary shadow-md')
                   : 'btn-ghost'
               }`}
               onClick={() => setViewMode('cards')}
@@ -4467,7 +4468,7 @@ const LeadSearchPage: React.FC = () => {
             <button
               className={`btn btn-sm btn-circle transition-all duration-300 ${
                 viewMode === 'table' 
-                  ? 'btn-primary shadow-md' 
+                  ? (isAltTheme ? 'bg-[#505d57] text-white shadow-md hover:bg-[#3d4743]' : 'btn-primary shadow-md')
                   : 'btn-ghost'
               }`}
               onClick={() => setViewMode('table')}
@@ -4478,7 +4479,7 @@ const LeadSearchPage: React.FC = () => {
           </div>
           {/* Search Button - Icon Only */}
           <button
-            className="btn btn-primary btn-circle"
+            className={isAltTheme ? 'btn btn-circle bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn btn-primary btn-circle'}
             onClick={handleSearch}
             disabled={isSearching}
             title="Search"
@@ -4494,27 +4495,27 @@ const LeadSearchPage: React.FC = () => {
 
       {/* Mobile Version - Always visible */}
       <div className="md:hidden fixed top-16 left-0 right-0 z-[35] flex justify-center px-4 transition-all duration-300 ease-in-out">
-          <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/20 dark:border-gray-700/20 px-3 py-2 transition-all duration-300 ease-in-out flex items-center gap-1.5">
+          <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl px-3 py-2 transition-all duration-300 ease-in-out flex items-center gap-1.5">
             {/* From Date */}
             <input
               type="date"
-              className="input input-bordered input-xs w-24 text-xs"
+              className="input input-xs w-24 text-xs"
               value={filters.fromDate}
               onChange={e => handleFilterChange('fromDate', e.target.value)}
             />
             {/* To Date */}
             <input
               type="date"
-              className="input input-bordered input-xs w-24 text-xs"
+              className="input input-xs w-24 text-xs"
               value={filters.toDate}
               onChange={e => handleFilterChange('toDate', e.target.value)}
             />
             {/* View Mode Toggle - Cards/Table */}
-            <div className="flex items-center gap-1 bg-base-200 rounded-full p-1">
+            <div className="flex items-center gap-1 rounded-full p-1">
               <button
                 className={`btn btn-sm btn-circle transition-all duration-300 ${
                   viewMode === 'cards' 
-                    ? 'btn-primary shadow-md' 
+                    ? (isAltTheme ? 'bg-[#505d57] text-white shadow-md hover:bg-[#3d4743]' : 'btn-primary shadow-md')
                     : 'btn-ghost'
                 }`}
                 onClick={() => setViewMode('cards')}
@@ -4525,7 +4526,7 @@ const LeadSearchPage: React.FC = () => {
               <button
                 className={`btn btn-sm btn-circle transition-all duration-300 ${
                   viewMode === 'table' 
-                    ? 'btn-primary shadow-md' 
+                    ? (isAltTheme ? 'bg-[#505d57] text-white shadow-md hover:bg-[#3d4743]' : 'btn-primary shadow-md')
                     : 'btn-ghost'
                 }`}
                 onClick={() => setViewMode('table')}
@@ -4536,7 +4537,7 @@ const LeadSearchPage: React.FC = () => {
             </div>
             {/* Search Button - Icon Only */}
             <button
-              className="btn btn-primary btn-circle btn-sm"
+              className={isAltTheme ? 'btn btn-circle btn-sm bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn btn-primary btn-circle btn-sm'}
               onClick={handleSearch}
               disabled={isSearching}
               title="Search"
@@ -4598,7 +4599,7 @@ const LeadSearchPage: React.FC = () => {
           />
           <div className="form-control flex flex-col col-span-2 sm:col-span-1">
             <label className="label mb-2"><span className="label-text">File id</span></label>
-            <input type="text" className="input input-bordered" onChange={e => handleFilterChange('fileId', e.target.value)} />
+            <input type="text" className="input" onChange={e => handleFilterChange('fileId', e.target.value)} />
           </div>
 
           {/* Column 2 */}
@@ -4806,7 +4807,7 @@ const LeadSearchPage: React.FC = () => {
           />
           <div className="form-control flex flex-col col-span-2 sm:col-span-1">
             <label className="label mb-2"><span className="label-text">Content</span></label>
-            <input type="text" className="input input-bordered" onChange={e => handleFilterChange('content', e.target.value)} />
+            <input type="text" className="input" onChange={e => handleFilterChange('content', e.target.value)} />
           </div>
 
           {/* View Mode Toggle - Removed (now in fixed bar) */}
