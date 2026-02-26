@@ -23,6 +23,8 @@ type Filters = {
 type PaymentRow = {
   id: string;
   leadId: string;
+  /** Legacy: client_id (contact). New: undefined. Used to pick one row per contact when multiple match. */
+  clientId?: number | null;
   leadName: string;
   clientName: string;
   amount: number;
@@ -35,7 +37,11 @@ type PaymentRow = {
   hasProforma: boolean;
   collectedDate: string | null;
   dueDate: string | null;
+  /** Legacy only: the `date` column (used for date filter when Due = Ignore). New leads: null. */
+  planDate: string | null;
   proformaDate: string | null;
+  /** New leads only: true when this is the "due" row (sent to finance). Used when Due = "Due date included". */
+  readyToPay?: boolean;
   handlerName: string;
   handlerId?: number | null;
   caseNumber: string;
@@ -363,6 +369,15 @@ const loadPayments = async () => {
       const [modern, legacy] = await Promise.all([fetchModernPayments(filters), fetchLegacyPayments(filters)]);
       console.log(`✅ [loadPayments] Fetched ${modern.length} modern payments, ${legacy.length} legacy payments`);
       
+      // Debug: Check for lead 168080 only (sublead 54977/2) — match by leadId, not caseNumber "54977"
+      const is168080 = (row: PaymentRow) => row.leadId?.toString() === '168080' || row.leadId?.toString() === 'legacy_168080';
+      const modern168080 = modern.filter(is168080);
+      const legacy168080 = legacy.filter(is168080);
+      console.log(`🔍 [loadPayments] Lead 168080 only (54977/2): modern=${modern168080.length}, legacy=${legacy168080.length}. If both 0, this lead has no payment rows in DB.`, {
+        modern: modern168080.map((p: any) => ({ id: p.id, leadId: p.leadId, caseNumber: p.caseNumber, collected: p.collected, hasProforma: p.hasProforma })),
+        legacy: legacy168080.map((p: any) => ({ id: p.id, leadId: p.leadId, caseNumber: p.caseNumber, collected: p.collected, hasProforma: p.hasProforma })),
+      });
+      
       // Debug: Check for lead 199849 in modern payments
       const modern199849 = modern.filter((row) => 
         row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
@@ -426,6 +441,11 @@ const loadPayments = async () => {
       })));
       
       const combined = [...modern, ...legacy];
+      const combined168080 = combined.filter((row) =>
+        row.leadId?.toString() === '168080' || row.leadId?.toString() === 'legacy_168080'
+      );
+      console.log(`🔍 [loadPayments] Lead 168080 in combined (before client filter):`, combined168080.length, combined168080.length === 0 ? '— No payment rows for 168080 in DB.' : combined168080.map((p: any) => ({ id: p.id, leadId: p.leadId, caseNumber: p.caseNumber, collected: p.collected, hasProforma: p.hasProforma })));
+      
       const combined199849 = combined.filter((row) => 
         row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
       );
@@ -454,9 +474,17 @@ const loadPayments = async () => {
       const withProforma = combined;
       const beforeFiltering = withProforma.length;
       const filtered = withProforma.filter((row) => {
+        const is168080 = row.leadId?.toString() === '168080' || row.leadId?.toString() === 'legacy_168080';
+        // Due date included: legacy = only if due_date is not null; new = only if ready_to_pay is true.
+        // Ignore = no extra filter (show all rows).
+        if (filters.due === 'due_only') {
+          if (row.leadType === 'legacy' && !row.dueDate) return false;
+          if (row.leadType === 'new' && row.readyToPay !== true) return false;
+        }
         // Category filter (multi-select)
         if (Array.isArray(filters.categoryId) && filters.categoryId.length > 0) {
           if (!row.mainCategoryId || !filters.categoryId.includes(row.mainCategoryId)) {
+            if (is168080) console.log(`🔍 [loadPayments] 168080 filtered OUT by category: mainCategoryId=${row.mainCategoryId}, filter=${filters.categoryId}`);
             return false;
           }
         }
@@ -490,60 +518,58 @@ const loadPayments = async () => {
             }
           }
           
-          if (!matchesFilter) return false;
+          if (!matchesFilter) {
+            if (is168080) console.log(`🔍 [loadPayments] 168080 filtered OUT by collected: row.collected=${row.collected}, row.hasProforma=${row.hasProforma}, filter=${filters.collected?.join(',')}`);
+            return false;
+          }
         }
         
         // Order filter (multi-select)
         if (Array.isArray(filters.order) && filters.order.length > 0) {
           if (!row.orderCode || !filters.order.includes(row.orderCode)) {
+            if (is168080) console.log(`🔍 [loadPayments] 168080 filtered OUT by order: orderCode=${row.orderCode}, filter=${filters.order?.join(',')}`);
             return false;
           }
         }
         
-        // Date range filter - always apply client-side to check all dates including proforma dates
-        // This ensures "No - With Proforma" filter works correctly even when "Due date included" is selected
+        // Date range: DB already filtered by the correct column (Ignore: legacy=date, new=due_date; Due included: due_date for both). Keep only rows whose date falls in range.
         if (filters.fromDate || filters.toDate) {
-          // When "Due date included" is selected, database already filtered by due_date
-          // But we still need to check proforma dates for payments that might have been excluded
-          // When "Due date included" is NOT selected, check all dates
-          
-          // Check if ANY of the dates (due_date, collectedDate, or proformaDate) fall within the range
-          const datesToCheck = [
-            row.dueDate,
-            row.collectedDate,
-            row.proformaDate, // Include proforma date for "No - With Proforma" filter
-          ].filter(Boolean);
-          
-          // If no dates at all, include it (don't exclude payment plans with no date info)
-          if (datesToCheck.length === 0) {
-            // Include payments with no dates
-          } else {
-            // Check if at least one date falls within the range
-            const fromDate = filters.fromDate ? new Date(filters.fromDate + 'T00:00:00') : null;
-            const toDate = filters.toDate ? new Date(filters.toDate + 'T23:59:59') : null;
-            
-            const hasDateInRange = datesToCheck.some((dateStr) => {
-              if (!dateStr) return false;
-              const date = new Date(dateStr);
-              if (Number.isNaN(date.getTime())) return false;
-              
-              if (fromDate && date < fromDate) return false;
-              if (toDate && date > toDate) return false;
-              return true;
-            });
-            
-            if (!hasDateInRange) {
-              return false;
-            }
-          }
+          const dateToCheck = filters.due === 'ignore' && row.leadType === 'legacy' ? row.planDate : row.dueDate;
+          if (!dateToCheck) return false;
+          const dateStr = dateToCheck.split('T')[0];
+          if (filters.fromDate && dateStr < filters.fromDate) return false;
+          if (filters.toDate && dateStr > filters.toDate) return false;
         }
         
         return true;
       });
-      console.log(`✅ [loadPayments] After client-side filtering: ${filtered.length} plans (was ${beforeFiltering})`);
+
+      // When "Due date included", show one row per contact: the one whose due_date is in range and has the highest order (Final > Intermediate > First).
+      // This fixes legacy where both Intermediate (date in range) and Final (due_date in range) can match — we show the row that matches due_date, i.e. Final.
+      let rowsToSet = filtered;
+      if (filters.due === 'due_only' && (filters.fromDate || filters.toDate)) {
+        const orderRank: Record<string, number> = { '9': 3, '5': 2, '1': 1, '90': 0, '99': 0 };
+        const byContact = new Map<string, PaymentRow>();
+        for (const row of filtered) {
+          const key = row.clientId != null ? `${row.leadId}_${row.clientId}` : row.leadId;
+          const existing = byContact.get(key);
+          const rank = orderRank[row.orderCode] ?? -1;
+          const existingRank = existing ? (orderRank[existing.orderCode] ?? -1) : -1;
+          if (!existing || rank > existingRank) byContact.set(key, row);
+        }
+        rowsToSet = Array.from(byContact.values());
+        console.log(`✅ [loadPayments] After per-contact deduplication (Due date included): ${rowsToSet.length} rows`);
+      }
+
+      console.log(`✅ [loadPayments] After client-side filtering: ${rowsToSet.length} plans (was ${beforeFiltering})`);
+      
+      const filtered168080 = rowsToSet.filter((row) =>
+        row.leadId?.toString() === '168080' || row.leadId?.toString() === 'legacy_168080'
+      );
+      console.log(`🔍 [loadPayments] Lead 168080 after filtering:`, filtered168080.length, filtered168080.length === 0 && combined168080.length > 0 ? 'FILTERED OUT - see logs above for reason' : filtered168080.length === 0 ? '(no rows for 168080 in DB)' : '', filtered168080.map((p: any) => ({ id: p.id, caseNumber: p.caseNumber, collected: p.collected, hasProforma: p.hasProforma })));
       
       // Debug: Check for lead 199849 after filtering
-      const plansFor199849AfterFilter = filtered.filter((row) => 
+      const plansFor199849AfterFilter = rowsToSet.filter((row) => 
         row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
       );
       console.log(`🔍 [loadPayments] Filtered plans for 199849:`, plansFor199849AfterFilter.length, plansFor199849AfterFilter.map((p: any) => ({
@@ -559,7 +585,7 @@ const loadPayments = async () => {
       })));
       
       // Debug: Check for lead 155026 after filtering
-      const plansFor155026AfterFilter = filtered.filter((row) => 
+      const plansFor155026AfterFilter = rowsToSet.filter((row) => 
         row.leadId?.toString().includes('155026') || row.caseNumber?.includes('155026')
       );
       console.log(`🔍 [loadPayments] Filtered plans for 155026:`, plansFor155026AfterFilter.length, plansFor155026AfterFilter.map((p: any) => ({
@@ -583,7 +609,7 @@ const loadPayments = async () => {
         console.log(`❌ [loadPayments] 199849 was filtered out! Before filter:`, beforeFilter199849[0]);
         console.log(`🔍 [loadPayments] Filter reasons:`, {
           categoryFilter: filters.categoryId ? `Category must be ${filters.categoryId}, got ${beforeFilter199849[0].mainCategoryId}` : 'No category filter',
-          collectedFilter: filters.collected !== 'all' ? `Collected filter: ${filters.collected}, row collected: ${beforeFilter199849[0].collected}, hasProforma: ${beforeFilter199849[0].hasProforma}` : 'No collected filter',
+          collectedFilter: (Array.isArray(filters.collected) && filters.collected.length > 0) ? `Collected filter: ${filters.collected.join(',')}, row collected: ${beforeFilter199849[0].collected}, hasProforma: ${beforeFilter199849[0].hasProforma}` : 'No collected filter',
           orderFilter: filters.order ? `Order must be ${filters.order}, got ${beforeFilter199849[0].orderCode}` : 'No order filter',
         });
       }
@@ -596,7 +622,7 @@ const loadPayments = async () => {
         console.log(`❌ [loadPayments] 155026 was filtered out! Before filter:`, beforeFilter155026[0]);
         console.log(`🔍 [loadPayments] Filter reasons for 155026:`, {
           categoryFilter: filters.categoryId ? `Category must be ${filters.categoryId}, got ${beforeFilter155026[0].mainCategoryId}` : 'No category filter',
-          collectedFilter: filters.collected !== 'all' ? `Collected filter: ${filters.collected}, row collected: ${beforeFilter155026[0].collected}, hasProforma: ${beforeFilter155026[0].hasProforma}` : 'No collected filter',
+          collectedFilter: (Array.isArray(filters.collected) && filters.collected.length > 0) ? `Collected filter: ${filters.collected.join(',')}, row collected: ${beforeFilter155026[0].collected}, hasProforma: ${beforeFilter155026[0].hasProforma}` : 'No collected filter',
           orderFilter: filters.order ? `Order must be ${filters.order}, got ${beforeFilter155026[0].orderCode}` : 'No order filter',
           dueDate: beforeFilter155026[0].dueDate,
           collectedDate: beforeFilter155026[0].collectedDate,
@@ -607,17 +633,17 @@ const loadPayments = async () => {
         console.log(`🔍 [loadPayments] This means it was filtered out during fetchModernPayments or fetchLegacyPayments`);
       }
       
-      filtered.sort((a, b) => {
+      rowsToSet.sort((a, b) => {
         const aDate = a.collectedDate || a.dueDate || '';
         const bDate = b.collectedDate || b.dueDate || '';
         return bDate.localeCompare(aDate);
       });
       
       // Debug: Final check before setting rows
-      const final199849 = filtered.filter((row) => 
+      const final199849 = rowsToSet.filter((row) =>
         row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
       );
-      console.log(`🔍 [loadPayments] Final rows to set: ${filtered.length} total, ${final199849.length} for 199849`);
+      console.log(`🔍 [loadPayments] Final rows to set: ${rowsToSet.length} total, ${final199849.length} for 199849`);
       if (final199849.length > 0) {
         console.log(`✅ [loadPayments] Payment plan for 199849 WILL BE SET:`, final199849[0]);
       } else {
@@ -625,17 +651,17 @@ const loadPayments = async () => {
       }
       
       // Debug: Final check for 155026 before setting rows
-      const final155026 = filtered.filter((row) => 
+      const final155026 = rowsToSet.filter((row) =>
         row.leadId?.toString().includes('155026') || row.caseNumber?.includes('155026')
       );
-      console.log(`🔍 [loadPayments] Final rows to set: ${filtered.length} total, ${final155026.length} for 155026`);
+      console.log(`🔍 [loadPayments] Final rows to set: ${rowsToSet.length} total, ${final155026.length} for 155026`);
       if (final155026.length > 0) {
         console.log(`✅ [loadPayments] Payment plan for 155026 WILL BE SET:`, final155026[0]);
       } else {
         console.log(`❌ [loadPayments] Payment plan for 155026 WILL NOT BE SET`);
       }
       
-      setRows(filtered);
+      setRows(rowsToSet);
     } catch (err) {
       console.error(err);
       setError(err instanceof Error ? err.message : 'Failed to load collection data.');
@@ -1205,7 +1231,11 @@ const loadPayments = async () => {
                     )}
                   </td>
                   <td>
-                    {row.dueDate ? new Date(row.dueDate).toLocaleDateString() : '—'}
+                    {(() => {
+                      // If row has due_date use it; otherwise use plan date (legacy date column). This fixes wrong-order display.
+                      const displayDate = row.dueDate ?? row.planDate;
+                      return displayDate ? new Date(displayDate).toLocaleDateString() : '—';
+                    })()}
                   </td>
                   <td>
                     {row.proformaDate ? new Date(row.proformaDate).toLocaleDateString() : '—'}
@@ -1301,25 +1331,34 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
 
   // Always filter out cancelled plans
   query = query.is('cancel_date', null);
-  
-  // If "due date included" is selected, we still need to fetch payments that might have proforma dates
-  // even if their due_date is outside the range, so we can filter by proforma date client-side
-  // The comprehensive date filtering (including proforma dates) is done in loadPayments
-  if (filters.due === 'due_only') {
-    console.log(`🔍 [fetchModernPayments] Using 'due_only' filter mode - fetching ready_to_pay payments`);
-    query = query
-      .eq('ready_to_pay', true) // Sent to finance
-      .not('due_date', 'is', null); // Must have due_date
-      // Note: We don't filter by due_date range here - that's done client-side to include proforma dates
-      // Note: Removed .eq('paid', false) to show both paid and unpaid payments
-  }
-  // When "due date included" is NOT selected, we fetch all non-cancelled plans
-  // Date filtering (including proforma dates) is done client-side in loadPayments
 
-  const { data, error } = await query;
-  if (error) throw error;
+  // New leads: always apply date range on due_date (one column, no combining rows).
+  // Ignore = show ALL rows (date range on due_date when set; no ready_to_pay filter).
+  // Due date included = only rows with ready_to_pay = true and due_date in range.
+  if (filters.fromDate || filters.toDate) {
+    if (filters.fromDate) query = query.gte('due_date', filters.fromDate);
+    if (filters.toDate) query = query.lte('due_date', filters.toDate);
+  }
+  if (filters.due === 'due_only') {
+    query = query.not('due_date', 'is', null).eq('ready_to_pay', true);
+    console.log(`🔍 [fetchModernPayments] Due date included: due_date range + ready_to_pay = true`);
+  } else {
+    console.log(`🔍 [fetchModernPayments] Ignore: all rows in due_date range (no ready_to_pay filter)`);
+  }
+
+  // Supabase returns max 1000 rows by default; paginate to fetch all
+  const PAGE_SIZE = 1000;
+  let data: any[] = [];
+  let offset = 0;
+  while (true) {
+    const { data: page, error } = await query.range(offset, offset + PAGE_SIZE - 1);
+    if (error) throw error;
+    data = data.concat(page || []);
+    if (!page || page.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
   
-  console.log(`✅ [fetchModernPayments] Fetched ${data?.length || 0} payment plans from database`);
+  console.log(`✅ [fetchModernPayments] Fetched ${data?.length || 0} payment plans from database (paginated)`);
   console.log(`🔍 [fetchModernPayments] Query filters applied:`, {
     due: filters.due,
     fromDate: filters.fromDate,
@@ -1328,8 +1367,14 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
     cancel_date: 'null',
   });
   
+  // Debug: Check for lead 168080 in raw data (modern = leads table)
+  const raw168080 = (data || []).filter((plan: any) =>
+    plan.lead_id?.toString() === '168080' || plan.lead_id === 168080
+  );
+  console.log(`🔍 [fetchModernPayments] Raw payment plans for 168080 (modern/leads):`, raw168080.length, raw168080.map((p: any) => ({ id: p.id, lead_id: p.lead_id, due_date: p.due_date, paid_at: p.paid_at, paid: p.paid, proforma: p.proforma ? '(set)' : null })));
+  
   // Debug: Check for lead 155026 in raw data BEFORE any filtering
-  const raw155026BeforeFilter = (data || []).filter((plan: any) => 
+  const raw155026BeforeFilter = (data || []).filter((plan: any) =>
     plan.lead_id?.toString() === '155026' || plan.lead_id === 155026
   );
   console.log(`🔍 [fetchModernPayments] Raw payment plans for 155026 (BEFORE date filtering):`, raw155026BeforeFilter.length, raw155026BeforeFilter.map((p: any) => ({
@@ -1375,19 +1420,8 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
     currency: p.currency,
   })));
 
-  // When "due date included" is selected, all filtering is done in the query
-  // When NOT selected, we only filter out cancelled plans here
-  // Date range filtering (including proforma dates) is done in loadPayments after proforma dates are extracted
-  const dateFilteredPlans = filters.due === 'due_only' 
-    ? (data || []) // All filtering already done in query (due_date range, ready_to_pay, paid, cancel_date)
-    : (data || []).filter((plan: any) => {
-        // Only filter out cancelled plans here
-        // Date filtering will be done in loadPayments after proforma dates are extracted
-        if (plan.cancel_date) {
-          return false;
-        }
-        return true;
-      });
+  // Rows are already filtered by query (date range on due_date; due_only adds ready_to_pay). No extra filtering.
+  const dateFilteredPlans = data || [];
   
   // Debug: Check for lead 199849 after date filtering
   const dateFiltered199849 = dateFilteredPlans.filter((plan: any) => 
@@ -1462,7 +1496,9 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
       hasProforma,
       collectedDate: paidAt,
       dueDate,
+      planDate: null, // New leads have no separate "date" column; date filter uses due_date
       proformaDate,
+      readyToPay: Boolean(plan.ready_to_pay), // When Due = "Due date included" we only want rows with ready_to_pay = true
       handlerName: meta?.handlerName || '—',
       handlerId: meta?.handlerId ?? null,
       caseNumber: meta?.caseNumber || (plan.lead_id ? `#${plan.lead_id}` : '—'),
@@ -1485,27 +1521,38 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
 
   // Always filter out cancelled plans
   query = query.is('cancel_date', null);
-  
-  // If "due date included" is selected, we still need to fetch payments that might have proforma dates
-  // even if their due_date is outside the range, so we can filter by proforma date client-side
-  // The comprehensive date filtering (including proforma dates) is done in loadPayments
-  if (filters.due === 'due_only') {
-    // For legacy leads: if due_date exists, it means ready to pay (no need to check ready_to_pay flag)
-    query = query.not('due_date', 'is', null); // Only fetch if due_date has a date (not NULL) - for legacy leads, due_date means ready to pay
-    // Note: We don't filter by due_date range here - that's done client-side to include proforma dates
-    // Note: Removed .is('actual_date', null) to show both paid and unpaid payments
-    console.log(`🔍 [fetchLegacyPayments] Using 'due_only' filter mode - fetching payments with due_date`);
-  }
-  // When "due date included" is NOT selected, we fetch all non-cancelled plans
-  // Date filtering (including proforma dates) is done client-side in loadPayments
 
-  const { data, error } = await query;
-  if (error) {
-    console.error('❌ [fetchLegacyPayments] Query error:', error);
-    throw error;
+  // Legacy: Ignore = show ALL rows (date range on date column when set; due_date can be NULL).
+  // Due date included = only rows where due_date IS NOT NULL, date range on due_date.
+  if (filters.fromDate || filters.toDate) {
+    if (filters.due === 'due_only') {
+      query = query.not('due_date', 'is', null);
+      if (filters.fromDate) query = query.gte('due_date', filters.fromDate);
+      if (filters.toDate) query = query.lte('due_date', filters.toDate);
+      console.log(`🔍 [fetchLegacyPayments] Due date included: due_date not null + due_date range`);
+    } else {
+      if (filters.fromDate) query = query.gte('date', filters.fromDate);
+      if (filters.toDate) query = query.lte('date', filters.toDate);
+      console.log(`🔍 [fetchLegacyPayments] Ignore: all rows in date column range (due_date can be null)`);
+    }
+  }
+
+  // Supabase returns max 1000 rows by default; paginate to fetch all so no leads (e.g. 168080) are missed
+  const PAGE_SIZE = 1000;
+  let data: any[] = [];
+  let offset = 0;
+  while (true) {
+    const { data: page, error } = await query.range(offset, offset + PAGE_SIZE - 1);
+    if (error) {
+      console.error('❌ [fetchLegacyPayments] Query error:', error);
+      throw error;
+    }
+    data = data.concat(page || []);
+    if (!page || page.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
   }
   
-  console.log(`✅ [fetchLegacyPayments] Fetched ${data?.length || 0} payment plans from database`);
+  console.log(`✅ [fetchLegacyPayments] Fetched ${data?.length || 0} payment plans from database (paginated)`);
   console.log(`🔍 [fetchLegacyPayments] Query filters applied:`, {
     due: filters.due,
     fromDate: filters.fromDate,
@@ -1523,8 +1570,21 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     actual_date: p.actual_date,
   })));
   
+  // Debug: Check for lead 168080 in raw data (legacy = leads_lead / finances_paymentplanrow)
+  const raw168080 = (data || []).filter((plan: any) =>
+    plan.lead_id?.toString() === '168080' || plan.lead_id === 168080 || plan.client_id?.toString() === '168080' || plan.client_id === 168080
+  );
+  console.log(`🔍 [fetchLegacyPayments] Raw payment plans for 168080 (legacy):`, raw168080.length, raw168080.map((p: any) => ({
+    id: p.id,
+    lead_id: p.lead_id,
+    client_id: p.client_id,
+    due_date: p.due_date,
+    actual_date: p.actual_date,
+    cancel_date: p.cancel_date,
+  })));
+  
   // Debug: Check for lead 155026 in raw data BEFORE any filtering
-  const raw155026BeforeFilter = (data || []).filter((plan: any) => 
+  const raw155026BeforeFilter = (data || []).filter((plan: any) =>
     plan.lead_id?.toString() === '155026' || plan.lead_id === 155026 || plan.client_id?.toString() === '155026' || plan.client_id === 155026
   );
   console.log(`🔍 [fetchLegacyPayments] Raw payment plans for 155026 (BEFORE filtering):`, raw155026BeforeFilter.length, raw155026BeforeFilter.map((p: any) => ({
@@ -1541,12 +1601,8 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     currency_id: p.currency_id,
   })));
 
-  // When "due date included" is selected, all filtering is done in the query
-  // (due_date not null, actual_date is null, cancel_date is null, and date range on due_date)
-  // When NOT selected, we need to filter out cancelled plans
-  const activePlans = filters.due === 'due_only' 
-    ? (data || []) // All filtering already done in query
-    : (data || []).filter((plan: any) => !plan.cancel_date);
+  // Rows already filtered by query (date range on date or due_date; due_only adds ready_to_pay)
+  const activePlans = data || [];
   
   console.log(`✅ [fetchLegacyPayments] Active plans: ${activePlans.length}`);
   
@@ -1624,36 +1680,46 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
   }
   
   // Fetch proforma dates from proformainvoice table for legacy leads
-  // IMPORTANT: Match by ppr_id (payment plan row id) to get the correct proforma for each specific payment row
-  // This aligns with FinancesTab.tsx which matches proformas by ppr_id === payment.id
+  // Match by ppr_id when set (payment plan row id), and by lead_id (+ client_id) when ppr_id is null (lead-level proformas)
   const proformaDateMap = new Map<number, string | null>(); // Key: ppr_id (payment plan row id)
+  const leadLevelProformaMap = new Map<string, string | null>(); // Key: "leadId" or "leadId_clientId" for proformas with ppr_id null
   if (leadIds.length > 0) {
     const numericLeadIds = leadIds.map((id) => parseInt(id, 10)).filter((id) => !Number.isNaN(id));
     if (numericLeadIds.length > 0) {
       const { data: proformas, error: proformasError } = await supabase
         .from('proformainvoice')
-        .select('ppr_id, cdate')
+        .select('ppr_id, client_id, cdate')
         .in('lead_id', numericLeadIds)
-        .is('cxd_date', null) // Only get active proformas (not cancelled)
-        .not('ppr_id', 'is', null); // Only get proformas linked to specific payment rows
+        .is('cxd_date', null); // Only get active proformas (not cancelled) — include both ppr_id set and null
       
       if (!proformasError && proformas) {
         proformas.forEach((proforma: any) => {
-          if (proforma.ppr_id) {
+          const normalizedDate = normalizeDate(proforma.cdate);
+          if (proforma.ppr_id != null) {
             const pprId = Number(proforma.ppr_id);
             if (!Number.isNaN(pprId)) {
-              const normalizedDate = normalizeDate(proforma.cdate);
-              
-              // If multiple proformas exist for the same ppr_id, keep the most recent one
               const existingDate = proformaDateMap.get(pprId);
               if (!existingDate || (normalizedDate && existingDate && normalizedDate > existingDate)) {
                 proformaDateMap.set(pprId, normalizedDate);
               }
             }
+          } else {
+            // Lead-level proforma (ppr_id null): attribute to all payment rows for this lead (and client if set)
+            const leadIdStr = proforma.lead_id?.toString() ?? '';
+            const clientIdStr = proforma.client_id != null ? String(proforma.client_id) : 'any';
+            const key = `${leadIdStr}_${clientIdStr}`;
+            const existingDate = leadLevelProformaMap.get(key);
+            if (!existingDate || (normalizedDate && existingDate && normalizedDate > existingDate)) {
+              leadLevelProformaMap.set(key, normalizedDate);
+            }
           }
         });
       }
-      console.log(`✅ [fetchLegacyPayments] Fetched ${proformaDateMap.size} proforma dates (matched by ppr_id)`);
+      console.log(`✅ [fetchLegacyPayments] Fetched ${proformaDateMap.size} proforma dates by ppr_id, ${leadLevelProformaMap.size} lead-level proformas`);
+      // Debug 168080: what proforma keys exist for this lead
+      const leadLevelKeys168080 = Array.from(leadLevelProformaMap.keys()).filter((k) => k.startsWith('168080_'));
+      const pprIdsFor168080 = activePlans.filter((p: any) => p.lead_id?.toString() === '168080').map((p: any) => p.id);
+      console.log(`🔍 [fetchLegacyPayments] Proforma lookup for 168080: leadLevelKeys=`, leadLevelKeys168080, leadLevelKeys168080.map((k) => leadLevelProformaMap.get(k)), `ppr_ids of plans=`, pprIdsFor168080, pprIdsFor168080.map((id) => proformaDateMap.get(id)));
     }
   }
 
@@ -1687,17 +1753,23 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     const dueDate = normalizeDate(dueSource);
     const actualDate = normalizeDate(plan.actual_date);
     
-    // Get proforma date for this specific payment row
-    // IMPORTANT: Match by ppr_id (payment plan row id) to get the correct proforma for each payment row
-    // This aligns with FinancesTab.tsx which matches proformas by ppr_id === payment.id
+    // Get proforma date for this specific payment row: first by ppr_id, then by lead-level (lead_id + client_id or lead_id only)
     const paymentRowId = plan.id ? (typeof plan.id === 'number' ? plan.id : Number(plan.id)) : null;
     let proformaDate: string | null = null;
     if (paymentRowId !== null && !Number.isNaN(paymentRowId)) {
-      proformaDate = proformaDateMap.get(paymentRowId) || null;
+      proformaDate = proformaDateMap.get(paymentRowId) ?? null;
+    }
+    if (!proformaDate) {
+      const clientIdVal = clientId != null && !Number.isNaN(clientId) ? String(clientId) : 'any';
+      proformaDate = leadLevelProformaMap.get(`${leadIdKey}_${clientIdVal}`) ?? leadLevelProformaMap.get(`${leadIdKey}_any`) ?? null;
     }
     
     // Determine if there's a proforma for this specific payment row
     const hasProforma = proformaDate !== null;
+    
+    if (leadIdKey === '168080') {
+      console.log(`🔍 [fetchLegacyPayments] Row for 168080: planId=${plan.id}, leadIdKey=${leadIdKey}, clientId=${clientId}, paymentRowId=${paymentRowId}, proformaDate=${proformaDate}, hasProforma=${hasProforma}, actualDate=${actualDate}, collected=${Boolean(actualDate)}`);
+    }
     
     // Debug for 199849
     if ((leadIdKey === '199849' || plan.lead_id === 199849)) {
@@ -1746,11 +1818,14 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
         },
       });
     }
+    // Legacy: planDate = "date" column (used for date filter when Due = Ignore)
+    const planDate = normalizeDate(plan.date);
     // Always use lead_id metadata for lead information (leadName, caseNumber, etc.)
     // Use contact name from client_id (contact_id) for clientName field
     return {
       id: `legacy-${plan.id}`,
       leadId: `legacy_${leadIdKey}`, // Always use original lead_id for navigation/filtering
+      clientId: clientId ?? null, // For per-contact deduplication when "Due date included"
       leadName: meta?.leadName || `Lead #${leadIdKey}`, // Use lead metadata for lead name
       clientName: contactName || meta?.contactName || meta?.clientName || meta?.leadName || `Lead #${leadIdKey}`, // Prefer contact name from client_id, then fallback to lead metadata
       amount,
@@ -1763,6 +1838,7 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
       hasProforma,
       collectedDate: actualDate,
       dueDate,
+      planDate,
       proformaDate,
       handlerName: meta?.handlerName || '—',
       handlerId: meta?.handlerId ?? null,
@@ -2012,15 +2088,15 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
     const categoryMeta = categoryMap.get(lead.category_id ?? null);
     const handlerId = normalizeHandlerId(lead.case_handler_id);
     
-    // Format case number with sublead suffix if applicable
+    // Format case number: prefer lead_number (includes L prefix for new leads, e.g. L210456/2)
     let caseNumber: string;
-    if (lead.master_id) {
-      // It's a sublead - format as master_id/suffix
+    if (lead.lead_number) {
+      caseNumber = `#${lead.lead_number}`;
+    } else if (lead.master_id) {
       const suffix = subLeadSuffixMap.get(key) || 2;
       caseNumber = `#${lead.master_id}/${suffix}`;
     } else {
-      // It's a master lead or standalone lead
-      caseNumber = lead.lead_number ? `#${lead.lead_number}` : `#${lead.id}`;
+      caseNumber = `#${lead.id}`;
     }
     
     map.set(key, {
@@ -2204,4 +2280,3 @@ function normalizeDate(value: any): string | null {
   }
   return date.toISOString().split('T')[0];
 }
-

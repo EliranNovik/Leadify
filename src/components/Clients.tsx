@@ -1163,19 +1163,41 @@ const Clients: React.FC<ClientsProps> = ({
     categoryCacheRef.current.set(cacheKey, result);
     return result;
   }, [allCategories]);
-  const { lead_number = "", "*": subleadSuffix = "" } = useParams<{ lead_number?: string; "*"?: string }>();
+  const rawParams = useParams<{ lead_number?: string; '*'?: string }>();
+  // Decode params so encoded segments like 210456%2F2 (210456/2) are recognized
+  const lead_number = (() => {
+    const raw = rawParams.lead_number ?? '';
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  })();
+  const subleadSuffix = (() => {
+    const raw = rawParams['*'] ?? '';
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  })();
   const location = useLocation();
   const navType = useNavigationType();
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const requestedLeadNumber = searchParams.get('lead');
-  // Construct fullLeadNumber: if we have a sublead suffix from route params, combine it with lead_number
-  // Otherwise, extract from pathname as fallback (handles both /clients/L210764/3 and /clients/2104625?lead=L210764%2F3)
-  const fullLeadNumberFromPath = decodeURIComponent(location.pathname.replace(/^\/clients\//, '').replace(/\/$/, '').replace(/\/master$/, ''));
-  // If we have both lead_number and subleadSuffix from route params, combine them
-  // Otherwise, use requestedLeadNumber from query (for legacy format) or fullLeadNumberFromPath
-  const fullLeadNumber = (subleadSuffix && lead_number)
-    ? `${lead_number}/${subleadSuffix}`
-    : (requestedLeadNumber || lead_number || fullLeadNumberFromPath);
+  // Construct fullLeadNumber: pathname fallback handles /clients/210456%2F2 (encoded slash in one segment)
+  const fullLeadNumberFromPath = (() => {
+    try {
+      return decodeURIComponent(location.pathname.replace(/^\/clients\//, '').replace(/\/$/, '').replace(/\/master$/, ''));
+    } catch {
+      return location.pathname.replace(/^\/clients\//, '').replace(/\/$/, '').replace(/\/master$/, '');
+    }
+  })();
+  // If we have lead_number and subleadSuffix as separate segments, combine; else use decoded lead_number or path
+  const fullLeadNumber =
+    subleadSuffix && lead_number && !lead_number.includes('/')
+      ? `${lead_number}/${subleadSuffix}`
+      : (requestedLeadNumber || lead_number || fullLeadNumberFromPath);
 
 
   const buildClientRoute = useCallback((manualId?: string | null, leadNumberValue?: string | null) => {
@@ -3420,10 +3442,24 @@ const Clients: React.FC<ClientsProps> = ({
         // Ensure we're still mounted before proceeding
         if (!isMounted) return;
 
-        // Always set loading when fetching new data
-        setLocalLoading(true);
         // Use fullLeadNumber if lead_number is empty (fallback for route parsing)
         const effectiveLeadNumber = lead_number || fullLeadNumber;
+
+        // Avoid second loading overlay: if we already have the correct client for this route, do not show overlay again
+        if (selectedClient && effectiveLeadNumber) {
+          const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+          const currentId = isLegacy ? selectedClient.id?.toString().replace('legacy_', '') : selectedClient.id?.toString();
+          const currentLeadNumber = selectedClient.lead_number;
+          const matches = isLegacy
+            ? (currentId === effectiveLeadNumber || currentId === String(effectiveLeadNumber))
+            : (currentLeadNumber === effectiveLeadNumber || currentId === effectiveLeadNumber);
+          if (matches) {
+            setLocalLoading(false);
+            return;
+          }
+        }
+
+        setLocalLoading(true);
         if (effectiveLeadNumber) {
           // Try to find the lead in both tables - run queries in parallel for faster loading
           let clientData = null;
@@ -3462,6 +3498,33 @@ const Clients: React.FC<ClientsProps> = ({
                 .single()
                 .then(({ data, error }) => ({ type: 'legacy', data, error }))
             );
+          }
+
+          // Legacy sublead by masterId/suffix (e.g. 210456/2 = master 210456, first sublead)
+          const legacySubleadMatch = effectiveLeadNumber.match(/^(\d+)\/(\d+)$/);
+          if (legacySubleadMatch) {
+            const [, masterIdStr, suffixStr] = legacySubleadMatch;
+            const masterId = parseInt(masterIdStr, 10);
+            const suffix = parseInt(suffixStr, 10);
+            if (!Number.isNaN(masterId) && !Number.isNaN(suffix) && suffix >= 2) {
+              queries.push(
+                supabase
+                  .from('leads_lead')
+                  .select(`
+                    *,
+                    accounting_currencies!leads_lead_currency_id_fkey ( name, iso_code ),
+                    misc_language!leads_lead_language_id_fkey ( name )
+                  `)
+                  .eq('master_id', masterId)
+                  .not('master_id', 'is', null)
+                  .order('id', { ascending: true })
+                  .then(({ data: subleads, error }) => {
+                    const index = suffix - 2;
+                    const legacyLead = subleads && subleads[index] ? subleads[index] : null;
+                    return { type: 'legacy', data: legacyLead, error };
+                  })
+              );
+            }
           }
 
           // Also try by lead_number for new leads
@@ -3847,50 +3910,25 @@ const Clients: React.FC<ClientsProps> = ({
             // This prevents race conditions where persisted data check runs with wrong state
             lastRouteRef.current = currentRoute;
 
-            // Wait for categories to be loaded before clearing loading state
-            // This ensures category names, topics, and other data appear while overlay is still showing
-            const waitForCategories = async () => {
-              // Check if categories are already loaded (from cache or previous load)
-              if (allCategories.length > 0 || mainCategories.length > 0) {
-                setLocalLoading(false);
-                return;
-              }
+            // Clear loading overlay as soon as client data is ready (categories load in background)
+            setLocalLoading(false);
 
-              // Check cache first
+            // Optionally apply category cache once so names appear sooner (non-blocking)
+            try {
               const cacheKey = 'clientsPage_backgroundData';
               const cachedData = sessionStorage.getItem(cacheKey);
               if (cachedData) {
-                try {
-                  const data = JSON.parse(cachedData);
-                  if (data.categories && data.categories.length > 0) {
-                    setMainCategories(data.categories);
-                    // Also set allCategories if categoryObjects are available
-                    if (data.categoryObjects && Array.isArray(data.categoryObjects)) {
-                      setAllCategories(data.categoryObjects);
-                    }
-                    setLocalLoading(false);
-                    return;
+                const data = JSON.parse(cachedData);
+                if (data.categories && data.categories.length > 0) {
+                  setMainCategories(data.categories);
+                  if (data.categoryObjects && Array.isArray(data.categoryObjects)) {
+                    setAllCategories(data.categoryObjects);
                   }
-                } catch (e) {
-                  // Cache parse error, continue to wait
                 }
               }
-
-              // Wait for categories to load (max 2 seconds timeout)
-              const startTime = Date.now();
-              const checkInterval = setInterval(() => {
-                if (allCategories.length > 0 || mainCategories.length > 0) {
-                  clearInterval(checkInterval);
-                  setLocalLoading(false);
-                } else if (Date.now() - startTime > 2000) {
-                  // Timeout after 2 seconds - clear loading anyway
-                  clearInterval(checkInterval);
-                  setLocalLoading(false);
-                }
-              }, 50); // Check every 50ms
-            };
-
-            waitForCategories();
+            } catch (_) {
+              /* ignore */
+            }
 
             // IMMEDIATELY check for subleads/master lead status (don't wait for useEffect)
             // This runs in parallel with rendering for faster UX
