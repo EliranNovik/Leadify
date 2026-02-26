@@ -1140,6 +1140,26 @@ const CalendarPage: React.FC = () => {
     return String(categoryId); // Fallback to original value if not found
   };
 
+  // Format category from joined misc_category (avoids waiting for allCategories / extra lookups)
+  const getCategoryDisplayFromJoin = (lead: any): string | null => {
+    const cat = lead?.misc_category;
+    if (!cat || !cat.name) return null;
+    const main = Array.isArray(cat.misc_maincategory) ? cat.misc_maincategory[0] : cat.misc_maincategory;
+    return main?.name ? `${cat.name} (${main.name})` : (cat.name || null);
+  };
+  // Format source from joined misc_leadsource
+  const getSourceDisplayFromJoin = (lead: any): string | null => {
+    const src = lead?.misc_leadsource;
+    if (!src || !src.name) return null;
+    return typeof src.name === 'string' ? src.name.trim() || null : null;
+  };
+  // Format language from joined misc_language
+  const getLanguageDisplayFromJoin = (lead: any): string | null => {
+    const lang = lead?.misc_language;
+    if (!lang) return null;
+    const record = Array.isArray(lang) ? lang[0] : lang;
+    return record?.name && typeof record.name === 'string' ? record.name.trim() || null : null;
+  };
 
   // Navigation functions for date range switching
   const goToPreviousDay = () => {
@@ -1245,9 +1265,9 @@ const CalendarPage: React.FC = () => {
             name,
             iso_code
           ),
-          misc_language!leads_lead_language_id_fkey (
-            name
-          )
+          misc_language!leads_lead_language_id_fkey ( id, name ),
+          misc_category!leads_lead_category_id_fkey ( id, name, parent_id, misc_maincategory!parent_id ( id, name ) ),
+          misc_leadsource!leads_lead_source_id_fkey ( id, name )
         `)
         .gte('meeting_date', fromDate)
         .lte('meeting_date', toDate)
@@ -1345,18 +1365,8 @@ const CalendarPage: React.FC = () => {
 
       // Process legacy meetings
       const processedLegacyMeetings = legacyData.map((legacyLead: any) => {
-        // Extract language name from joined table (same as Clients.tsx)
-        const legacyLanguageRecord = Array.isArray(legacyLead.misc_language)
-          ? legacyLead.misc_language[0]
-          : legacyLead.misc_language;
-
-        let languageName = '';
-        if (legacyLanguageRecord?.name) {
-          languageName = legacyLanguageRecord.name;
-        } else if (legacyLead.language_id) {
-          // If join failed, will be fetched later in assign staff modal
-          languageName = '';
-        }
+        const languageName = getLanguageDisplayFromJoin(legacyLead) ?? '';
+        const categoryDisplay = getCategoryDisplayFromJoin(legacyLead) ?? getCategoryName(legacyLead.category_id) ?? legacyLead.category ?? 'Unassigned';
 
         const meeting = {
           id: `legacy_${legacyLead.id}`,
@@ -1404,9 +1414,9 @@ const CalendarPage: React.FC = () => {
             expert_examination: legacyLead.expert_examination || '',
             probability: parseFloat(legacyLead.probability || '0'),
             category_id: legacyLead.category_id || null,
-            category: getCategoryName(legacyLead.category_id) || legacyLead.category || 'Unassigned',
-            language: languageName || null, // Always use the language name (never use ID) - same as Clients.tsx
-            language_id: legacyLead.language_id || null, // Keep ID for reference
+            category: categoryDisplay,
+            language: languageName || null,
+            language_id: legacyLead.language_id || null,
             onedrive_folder_link: '',
             expert_notes: '',
             manual_interactions: [],
@@ -1969,13 +1979,15 @@ const CalendarPage: React.FC = () => {
                   name,
                   iso_code
                 ),
-                misc_category!category_id(
+                misc_category!fk_leads_category_id (
                   id, name, parent_id,
-                  misc_maincategory!parent_id(
+                  misc_maincategory!parent_id (
                     id, name, department_id,
-                    tenant_departement!department_id(id, name)
+                    tenant_departement!department_id ( id, name )
                   )
-                )
+                ),
+                misc_leadsource!fk_leads_source_id ( id, name ),
+                misc_language!fk_leads_language_id ( id, name )
               `)
               .in('id', clientIds)
               .is('unactivated_at', null) // Filter out inactive leads
@@ -2041,6 +2053,8 @@ const CalendarPage: React.FC = () => {
                   lead.balance_currency = lead.balance_currency || '₪';
                 }
 
+                lead.category = getCategoryDisplayFromJoin(lead) ?? getCategoryName(lead.category_id) ?? lead.category;
+                lead.language = getLanguageDisplayFromJoin(lead) ?? lead.language;
                 newLeadsMap.set(lead.id, lead);
               });
             }
@@ -2062,13 +2076,15 @@ const CalendarPage: React.FC = () => {
                   name,
                   iso_code
                 ),
-                misc_category!category_id(
+                misc_category!leads_lead_category_id_fkey (
                   id, name, parent_id,
-                  misc_maincategory!parent_id(
+                  misc_maincategory!parent_id (
                     id, name, department_id,
-                    tenant_departement!department_id(id, name)
+                    tenant_departement!department_id ( id, name )
                   )
-                )
+                ),
+                misc_leadsource!leads_lead_source_id_fkey ( id, name ),
+                misc_language!leads_lead_language_id_fkey ( id, name )
               `)
               .in('id', numericLegacyLeadIds)
               .or('status.eq.0,status.is.null') // Filter out inactive leads
@@ -2134,6 +2150,8 @@ const CalendarPage: React.FC = () => {
                   lead.balance_currency = '₪';
                 }
 
+                lead.category = getCategoryDisplayFromJoin(lead) ?? getCategoryName(lead.category_id) ?? lead.category;
+                lead.language = getLanguageDisplayFromJoin(lead) ?? lead.language;
                 legacyLeadsMap.set(lead.id, lead);
                 legacyLeadsMap.set(String(lead.id), lead);
               });
@@ -2996,26 +3014,6 @@ const CalendarPage: React.FC = () => {
         setModalSelectedDate(today);
       }
 
-      // Fetch languages if not already loaded (needed for language ID to name conversion)
-      let languagesToUse = allLanguages;
-      if (languagesToUse.length === 0) {
-        try {
-          const { data: languagesData, error: languagesError } = await supabase
-            .from('misc_language')
-            .select('id, name')
-            .order('name', { ascending: true });
-
-          if (!languagesError && languagesData) {
-            setAllLanguages(languagesData);
-            languagesToUse = languagesData;
-          } else if (languagesError) {
-            console.error('Error fetching languages:', languagesError);
-          }
-        } catch (error) {
-          console.error('Exception fetching languages:', error);
-        }
-      }
-
       // Step 1: Fetch only basic meeting data from meetings table (no joins)
       // Only select minimal fields that definitely exist - we'll get the rest from leads/leads_lead tables
       const { data: meetingsData, error: meetingsError } = await supabase
@@ -3058,13 +3056,16 @@ const CalendarPage: React.FC = () => {
           .from('leads')
           .select(`
             id, name, lead_number, stage, manager, helper, scheduler, category, category_id, balance, balance_currency, 
-            expert_notes, expert, probability, phone, email, language, number_of_applicants_meeting, eligibility_status,
+            expert_notes, expert, probability, phone, email, language, language_id, number_of_applicants_meeting, eligibility_status,
             currency_id,
             accounting_currencies!leads_currency_id_fkey (
               id,
               name,
               iso_code
-            )
+            ),
+            misc_category!fk_leads_category_id ( id, name, parent_id, misc_maincategory!parent_id ( id, name ) ),
+            misc_leadsource!fk_leads_source_id ( id, name ),
+            misc_language!fk_leads_language_id ( id, name )
           `)
           .in('id', uniqueClientIds)
           .is('unactivated_at', null) // Filter out inactive leads
@@ -3120,6 +3121,8 @@ const CalendarPage: React.FC = () => {
               lead.balance_currency = lead.balance_currency || '₪';
             }
 
+            lead.category = getCategoryDisplayFromJoin(lead) ?? getCategoryName(lead.category_id) ?? lead.category;
+            lead.language = getLanguageDisplayFromJoin(lead) ?? lead.language;
             leadsMap[lead.id] = lead;
           });
         }
@@ -3136,7 +3139,10 @@ const CalendarPage: React.FC = () => {
               id,
               name,
               iso_code
-            )
+            ),
+            misc_category!leads_lead_category_id_fkey ( id, name, parent_id, misc_maincategory!parent_id ( id, name ) ),
+            misc_leadsource!leads_lead_source_id_fkey ( id, name ),
+            misc_language!leads_lead_language_id_fkey ( id, name )
           `)
           .in('id', uniqueLegacyLeadIds)
           .or('status.eq.0,status.is.null') // Filter out inactive leads
@@ -3192,6 +3198,8 @@ const CalendarPage: React.FC = () => {
               legacyLead.balance_currency = '₪';
             }
 
+            legacyLead.category = getCategoryDisplayFromJoin(legacyLead) ?? getCategoryName(legacyLead.category_id) ?? legacyLead.category;
+            legacyLead.language = getLanguageDisplayFromJoin(legacyLead) ?? legacyLead.language;
             legacyLeadsMap[String(legacyLead.id)] = legacyLead;
           });
         }
@@ -3212,7 +3220,10 @@ const CalendarPage: React.FC = () => {
             id,
             name,
             iso_code
-          )
+          ),
+          misc_category!leads_lead_category_id_fkey ( id, name, parent_id, misc_maincategory!parent_id ( id, name ) ),
+          misc_leadsource!leads_lead_source_id_fkey ( id, name ),
+          misc_language!leads_lead_language_id_fkey ( id, name )
         `)
         .gte('meeting_date', sevenDaysAgo)
         .lte('meeting_date', thirtyDaysFromNow)
@@ -3336,23 +3347,8 @@ const CalendarPage: React.FC = () => {
             expert_examination: legacyLead.expert_examination || '',
             probability: parseFloat(legacyLead.probability || '0'),
             category_id: legacyLead.category_id || null,
-            category: getCategoryName(legacyLead.category_id) || legacyLead.category || 'Unassigned',
-            language: (() => {
-              // Convert language ID to name
-              const languageId = legacyLead.language_id;
-              if (!languageId) return 'N/A';
-
-              // Use languages fetched earlier
-              if (languagesToUse.length > 0) {
-                const languageObj = languagesToUse.find((lang: any) => {
-                  return String(lang.id) === String(languageId);
-                });
-                if (languageObj?.name) {
-                  return languageObj.name;
-                }
-              }
-              return 'N/A';
-            })(),
+            category: getCategoryDisplayFromJoin(legacyLead) ?? getCategoryName(legacyLead.category_id) ?? legacyLead.category ?? 'Unassigned',
+            language: getLanguageDisplayFromJoin(legacyLead) ?? 'N/A',
             lead_type: 'legacy' as const
           }
         };
@@ -3380,24 +3376,9 @@ const CalendarPage: React.FC = () => {
           let leadData = null;
 
           if (meeting.client_id && leadsMap[meeting.client_id]) {
-            // Use new lead data from the map
+            // Use new lead data from the map (category and language already set from join)
             const lead = leadsMap[meeting.client_id];
-
-            // Convert language ID to name if needed
-            let language = lead.language || 'N/A';
-            if (language && languagesToUse.length > 0) {
-              // Check if it's a numeric ID
-              const languageId = typeof language === 'string' && /^\d+$/.test(language.trim())
-                ? parseInt(language.trim(), 10)
-                : (typeof language === 'number' ? language : null);
-
-              if (languageId && !isNaN(languageId)) {
-                const languageObj = languagesToUse.find((lang: any) => String(lang.id) === String(languageId));
-                if (languageObj?.name) {
-                  language = languageObj.name;
-                }
-              }
-            }
+            const language = lead.language || 'N/A';
 
             // Convert manager, helper, scheduler, expert IDs to display names if they're numeric
             let manager = lead.manager || '--';
@@ -3439,18 +3420,7 @@ const CalendarPage: React.FC = () => {
             };
           } else if (meeting.legacy_lead_id && legacyLeadsMap[String(meeting.legacy_lead_id)]) {
             const legacyLead = legacyLeadsMap[String(meeting.legacy_lead_id)];
-
-            // Convert language ID to name
-            let language = 'N/A';
-            const languageId = legacyLead.language_id;
-            if (languageId && languagesToUse.length > 0) {
-              const languageObj = languagesToUse.find((lang: any) => {
-                return String(lang.id) === String(languageId);
-              });
-              if (languageObj?.name) {
-                language = languageObj.name;
-              }
-            }
+            // category and language already set from join when building legacyLeadsMap
 
             leadData = {
               ...legacyLead,
@@ -3460,8 +3430,8 @@ const CalendarPage: React.FC = () => {
               scheduler: getEmployeeDisplayName(legacyLead.meeting_scheduler_id),
               expert: getEmployeeDisplayName(legacyLead.expert_id),
               balance: legacyLead.total,
-              balance_currency: legacyLead.meeting_total_currency_id,
-              language: language,
+              balance_currency: legacyLead.balance_currency || legacyLead.meeting_total_currency_id,
+              language: legacyLead.language || 'N/A',
               phone: legacyLead.phone || legacyLead.mobile || '',
               lead_number: legacyLead.lead_number || legacyLead.id?.toString()
             };
