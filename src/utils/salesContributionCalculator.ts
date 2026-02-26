@@ -240,11 +240,22 @@ const checkEmployeeInRole = (
             return true;
         }
         return false;
-    } else if (roleField === 'helper' && lead.helper) {
-        const helperValue = lead.helper;
-        return typeof helperValue === 'string'
-            ? helperValue.toLowerCase() === employeeName.toLowerCase()
-            : Number(helperValue) === employeeId;
+    } else if (roleField === 'helper') {
+        // Helper Closer: check helper (name or ID - e.g. "129" must match employeeId 129), meeting_lawyer_id, lawyer
+        if (lead.helper != null && lead.helper !== '') {
+            const helperValue = lead.helper;
+            const matchName = typeof helperValue === 'string' && helperValue.toLowerCase() === employeeName.toLowerCase();
+            const matchId = Number(helperValue) === employeeId;
+            if (matchName || matchId) return true;
+        }
+        if (lead.meeting_lawyer_id != null && Number(lead.meeting_lawyer_id) === employeeId) return true;
+        if (lead.lawyer != null && lead.lawyer !== '') {
+            const lawyerValue = lead.lawyer;
+            const matchName = typeof lawyerValue === 'string' && lawyerValue.toLowerCase() === employeeName.toLowerCase();
+            const matchId = Number(lawyerValue) === employeeId;
+            if (matchName || matchId) return true;
+        }
+        return false;
     } else if (roleField === 'expert' && lead.expert) {
         return Number(lead.expert) === employeeId;
     } else if (roleField === 'manager' || roleField === 'meeting_manager_id') {

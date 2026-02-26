@@ -706,6 +706,8 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
             scheduler,
             handler,
             helper,
+            meeting_lawyer_id,
+            lawyer,
             expert,
             case_handler_id,
             manager,
@@ -761,12 +763,21 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
               if (matches) roles.push('Scheduler');
             }
 
-            if (lead.helper) {
+            // Helper Closer: check helper (name or ID e.g. "129"), meeting_lawyer_id, and lawyer (new leads)
+            if (lead.helper != null && lead.helper !== '') {
               const helperValue = lead.helper;
-              const matches = typeof helperValue === 'string'
-                ? helperValue.toLowerCase() === employeeName.toLowerCase()
-                : Number(helperValue) === employeeId;
-              if (matches) roles.push('Helper Closer');
+              const matchName = typeof helperValue === 'string' && helperValue.toLowerCase() === employeeName.toLowerCase();
+              const matchId = Number(helperValue) === employeeId;
+              if ((matchName || matchId) && !roles.includes('Helper Closer')) roles.push('Helper Closer');
+            }
+            if (lead.meeting_lawyer_id != null && Number(lead.meeting_lawyer_id) === employeeId && !roles.includes('Helper Closer')) {
+              roles.push('Helper Closer');
+            }
+            if (lead.lawyer != null && lead.lawyer !== '') {
+              const lawyerValue = lead.lawyer;
+              const matchName = typeof lawyerValue === 'string' && lawyerValue.toLowerCase() === employeeName.toLowerCase();
+              const matchId = Number(lawyerValue) === employeeId;
+              if ((matchName || matchId) && !roles.includes('Helper Closer')) roles.push('Helper Closer');
             }
 
             let isHandler = false;
@@ -822,9 +833,8 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
 
             const requiredRoles = role.split(',').map(r => r.trim());
             const hasAllRoles = requiredRoles.every(reqRole => roles.includes(reqRole));
-            const hasExactMatch = requiredRoles.length === roles.length && hasAllRoles;
-
-            if (hasExactMatch) {
+            // Show leads where employee has the selected role(s) (e.g. "Helper Closer" shows all leads where they are Helper Closer)
+            if (hasAllRoles) {
               // Check if this is "Handler only" - exclude from signed totals (same logic as main report)
               const isHandlerOnly = roles.length === 1 && roles[0] === 'Handler';
 
@@ -928,9 +938,8 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
 
             const requiredRoles = role.split(',').map(r => r.trim());
             const hasAllRoles = requiredRoles.every(reqRole => roles.includes(reqRole));
-            const hasExactMatch = requiredRoles.length === roles.length && hasAllRoles;
-
-            if (hasExactMatch) {
+            // Show leads where employee has the selected role(s)
+            if (hasAllRoles) {
               // Check if this is "Handler only" - exclude from signed totals (same logic as main report)
               const isHandlerOnly = roles.length === 1 && roles[0] === 'Handler';
 

@@ -863,8 +863,16 @@ const SalesContributionPage = () => {
     return `${value.toFixed(2)}%`;
   };
 
+  // DEBUG: Helper Closer (L210620 / employee 129)
+  const DEBUG_HELPER_CLOSER = true; // set false to disable
+  const DEBUG_EMPLOYEE_ID = 129;
+  const DEBUG_LEAD_NUMBER = 'L210620';
+
   // Fetch role data for an employee
   const fetchRoleData = useCallback(async (employeeId: number, employeeName: string) => {
+    if (DEBUG_HELPER_CLOSER && employeeId === DEBUG_EMPLOYEE_ID) {
+      console.log('[SalesContribution fetchRoleData] employeeId=', employeeId, 'employeeName=', employeeName, 'dateRange=', filters.fromDate, '-', filters.toDate);
+    }
     // Include date range, income, due normalized percentage, and role percentages hash in cache key to ensure data is refetched when any of these change
     const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
     const incomeKey = totalIncome || 0;
@@ -1025,6 +1033,10 @@ const SalesContributionPage = () => {
         }
       });
 
+      if (DEBUG_HELPER_CLOSER && employeeId === DEBUG_EMPLOYEE_ID) {
+        console.log('[SalesContribution Step1] newLeadIds.size=', newLeadIds.size, 'legacyLeadIds.size=', legacyLeadIds.size, 'newLeadIds sample=', Array.from(newLeadIds).slice(0, 5));
+      }
+
       // Step 2: Fetch new leads data
       // NOTE: No date filtering here - we already filtered by sign date in step 1
       // We're only fetching leads that have stage 60 entries in the date range
@@ -1046,6 +1058,8 @@ const SalesContributionPage = () => {
             scheduler,
             handler,
             helper,
+            meeting_lawyer_id,
+            lawyer,
             expert,
             case_handler_id,
             manager,
@@ -1072,6 +1086,22 @@ const SalesContributionPage = () => {
           processedLeads.forEach(lead => {
             newLeadsMap.set(lead.id, lead);
           });
+          if (DEBUG_HELPER_CLOSER && employeeId === DEBUG_EMPLOYEE_ID) {
+            const debugLead = processedLeads.find((l: any) => (l.lead_number || '').toString().includes('210620'));
+            if (debugLead) {
+              console.log('[SalesContribution Step2] Lead L210620 found in newLeads:', {
+                id: debugLead.id,
+                lead_number: debugLead.lead_number,
+                helper: debugLead.helper,
+                helperType: typeof debugLead.helper,
+                meeting_lawyer_id: debugLead.meeting_lawyer_id,
+                lawyer: debugLead.lawyer,
+                inNewLeadIds: newLeadIds.has(String(debugLead.id)),
+              });
+            } else {
+              console.log('[SalesContribution Step2] Lead L210620 NOT in newLeads fetch. newLeadIds.size=', newLeadIds.size, 'lead_numbers in fetch=', processedLeads.map((l: any) => l.lead_number).filter(Boolean).slice(0, 10));
+            }
+          }
         }
       }
 
@@ -1333,11 +1363,41 @@ const SalesContributionPage = () => {
             return true;
           }
           return false;
-        } else if (roleField === 'helper' && lead.helper) {
-          const helperValue = lead.helper;
-          return typeof helperValue === 'string'
-            ? helperValue.toLowerCase() === employeeName.toLowerCase()
-            : Number(helperValue) === employeeId;
+        } else if (roleField === 'helper') {
+          // Helper Closer: check helper, meeting_lawyer_id (new leads), and lawyer (display name)
+          const isDebugHelper = DEBUG_HELPER_CLOSER && employeeId === DEBUG_EMPLOYEE_ID && (lead.lead_number || '').toString().includes('210620');
+          if (lead.helper != null && lead.helper !== '') {
+            const helperValue = lead.helper;
+            const matchName = typeof helperValue === 'string' && helperValue.toLowerCase() === employeeName.toLowerCase();
+            const matchId = Number(helperValue) === employeeId;
+            if (isDebugHelper) {
+              console.log('[SalesContribution checkEmployeeInRole helper]', {
+                lead_number: lead.lead_number,
+                helperValue,
+                helperType: typeof helperValue,
+                employeeId,
+                employeeName,
+                matchName,
+                matchId,
+                result: matchName || matchId,
+              });
+            }
+            if (matchName || matchId) return true;
+          }
+          if (lead.meeting_lawyer_id != null && Number(lead.meeting_lawyer_id) === employeeId) {
+            if (isDebugHelper) console.log('[SalesContribution checkEmployeeInRole helper] match via meeting_lawyer_id');
+            return true;
+          }
+          if (lead.lawyer != null && lead.lawyer !== '') {
+            const lawyerValue = lead.lawyer;
+            const matchName = typeof lawyerValue === 'string' && lawyerValue.toLowerCase() === employeeName.toLowerCase();
+            const matchId = Number(lawyerValue) === employeeId;
+            if (matchName || matchId) return true;
+          }
+          if (isDebugHelper) {
+            console.log('[SalesContribution checkEmployeeInRole helper] L210620 no match. helper=', lead.helper, 'meeting_lawyer_id=', lead.meeting_lawyer_id, 'lawyer=', lead.lawyer);
+          }
+          return false;
         } else if (roleField === 'expert' && lead.expert) {
           return Number(lead.expert) === employeeId;
         } else if (roleField === 'meeting_manager_id') {
@@ -1395,6 +1455,10 @@ const SalesContributionPage = () => {
             employeeRoles.push(role.name);
           }
         });
+
+        if (DEBUG_HELPER_CLOSER && employeeId === DEBUG_EMPLOYEE_ID && (lead.lead_number || '').toString().includes('210620')) {
+          console.log('[SalesContribution newLeads process] L210620 employeeRoles=', employeeRoles, 'leadId=', leadId, 'helper=', lead.helper);
+        }
 
         // Check if employee is handler for this lead (needed for due amounts)
         const isHandler = checkEmployeeInRole(lead, 'handler', 'Handler');
@@ -1540,7 +1604,7 @@ const SalesContributionPage = () => {
             manager: lead.meeting_manager_id, // Meeting Manager is stored as meeting_manager_id (numeric) in new leads
             expert: lead.expert,
             handler: lead.handler, // Handler role
-            helperCloser: lead.helper, // Helper Closer is stored as 'helper' in new leads
+            helperCloser: lead.helper ?? lead.meeting_lawyer_id, // Helper Closer: helper or meeting_lawyer_id in new leads
           };
 
           // Calculate signed portion from amountAfterFee (no adjustment)
@@ -3274,84 +3338,11 @@ const SalesContributionPage = () => {
           const { data: stageHistoryData, error: stageHistoryError } = await stageHistoryQuery;
           if (stageHistoryError) throw stageHistoryError;
 
-          // DEBUG: Check for lead L210675 in stage 60 records
-          const debugLeadL210675 = stageHistoryData?.find((entry: any) => {
-            // Check if this entry might be for L210675
-            return entry.newlead_id?.toString().includes('210675') ||
-              entry.lead_id?.toString().includes('210675');
-          });
-
-          // DEBUG: Also check all records to see date range
-          const sampleDates = stageHistoryData?.slice(0, 5).map((entry: any) => ({
-            newlead_id: entry.newlead_id,
-            lead_id: entry.lead_id,
-            date: entry.date,
-            cdate: entry.cdate,
-            dateISO: entry.date ? new Date(entry.date).toISOString() : null,
-            dateInRange: fromDateTime && toDateTime ?
-              (entry.date >= fromDateTime && entry.date <= toDateTime) : null
-          }));
-
-          if (debugLeadL210675) {
-            console.log('🔍 DEBUG L210675: Found in stage 60 records:', {
-              entry: debugLeadL210675,
-              newlead_id: debugLeadL210675.newlead_id,
-              lead_id: debugLeadL210675.lead_id,
-              date: debugLeadL210675.date,
-              cdate: debugLeadL210675.cdate,
-              stage: debugLeadL210675.stage,
-              dateISO: debugLeadL210675.date ? new Date(debugLeadL210675.date).toISOString() : null,
-              dateInRange: fromDateTime && toDateTime ?
-                (debugLeadL210675.date >= fromDateTime && debugLeadL210675.date <= toDateTime) : 'N/A',
-              dateComparison: fromDateTime && debugLeadL210675.date ? {
-                date: debugLeadL210675.date,
-                fromDateTime,
-                isGTE: debugLeadL210675.date >= fromDateTime,
-                toDateTime,
-                isLTE: debugLeadL210675.date <= toDateTime,
-                willPass: debugLeadL210675.date >= fromDateTime && debugLeadL210675.date <= toDateTime
-              } : null
-            });
-          } else {
-            console.log('🔍 DEBUG L210675: NOT found in stage 60 records for date range:', {
-              fromDate: filters.fromDate,
-              toDate: filters.toDate,
-              fromDateTime,
-              toDateTime,
-              totalRecords: stageHistoryData?.length || 0,
-              sampleDates,
-              queryString: stageHistoryQuery.toString ? stageHistoryQuery.toString() : 'N/A'
-            });
-          }
-
           // Separate new and legacy lead IDs
           const allNewLeadIds = new Set<string>();
           const allLegacyLeadIds = new Set<number>();
 
-          // DEBUG: Find the entry for L210675 before processing
-          const l210675Entry = stageHistoryData?.find((entry: any) =>
-            entry.newlead_id === '801a6928-574d-4ee7-b54d-bf2e169051bc' ||
-            entry.newlead_id?.toString() === '801a6928-574d-4ee7-b54d-bf2e169051bc'
-          );
-
           stageHistoryData?.forEach((entry: any) => {
-            // DEBUG: Log details for L210675 entry
-            const isL210675 = entry.newlead_id === '801a6928-574d-4ee7-b54d-bf2e169051bc' ||
-              entry.newlead_id?.toString() === '801a6928-574d-4ee7-b54d-bf2e169051bc';
-
-            if (isL210675) {
-              console.log('🔍 DEBUG L210675: Processing entry in forEach:', {
-                entry,
-                newlead_id: entry.newlead_id,
-                newlead_idType: typeof entry.newlead_id,
-                newlead_idTruthy: !!entry.newlead_id,
-                lead_id: entry.lead_id,
-                lead_idType: typeof entry.lead_id,
-                willAddToNew: !!entry.newlead_id,
-                willAddToLegacy: entry.lead_id !== null && entry.lead_id !== undefined
-              });
-            }
-
             if (entry.newlead_id) {
               allNewLeadIds.add(entry.newlead_id.toString());
             }
@@ -3360,218 +3351,10 @@ const SalesContributionPage = () => {
             }
           });
 
-          // DEBUG: Check the entry we found
-          if (l210675Entry) {
-            console.log('🔍 DEBUG L210675: Found entry before forEach:', {
-              entry: l210675Entry,
-              newlead_id: l210675Entry.newlead_id,
-              newlead_idType: typeof l210675Entry.newlead_id,
-              newlead_idTruthy: !!l210675Entry.newlead_id,
-              lead_id: l210675Entry.lead_id,
-              inNewLeadIdsAfter: allNewLeadIds.has(l210675Entry.newlead_id?.toString() || ''),
-              inNewLeadIdsAfterCheck: Array.from(allNewLeadIds).includes(l210675Entry.newlead_id?.toString() || '')
-            });
-          }
-
-          // DEBUG: Check if L210675 is in the ID sets
-          const l210675LeadId = '801a6928-574d-4ee7-b54d-bf2e169051bc';
-          const l210675InNewIds = allNewLeadIds.has(l210675LeadId);
-          const l210675InLegacyIds = Array.from(allLegacyLeadIds).some(id => id.toString() === l210675LeadId);
-
-          console.log('🔍 DEBUG L210675: Checking ID sets:', {
-            l210675LeadId,
-            inNewLeadIds: l210675InNewIds,
-            inLegacyLeadIds: l210675InLegacyIds,
-            newLeadIdsCount: allNewLeadIds.size,
-            legacyLeadIdsCount: allLegacyLeadIds.size,
-            newLeadIdsSample: Array.from(allNewLeadIds).slice(0, 10),
-            hasL210675InSet: allNewLeadIds.has(l210675LeadId),
-            allNewLeadIdsArray: Array.from(allNewLeadIds)
-          });
-
-          // DEBUG: Test the main query directly with L210675's lead ID to see if it should be included
-          // First, get the lead ID for L210675
-          const { data: debugL210675Direct, error: debugL210675Error } = await supabase
-            .from('leads')
-            .select('id, lead_number, name, closer, scheduler, handler, expert, case_handler_id, meeting_manager_id, balance, proposal_total, date_signed')
-            .or('lead_number.ilike.%210675%,manual_id.ilike.%210675%')
-            .limit(5);
-
-          // If we found L210675, test if the main query would find it
-          if (debugL210675Direct && debugL210675Direct.length > 0) {
-            const testLeadId = debugL210675Direct[0].id;
-
-            // Replicate the exact main query but filter for this specific lead ID
-            let testMainQuery = supabase
-              .from('leads_leadstage')
-              .select('id, stage, date, cdate, lead_id, newlead_id')
-              .eq('stage', 60)
-              .eq('newlead_id', testLeadId);
-
-            if (fromDateTime) {
-              testMainQuery = testMainQuery.gte('date', fromDateTime);
-            }
-            if (toDateTime) {
-              testMainQuery = testMainQuery.lte('date', toDateTime);
-            }
-
-            const { data: testMainQueryResult } = await testMainQuery;
-
-            console.log('🔍 DEBUG L210675: Testing main query directly:', {
-              testLeadId,
-              fromDateTime,
-              toDateTime,
-              testMainQueryResult,
-              foundInTest: testMainQueryResult && testMainQueryResult.length > 0,
-              testResultCount: testMainQueryResult?.length || 0
-            });
-          }
-
-          if (debugL210675Direct && debugL210675Direct.length > 0) {
-            console.log('🔍 DEBUG L210675: Direct query result:', {
-              found: debugL210675Direct.length,
-              leads: debugL210675Direct.map(l => ({
-                id: l.id,
-                lead_number: l.lead_number,
-                name: l.name,
-                closer: l.closer,
-                scheduler: l.scheduler,
-                handler: l.handler,
-                expert: l.expert,
-                case_handler_id: l.case_handler_id,
-                meeting_manager_id: l.meeting_manager_id,
-                balance: l.balance,
-                proposal_total: l.proposal_total,
-                date_signed: l.date_signed
-              }))
-            });
-
-            // Check if this lead has stage 60 in the date range
-            if (debugL210675Direct.length > 0) {
-              const leadId = debugL210675Direct[0].id;
-
-              // Query stage 60 with the same filters as the main query to see if it matches
-              let debugStage60Query = supabase
-                .from('leads_leadstage')
-                .select('id, date, cdate, stage, newlead_id, lead_id')
-                .eq('stage', 60)
-                .eq('newlead_id', leadId);
-
-              if (fromDateTime) {
-                debugStage60Query = debugStage60Query.gte('date', fromDateTime);
-              }
-              if (toDateTime) {
-                debugStage60Query = debugStage60Query.lte('date', toDateTime);
-              }
-
-              const { data: stage60ForL210675Filtered } = await debugStage60Query;
-
-              // Also get all stage 60 records for this lead (no date filter)
-              const { data: stage60ForL210675 } = await supabase
-                .from('leads_leadstage')
-                .select('id, date, cdate, stage, newlead_id, lead_id')
-                .eq('stage', 60)
-                .eq('newlead_id', leadId)
-                .order('date', { ascending: false })
-                .limit(5);
-
-              const inDateRangeRecords = stage60ForL210675?.filter(s =>
-                fromDateTime && toDateTime &&
-                s.date >= fromDateTime &&
-                s.date <= toDateTime
-              ) || [];
-
-              // Get the actual date value from the stage 60 record
-              const actualStage60Record = stage60ForL210675?.[0];
-              const actualDate = actualStage60Record?.date;
-              const actualCdate = actualStage60Record?.cdate;
-
-              console.log('🔍 DEBUG L210675: Stage 60 records - DETAILED:', {
-                leadId,
-                leadNumber: debugL210675Direct[0].lead_number,
-                fromDateTime,
-                toDateTime,
-                fromDate: filters.fromDate,
-                toDate: filters.toDate,
-                // Actual date values from the stage 60 record
-                actualDateValue: actualDate,
-                actualCdateValue: actualCdate,
-                actualDateISO: actualDate ? new Date(actualDate).toISOString() : null,
-                actualCdateISO: actualCdate ? new Date(actualCdate).toISOString() : null,
-                // Date comparison
-                datePassesFilter: actualDate && fromDateTime && toDateTime ?
-                  (actualDate >= fromDateTime && actualDate <= toDateTime) : null,
-                cdatePassesFilter: actualCdate && fromDateTime && toDateTime ?
-                  (actualCdate >= fromDateTime && actualCdate <= toDateTime) : null,
-                dateComparison: actualDate && fromDateTime && toDateTime ? {
-                  actualDate,
-                  fromDateTime,
-                  isGTE: actualDate >= fromDateTime,
-                  toDateTime,
-                  isLTE: actualDate <= toDateTime,
-                  willPass: actualDate >= fromDateTime && actualDate <= toDateTime,
-                  difference: actualDate ? new Date(actualDate).getTime() - new Date(fromDateTime).getTime() : null
-                } : null,
-                // All stage 60 records (no date filter)
-                allStage60Records: stage60ForL210675?.map(s => ({
-                  id: s.id,
-                  date: s.date,
-                  cdate: s.cdate,
-                  stage: s.stage,
-                  newlead_id: s.newlead_id,
-                  lead_id: s.lead_id,
-                  dateISO: s.date ? new Date(s.date).toISOString() : null,
-                  cdateISO: s.cdate ? new Date(s.cdate).toISOString() : null,
-                  dateInRange: fromDateTime && toDateTime ?
-                    (s.date >= fromDateTime && s.date <= toDateTime) : null,
-                  cdateInRange: fromDateTime && toDateTime ?
-                    (s.cdate >= fromDateTime && s.cdate <= toDateTime) : null
-                })),
-                // Stage 60 records WITH date filter (what the main query should return)
-                filteredStage60Records: stage60ForL210675Filtered?.map(s => ({
-                  id: s.id,
-                  date: s.date,
-                  cdate: s.cdate,
-                  stage: s.stage,
-                  newlead_id: s.newlead_id,
-                  lead_id: s.lead_id,
-                  dateISO: s.date ? new Date(s.date).toISOString() : null,
-                  cdateISO: s.cdate ? new Date(s.cdate).toISOString() : null
-                })),
-                filteredCount: stage60ForL210675Filtered?.length || 0,
-                inDateRange: inDateRangeRecords,
-                inDateRangeCount: inDateRangeRecords.length,
-                // Check if this lead ID is in the main query results
-                inMainQueryResults: stageHistoryData?.some((entry: any) =>
-                  entry.newlead_id === leadId || entry.lead_id === leadId
-                ) || false,
-                // Check what the main query actually returned for this lead ID
-                mainQueryEntriesForThisLead: stageHistoryData?.filter((entry: any) =>
-                  entry.newlead_id === leadId || entry.lead_id === leadId
-                ) || []
-              });
-            }
-          } else {
-            console.log('🔍 DEBUG L210675: Direct query found nothing:', {
-              error: debugL210675Error
-            });
-          }
-
           // Step 2: Fetch all new leads - ONCE
           const newLeadsMap = new Map();
           if (allNewLeadIds.size > 0) {
             const newLeadIdsArray = Array.from(allNewLeadIds);
-
-            // DEBUG: Check if L210675 is in the array being passed to the query
-            const l210675InArray = newLeadIdsArray.includes(l210675LeadId);
-            console.log('🔍 DEBUG L210675: Before fetching new leads:', {
-              l210675LeadId,
-              l210675InArray,
-              newLeadIdsArrayLength: newLeadIdsArray.length,
-              newLeadIdsArraySample: newLeadIdsArray.slice(0, 10),
-              allNewLeadIdsSize: allNewLeadIds.size,
-              hasInSet: allNewLeadIds.has(l210675LeadId)
-            });
 
             const { data: newLeads, error: newLeadsError } = await supabase
               .from('leads')
@@ -3588,6 +3371,8 @@ const SalesContributionPage = () => {
                   scheduler,
                   handler,
                   helper,
+                  meeting_lawyer_id,
+                  lawyer,
                   expert,
                   case_handler_id,
                   manager,
@@ -3608,134 +3393,26 @@ const SalesContributionPage = () => {
                 `)
               .in('id', newLeadIdsArray);
 
-            // DEBUG: Log query details
-            console.log('🔍 DEBUG L210675: Query details:', {
-              queryArrayLength: newLeadIdsArray.length,
-              l210675InQueryArray: newLeadIdsArray.includes(l210675LeadId),
-              queryArraySample: newLeadIdsArray.slice(0, 10),
-              queryArrayLast: newLeadIdsArray.slice(-10),
-              l210675IndexInArray: newLeadIdsArray.indexOf(l210675LeadId)
-            });
-
-            // DEBUG: Test if we can query L210675 directly
-            const { data: testL210675Direct, error: testL210675Error } = await supabase
-              .from('leads')
-              .select('id, lead_number, name')
-              .eq('id', l210675LeadId)
-              .single();
-
-            console.log('🔍 DEBUG L210675: Direct query test:', {
-              found: !!testL210675Direct,
-              error: testL210675Error,
-              data: testL210675Direct
-            });
-
-            if (newLeadsError) {
-              console.error('🔍 DEBUG L210675: Error fetching new leads:', newLeadsError);
-            }
-
             if (!newLeadsError && newLeads) {
-              // DEBUG: Check what IDs were actually returned
-              const returnedIds = newLeads.map((l: any) => l.id);
-              console.log('🔍 DEBUG L210675: After fetching new leads:', {
-                totalReturned: newLeads.length,
-                l210675InReturned: returnedIds.includes(l210675LeadId),
-                returnedIdsSample: returnedIds.slice(0, 10),
-                queryArrayLength: newLeadIdsArray.length,
-                l210675InQueryArray: newLeadIdsArray.includes(l210675LeadId)
-              });
-
               // Pre-process leads to ensure categories are correctly mapped
               const processedLeads = preprocessLeadsCategories(newLeads, false);
               processedLeads.forEach(lead => {
                 newLeadsMap.set(lead.id, lead);
               });
-
-              // DEBUG: If L210675 is in the query array but not in results, fetch it separately
-              if (newLeadIdsArray.includes(l210675LeadId) && !newLeadsMap.has(l210675LeadId)) {
-                console.log('🔍 DEBUG L210675: Missing from .in() query, fetching separately...');
-                const { data: missingLead, error: missingLeadError } = await supabase
-                  .from('leads')
-                  .select(`
-                      id,
-                      balance,
-                      balance_currency,
-                      proposal_total,
-                      proposal_currency,
-                      currency_id,
-                      closer,
-                      scheduler,
-                      handler,
-                      helper,
-                      expert,
-                      case_handler_id,
-                      meeting_manager_id,
-                      subcontractor_fee,
-                      category_id,
-                      category,
-                      accounting_currencies!leads_currency_id_fkey(name, iso_code),
-                      misc_category!category_id(
-                        id,
-                        name,
-                        parent_id,
-                        misc_maincategory!parent_id(
-                          id,
-                          name
-                        )
-                      )
-                    `)
-                  .eq('id', l210675LeadId)
-                  .single();
-
-                if (!missingLeadError && missingLead) {
-                  console.log('🔍 DEBUG L210675: Successfully fetched separately:', {
-                    id: missingLead.id,
-                    lead_number: missingLead.lead_number,
-                    name: missingLead.name
-                  });
-                  // Pre-process and add to map
-                  const processedMissing = preprocessLeadsCategories([missingLead], false);
-                  processedMissing.forEach(lead => {
-                    newLeadsMap.set(lead.id, lead);
-                  });
-                } else {
-                  console.error('🔍 DEBUG L210675: Failed to fetch separately:', missingLeadError);
-                }
-              }
-
-              // DEBUG: Check if L210675 is in the fetched new leads
-              const debugLeadL210675InNewLeads = newLeads.find((lead: any) => {
-                // Check by lead_number or id
-                return lead.lead_number?.toString().includes('210675') ||
-                  lead.id?.toString().includes('210675') ||
-                  lead.id === l210675LeadId;
-              });
-              if (debugLeadL210675InNewLeads) {
-                console.log('🔍 DEBUG L210675: Found in new leads fetch:', {
-                  id: debugLeadL210675InNewLeads.id,
-                  lead_number: debugLeadL210675InNewLeads.lead_number,
-                  name: debugLeadL210675InNewLeads.name,
-                  closer: debugLeadL210675InNewLeads.closer,
-                  scheduler: debugLeadL210675InNewLeads.scheduler,
-                  handler: debugLeadL210675InNewLeads.handler,
-                  helper: debugLeadL210675InNewLeads.helper,
-                  expert: debugLeadL210675InNewLeads.expert,
-                  case_handler_id: debugLeadL210675InNewLeads.case_handler_id,
-                  manager: debugLeadL210675InNewLeads.manager,
-                  meeting_manager_id: debugLeadL210675InNewLeads.meeting_manager_id,
-                  balance: debugLeadL210675InNewLeads.balance,
-                  proposal_total: debugLeadL210675InNewLeads.proposal_total
+              // DEBUG L210620: Is lead in fetched new leads and what are helper fields?
+              const leadL210620 = processedLeads.find((l: any) => (l.lead_number || '').toString().includes('210620'));
+              if (leadL210620) {
+                console.log('🔍 DEBUG L210620 (batch): Lead in newLeads fetch:', {
+                  id: leadL210620.id,
+                  lead_number: leadL210620.lead_number,
+                  helper: leadL210620.helper,
+                  helperType: typeof leadL210620.helper,
+                  meeting_lawyer_id: leadL210620.meeting_lawyer_id,
+                  lawyer: leadL210620.lawyer,
+                  inAllNewLeadIds: allNewLeadIds.has(String(leadL210620.id)),
                 });
               } else {
-                console.log('🔍 DEBUG L210675: NOT found in new leads fetch. Details:', {
-                  l210675LeadId,
-                  inNewLeadIdsSet: allNewLeadIds.has(l210675LeadId),
-                  inQueryArray: newLeadIdsArray.includes(l210675LeadId),
-                  queryArrayLength: newLeadIdsArray.length,
-                  totalNewLeads: newLeads.length,
-                  returnedIds: returnedIds.slice(0, 20),
-                  error: newLeadsError
-                });
+                console.log('🔍 DEBUG L210620 (batch): Lead NOT in newLeads fetch. allNewLeadIds.size=', allNewLeadIds.size, 'lead_numbers=', processedLeads.map((l: any) => l.lead_number).slice(0, 15));
               }
             }
           }
@@ -3962,11 +3639,22 @@ const SalesContributionPage = () => {
                   return true;
                 }
                 return false;
-              } else if (roleField === 'helper' && lead.helper) {
-                const helperValue = lead.helper;
-                return typeof helperValue === 'string'
-                  ? helperValue.toLowerCase() === employeeName.toLowerCase()
-                  : Number(helperValue) === employeeId;
+              } else if (roleField === 'helper') {
+                // Helper Closer: check helper, meeting_lawyer_id, and lawyer (same as fetchRoleData)
+                if (lead.helper != null && lead.helper !== '') {
+                  const helperValue = lead.helper;
+                  const matchName = typeof helperValue === 'string' && helperValue.toLowerCase() === employeeName.toLowerCase();
+                  const matchId = Number(helperValue) === employeeId;
+                  if (matchName || matchId) return true;
+                }
+                if (lead.meeting_lawyer_id != null && Number(lead.meeting_lawyer_id) === employeeId) return true;
+                if (lead.lawyer != null && lead.lawyer !== '') {
+                  const lawyerValue = lead.lawyer;
+                  const matchName = typeof lawyerValue === 'string' && lawyerValue.toLowerCase() === employeeName.toLowerCase();
+                  const matchId = Number(lawyerValue) === employeeId;
+                  if (matchName || matchId) return true;
+                }
+                return false;
               } else if (roleField === 'expert' && lead.expert) {
                 return Number(lead.expert) === employeeId;
               } else if (roleField === 'meeting_manager_id') {
@@ -3996,7 +3684,9 @@ const SalesContributionPage = () => {
             };
 
             // Filter new leads for this employee
+            const DEBUG_EMP_129 = employeeId === 129;
             const employeeNewLeads = Array.from(newLeadsMap.values()).filter(lead => {
+              const isL210620 = (lead.lead_number || '').toString().includes('210620');
               const isL210675 = lead.lead_number?.toString().includes('210675') ||
                 lead.id?.toString().includes('210675');
 
@@ -4009,6 +3699,24 @@ const SalesContributionPage = () => {
 
               const matches = matchesCloser || matchesScheduler || matchesHandler ||
                 matchesHelper || matchesExpert || matchesManager;
+
+              // DEBUG L210620: when processing employee 129, log for lead L210620
+              if (DEBUG_EMP_129 && isL210620) {
+                console.log('🔍 DEBUG L210620 (batch): Employee 129 role check for lead:', {
+                  lead_number: lead.lead_number,
+                  leadId: lead.id,
+                  helper: lead.helper,
+                  helperType: typeof lead.helper,
+                  meeting_lawyer_id: lead.meeting_lawyer_id,
+                  lawyer: lead.lawyer,
+                  matchesHelper,
+                  matchesCloser,
+                  matchesScheduler,
+                  matchesManager,
+                  matchesExpert,
+                  matches,
+                });
+              }
 
               // DEBUG: Log details for L210675 when processing Hava
               if (isHava && isL210675) {
@@ -4111,6 +3819,22 @@ const SalesContributionPage = () => {
               return matches;
             });
 
+            // DEBUG L210620: Summary for employee 129
+            if (DEBUG_EMP_129) {
+              const hasL210620InNew = employeeNewLeads.some(l => (l.lead_number || '').toString().includes('210620'));
+              const l210620Lead = employeeNewLeads.find(l => (l.lead_number || '').toString().includes('210620'));
+              console.log('🔍 DEBUG L210620 (batch): Employee 129 summary after filter:', {
+                employeeId,
+                employeeName,
+                newLeadsCount: employeeNewLeads.length,
+                legacyLeadsCount: employeeLegacyLeads.length,
+                hasL210620InNew,
+                l210620InList: !!l210620Lead,
+                l210620Lead: l210620Lead ? { id: l210620Lead.id, lead_number: l210620Lead.lead_number, helper: l210620Lead.helper } : null,
+                newLeadNumbers: employeeNewLeads.map(l => l.lead_number).slice(0, 20),
+              });
+            }
+
             // DEBUG: Summary for Hava
             if (isHava) {
               console.log('🔍 DEBUG Hava Summary:', {
@@ -4191,6 +3915,19 @@ const SalesContributionPage = () => {
           });
 
           const calculationResults = batchCalculateEmployeeMetrics(calculationInputs);
+
+          // DEBUG L210620: Log employee 129 calculation result (Helper Closer / L210620)
+          const emp129Result = calculationResults.get(129);
+          if (emp129Result) {
+            console.log('🔍 DEBUG L210620 (batch): Employee 129 calculation result:', {
+              employeeId: 129,
+              signed: emp129Result.signed,
+              roleBreakdown: emp129Result.roleBreakdown?.map(r => ({ role: r.role, signedTotal: r.signedTotal, dueTotal: r.dueTotal })) || [],
+              hasHelperCloserInBreakdown: emp129Result.roleBreakdown?.some(r => r.role && r.role.includes('Helper Closer')) ?? false,
+            });
+          } else {
+            console.log('🔍 DEBUG L210620 (batch): No calculation result for employee 129');
+          }
 
           // DEBUG: Log Hava's calculation result
           const havaResult = calculationResults.get(108);
