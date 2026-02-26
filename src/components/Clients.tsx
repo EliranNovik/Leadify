@@ -3,7 +3,7 @@ import { useLocation, useNavigate, useParams, useNavigationType } from 'react-ro
 import { supabase, type Lead } from '../lib/supabase';
 import { getStageName, fetchStageNames, areStagesEquivalent, normalizeStageName, getStageColour } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
-import { fetchAllLeads, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
+import { fetchAllLeads, fetchLatestLead, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
 import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
 import { saveFollowUp } from '../lib/followUpsManager';
 import { usePersistedState } from '../hooks/usePersistedState';
@@ -1114,6 +1114,29 @@ const Clients: React.FC<ClientsProps> = ({
     // Ultimate fallback: return empty string (should not happen if currencies are loaded)
     return '';
   };
+
+  // Format category display from joined misc_category (used when lead is fetched with category join — avoids waiting for allCategories)
+  const getCategoryDisplayFromJoin = useCallback((lead: any): string | null => {
+    const cat = lead?.misc_category;
+    if (!cat || !cat.name) return null;
+    const main = Array.isArray(cat.misc_maincategory) ? cat.misc_maincategory[0] : cat.misc_maincategory;
+    return main?.name ? `${cat.name} (${main.name})` : (cat.name || null);
+  }, []);
+
+  // Format source display from joined misc_leadsource (used when lead is fetched with source join — avoids waiting for sources fetch)
+  const getSourceDisplayFromJoin = useCallback((lead: any): string | null => {
+    const src = lead?.misc_leadsource;
+    if (!src || !src.name) return null;
+    return typeof src.name === 'string' ? src.name.trim() || null : null;
+  }, []);
+
+  // Format language display from joined misc_language (used when lead is fetched with language join)
+  const getLanguageDisplayFromJoin = useCallback((lead: any): string | null => {
+    const lang = lead?.misc_language;
+    if (!lang) return null;
+    const record = Array.isArray(lang) ? lang[0] : lang;
+    return record?.name && typeof record.name === 'string' ? record.name.trim() || null : null;
+  }, []);
 
   // Helper function to get category name from ID with main category (memoized with cache)
   const getCategoryName = useCallback((categoryId: string | number | null | undefined, fallbackCategory?: string) => {
@@ -2942,9 +2965,6 @@ const Clients: React.FC<ClientsProps> = ({
             sourceName = sourceData?.name || '';
           }
 
-          const legacyLanguageRecord = Array.isArray(data.misc_language)
-            ? data.misc_language[0]
-            : data.misc_language;
           const legacyCurrencyRecord = Array.isArray(data.accounting_currencies)
             ? data.accounting_currencies[0]
             : data.accounting_currencies;
@@ -2968,22 +2988,16 @@ const Clients: React.FC<ClientsProps> = ({
 
           // Transform legacy lead to match new lead structure
           const legacyStageId = resolveStageId(data.stage);
-          // Extract language name from joined table - ensure we get the name, not the ID
-          let languageName = '';
-          if (legacyLanguageRecord?.name) {
-            languageName = legacyLanguageRecord.name;
-          } else if (data.language_id) {
-            // If join failed, fetch language name directly by language_id
-            console.warn('⚠️ Language join failed, fetching language name directly for language_id:', data.language_id);
+          // Extract language name from joined table (with fallback fetch if join missing)
+          let languageName = getLanguageDisplayFromJoin(data) ?? '';
+          if (!languageName && data.language_id) {
             try {
               const { data: langData } = await supabase
                 .from('misc_language')
                 .select('name')
                 .eq('id', data.language_id)
                 .maybeSingle();
-              if (langData?.name) {
-                languageName = langData.name;
-              }
+              if (langData?.name) languageName = langData.name;
             } catch (langError) {
               console.error('Error fetching language name:', langError);
             }
@@ -3399,8 +3413,13 @@ const Clients: React.FC<ClientsProps> = ({
         fetchingRouteRef.current = currentRoute; // Track which route we're fetching
         // DO NOT update lastRouteRef here - wait until client is successfully loaded
         // This prevents the persisted data check from running with wrong state
-        // Clear selectedClient immediately to reset all child components
+        // Clear selectedClient and all client-derived state to prevent flickering/wrong button from previous lead
         setSelectedClient(null);
+        setMasterLeadNumberForNewLead(null);
+        setMasterLeadNumberForLegacy(null);
+        setIsMasterLead(false);
+        setDuplicateContacts([]);
+        setIsDuplicateDropdownOpen(false);
         // Continue to fetch data below - don't return early
       } else if (routeChanged && navType === 'POP') {
         // POP navigation but client doesn't match - update route ref and continue
@@ -3474,7 +3493,18 @@ const Clients: React.FC<ClientsProps> = ({
             queries.push(
               supabase
                 .from('leads')
-                .select('*')
+                .select(`
+                  *,
+                  accounting_currencies!leads_currency_id_fkey ( id, name, iso_code ),
+                  misc_category!fk_leads_category_id (
+                    id,
+                    name,
+                    parent_id,
+                    misc_maincategory!parent_id ( id, name )
+                  ),
+                  misc_leadsource!fk_leads_source_id ( id, name ),
+                  misc_language!fk_leads_language_id ( id, name )
+                `)
                 .eq('manual_id', effectiveLeadNumber)
                 .then(({ data, error }) => ({ type: 'manual', data, error }))
             );
@@ -3492,7 +3522,17 @@ const Clients: React.FC<ClientsProps> = ({
                 ),
                 misc_language!leads_lead_language_id_fkey (
                   name
-                )
+                ),
+                misc_category!leads_lead_category_id_fkey (
+                  id,
+                  name,
+                  parent_id,
+                  misc_maincategory!parent_id (
+                    id,
+                    name
+                  )
+                ),
+                misc_leadsource!leads_lead_source_id_fkey ( id, name )
               `)
                 .eq('id', parseInt(effectiveLeadNumber))
                 .single()
@@ -3513,7 +3553,14 @@ const Clients: React.FC<ClientsProps> = ({
                   .select(`
                     *,
                     accounting_currencies!leads_lead_currency_id_fkey ( name, iso_code ),
-                    misc_language!leads_lead_language_id_fkey ( name )
+                    misc_language!leads_lead_language_id_fkey ( name ),
+                    misc_category!leads_lead_category_id_fkey (
+                      id,
+                      name,
+                      parent_id,
+                      misc_maincategory!parent_id ( id, name )
+                    ),
+                    misc_leadsource!leads_lead_source_id_fkey ( id, name )
                   `)
                   .eq('master_id', masterId)
                   .not('master_id', 'is', null)
@@ -3541,7 +3588,15 @@ const Clients: React.FC<ClientsProps> = ({
                     id,
                     name,
                     iso_code
-                  )
+                  ),
+                  misc_category!fk_leads_category_id (
+                    id,
+                    name,
+                    parent_id,
+                    misc_maincategory!parent_id ( id, name )
+                  ),
+                  misc_leadsource!fk_leads_source_id ( id, name ),
+                  misc_language!fk_leads_language_id ( id, name )
                 `)
                 .eq('lead_number', effectiveLeadNumber)
                 .single()
@@ -3557,7 +3612,15 @@ const Clients: React.FC<ClientsProps> = ({
                     id,
                     name,
                     iso_code
-                  )
+                  ),
+                  misc_category!fk_leads_category_id (
+                    id,
+                    name,
+                    parent_id,
+                    misc_maincategory!parent_id ( id, name )
+                  ),
+                  misc_leadsource!fk_leads_source_id ( id, name ),
+                  misc_language!fk_leads_language_id ( id, name )
                 `)
                 .eq('lead_number', effectiveLeadNumber)
                 .single()
@@ -3588,7 +3651,7 @@ const Clients: React.FC<ClientsProps> = ({
                 }
 
                 if (chosenLead) {
-                  const categoryName = getCategoryName(chosenLead.category_id, chosenLead.category);
+                  const categoryName = getCategoryDisplayFromJoin(chosenLead) ?? getCategoryName(chosenLead.category_id, chosenLead.category);
                   const chosenStageId = resolveStageId(chosenLead.stage);
 
                   // Extract currency name from accounting_currencies join (like legacy leads)
@@ -3599,6 +3662,8 @@ const Clients: React.FC<ClientsProps> = ({
                   clientData = {
                     ...chosenLead,
                     category: categoryName,
+                    source: getSourceDisplayFromJoin(chosenLead) ?? String(chosenLead.source_id ?? ''),
+                    language: getLanguageDisplayFromJoin(chosenLead) ?? chosenLead.language ?? '',
                     stage: chosenStageId ?? (typeof chosenLead.stage === 'number' ? chosenLead.stage : null),
                     emails: [],
                     handler:
@@ -3625,54 +3690,27 @@ const Clients: React.FC<ClientsProps> = ({
                 const legacyCurrencyRecord = Array.isArray(legacyLead.accounting_currencies)
                   ? legacyLead.accounting_currencies[0]
                   : legacyLead.accounting_currencies;
-                const legacyLanguageRecord = Array.isArray(legacyLead.misc_language)
-                  ? legacyLead.misc_language[0]
-                  : legacyLead.misc_language;
-
                 // Get scheduler name if available (defer to avoid blocking)
                 let schedulerName = '---';
                 if (legacyLead.meeting_scheduler_id) {
                   schedulerName = getEmployeeDisplayName(String(legacyLead.meeting_scheduler_id));
                 }
 
-                // Calculate sub-lead suffix if this is a sub-lead (has master_id)
-                // Optimized: Use a simpler query without ordering for faster results
-                let subLeadSuffix: number | undefined;
-                if (legacyLead.master_id) {
-                  // Use a faster query - just count and find index, no ordering needed initially
-                  const { data: existingSubLeads } = await supabase
-                    .from('leads_lead')
-                    .select('id')
-                    .eq('master_id', legacyLead.master_id)
-                    .not('master_id', 'is', null)
-                    .limit(100); // Limit to prevent huge queries
-
-                  if (existingSubLeads) {
-                    // Sort in memory (faster than DB sort for small datasets)
-                    existingSubLeads.sort((a, b) => a.id - b.id);
-                    const currentLeadIndex = existingSubLeads.findIndex(sub => sub.id === legacyLead.id);
-                    // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
-                    subLeadSuffix = currentLeadIndex >= 0 ? currentLeadIndex + 2 : existingSubLeads.length + 2;
-                  }
-                }
+                // Defer sub-lead suffix so it doesn't block first paint (suffix fetched after setLocalLoading(false))
+                const subLeadSuffix: number | undefined = undefined;
 
                 const legacyStageId = resolveStageId(legacyLead.stage);
 
-                // Extract language name from joined table
-                let languageName = '';
-                if (legacyLanguageRecord?.name) {
-                  languageName = legacyLanguageRecord.name;
-                } else if (legacyLead.language_id) {
-                  // If join failed, fetch language name directly by language_id
+                // Extract language name from joined table (with fallback fetch if join missing)
+                let languageName = getLanguageDisplayFromJoin(legacyLead) ?? '';
+                if (!languageName && legacyLead.language_id) {
                   try {
                     const { data: langData } = await supabase
                       .from('misc_language')
                       .select('name')
                       .eq('id', legacyLead.language_id)
                       .maybeSingle();
-                    if (langData?.name) {
-                      languageName = langData.name;
-                    }
+                    if (langData?.name) languageName = langData.name;
                   } catch (langError) {
                     console.error('Error fetching language name:', langError);
                   }
@@ -3689,14 +3727,14 @@ const Clients: React.FC<ClientsProps> = ({
                   topic: legacyLead.topic || '',
                   lead_number: formatLegacyLeadNumber(legacyLead, subLeadSuffix),
                   stage: legacyStageId ?? (typeof legacyLead.stage === 'number' ? legacyLead.stage : null),
-                  source: String(legacyLead.source_id || ''),
+                  source: getSourceDisplayFromJoin(legacyLead) ?? String(legacyLead.source_id || ''),
                   created_at: legacyLead.cdate,
                   updated_at: legacyLead.udate,
                   notes: legacyLead.notes || '',
                   special_notes: legacyLead.special_notes || '',
                   next_followup: legacyLead.next_followup || '',
                   probability: legacyLead.probability !== null && legacyLead.probability !== undefined ? Number(legacyLead.probability) : 0,
-                  category: getCategoryName(legacyLead.category_id, legacyLead.category),
+                  category: getCategoryDisplayFromJoin(legacyLead) ?? getCategoryName(legacyLead.category_id, legacyLead.category),
                   language: languageName, // Always use the language name (never use ID)
                   balance: String(legacyLead.total || ''),
                   balance_currency: legacyCurrencyRecord?.name || (() => {
@@ -3750,7 +3788,7 @@ const Clients: React.FC<ClientsProps> = ({
               } else if (type === 'lead_number' && data && !error) {
                 // Process new lead by lead_number
                 const newLead = data;
-                const categoryName = getCategoryName(newLead.category_id, newLead.category);
+                const categoryName = getCategoryDisplayFromJoin(newLead) ?? getCategoryName(newLead.category_id, newLead.category);
                 const newStageId = resolveStageId(newLead.stage);
 
                 // Extract currency name from accounting_currencies join (like legacy leads)
@@ -3761,6 +3799,8 @@ const Clients: React.FC<ClientsProps> = ({
                 clientData = {
                   ...newLead,
                   category: categoryName,
+                  source: getSourceDisplayFromJoin(newLead) ?? String(newLead.source_id ?? ''),
+                  language: getLanguageDisplayFromJoin(newLead) ?? newLead.language ?? '',
                   stage: newStageId ?? (typeof newLead.stage === 'number' ? newLead.stage : null),
                   emails: [],
                   handler:
@@ -3790,14 +3830,25 @@ const Clients: React.FC<ClientsProps> = ({
             if (numericLeadCandidate && /^\d+$/.test(numericLeadCandidate)) {
               const { data: leadsByManualId, error: manualLookupError } = await supabase
                 .from('leads')
-                .select('*')
+                .select(`
+                  *,
+                  accounting_currencies!leads_currency_id_fkey ( id, name, iso_code ),
+                  misc_category!fk_leads_category_id (
+                    id,
+                    name,
+                    parent_id,
+                    misc_maincategory!parent_id ( id, name )
+                  ),
+                  misc_leadsource!fk_leads_source_id ( id, name ),
+                  misc_language!fk_leads_language_id ( id, name )
+                `)
                 .eq('manual_id', numericLeadCandidate)
                 .order('created_at', { ascending: false })
                 .limit(1);
 
               if (!manualLookupError && leadsByManualId?.[0]) {
                 const leadByManualId = leadsByManualId[0];
-                const categoryName = getCategoryName(leadByManualId.category_id, leadByManualId.category);
+                const categoryName = getCategoryDisplayFromJoin(leadByManualId) ?? getCategoryName(leadByManualId.category_id, leadByManualId.category);
                 const manualStageId = resolveStageId(leadByManualId.stage);
 
                 // Extract currency name from accounting_currencies join (like legacy leads)
@@ -3808,6 +3859,8 @@ const Clients: React.FC<ClientsProps> = ({
                 clientData = {
                   ...leadByManualId,
                   category: categoryName,
+                  source: getSourceDisplayFromJoin(leadByManualId) ?? String(leadByManualId.source_id ?? ''),
+                  language: getLanguageDisplayFromJoin(leadByManualId) ?? leadByManualId.language ?? '',
                   stage: manualStageId ?? (typeof leadByManualId.stage === 'number' ? leadByManualId.stage : null),
                   emails: [],
                   handler:
@@ -3832,6 +3885,13 @@ const Clients: React.FC<ClientsProps> = ({
 
           // Set client data and stop loading as soon as we have it
           if (clientData && isMounted) {
+            // Clear previous client's master/duplicate state first to prevent showing wrong button for one frame
+            setDuplicateContacts([]);
+            setMasterLeadNumberForNewLead(null);
+            setMasterLeadNumberForLegacy(null);
+            setIsMasterLead(false);
+            setIsDuplicateDropdownOpen(false);
+
             // Set unactivated view BEFORE setting selectedClient
             try {
               const isLegacy = clientData.lead_type === 'legacy' || clientData.id?.toString().startsWith('legacy_');
@@ -3913,6 +3973,31 @@ const Clients: React.FC<ClientsProps> = ({
             // Clear loading overlay as soon as client data is ready (categories load in background)
             setLocalLoading(false);
 
+            // Deferred: fetch sub-lead suffix for legacy so lead_number updates from "masterId/?" to "masterId/2" without blocking first paint
+            if (clientData.lead_type === 'legacy' && clientData.master_id) {
+              const legacyIdRaw = typeof clientData.id === 'string' ? clientData.id.replace(/^legacy_/, '') : clientData.id;
+              const legacyIdNum = Number(legacyIdRaw);
+              const masterId = clientData.master_id;
+              (async () => {
+                try {
+                  const { data: existingSubLeads } = await supabase
+                    .from('leads_lead')
+                    .select('id')
+                    .eq('master_id', masterId)
+                    .not('master_id', 'is', null)
+                    .limit(100);
+                  if (existingSubLeads && existingSubLeads.length > 0 && isMounted) {
+                    existingSubLeads.sort((a: any, b: any) => a.id - b.id);
+                    const idx = existingSubLeads.findIndex((sub: any) => sub.id === legacyIdNum);
+                    const suffix = idx >= 0 ? idx + 2 : existingSubLeads.length + 2;
+                    setSelectedClient((prev: any) => prev && String(prev.id) === String(clientData.id)
+                      ? { ...prev, lead_number: `${masterId}/${suffix}` }
+                      : prev);
+                  }
+                } catch (_) { /* ignore */ }
+              })();
+            }
+
             // Optionally apply category cache once so names appear sooner (non-blocking)
             try {
               const cacheKey = 'clientsPage_backgroundData';
@@ -3964,13 +4049,11 @@ const Clients: React.FC<ClientsProps> = ({
               isSettingUpClientRef.current = false; // Backup clear
             }, 100);
           } else if (!clientData) {
-            // If still no client found, try to get latest lead
+            // If still no client found, try to get latest lead (fast path: single row per table)
             // Only do this if there's no lead_number in the URL (empty route)
-            // If there IS a lead_number, it means we're trying to load a specific client, so don't jump to latest
             if (!lead_number && isMounted) {
-              const allLeads = await fetchAllLeads();
-              if (allLeads.length > 0 && isMounted) {
-                const latestLead = allLeads[0];
+              const latestLead = await fetchLatestLead();
+              if (latestLead && isMounted) {
                 const latestManualId = (latestLead as any)?.manual_id;
                 const latestLeadNumber = (latestLead as any)?.lead_number;
                 const targetRoute = buildClientRoute(latestManualId, latestLeadNumber);
@@ -3985,6 +4068,13 @@ const Clients: React.FC<ClientsProps> = ({
                 const statusValue = (latestLead as any).status;
                 const isUnactivated = !isLegacy && (statusValue === 'inactive');
                 setIsUnactivatedView(!!(latestLead && isUnactivated && !userManuallyExpanded));
+
+                // Clear previous client's state so buttons don't flicker
+                setDuplicateContacts([]);
+                setMasterLeadNumberForNewLead(null);
+                setMasterLeadNumberForLegacy(null);
+                setIsMasterLead(false);
+                setIsDuplicateDropdownOpen(false);
 
                 // Set the client
                 const normalizedLatestLead = normalizeClientStage(latestLead);
@@ -4015,11 +4105,9 @@ const Clients: React.FC<ClientsProps> = ({
             }
           }
         } else {
-          // Get the most recent lead from either table
-          // Only navigate if we're not already on a valid route to prevent switching
-          const allLeads = await fetchAllLeads();
-          if (allLeads.length > 0 && isMounted) {
-            const latestLead = allLeads[0];
+          // Get the most recent lead from either table (fast path: 2 queries, 1 row each)
+          const latestLead = await fetchLatestLead();
+          if (latestLead && isMounted) {
             const latestManualId = (latestLead as any)?.manual_id;
             const latestLeadNumber = (latestLead as any)?.lead_number;
             const targetRoute = buildClientRoute(latestManualId, latestLeadNumber);
@@ -4043,6 +4131,13 @@ const Clients: React.FC<ClientsProps> = ({
               userManuallyExpanded
             });
             setIsUnactivatedView(!!(latestLead && isUnactivated && !userManuallyExpanded));
+
+            // Clear previous client's state so buttons don't flicker
+            setDuplicateContacts([]);
+            setMasterLeadNumberForNewLead(null);
+            setMasterLeadNumberForLegacy(null);
+            setIsMasterLead(false);
+            setIsDuplicateDropdownOpen(false);
 
             // Now set the client
             const normalizedLatestLead = normalizeClientStage(latestLead);

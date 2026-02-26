@@ -1973,46 +1973,39 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     ))}
                                 </div>
 
-                                {/* Group 2: Handler Team (CENTER) */}
+                                {/* Group 2: Handler and Retainer Handler (CENTER) - no background box; keep green ring and active badge */}
                                 {(!isRoleEmpty(handlerId, handlerDisplay) || !isRoleEmpty(retentionHandlerId, retentionHandlerDisplay)) && (
-                                    <div className="flex items-center gap-12 mx-auto scale-110 relative px-6 py-4">
-                                        <div className="absolute inset-0 bg-white dark:bg-gray-800 rounded-full shadow-lg border border-gray-200 dark:border-gray-700" style={{ width: 'calc(100% + 1.5rem)', height: 'calc(100% + 0.5rem)', top: '-0.25rem', left: '-0.75rem' }}></div>
+                                    <div className="flex items-center gap-8 mx-auto">
                                         {!isRoleEmpty(handlerId, handlerDisplay) && (
-                                            <div className="flex flex-col items-center relative z-10">
-                                                <div className="flex flex-col items-center relative">
-                                                    <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-2">Handler</p>
-                                                    <div className="flex items-center justify-center h-16 relative">
-                                                        <div className={`relative ${selectedClient.active_handler_type === 2 ? 'rounded-full ring-2 ring-emerald-500 p-0.5' : ''}`}>
-                                                            <EmployeeAvatar employeeId={handlerId} size="lg" />
-                                                            {selectedClient.active_handler_type === 2 && (
-                                                                <div className="absolute -top-1 -right-1 bg-emerald-500 rounded-full p-0.5 ring-2 ring-white shadow-md">
-                                                                    <CheckCircleIcon className="w-4 h-4 text-white" />
-                                                                </div>
-                                                            )}
-                                                        </div>
+                                            <div className="flex flex-col items-center">
+                                                <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-2">Handler</p>
+                                                <div className="flex items-center justify-center h-16 relative">
+                                                    <div className={`relative ${selectedClient.active_handler_type === 2 ? 'rounded-full ring-2 ring-emerald-500 p-0.5' : ''}`}>
+                                                        <EmployeeAvatar employeeId={handlerId} size="lg" />
+                                                        {selectedClient.active_handler_type === 2 && (
+                                                            <div className="absolute -top-1 -right-1 bg-emerald-500 rounded-full p-0.5 ring-2 ring-white shadow-md">
+                                                                <CheckCircleIcon className="w-4 h-4 text-white" />
+                                                            </div>
+                                                        )}
                                                     </div>
-                                                    <p className="font-bold truncate text-sm leading-5 mt-2 text-gray-600 dark:text-gray-400">{formatRoleDisplay(handlerDisplay)}</p>
                                                 </div>
+                                                <p className="font-medium truncate text-sm leading-5 mt-1 text-gray-600 dark:text-gray-400">{formatRoleDisplay(handlerDisplay)}</p>
                                             </div>
                                         )}
                                         {!isRoleEmpty(retentionHandlerId, retentionHandlerDisplay) && (
-                                            <div className="flex flex-col items-center relative z-10">
-                                                <div className="flex flex-col items-center relative">
-                                                    <div className="flex flex-col items-center mb-2">
-                                                        <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4">R-Handler</p>
+                                            <div className="flex flex-col items-center">
+                                                <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-2">R-Handler</p>
+                                                <div className="flex items-center justify-center h-16 relative">
+                                                    <div className={`relative ${selectedClient.active_handler_type === 1 ? 'rounded-full ring-2 ring-emerald-500 p-0.5' : ''}`}>
+                                                        <EmployeeAvatar employeeId={retentionHandlerId} size="lg" />
+                                                        {selectedClient.active_handler_type === 1 && (
+                                                            <div className="absolute -top-1 -right-1 bg-emerald-500 rounded-full p-0.5 ring-2 ring-white shadow-md">
+                                                                <CheckCircleIcon className="w-4 h-4 text-white" />
+                                                            </div>
+                                                        )}
                                                     </div>
-                                                    <div className="flex items-center justify-center h-16 relative">
-                                                        <div className={`relative ${selectedClient.active_handler_type === 1 ? 'rounded-full ring-2 ring-emerald-500 p-0.5' : ''}`}>
-                                                            <EmployeeAvatar employeeId={retentionHandlerId} size="lg" />
-                                                            {selectedClient.active_handler_type === 1 && (
-                                                                <div className="absolute -top-1 -right-1 bg-emerald-500 rounded-full p-0.5 ring-2 ring-white shadow-md">
-                                                                    <CheckCircleIcon className="w-4 h-4 text-white" />
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                    <p className="font-bold truncate text-sm leading-5 mt-2 text-gray-600 dark:text-gray-400">{formatRoleDisplay(retentionHandlerDisplay)}</p>
                                                 </div>
+                                                <p className="font-medium truncate text-sm leading-5 mt-1 text-gray-600 dark:text-gray-400">{formatRoleDisplay(retentionHandlerDisplay)}</p>
                                             </div>
                                         )}
                                     </div>

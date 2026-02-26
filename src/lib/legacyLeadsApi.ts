@@ -1087,6 +1087,42 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
 }
 
 // -----------------------------------------------------
+// Fetch latest lead only (for Clients page when no lead in URL - fast path)
+// -----------------------------------------------------
+
+export async function fetchLatestLead(): Promise<CombinedLead | null> {
+  try {
+    const [newResult, legacyResult] = await Promise.all([
+      supabase
+        .from("leads")
+        .select("id, lead_number, name, email, phone, mobile, topic, stage, created_at, status")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      supabase
+        .from("leads_lead")
+        .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status")
+        .order("cdate", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+
+    const newLead = newResult.data && !newResult.error ? mapNewLeadRow(newResult.data) : null;
+    const legacyLead = legacyResult.data && !legacyResult.error ? mapLegacyLeadRow(legacyResult.data) : null;
+
+    if (!newLead && !legacyLead) return null;
+    if (!legacyLead) return newLead;
+    if (!newLead) return legacyLead;
+
+    const newDate = new Date(newLead.created_at).getTime();
+    const legacyDate = new Date(legacyLead.created_at).getTime();
+    return newDate >= legacyDate ? newLead : legacyLead;
+  } catch (error) {
+    return null;
+  }
+}
+
+// -----------------------------------------------------
 // Fetch All Leads (for navigation to latest lead)
 // -----------------------------------------------------
 
