@@ -402,10 +402,10 @@ const CalendarPage: React.FC = () => {
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (
-        staffDropdownRef.current &&
-        !staffDropdownRef.current.contains(event.target as Node)
-      ) {
+      const target = event.target as Node;
+      const inMain = staffDropdownRef.current?.contains(target);
+      const inModal = staffDropdownModalRef.current?.contains(target);
+      if (showStaffDropdown && !inMain && !inModal) {
         setShowStaffDropdown(false);
       }
     };
@@ -430,6 +430,7 @@ const CalendarPage: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const quillRef = useRef<ReactQuill>(null);
   const staffDropdownRef = useRef<HTMLDivElement | null>(null);
+  const staffDropdownModalRef = useRef<HTMLDivElement | null>(null);
   const actionMenuDropdownRef = useRef<HTMLDivElement | null>(null);
 
   // Assign Staff Modal State
@@ -506,6 +507,9 @@ const CalendarPage: React.FC = () => {
 
   // Action menu dropdown state
   const [showActionMenuDropdown, setShowActionMenuDropdown] = useState(false);
+
+  // Mobile filters modal (date, staff, meeting type)
+  const [showMobileFiltersModal, setShowMobileFiltersModal] = useState(false);
 
   // Unavailable staff section collapse state
   const [isUnavailableStaffExpanded, setIsUnavailableStaffExpanded] = useState(false);
@@ -614,7 +618,7 @@ const CalendarPage: React.FC = () => {
   // Helper component for employee avatar with image error fallback (like CallsLedgerPage)
   const EmployeeAvatar: React.FC<{
     employeeId: string | number | null | undefined;
-    size?: 'sm' | 'md' | 'lg' | 'md' | 'md';
+    size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl';
     showPlaceholder?: boolean; // If false, return null when no employee (for unassigned roles)
   }> = ({ employeeId, size = 'md', showPlaceholder = false }) => {
     const [imageError, setImageError] = useState(false);
@@ -1916,10 +1920,9 @@ const CalendarPage: React.FC = () => {
         const dateRangeFrom = appliedFromDate || today;
         const dateRangeTo = appliedToDate || today;
 
-        // Fetch ALL data in parallel: regular meetings + legacy meetings + past stages
-        console.log('🔍 Fetching all meetings in parallel...', { dateRangeFrom, dateRangeTo, datesManuallySet });
-        // Use allEmployees state if available, otherwise fallback to employeesAndCategoriesData
-        const employeesForLegacy = allEmployees.length > 0 ? allEmployees : (employeesAndCategoriesData?.employees || []);
+        // Fetch only regular meetings + past stages first so the calendar shows immediately.
+        // Legacy leads_lead meetings are loaded in the background and merged when ready.
+        console.log('🔍 Fetching meetings (legacy deferred for fast load)...', { dateRangeFrom, dateRangeTo, datesManuallySet });
 
         // Build regular meetings query with date filtering if dates are manually set
         let regularMeetingsQuery = supabase
@@ -1940,14 +1943,11 @@ const CalendarPage: React.FC = () => {
 
         const [
           { data: allMeetingsData, error: allMeetingsError },
-          legacyMeetings,
           pastStagesData
         ] = await Promise.all([
           // Fetch regular meetings (filtered by date range if dates are manually set)
           regularMeetingsQuery.order('meeting_date', { ascending: false }),
-          // Fetch legacy meetings
-          fetchLegacyMeetingsForDateRange(dateRangeFrom, dateRangeTo, employeesForLegacy),
-          // Fetch past stages data
+          // Fetch past stages data (small query)
           fetchPastStagesData()
         ]);
 
@@ -2352,21 +2352,24 @@ const CalendarPage: React.FC = () => {
             });
         }
 
-        // Combine all meetings: regular + legacy (without duplicates)
-        console.log('🔍 [fetchMeetingsAndStaff] Before combining:', {
-          regularCount: allProcessedMeetings.length,
-          legacyCount: legacyMeetings.length
-        });
-        const allMeetingsCombined = combineMeetingsWithoutDuplicates(allProcessedMeetings, legacyMeetings);
-        console.log('🔍 [fetchMeetingsAndStaff] After combining:', {
-          totalCount: allMeetingsCombined.length,
-          legacyInCombined: allMeetingsCombined.filter((m: any) => m.id?.toString().startsWith('legacy_')).length
-        });
-
-        // Set ALL meetings at once - this ensures everything appears together
-        setMeetings(allMeetingsCombined);
+        // Set meetings immediately so the calendar renders without waiting for legacy
+        setMeetings(allProcessedMeetings);
         setIsLoading(false);
         setIsBackgroundLoading(false);
+
+        // Load legacy meetings in background and merge when ready (don't block initial paint)
+        const employeesForLegacy = allEmployees.length > 0 ? allEmployees : (employeesAndCategoriesData?.employees || []);
+        fetchLegacyMeetingsForDateRange(dateRangeFrom, dateRangeTo, employeesForLegacy)
+          .then(legacyMeetings => {
+            if (legacyMeetings.length > 0) {
+              setMeetings(prev => combineMeetingsWithoutDuplicates(prev, legacyMeetings));
+            }
+          })
+          .catch(err => {
+            console.error('Background legacy meetings fetch failed:', err);
+            const msg = typeof err?.message === 'string' ? err.message : '';
+            if (msg.includes('timeout') || err?.code === '57014') setLegacyLoadingDisabled(true);
+          });
 
         // Fetch staff meetings for today
         await fetchStaffMeetings(today, today);
@@ -4541,8 +4544,15 @@ const CalendarPage: React.FC = () => {
       return false;
     })();
 
+    // Same dark green as meeting time badge for "meeting ended" left outline
+    const meetingScheduledColor = resolveStageColour('20') || getStageColour('20') || '#10b981';
+
     return (
-      <div key={meeting.id} className={`rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 md:text-lg md:leading-relaxed bg-white ${selectedRowId === meeting.id ? 'ring-2 ring-primary ring-offset-2' : ''} ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}>
+      <div
+        key={meeting.id}
+        className={`rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 md:text-lg md:leading-relaxed bg-white ${selectedRowId === meeting.id ? 'ring-2 ring-primary ring-offset-2' : ''} ${hasPassedStage ? 'border-l-4' : ''}`}
+        style={hasPassedStage ? { borderLeftColor: meetingScheduledColor } : undefined}
+      >
         <div
           onClick={(e) => {
             if (meeting.calendar_type !== 'staff' && meeting.lead) {
@@ -4552,13 +4562,16 @@ const CalendarPage: React.FC = () => {
               setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id);
             }
           }}
-          className="flex-1 cursor-pointer flex flex-col"
+          className="flex-1 cursor-pointer flex flex-col relative"
         >
-          {/* Header with Name, Badge, and Action Buttons */}
+          {/* Small green hook top-left when meeting ended (tucked into corner away from lead number) */}
+          {hasPassedStage && (
+            <div className="absolute left-0 top-0 -ml-3 -mt-3 z-10" style={{ color: meetingScheduledColor }}>
+              <CheckCircleIcon className="w-5 h-5" />
+            </div>
+          )}
+          {/* Header with Name, Badge */}
           <div className="mb-3 flex items-start justify-between gap-2 relative">
-            {hasPassedStage && (
-              <CheckCircleIcon className="absolute left-0 top-0 w-5 h-5 text-green-500 -ml-2 -mt-2" />
-            )}
             <div className="flex items-center gap-2 flex-1 min-w-0">
               <span className="text-xs md:text-base font-semibold text-gray-400 tracking-widest">
                 {meeting.calendar_type === 'staff' ? 'STAFF' : (lead.lead_number || meeting.lead_number)}
@@ -4583,81 +4596,11 @@ const CalendarPage: React.FC = () => {
                 );
               })()}
             </div>
-            {/* Action Buttons - Top Right Corner */}
-            <div className="flex flex-row gap-2 items-center flex-shrink-0">
-              {meeting.calendar_type !== 'staff' && (
-                <label
-                  className="cursor-pointer"
-                  onClick={e => e.stopPropagation()}
-                  title="Toggle meeting confirmation"
-                >
-                  <input
-                    type="checkbox"
-                    className={`toggle toggle-primary toggle-sm ${meetingConfirmationLoadingId === meeting.id ? 'opacity-60' : ''}`}
-                    checked={getMeetingConfirmationState(meeting)}
-                    onChange={e => {
-                      e.stopPropagation();
-                      handleMeetingConfirmationToggle(meeting);
-                    }}
-                    disabled={meetingConfirmationLoadingId === meeting.id}
-                    aria-label="Meeting confirmed"
-                  />
-                </label>
-              )}
-              {/* Only show join button if location ID is in the allowed list from SQL file, OR if it's Teams with teams_meeting_url */}
-              {(() => {
-                // Get location ID - try meeting_location_id first (for legacy leads), then look up by name
-                let locationIdNum: number | null = null;
-                if (meeting.meeting_location_id) {
-                  locationIdNum = typeof meeting.meeting_location_id === 'string'
-                    ? parseInt(meeting.meeting_location_id, 10)
-                    : (typeof meeting.meeting_location_id === 'number' ? meeting.meeting_location_id : null);
-                }
-                // If no ID, try to look up by location name
-                const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
-                if (locationIdNum === null && locationName && locationName !== 'N/A') {
-                  locationIdNum = meetingLocationNameToId[locationName] || null;
-                }
-
-                // Check if location ID is in the allowed list
-                const hasAllowedLocationId = locationIdNum !== null && meetingLocationIdsWithLink.has(locationIdNum);
-
-                // Also show for Teams meetings that have a teams_meeting_url
-                const isTeamsWithUrl = locationName && locationName.toLowerCase() === 'teams' && !!meeting.teams_meeting_url;
-
-                // Also show for staff meetings (they have teams_meeting_url)
-                const isStaffMeeting = meeting.calendar_type === 'staff';
-
-                return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting;
-              })() && (
-                  <button
-                    className="btn btn-outline btn-primary btn-sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      // Use teams_meeting_url if available, otherwise use default_link from location
-                      const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
-                      const defaultLink = meetingLocationLinks[locationName] || '';
-                      const url = getValidTeamsLink(meeting.teams_meeting_url || defaultLink);
-                      if (url) {
-                        window.open(url, '_blank');
-                      } else {
-                        alert('No meeting URL available');
-                      }
-                    }}
-                    title="Teams Meeting"
-                  >
-                    <VideoCameraIcon className="w-4 h-4" />
-                  </button>
-                )}
-            </div>
           </div>
 
           {/* Meeting Time and Stage Badge - Same row */}
           {meeting.meeting_time && (() => {
-            // Get the color for "Meeting scheduled" stage (stage 20) to match the stage badge
-            const meetingScheduledColor = resolveStageColour('20') || getStageColour('20') || '#10b981';
             const textColor = getContrastingTextColor(meetingScheduledColor);
-
             return (
               <div className="mt-4 mb-3 flex items-center justify-between">
                 <div
@@ -4681,28 +4624,28 @@ const CalendarPage: React.FC = () => {
 
           <div className="space-y-2 divide-y divide-gray-100">
 
-            {/* Handler - only show for active_client meetings */}
+            {/* Handler - only show for active_client meetings. Fixed w-16 so all employee avatars align across rows. */}
             {meeting.calendar_type === 'active_client' && (
               <div className="flex justify-between items-center py-1">
                 <span className="text-xs md:text-base font-semibold text-gray-500">Handler</span>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-col items-center gap-0.5 w-16 flex-shrink-0">
                   {renderEmployeeAvatar(lead.handler_id || lead.handler, 'lg', false)}
-                  <span className="text-xs md:text-sm font-bold text-gray-800">
+                  <span className="text-xs font-bold text-gray-800 text-center leading-tight">
                     {getEmployeeDisplayName(lead.handler || meeting.handler) || '---'}
                   </span>
                 </div>
               </div>
             )}
 
-            {/* Manager, Helper, Scheduler - show for potential_client and other non-active_client meetings */}
+            {/* Manager, Helper - show for potential_client and other non-active_client meetings */}
             {meeting.calendar_type !== 'active_client' && meeting.calendar_type !== 'staff' && (
               <>
                 {/* Manager */}
                 <div className="flex justify-between items-center py-1">
                   <span className="text-xs md:text-base font-semibold text-gray-500">Manager</span>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-col items-center gap-0.5 w-16 flex-shrink-0">
                     {renderEmployeeAvatar(lead.manager_id || lead.manager || meeting.meeting_manager_id || meeting.meeting_manager, 'lg', false)}
-                    <span className="text-xs md:text-sm font-bold text-gray-800">
+                    <span className="text-xs font-bold text-gray-800 text-center leading-tight">
                       {getEmployeeDisplayName(lead.manager || meeting.meeting_manager) || '---'}
                     </span>
                   </div>
@@ -4711,9 +4654,9 @@ const CalendarPage: React.FC = () => {
                 {/* Helper */}
                 <div className="flex justify-between items-center py-1">
                   <span className="text-xs md:text-base font-semibold text-gray-500">Helper</span>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-col items-center gap-0.5 w-16 flex-shrink-0">
                     {renderEmployeeAvatar(lead.helper_id || lead.helper || meeting.helper, 'lg', false)}
-                    <span className="text-xs md:text-sm font-bold text-gray-800">
+                    <span className="text-xs font-bold text-gray-800 text-center leading-tight">
                       {getEmployeeDisplayName(lead.helper || meeting.helper) || '---'}
                     </span>
                   </div>
@@ -4724,9 +4667,9 @@ const CalendarPage: React.FC = () => {
 
             {/* Staff Meeting Attendees */}
             {meeting.calendar_type === 'staff' && (
-              <div className="flex items-center gap-2 py-1">
+              <div className="flex items-center justify-between gap-2 py-1">
                 <span className="text-xs md:text-base font-semibold text-gray-500">Attendees</span>
-                <div className="text-sm md:text-lg font-bold text-gray-800 break-words">
+                <div className="text-sm md:text-lg font-bold text-gray-800 break-words text-right">
                   {meeting.meeting_manager || 'No attendees'}
                 </div>
               </div>
@@ -4739,9 +4682,9 @@ const CalendarPage: React.FC = () => {
                 {meeting.extern1 && meeting.extern1 !== '--' && meeting.extern1 !== '' && (
                   <div className="flex justify-between items-center py-1">
                     <span className="text-xs md:text-base font-semibold text-gray-500">Guest 1</span>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-col items-center gap-0.5 w-16 flex-shrink-0">
                       {renderEmployeeAvatar(meeting.extern1, 'lg', false)}
-                      <span className="text-xs md:text-sm font-bold text-gray-800">
+                      <span className="text-xs font-bold text-gray-800 text-center leading-tight">
                         {getEmployeeDisplayName(meeting.extern1) || '---'}
                       </span>
                     </div>
@@ -4751,9 +4694,9 @@ const CalendarPage: React.FC = () => {
                 {meeting.extern2 && meeting.extern2 !== '--' && meeting.extern2 !== '' && (
                   <div className="flex justify-between items-center py-1">
                     <span className="text-xs md:text-base font-semibold text-gray-500">Guest 2</span>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-col items-center gap-0.5 w-16 flex-shrink-0">
                       {renderEmployeeAvatar(meeting.extern2, 'lg', false)}
-                      <span className="text-xs md:text-sm font-bold text-gray-800">
+                      <span className="text-xs font-bold text-gray-800 text-center leading-tight">
                         {getEmployeeDisplayName(meeting.extern2) || '---'}
                       </span>
                     </div>
@@ -4765,7 +4708,7 @@ const CalendarPage: React.FC = () => {
             {/* Category */}
             <div className="flex justify-between items-center py-1">
               <span className="text-xs md:text-base font-semibold text-gray-500">Category</span>
-              <span className="text-sm md:text-lg font-bold text-gray-800">{getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A'}</span>
+              <span className="text-xs md:text-sm font-bold text-gray-800">{getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A'}</span>
             </div>
 
             {/* Amount */}
@@ -4934,6 +4877,56 @@ const CalendarPage: React.FC = () => {
           )}
         </div>
 
+        {/* Toggle and Join link - bottom left corner (box view) */}
+        <div className="absolute bottom-3 left-3 flex items-center gap-2" onClick={e => e.stopPropagation()}>
+          {meeting.calendar_type !== 'staff' && (
+            <label className="cursor-pointer" title="Toggle meeting confirmation">
+              <input
+                type="checkbox"
+                className={`toggle toggle-primary toggle-sm ${meetingConfirmationLoadingId === meeting.id ? 'opacity-60' : ''}`}
+                checked={getMeetingConfirmationState(meeting)}
+                onChange={e => {
+                  e.stopPropagation();
+                  handleMeetingConfirmationToggle(meeting);
+                }}
+                disabled={meetingConfirmationLoadingId === meeting.id}
+                aria-label="Meeting confirmed"
+              />
+            </label>
+          )}
+          {(() => {
+            let locationIdNum: number | null = null;
+            if (meeting.meeting_location_id) {
+              locationIdNum = typeof meeting.meeting_location_id === 'string'
+                ? parseInt(meeting.meeting_location_id, 10)
+                : (typeof meeting.meeting_location_id === 'number' ? meeting.meeting_location_id : null);
+            }
+            const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
+            if (locationIdNum === null && locationName && locationName !== 'N/A') {
+              locationIdNum = meetingLocationNameToId[locationName] || null;
+            }
+            const hasAllowedLocationId = locationIdNum !== null && meetingLocationIdsWithLink.has(locationIdNum);
+            const isTeamsWithUrl = locationName && locationName.toLowerCase() === 'teams' && !!meeting.teams_meeting_url;
+            const isStaffMeeting = meeting.calendar_type === 'staff';
+            return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting;
+          })() && (
+            <button
+              className="btn btn-outline btn-primary btn-sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
+                const defaultLink = meetingLocationLinks[locationName] || '';
+                const url = getValidTeamsLink(meeting.teams_meeting_url || defaultLink);
+                if (url) window.open(url, '_blank');
+                else alert('No meeting URL available');
+              }}
+              title="Teams Meeting"
+            >
+              <VideoCameraIcon className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
         {/* Show edit button for staff meetings (at bottom) */}
         {meeting.calendar_type === 'staff' && (
           <div className="mt-4 flex flex-row gap-2 justify-end items-center">
@@ -5060,10 +5053,10 @@ const CalendarPage: React.FC = () => {
                   <div className="bg-white p-3 rounded-lg">
                     <h6 className="font-semibold text-gray-800 mb-2">Staff</h6>
                     <div className="flex items-center gap-2">
-                      <span className="text-sm text-gray-600">Scheduler:</span>
-                      <div className="flex items-center gap-2">
-                        {renderEmployeeAvatar(lead.scheduler_id || lead.scheduler || meeting.scheduler, 'sm', false)}
-                        <span className="text-sm text-gray-800 font-medium">
+                      <span className="text-xs text-gray-600">Scheduler:</span>
+                      <div className="flex flex-col items-center gap-0.5 w-16 flex-shrink-0">
+                        {renderEmployeeAvatar(lead.scheduler_id || lead.scheduler || meeting.scheduler, 'lg', false)}
+                        <span className="text-xs text-gray-800 font-medium text-center leading-tight">
                           {getEmployeeDisplayName(lead.scheduler || meeting.scheduler) || '---'}
                         </span>
                       </div>
@@ -5268,8 +5261,8 @@ const CalendarPage: React.FC = () => {
               return `${getCurrencySymbol(balanceCurrency)}0`;
             })()}
           </td>
-          {/* Participants Column - Fourth */}
-          <td>
+          {/* Participants Column - Fourth: fixed width so employee avatars align across all rows */}
+          <td className="w-20 min-w-[5rem]">
             {meeting.calendar_type === 'staff' ? (
               <div className="max-w-xs">
                 <div className="text-xs font-medium text-gray-700">Attendees:</div>
@@ -5282,29 +5275,25 @@ const CalendarPage: React.FC = () => {
                 {/* Handler - only show for active_client meetings */}
                 {meeting.calendar_type === 'active_client' && (
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-500" style={{ writingMode: 'vertical-rl' }}>Handler</span>
-                    <div className="flex items-center gap-1">
-                      <div className="hidden md:block">
-                        {renderEmployeeAvatar(lead.handler_id || lead.handler, 'lg', false)}
-                      </div>
-                      <span className="text-sm sm:text-base">
-                        {getEmployeeDisplayName(lead.handler || meeting.handler)}
-                      </span>
+                    <span className="text-xs text-gray-500 flex-shrink-0" style={{ writingMode: 'vertical-rl' }}>Handler</span>
+                    <div className="hidden md:flex flex-col items-center gap-0.5 w-14 flex-shrink-0">
+                      {renderEmployeeAvatar(lead.handler_id || lead.handler, 'lg', false)}
+                      <span className="text-xs text-center leading-tight">{getEmployeeDisplayName(lead.handler || meeting.handler)}</span>
                     </div>
+                    <span className="md:hidden text-xs">{getEmployeeDisplayName(lead.handler || meeting.handler)}</span>
                   </div>
                 )}
-                {/* Manager, Helper, Scheduler - show for potential_client and other non-active_client meetings */}
+                {/* Manager, Helper - show for potential_client and other non-active_client meetings */}
                 {meeting.calendar_type !== 'active_client' && meeting.calendar_type !== 'staff' && (
                   <>
                     {/* Manager */}
                     <div className="flex items-center gap-2">
-                      <span className="text-xs text-gray-500" style={{ writingMode: 'vertical-rl' }}>Manager</span>
-                      <div className="flex items-center gap-1">
-                        <div className="hidden md:block">
-                          {renderEmployeeAvatar(lead.manager_id || lead.manager || meeting.meeting_manager_id || meeting.meeting_manager, 'lg', false)}
-                        </div>
-                        <span className="text-sm sm:text-base">{getEmployeeDisplayName(lead.manager || meeting.meeting_manager)}</span>
+                      <span className="text-xs text-gray-500 flex-shrink-0" style={{ writingMode: 'vertical-rl' }}>Manager</span>
+                      <div className="hidden md:flex flex-col items-center gap-0.5 w-14 flex-shrink-0">
+                        {renderEmployeeAvatar(lead.manager_id || lead.manager || meeting.meeting_manager_id || meeting.meeting_manager, 'lg', false)}
+                        <span className="text-xs text-center leading-tight">{getEmployeeDisplayName(lead.manager || meeting.meeting_manager)}</span>
                       </div>
+                      <span className="md:hidden text-xs">{getEmployeeDisplayName(lead.manager || meeting.meeting_manager)}</span>
                     </div>
                     {/* Helper - only show if helper exists and is not "--" */}
                     {(() => {
@@ -5312,13 +5301,12 @@ const CalendarPage: React.FC = () => {
                       return helperId && helperId !== '--' && helperId !== 'N/A' && helperId !== 'Not_assigned' && helperId !== '---';
                     })() && (
                         <div className="flex items-center gap-2">
-                          <span className="text-xs text-gray-500" style={{ writingMode: 'vertical-rl' }}>Helper</span>
-                          <div className="flex items-center gap-1">
-                            <div className="hidden md:block">
-                              {renderEmployeeAvatar(lead.helper_id || lead.helper || meeting.helper, 'lg', false)}
-                            </div>
-                            <span className="text-sm sm:text-base">{getEmployeeDisplayName(lead.helper || meeting.helper)}</span>
+                          <span className="text-xs text-gray-500 flex-shrink-0" style={{ writingMode: 'vertical-rl' }}>Helper</span>
+                          <div className="hidden md:flex flex-col items-center gap-0.5 w-14 flex-shrink-0">
+                            {renderEmployeeAvatar(lead.helper_id || lead.helper || meeting.helper, 'lg', false)}
+                            <span className="text-xs text-center leading-tight">{getEmployeeDisplayName(lead.helper || meeting.helper)}</span>
                           </div>
+                          <span className="md:hidden text-xs">{getEmployeeDisplayName(lead.helper || meeting.helper)}</span>
                         </div>
                       )}
                   </>
@@ -5329,25 +5317,23 @@ const CalendarPage: React.FC = () => {
                     {/* Guest 1 */}
                     {meeting.extern1 && meeting.extern1 !== '--' && meeting.extern1 !== '' && (
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-gray-500" style={{ writingMode: 'vertical-rl' }}>Guest 1</span>
-                        <div className="flex items-center gap-1">
-                          <div className="hidden md:block">
-                            {renderEmployeeAvatar(meeting.extern1, 'lg', false)}
-                          </div>
-                          <span className="text-sm sm:text-base">{getEmployeeDisplayName(meeting.extern1)}</span>
+                        <span className="text-xs text-gray-500 flex-shrink-0" style={{ writingMode: 'vertical-rl' }}>Guest 1</span>
+                        <div className="hidden md:flex flex-col items-center gap-0.5 w-14 flex-shrink-0">
+                          {renderEmployeeAvatar(meeting.extern1, 'lg', false)}
+                          <span className="text-xs text-center leading-tight">{getEmployeeDisplayName(meeting.extern1)}</span>
                         </div>
+                        <span className="md:hidden text-xs">{getEmployeeDisplayName(meeting.extern1)}</span>
                       </div>
                     )}
                     {/* Guest 2 */}
                     {meeting.extern2 && meeting.extern2 !== '--' && meeting.extern2 !== '' && (
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-gray-500" style={{ writingMode: 'vertical-rl' }}>Guest 2</span>
-                        <div className="flex items-center gap-1">
-                          <div className="hidden md:block">
-                            {renderEmployeeAvatar(meeting.extern2, 'lg', false)}
-                          </div>
-                          <span className="text-sm sm:text-base">{getEmployeeDisplayName(meeting.extern2)}</span>
+                        <span className="text-xs text-gray-500 flex-shrink-0" style={{ writingMode: 'vertical-rl' }}>Guest 2</span>
+                        <div className="hidden md:flex flex-col items-center gap-0.5 w-14 flex-shrink-0">
+                          {renderEmployeeAvatar(meeting.extern2, 'lg', false)}
+                          <span className="text-xs text-center leading-tight">{getEmployeeDisplayName(meeting.extern2)}</span>
                         </div>
+                        <span className="md:hidden text-xs">{getEmployeeDisplayName(meeting.extern2)}</span>
                       </div>
                     )}
                   </>
@@ -5761,41 +5747,61 @@ const CalendarPage: React.FC = () => {
           .hide-scrollbar::-webkit-scrollbar { 
             display: none;  /* Safari and Chrome */
           }
+          @media (max-width: 767px) {
+            .calendar-action-fixed-mobile {
+              bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+            }
+          }
+          @media (min-width: 768px) {
+            .calendar-action-fixed-mobile {
+              bottom: auto;
+            }
+          }
         `}
       </style>
-      {/* Date Navigation */}
-      <div className="mb-6 flex items-center justify-center gap-4">
+      {/* Date Navigation - on mobile: fixed oval below header, bigger + glassy blurred; on desktop: normal flow */}
+      <div
+        className="flex items-center justify-center gap-4 md:gap-4 mb-6 md:mb-6 rounded-full bg-white/60 dark:bg-base-300/50 backdrop-blur-xl border border-white/30 dark:border-base-content/10 shadow-xl px-6 py-3.5 md:px-0 md:py-0 md:rounded-none md:bg-transparent md:backdrop-blur-none md:border-0 md:shadow-none fixed left-1/2 -translate-x-1/2 z-40 md:static md:left-auto md:translate-x-0 md:top-auto"
+        style={{
+          top: 'max(4.75rem, calc(76px + env(safe-area-inset-top, 0px)))',
+          paddingTop: 'max(0.25rem, env(safe-area-inset-top, 0px))'
+        }}
+      >
         <button
           onClick={goToPreviousDay}
-          className="btn btn-circle btn-outline btn-primary"
+          className="btn btn-circle btn-outline btn-primary btn-md md:btn-md"
           title="Previous Day"
         >
-          <ChevronLeftIcon className="w-6 h-6" />
+          <ChevronLeftIcon className="w-6 h-6 md:w-6 md:h-6" />
         </button>
 
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-semibold text-center sm:text-lg sm:text-left">
+        <div className="flex items-center gap-2 md:gap-3 min-w-0 flex-1 justify-center md:flex-initial">
+          <span className="text-sm font-semibold text-center sm:text-base md:text-lg md:text-left truncate max-w-[55vw] md:max-w-none">
             {appliedFromDate === appliedToDate ? (
-              new Date(appliedFromDate).toLocaleDateString('en-US', {
-                weekday: 'long',
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric'
-              })
+              (() => {
+                const d = new Date(appliedFromDate);
+                const weekday = d.toLocaleDateString('en-US', { weekday: 'long' });
+                const day = String(d.getDate()).padStart(2, '0');
+                const month = d.toLocaleDateString('en-US', { month: 'long' });
+                const year = String(d.getFullYear()).slice(-2);
+                return `${weekday}, ${day}. ${month} ${year}`;
+              })()
             ) : (
-              `${new Date(appliedFromDate).toLocaleDateString('en-US', {
-                month: 'short',
-                day: 'numeric'
-              })} - ${new Date(appliedToDate).toLocaleDateString('en-US', {
-                month: 'short',
-                day: 'numeric',
-                year: 'numeric'
-              })}`
+              (() => {
+                const fmt = (dateStr: string) => {
+                  const d = new Date(dateStr);
+                  const day = String(d.getDate()).padStart(2, '0');
+                  const month = d.toLocaleDateString('en-US', { month: 'long' });
+                  const year = String(d.getFullYear()).slice(-2);
+                  return `${day}. ${month} ${year}`;
+                };
+                return `${fmt(appliedFromDate)} - ${fmt(appliedToDate)}`;
+              })()
             )}
           </span>
           <button
             onClick={goToToday}
-            className="btn btn-sm btn-primary"
+            className="hidden md:inline-flex btn btn-sm btn-primary flex-shrink-0"
             title="Go to Today"
           >
             Today
@@ -5804,15 +5810,17 @@ const CalendarPage: React.FC = () => {
 
         <button
           onClick={goToNextDay}
-          className="btn btn-circle btn-outline btn-primary"
+          className="btn btn-circle btn-outline btn-primary btn-md md:btn-md"
           title="Next Day"
         >
-          <ChevronRightIcon className="w-6 h-6" />
+          <ChevronRightIcon className="w-6 h-6 md:w-6 md:h-6" />
         </button>
       </div>
+      {/* Spacer on mobile so content starts below the fixed date bar (under header) */}
+      <div className="h-32 flex-shrink-0 md:hidden" aria-hidden="true" />
 
-      {/* Filters */}
-      <div className="mb-6 w-full">
+      {/* Filters - desktop only; on mobile moved to modal */}
+      <div className="mb-6 w-full hidden md:block">
         <div className="flex flex-wrap gap-4 w-full">
           <div className="flex flex-1 min-w-[260px] items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
             <FunnelIcon className="w-5 h-5 text-gray-500" />
@@ -5913,19 +5921,145 @@ const CalendarPage: React.FC = () => {
         </div>
       </div>
 
+      {/* Mobile: filter FAB hidden - filters opened via action dropdown (action button is stacked on this spot) */}
+
+      {/* Mobile: filters modal (date, staff, meeting type) */}
+      {showMobileFiltersModal && (
+        <div
+          className="fixed inset-0 z-[100] md:hidden"
+          aria-modal="true"
+          role="dialog"
+          aria-labelledby="mobile-filters-title"
+        >
+          <div
+            className="absolute inset-0 bg-black/50"
+            onClick={() => setShowMobileFiltersModal(false)}
+            aria-hidden="true"
+          />
+          <div className="absolute inset-x-4 top-1/2 -translate-y-1/2 max-h-[85vh] overflow-y-auto bg-base-100 rounded-2xl shadow-xl border border-base-200 p-4 flex flex-col gap-4">
+            <div className="flex items-center justify-between border-b border-base-200 pb-3">
+              <h2 id="mobile-filters-title" className="text-lg font-semibold text-base-content">Filters</h2>
+              <button
+                type="button"
+                className="btn btn-ghost btn-circle btn-sm"
+                onClick={() => setShowMobileFiltersModal(false)}
+                aria-label="Close filters"
+              >
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+            {/* Date filter */}
+            <div className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-base-content/70">Date range</span>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="date"
+                  className="input input-bordered flex-1 min-w-0"
+                  value={fromDate}
+                  onChange={(e) => setFromDate(e.target.value)}
+                  title="From Date"
+                />
+                <span className="text-gray-400 font-semibold">to</span>
+                <input
+                  type="date"
+                  className="input input-bordered flex-1 min-w-0"
+                  value={toDate}
+                  onChange={(e) => setToDate(e.target.value)}
+                  title="To Date"
+                />
+              </div>
+              <button
+                onClick={() => {
+                  handleShowButton();
+                  setShowMobileFiltersModal(false);
+                }}
+                className="btn btn-primary btn-sm w-full"
+              >
+                Show
+              </button>
+            </div>
+            {/* Staff filter */}
+            <div className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-base-content/70">Staff</span>
+              <div className="relative" ref={staffDropdownModalRef}>
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  placeholder="All staff"
+                  value={staffSearchTerm}
+                  onFocus={() => setShowStaffDropdown(true)}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setStaffSearchTerm(value);
+                    setShowStaffDropdown(true);
+                    if (!value.trim()) setSelectedStaff('');
+                  }}
+                />
+                {showStaffDropdown && (
+                  <div className="absolute z-10 mt-2 w-full bg-base-100 border border-base-200 rounded-xl shadow-lg max-h-48 overflow-auto">
+                    <button
+                      type="button"
+                      className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                      onClick={() => {
+                        setSelectedStaff('');
+                        setStaffSearchTerm('');
+                        setShowStaffDropdown(false);
+                      }}
+                    >
+                      All Staff
+                    </button>
+                    {filteredStaffOptions.length > 0 ? (
+                      filteredStaffOptions.map((staffName, index) => (
+                        <button
+                          key={`modal-${staffName}-${index}`}
+                          type="button"
+                          className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                          onClick={() => {
+                            handleStaffSelect(staffName);
+                          }}
+                        >
+                          {staffName}
+                        </button>
+                      ))
+                    ) : (
+                      <div className="px-4 py-3 text-sm text-base-content/60">No matches</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+            {/* Meeting type filter */}
+            <div className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-base-content/70">Meeting type</span>
+              <select
+                className="select select-bordered w-full"
+                value={selectedMeetingType}
+                onChange={(e) => setSelectedMeetingType(e.target.value as 'all' | 'potential' | 'active' | 'staff' | 'paid')}
+              >
+                <option value="all">All Meetings</option>
+                <option value="potential">Potential Clients</option>
+                <option value="active">Active Clients</option>
+                <option value="staff">Staff Meetings</option>
+                <option value="paid">Paid Meetings</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {/* Action Buttons Row */}
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3 w-full">
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-2">
-            <span className="text-sm md:text-base font-medium text-gray-700">Total Meetings:</span>
-            <span className="text-base md:text-lg font-bold" style={{ color: '#3b28c7' }}>{filteredMeetings.length}</span>
+            <span className="hidden md:inline text-sm md:text-base font-medium text-gray-700">Total Meetings:</span>
+            <span className="text-base md:text-lg font-bold" style={{ color: '#3b28c7' }}>{filteredMeetings.length} meetings</span>
           </div>
         </div>
 
-        {/* Click Dropdown Menu - Top Right */}
+        {/* Click Dropdown Menu - desktop: in flow top right; mobile: fixed bottom right, stacked ON TOP of filter button (z-50) */}
         <div
-          className="relative"
+          className="calendar-action-fixed-mobile fixed md:relative right-6 md:right-auto z-50 md:z-auto"
           ref={actionMenuDropdownRef}
         >
           <button
@@ -5940,9 +6074,9 @@ const CalendarPage: React.FC = () => {
             <EllipsisVerticalIcon className="w-6 h-6" />
           </button>
 
-          {/* Dropdown Menu */}
+          {/* Dropdown Menu - opens upward on mobile (bottom-full), downward on desktop (top-full) */}
           {showActionMenuDropdown && (
-            <div className="absolute right-0 top-full mt-2 w-56 bg-white border border-gray-200 rounded-xl shadow-2xl z-50 overflow-hidden">
+            <div className="absolute right-0 bottom-full mb-2 md:bottom-auto md:mb-0 md:top-full md:mt-2 w-56 bg-white border border-gray-200 rounded-xl shadow-2xl z-50 overflow-hidden">
               <div className="py-2">
                 <button
                   className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
@@ -5982,6 +6116,16 @@ const CalendarPage: React.FC = () => {
                     {viewMode === 'cards' ? 'Switch to List View' : 'Switch to Card View'}
                   </span>
                 </button>
+                <button
+                  className="md:hidden w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+                  onClick={() => {
+                    setShowMobileFiltersModal(true);
+                    setShowActionMenuDropdown(false);
+                  }}
+                >
+                  <FunnelIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+                  <span className="text-sm font-semibold text-gray-700">Filters</span>
+                </button>
               </div>
             </div>
           )}
@@ -6003,7 +6147,7 @@ const CalendarPage: React.FC = () => {
                 <th className="text-gray-500">Lead</th>
                 <th className="text-gray-500">Category</th>
                 <th className="text-gray-500">Value</th>
-                <th className="text-gray-500">Participants</th>
+                <th className="text-gray-500 w-20 min-w-[5rem]">Participants</th>
                 <th className="text-gray-500">Location</th>
                 <th className="text-gray-500">Status</th>
                 <th className="text-gray-500">Actions</th>
@@ -6168,18 +6312,18 @@ const CalendarPage: React.FC = () => {
                           handleSaveGuest(selectedMeetingForGuest.id, guestSelectionType, employee.id);
                         }
                       }}
-                      className={`flex items-center gap-3 p-4 rounded-lg border-2 transition-all ${isSelected
+                      className={`flex flex-col items-center gap-1 p-4 rounded-lg border-2 transition-all ${isSelected
                         ? 'border-primary bg-primary/10'
                         : 'border-gray-200 hover:border-primary hover:bg-gray-50'
                         }`}
                     >
                       <div className="flex-shrink-0">
-                        {renderEmployeeAvatar(employee.id, 'md', false)}
+                        {renderEmployeeAvatar(employee.id, 'sm', false)}
                       </div>
-                      <div className="flex-1 text-left">
-                        <div className="font-semibold text-gray-900">{employee.display_name}</div>
+                      <div className="text-center">
+                        <div className="font-semibold text-gray-900 text-sm">{employee.display_name}</div>
                         {employee.tenant_departement?.name && (
-                          <div className="text-sm text-gray-500">{employee.tenant_departement.name}</div>
+                          <div className="text-xs text-gray-500">{employee.tenant_departement.name}</div>
                         )}
                       </div>
                       {isSelected && (
@@ -7097,13 +7241,13 @@ const CalendarPage: React.FC = () => {
                                     </td>
 
                                     {/* Scheduler */}
-                                    <td className="text-base">
+                                    <td className="text-base w-20 min-w-[5rem]">
                                       {meeting.calendar_type === 'staff' ? (
                                         null
                                       ) : (
-                                        <div className="flex items-center gap-2">
-                                          {renderEmployeeAvatar(lead.scheduler_id || lead.scheduler || meeting.scheduler, 'md', false)}
-                                          <span className="text-sm sm:text-base">{getEmployeeDisplayName(lead.scheduler || meeting.scheduler)}</span>
+                                        <div className="flex flex-col items-center gap-0.5 w-14 flex-shrink-0">
+                                          {renderEmployeeAvatar(lead.scheduler_id || lead.scheduler || meeting.scheduler, 'lg', false)}
+                                          <span className="text-xs text-center leading-tight">{getEmployeeDisplayName(lead.scheduler || meeting.scheduler)}</span>
                                         </div>
                                       )}
                                     </td>

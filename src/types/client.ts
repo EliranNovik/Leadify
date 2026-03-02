@@ -61,4 +61,6 @@ export interface ClientTabProps {
   onInteractionsCacheUpdate?: (cache: ClientInteractionsCache) => void;
   onInteractionCountUpdate?: (count: number) => void;
   allEmployees?: any[]; // Employees loaded in parent component
+  /** When true, all edit/save/action buttons are hidden and non-functional (e.g. external user modal) */
+  readOnly?: boolean;
 }

@@ -441,12 +441,13 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     try {
       const { data } = await supabase
         .from('users')
-        .select('first_name, full_name')
+        .select('first_name, full_name, tenants_employee!users_employee_id_fkey(display_name)')
         .eq('id', userId)
         .single();
 
       if (data) {
-        const name = data.first_name || data.full_name || 'Unknown User';
+        const emp = Array.isArray((data as any).tenants_employee) ? (data as any).tenants_employee[0] : (data as any).tenants_employee;
+        const name = emp?.display_name || data.first_name || data.full_name || 'Unknown User';
         setUserCache(prev => ({ ...prev, [userId]: name }));
         return name;
       }
@@ -471,7 +472,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
   // Helper function to detect if message contains only emojis
   // Helper function to convert URLs, email addresses, and bold formatting in text
-  const renderTextWithLinks = (text: string): React.ReactNode => {
+  // neonGreenLinks: true = outgoing (team) messages get neon green links; false = incoming (client) messages get normal link styling
+  const renderTextWithLinks = (text: string, neonGreenLinks: boolean = true): React.ReactNode => {
     if (!text) return text;
 
     // Process links (URLs and emails)
@@ -524,14 +526,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             rel={href.startsWith('mailto:') ? undefined : 'noopener noreferrer'}
             className="hover:underline break-all"
             style={{
-              color: '#39ff14',
+              color: neonGreenLinks ? '#39ff14' : '#2563eb',
               wordBreak: 'break-all',
               overflowWrap: 'anywhere',
               hyphens: 'auto',
               maxWidth: '100%',
               whiteSpace: 'normal',
               display: 'inline',
-              fontWeight: 600,
+              fontWeight: neonGreenLinks ? 600 : 400,
               lineBreak: 'anywhere'
             }}
           >
@@ -1114,10 +1116,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               email,
               employee_id,
               is_superuser,
-              tenants_employee!employee_id(
-                id,
-                display_name
-              )
+              tenants_employee!users_employee_id_fkey(id, display_name)
             `)
             .eq('email', user.email)
             .single();
@@ -2783,42 +2782,55 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             return;
           }
 
-          // Fetch from leads_leadinteractions for legacy leads
-          const { data: interactions, error: interactionsError } = await supabase
+          // Fetch from leads_leadinteractions with optional creator join
+          let result = await supabase
             .from('leads_leadinteractions')
-            .select('*')
+            .select(`id, cdate, date, time, content, description, creator_id, direction, kind,
+              creator_employee:tenants_employee!leads_leadinteractions_creator_id_fkey(id, display_name, official_name)`)
             .eq('lead_id', legacyId)
-            .eq('kind', 'w') // 'w' for WhatsApp
+            .eq('kind', 'w')
             .order('cdate', { ascending: true });
-
-          if (interactionsError) {
-            console.error('Error fetching legacy interactions:', interactionsError);
-            toast.error('Failed to load messages');
-            return;
+          let interactions: any[] | null = result.data;
+          if (result.error) {
+            const fallback = await supabase
+              .from('leads_leadinteractions')
+              .select('id, cdate, date, time, content, description, creator_id, direction, kind')
+              .eq('lead_id', legacyId)
+              .eq('kind', 'w')
+              .order('cdate', { ascending: true });
+            interactions = fallback.data as any[] | null;
+            if (fallback.error) {
+              console.error('Error fetching legacy interactions:', fallback.error);
+              toast.error('Failed to load messages');
+              return;
+            }
           }
 
-          // Fetch employee display names for creator_ids
           const creatorIds = [...new Set((interactions || [])
-            .map((interaction: any) => interaction.creator_id)
-            .filter((id: any) => id && id !== '\\N' && id !== 'EMPTY' && id !== null && id !== undefined)
+            .map((i: any) => i.creator_id)
+            .filter((id: any) => id && id !== '\\N' && id !== 'EMPTY' && id != null)
             .map((id: any) => Number(id))
             .filter((id: number) => !isNaN(id))
           )];
-
           let employeeNameMap: Record<number, string> = {};
           if (creatorIds.length > 0) {
             const { data: employees, error: employeeError } = await supabase
               .from('tenants_employee')
               .select('id, display_name')
               .in('id', creatorIds);
-
             if (!employeeError && employees) {
-              employeeNameMap = employees.reduce((acc, emp) => {
-                acc[emp.id] = emp.display_name;
+              employeeNameMap = (employees as { id: number; display_name: string | null }[]).reduce((acc, emp) => {
+                if (emp.display_name) acc[emp.id] = emp.display_name;
                 return acc;
               }, {} as Record<number, string>);
             }
           }
+
+          const fromJoin = (rel: any) => {
+            const r = Array.isArray(rel) ? rel[0] : rel;
+            const name = r?.display_name ?? r?.official_name;
+            return name && String(name).trim() ? String(name).trim() : null;
+          };
 
           // Transform legacy interactions to WhatsAppMessage format
           const transformedMessages: WhatsAppMessage[] = (interactions || []).map((interaction: any) => {
@@ -2850,11 +2862,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               sentAt = interaction.cdate;
             }
 
-            // Get sender name from creator_id
+            // Get sender name from join (creator_employee) or fallback to employeeNameMap
             let senderName = 'Unknown';
             if (interaction.creator_id && interaction.creator_id !== '\\N' && interaction.creator_id !== 'EMPTY') {
+              const fromJoinName = fromJoin(interaction.creator_employee);
               const creatorId = Number(interaction.creator_id);
-              if (!isNaN(creatorId) && employeeNameMap[creatorId]) {
+              if (fromJoinName) {
+                senderName = fromJoinName;
+              } else if (!isNaN(creatorId) && employeeNameMap[creatorId]) {
                 senderName = employeeNameMap[creatorId];
               } else if (!isNaN(creatorId)) {
                 senderName = `Employee ${creatorId}`;
@@ -6292,8 +6307,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 )}
               </div>
 
-              {/* New Message Button - Fixed at bottom */}
-              <div className="flex-none p-3 border-t border-gray-200 bg-white">
+              {/* New Message Button - Fixed at bottom; on mobile add safe-area + browser bar padding */}
+              <div
+                className="flex-none pt-3 px-3 border-t border-gray-200 bg-white"
+                style={isMobile ? { paddingBottom: 'max(1rem, calc(env(safe-area-inset-bottom, 0px) + 56px))' } : { paddingBottom: '0.75rem' }}
+              >
                 <button
                   onClick={() => setIsNewMessageModalOpen(true)}
                   className="flex items-center gap-3 w-full"
@@ -6329,14 +6347,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           </svg>
                         </button>
 
-                        {/* Client Avatar */}
+                        {/* Client Avatar - lock as simple icon on top of circle when locked */}
                         <div className="w-8 h-8 rounded-full flex items-center justify-center relative flex-shrink-0 border bg-green-100 border-green-200 text-green-700 shadow-[0_4px_12px_rgba(16,185,129,0.2)]">
                           <span className="font-semibold text-xs">
                             {selectedClient.name.charAt(0).toUpperCase()}
                           </span>
                           {(isLocked || messages.length === 0) && (
-                            <div className="absolute -bottom-1 -right-1 bg-red-500 rounded-full p-0.5">
-                              <LockClosedIcon className="w-2.5 h-2.5 text-white" />
+                            <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40">
+                              <LockClosedIcon className="w-3.5 h-3.5 text-white" />
                             </div>
                           )}
                         </div>
@@ -6358,10 +6376,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
                       {/* Right Side - Time Left Badge and Close Button */}
                       <div className="flex items-center gap-1 ml-auto flex-shrink-0 z-10">
-                        {/* Time Left Badge */}
                         {timeLeft && (
-                          <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
-                            }`} style={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
+                          <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`} style={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
                             {isLocked ? (
                               <LockClosedIcon className="w-3 h-3" />
                             ) : (
@@ -6372,8 +6388,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                             )}
                           </div>
                         )}
-
-                        {/* Close Button - Right */}
                         <button
                           onClick={() => {
                             if (onClose) {
@@ -6505,7 +6519,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                         color: message.direction === 'out' ? 'white' : undefined
                                       }}
                                     >
-                                      {renderTextWithLinks(message.caption)}
+                                      {renderTextWithLinks(message.caption, message.direction === 'out')}
                                     </p>
                                   )}
 
@@ -6594,7 +6608,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             color: message.direction === 'out' ? 'white' : undefined
                                           }}
                                         >
-                                          {renderTextWithLinks(message.message)}
+                                          {renderTextWithLinks(message.message, message.direction === 'out')}
                                         </p>
                                       )}
 
@@ -6734,7 +6748,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             color: message.direction === 'out' ? 'white' : undefined
                                           }}
                                         >
-                                          {renderTextWithLinks(message.caption)}
+                                          {renderTextWithLinks(message.caption, message.direction === 'out')}
                                         </p>
                                       )}
                                     </div>
@@ -6764,7 +6778,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             color: message.direction === 'out' ? 'white' : undefined
                                           }}
                                         >
-                                          {renderTextWithLinks(message.caption)}
+                                          {renderTextWithLinks(message.caption, message.direction === 'out')}
                                         </p>
                                       )}
                                       {!message.caption && message.message && message.message !== 'Voice message' && (
@@ -6780,7 +6794,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             color: message.direction === 'out' ? 'white' : undefined
                                           }}
                                         >
-                                          {renderTextWithLinks(message.message)}
+                                          {renderTextWithLinks(message.message, message.direction === 'out')}
                                         </p>
                                       )}
                                     </div>
@@ -6830,7 +6844,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             color: message.direction === 'out' ? 'white' : undefined
                                           }}
                                         >
-                                          {renderTextWithLinks(message.caption)}
+                                          {renderTextWithLinks(message.caption, message.direction === 'out')}
                                         </p>
                                       )}
                                     </div>
@@ -7252,9 +7266,12 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   </div>
                 )}
 
-                {/* Message Input - Mobile Only */}
+                {/* Message Input - Mobile Only - pb accounts for safe-area + browser nav bar */}
                 {isMobile && (
-                  <div className="lg:hidden absolute bottom-0 left-0 right-0 p-3 z-[100] pointer-events-none" style={{ overflow: 'visible' }}>
+                  <div
+                    className="lg:hidden absolute bottom-0 left-0 right-0 pt-3 px-3 z-[100] pointer-events-none"
+                    style={{ overflow: 'visible', paddingBottom: 'max(1rem, calc(env(safe-area-inset-bottom, 0px) + 56px))' }}
+                  >
                     {/* AI Suggestions Dropdown - Mobile */}
                     {showAISuggestions && (
                       <div className="mb-2 pointer-events-auto">

@@ -114,12 +114,6 @@ const Dashboard: React.FC = () => {
     };
   }, []);
 
-  // EARLY RETURN: Check for external user immediately to prevent flash of regular dashboard
-  // This must be before any other logic to ensure external users see their dashboard instantly
-  if (isExternalUser) {
-    return <ExternalUserDashboard userName={externalUserName} />;
-  }
-
   // Get the current month name
   const currentMonthName = new Date().toLocaleString('en-US', { month: 'long' });
 
@@ -2542,8 +2536,73 @@ const Dashboard: React.FC = () => {
     fetchPerformanceData();
   }, []);
 
+  // Shared fetch: departments + categories (join-based). Used by both Agreement signed and Invoiced to avoid duplicate requests.
+  const fetchDepartmentsAndCategories = async (): Promise<{
+    departmentTargets: any[];
+    departmentIds: number[];
+    allCategoriesData: any[] | null;
+    categoryNameToDataMap: Map<string, any>;
+    targetMap: { [key: number]: number };
+    selectedMonthName: string;
+  }> => {
+    const mergedTargetDeptIds = [2, 4, 5, 6];
+    const salesDeptIdsToExclude = [12, 14, 15];
+    const selectedMonthIndex = months.indexOf(selectedMonth);
+    const selectedDate = new Date(selectedYear, selectedMonthIndex, 1);
+    const selectedMonthName = selectedDate.toLocaleDateString('en-US', { month: 'long' });
+
+    const [{ data: importantDepartments, error: importantError }, { data: mergedTargetDepts, error: mergedError }, { data: allCategoriesData, error: categoriesError }] = await Promise.all([
+      supabase.from('tenant_departement').select('id, name, min_income, important').eq('important', 't').order('id'),
+      supabase.from('tenant_departement').select('id, name, min_income, important').in('id', mergedTargetDeptIds).order('id'),
+      supabase.from('misc_category').select(`
+        id, name, parent_id,
+        misc_maincategory!parent_id(
+          id, name, department_id,
+          tenant_departement!fk_misc_maincategory_department_id(id, name)
+        )
+      `).order('name', { ascending: true })
+    ]);
+
+    if (importantError) throw importantError;
+    if (mergedError) console.error('Error fetching merged target departments:', mergedError);
+    if (categoriesError) console.error('Error fetching categories for department mapping:', categoriesError);
+
+    const departmentMap = new Map<number, any>();
+    (importantDepartments || []).forEach((dept: any) => {
+      if (!salesDeptIdsToExclude.includes(dept.id)) departmentMap.set(dept.id, dept);
+    });
+    (mergedTargetDepts || []).forEach((dept: any) => {
+      if (!salesDeptIdsToExclude.includes(dept.id) && !departmentMap.has(dept.id)) departmentMap.set(dept.id, dept);
+    });
+
+    let departmentTargets = Array.from(departmentMap.values());
+    departmentTargets = departmentTargets.filter((dept: any) => {
+      if (dept.id === 20) return true;
+      if (dept.name === 'Commercial - Sales' || dept.name?.includes('Commercial - Sales')) return false;
+      if (departmentMap.has(20) && (dept.name === 'Commercial & Civil' || dept.name?.includes('Commercial & Civil'))) return false;
+      return true;
+    });
+    departmentTargets = departmentTargets.map((dept: any) =>
+      dept.id === 20 ? { ...dept, name: 'Commercial & Civil' } : dept
+    );
+    departmentTargets.sort((a: any, b: any) => a.id - b.id);
+    const departmentIds = departmentTargets.map((d: any) => d.id);
+
+    const categoryNameToDataMap = new Map<string, any>();
+    (allCategoriesData || []).forEach((category: any) => {
+      if (category.name) categoryNameToDataMap.set(category.name.trim().toLowerCase(), category);
+    });
+
+    const targetMap: { [key: number]: number } = {};
+    departmentTargets.forEach((dept: any) => {
+      targetMap[dept.id] = parseFloat(dept.min_income || '0');
+    });
+
+    return { departmentTargets, departmentIds, allCategoriesData: allCategoriesData || null, categoryNameToDataMap, targetMap, selectedMonthName };
+  };
+
   // Fetch department performance data
-  const fetchDepartmentPerformance = async () => {
+  const fetchDepartmentPerformance = async (shared?: Awaited<ReturnType<typeof fetchDepartmentsAndCategories>>) => {
     setDepartmentPerformanceLoading(true);
     try {
       const now = new Date();
@@ -2551,117 +2610,74 @@ const Dashboard: React.FC = () => {
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(now.getDate() - 30);
 
-      // Use selected month and year instead of current month
       const selectedMonthIndex = months.indexOf(selectedMonth);
       const selectedDate = new Date(selectedYear, selectedMonthIndex, 1);
       const selectedMonthName = selectedDate.toLocaleDateString('en-US', { month: 'long' });
-      // IMPORTANT: Also include merged target departments (4, 5, 6) even if not marked important
-      // These are the target departments for merging: 2 (Austria/Germany), 4, 5, 6
-      // NOTE: Department 4 might be "Commercial & Civil" but we want to use department 20 instead
-      const mergedTargetDeptIds = [2, 4, 5, 6]; // Target departments for merging
-      // Note: Department 20 should be displayed and renamed to "Commercial & Civil"
-      // Exclude department 4 if it's "Commercial & Civil" to avoid duplicate (we'll use department 20 instead)
-      const salesDeptIdsToExclude = [12, 14, 15]; // Sales departments that should be merged (exclude from display) - removed 20
 
-      // Fetch important departments AND merged target departments
-      const { data: importantDepartments, error: importantError } = await supabase
-        .from('tenant_departement')
-        .select('id, name, min_income, important')
-        .eq('important', 't')
-        .order('id');
+      let departmentTargets: any[];
+      let departmentIds: number[];
+      let allCategoriesData: any[] | null;
+      let categoryNameToDataMap: Map<string, any>;
 
-      if (importantError) {
-        throw importantError;
-      }
+      if (shared) {
+        departmentTargets = shared.departmentTargets;
+        departmentIds = shared.departmentIds;
+        allCategoriesData = shared.allCategoriesData;
+        categoryNameToDataMap = shared.categoryNameToDataMap;
+      } else {
+        const mergedTargetDeptIds = [2, 4, 5, 6];
+        const salesDeptIdsToExclude = [12, 14, 15];
 
-      // Fetch merged target departments (in case they're not in the important list)
-      const { data: mergedTargetDepts, error: mergedError } = await supabase
-        .from('tenant_departement')
-        .select('id, name, min_income, important')
-        .in('id', mergedTargetDeptIds)
-        .order('id');
+        const { data: importantDepartments, error: importantError } = await supabase
+          .from('tenant_departement')
+          .select('id, name, min_income, important')
+          .eq('important', 't')
+          .order('id');
+        if (importantError) throw importantError;
 
-      if (mergedError) {
-        console.error('Error fetching merged target departments:', mergedError);
-      }
+        const { data: mergedTargetDepts, error: mergedError } = await supabase
+          .from('tenant_departement')
+          .select('id, name, min_income, important')
+          .in('id', mergedTargetDeptIds)
+          .order('id');
+        if (mergedError) console.error('Error fetching merged target departments:', mergedError);
 
-      // Combine both lists, avoiding duplicates, and EXCLUDE sales departments from display
-      // NOTE: Department 20 (Commercial & Civil) should NOT be excluded
-      const departmentMap = new Map<number, any>();
-      (importantDepartments || []).forEach(dept => {
-        // Exclude sales departments that should be merged (they'll be merged during processing)
-        // But keep department 20 (Commercial & Civil)
-        if (!salesDeptIdsToExclude.includes(dept.id)) {
-          departmentMap.set(dept.id, dept);
-        }
-      });
-      (mergedTargetDepts || []).forEach(dept => {
-        // Exclude sales departments that should be merged
-        // But keep department 20 (Commercial & Civil)
-        if (!salesDeptIdsToExclude.includes(dept.id) && !departmentMap.has(dept.id)) {
-          departmentMap.set(dept.id, dept);
-        }
-      });
+        const departmentMap = new Map<number, any>();
+        (importantDepartments || []).forEach(dept => {
+          if (!salesDeptIdsToExclude.includes(dept.id)) departmentMap.set(dept.id, dept);
+        });
+        (mergedTargetDepts || []).forEach(dept => {
+          if (!salesDeptIdsToExclude.includes(dept.id) && !departmentMap.has(dept.id)) departmentMap.set(dept.id, dept);
+        });
 
-      // Convert map to arrays and fix department name for ID 20
-      let departmentTargets = Array.from(departmentMap.values());
+        let deptTargets = Array.from(departmentMap.values());
+        deptTargets = deptTargets.filter(dept => {
+          if (dept.id === 20) return true;
+          if (dept.name === 'Commercial - Sales' || dept.name?.includes('Commercial - Sales')) return false;
+          if (departmentMap.has(20) && (dept.name === 'Commercial & Civil' || dept.name?.includes('Commercial & Civil'))) return false;
+          return true;
+        });
+        departmentTargets = deptTargets.map(dept => (dept.id === 20 ? { ...dept, name: 'Commercial & Civil' } : dept));
+        departmentTargets.sort((a, b) => a.id - b.id);
+        departmentIds = departmentTargets.map(dept => dept.id);
 
-      // CRITICAL: Exclude any department with name "Commercial - Sales" (except department 20 which we'll rename)
-      // Also exclude any other department named "Commercial & Civil" if department 20 exists
-      departmentTargets = departmentTargets.filter(dept => {
-        // Always keep department 20 (we'll rename it)
-        if (dept.id === 20) return true;
-        // Exclude any department named "Commercial - Sales" (these should be merged into department 20)
-        if (dept.name === 'Commercial - Sales' || dept.name?.includes('Commercial - Sales')) {
-          return false;
-        }
-        // If department 20 exists, exclude any other department named "Commercial & Civil"
-        if (departmentMap.has(20) && (dept.name === 'Commercial & Civil' || dept.name?.includes('Commercial & Civil'))) {
-          return false;
-        }
-        return true;
-      });
-
-      // Fix department name for ID 20: should be "Commercial & Civil" not "Commercial - Sales"
-      departmentTargets = departmentTargets.map(dept => {
-        if (dept.id === 20) {
-          return { ...dept, name: 'Commercial & Civil' };
-        }
-        return dept;
-      });
-
-      // Sort by ID to ensure consistent order
-      departmentTargets.sort((a, b) => a.id - b.id);
-      const departmentIds = departmentTargets.map(dept => dept.id);
-
-      // Fetch all categories with their main categories and department_ids for category name mapping
-      const { data: allCategoriesData, error: categoriesError } = await supabase
-        .from('misc_category')
-        .select(`
-            id,
-            name,
-            parent_id,
+        const { data: categoriesData, error: categoriesError } = await supabase
+          .from('misc_category')
+          .select(`
+            id, name, parent_id,
             misc_maincategory!parent_id(
-              id,
-              name,
-              department_id,
-              tenant_departement(id, name)
+              id, name, department_id,
+              tenant_departement!fk_misc_maincategory_department_id(id, name)
             )
           `)
-        .order('name', { ascending: true });
-
-      if (categoriesError) {
-        console.error('Error fetching categories for department mapping:', categoriesError);
+          .order('name', { ascending: true });
+        if (categoriesError) console.error('Error fetching categories for department mapping:', categoriesError);
+        allCategoriesData = categoriesData || null;
+        categoryNameToDataMap = new Map<string, any>();
+        (allCategoriesData || []).forEach((category: any) => {
+          if (category.name) categoryNameToDataMap.set(category.name.trim().toLowerCase(), category);
+        });
       }
-
-      // Create a map from category name (normalized) to category data with department_id
-      const categoryNameToDataMap = new Map<string, any>();
-      (allCategoriesData || []).forEach((category: any) => {
-        if (category.name) {
-          const normalizedName = category.name.trim().toLowerCase();
-          categoryNameToDataMap.set(normalizedName, category);
-        }
-      });
 
       // Log which departments are important
       const importantDepts = departmentTargets.filter(dept => dept.important === 't');
@@ -2676,11 +2692,11 @@ const Dashboard: React.FC = () => {
       departmentTargets.forEach((dept, index) => {
       });
 
-      // Create target map (department ID -> min_income)
-      const targetMap: { [key: number]: number } = {};
-      departmentTargets?.forEach(dept => {
-        targetMap[dept.id] = parseFloat(dept.min_income || '0');
-      });
+      const targetMap = shared?.targetMap ?? (() => {
+        const t: { [key: number]: number } = {};
+        departmentTargets?.forEach((dept: any) => { t[dept.id] = parseFloat(dept.min_income || '0'); });
+        return t;
+      })();
       // Initialize data structure dynamically based on actual departments
       const newAgreementData = {
         Today: [
@@ -2868,7 +2884,7 @@ const Dashboard: React.FC = () => {
                 id, name, parent_id,
                 misc_maincategory!parent_id(
                   id, name, department_id,
-                  tenant_departement(id, name)
+                  tenant_departement!fk_misc_maincategory_department_id(id, name)
                 )
               )
             `)
@@ -2900,7 +2916,7 @@ const Dashboard: React.FC = () => {
                 id, name, parent_id,
                 misc_maincategory(
                   id, name, department_id,
-                  tenant_departement(id, name)
+                  tenant_departement!fk_misc_maincategory_department_id(id, name)
                 )
               )
             `)
@@ -3045,7 +3061,7 @@ const Dashboard: React.FC = () => {
                 id, name, parent_id,
                 misc_maincategory!parent_id(
                   id, name, department_id,
-                  tenant_departement(id, name)
+                  tenant_departement!fk_misc_maincategory_department_id(id, name)
                 )
               )
             `)
@@ -3076,7 +3092,7 @@ const Dashboard: React.FC = () => {
                 id, name, parent_id,
                 misc_maincategory(
                   id, name, department_id,
-                  tenant_departement(id, name)
+                  tenant_departement!fk_misc_maincategory_department_id(id, name)
                 )
               )
             `)
@@ -3277,7 +3293,6 @@ const Dashboard: React.FC = () => {
           if (lead.misc_category?.misc_maincategory?.department_id) {
             departmentId = lead.misc_category.misc_maincategory.department_id;
           } else if (lead.category && categoryNameToDataMap) {
-            // If misc_category join failed (category_id is null), try to look up by category name
             const normalizedCategoryName = lead.category.trim().toLowerCase();
             const mappedCategory = categoryNameToDataMap.get(normalizedCategoryName);
             if (mappedCategory?.misc_maincategory?.department_id) {
@@ -3437,7 +3452,6 @@ const Dashboard: React.FC = () => {
           if (lead.misc_category?.misc_maincategory?.department_id) {
             departmentId = lead.misc_category.misc_maincategory.department_id;
           } else if (lead.category && categoryNameToDataMap) {
-            // If misc_category join failed (category_id is null), try to look up by category name
             const normalizedCategoryName = lead.category.trim().toLowerCase();
             const mappedCategory = categoryNameToDataMap.get(normalizedCategoryName);
             if (mappedCategory?.misc_maincategory?.department_id) {
@@ -3693,7 +3707,7 @@ const Dashboard: React.FC = () => {
   // For new leads: payment_plans where ready_to_pay = true and paid = false
   // For legacy leads: finances_paymentplanrow where ready_to_pay = true and actual_date IS NULL
   // Group by department instead of employee
-  const fetchInvoicedData = async () => {
+  const fetchInvoicedData = async (shared?: Awaited<ReturnType<typeof fetchDepartmentsAndCategories>>) => {
     setInvoicedDataLoading(true);
     try {
       const now = new Date();
@@ -3701,78 +3715,56 @@ const Dashboard: React.FC = () => {
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(now.getDate() - 30);
 
-      // Use selected month and year
       const selectedMonthIndex = months.indexOf(selectedMonth);
       const selectedDate = new Date(selectedYear, selectedMonthIndex, 1);
       const selectedMonthName = selectedDate.toLocaleDateString('en-US', { month: 'long' });
 
-      // Fetch only important departments (matching CollectionDueReport - no merging, no exclusions)
-      // Also explicitly include department 20 (Commercial & Civil) even if not marked important
-      const { data: allDepartments, error: departmentsError } = await supabase
-        .from('tenant_departement')
-        .select('id, name, min_income, important')
-        .eq('important', 't')
-        .order('id');
+      let departmentTargets: any[];
+      let departmentIds: number[];
+      let allCategoriesData: any[] | null;
 
-      if (departmentsError) {
-        throw departmentsError;
+      if (shared) {
+        departmentTargets = shared.departmentTargets;
+        departmentIds = shared.departmentIds;
+        allCategoriesData = shared.allCategoriesData;
+      } else {
+        const { data: allDepartments, error: departmentsError } = await supabase
+          .from('tenant_departement')
+          .select('id, name, min_income, important')
+          .eq('important', 't')
+          .order('id');
+        if (departmentsError) throw departmentsError;
+
+        let deptTargets = (allDepartments || []).filter((dept: any) => {
+          if (dept.id === 20) return true;
+          if (dept.name === 'Commercial - Sales' || dept.name?.includes('Commercial - Sales')) return false;
+          const hasDept20 = (allDepartments || []).some((d: any) => d.id === 20);
+          if (hasDept20 && (dept.name === 'Commercial & Civil' || dept.name?.includes('Commercial & Civil'))) return false;
+          return true;
+        });
+        departmentTargets = deptTargets.map((dept: any) => (dept.id === 20 ? { ...dept, name: 'Commercial & Civil' } : dept));
+        departmentIds = departmentTargets.map((d: any) => d.id);
+
+        const { data: categoriesData, error: categoriesError } = await supabase
+          .from('misc_category')
+          .select(`
+            id, name, parent_id,
+            misc_maincategory!parent_id(
+              id, name, department_id,
+              tenant_departement!fk_misc_maincategory_department_id(id, name)
+            )
+          `)
+          .order('name', { ascending: true });
+        if (categoriesError) console.error('Error fetching categories for invoiced department mapping:', categoriesError);
+        allCategoriesData = categoriesData || null;
       }
 
-      // Extract department IDs and create target mapping
-      // CRITICAL: Exclude any department with name "Commercial - Sales" (except department 20 which we'll rename)
-      // Also exclude any other department named "Commercial & Civil" if department 20 exists
-      let departmentTargets = (allDepartments || []).filter(dept => {
-        // Always keep department 20 (we'll rename it)
-        if (dept.id === 20) return true;
-        // Exclude any department named "Commercial - Sales" (these should be merged into department 20)
-        if (dept.name === 'Commercial - Sales' || dept.name?.includes('Commercial - Sales')) {
-          return false;
-        }
-        // If department 20 exists, exclude any other department named "Commercial & Civil"
-        const hasDept20 = (allDepartments || []).some(d => d.id === 20);
-        if (hasDept20 && (dept.name === 'Commercial & Civil' || dept.name?.includes('Commercial & Civil'))) {
-          return false;
-        }
-        return true;
-      });
-
-      // Fix department name for ID 20: should be "Commercial & Civil" not "Commercial - Sales"
-      departmentTargets = departmentTargets.map(dept => {
-        if (dept.id === 20) {
-          return { ...dept, name: 'Commercial & Civil' };
-        }
-        return dept;
-      });
-      const departmentIds = departmentTargets.map(dept => dept.id);
-
-      // Fetch all categories with their main categories and department_ids for category name mapping
-      const { data: allCategoriesData, error: categoriesError } = await supabase
-        .from('misc_category')
-        .select(`
-          id,
-          name,
-          parent_id,
-          misc_maincategory!parent_id(
-            id,
-            name,
-            department_id,
-            tenant_departement(id, name)
-          )
-        `)
-        .order('name', { ascending: true });
-
-      if (categoriesError) {
-        console.error('Error fetching categories for invoiced department mapping:', categoriesError);
+      const categoryNameToDataMap = shared?.categoryNameToDataMap ?? new Map<string, any>();
+      if (!shared && allCategoriesData) {
+        (allCategoriesData || []).forEach((category: any) => {
+          if (category.name) categoryNameToDataMap.set(category.name.trim().toLowerCase(), category);
+        });
       }
-
-      // Create a map from category name (normalized) to category data with department_id
-      const categoryNameToDataMap = new Map<string, any>();
-      (allCategoriesData || []).forEach((category: any) => {
-        if (category.name) {
-          const normalizedName = category.name.trim().toLowerCase();
-          categoryNameToDataMap.set(normalizedName, category);
-        }
-      });
 
       // Helper function to resolve category and get department (same as CollectionDueReport)
       const resolveCategoryAndDepartment = (
@@ -3802,18 +3794,15 @@ const Dashboard: React.FC = () => {
           }
         }
 
-        // If we still don't have a category, return defaults
         if (!resolvedMiscCategory) {
           return { departmentId: null, departmentName: '—' };
         }
 
-        // Handle array case (shouldn't happen, but be safe)
         const categoryRecord = Array.isArray(resolvedMiscCategory) ? resolvedMiscCategory[0] : resolvedMiscCategory;
         if (!categoryRecord) {
           return { departmentId: null, departmentName: '—' };
         }
 
-        // Extract main category (handle both array and object cases)
         let mainCategory = Array.isArray(categoryRecord.misc_maincategory)
           ? categoryRecord.misc_maincategory[0]
           : categoryRecord.misc_maincategory;
@@ -3822,7 +3811,6 @@ const Dashboard: React.FC = () => {
           return { departmentId: null, departmentName: categoryRecord.name || '—' };
         }
 
-        // Extract department from main category
         const department = mainCategory.tenant_departement
           ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement)
           : null;
@@ -4065,7 +4053,7 @@ const Dashboard: React.FC = () => {
               id, name, parent_id,
               misc_maincategory!parent_id(
                 id, name, department_id,
-                tenant_departement(id, name)
+                tenant_departement!fk_misc_maincategory_department_id(id, name)
               )
             )
           `)
@@ -4108,10 +4096,7 @@ const Dashboard: React.FC = () => {
                   id,
                   name,
                   department_id,
-                  tenant_departement!department_id(
-                    id,
-                    name
-                  )
+                  tenant_departement!fk_misc_maincategory_department_id(id, name)
                 )
               )
             `)
@@ -4329,9 +4314,9 @@ const Dashboard: React.FC = () => {
 
         // Get department from category -> main category -> department (using helper function)
         const { departmentId, departmentName } = resolveCategoryAndDepartment(
-          lead.category, // category text field
-          lead.category_id, // category ID
-          lead.misc_category // joined misc_category data
+          lead.category,
+          lead.category_id,
+          lead.misc_category
         );
 
         // Only include payments that have a department in our department list
@@ -4420,9 +4405,9 @@ const Dashboard: React.FC = () => {
 
         // Get department from category -> main category -> department (using helper function, matching CollectionDueReport)
         const { departmentId, departmentName } = resolveCategoryAndDepartment(
-          lead.category, // category text field (for legacy leads)
-          lead.category_id, // category ID
-          lead.misc_category // joined misc_category data
+          lead.category,
+          lead.category_id,
+          lead.misc_category
         );
 
         // Only include payments that have a department in our department list (or '—' which we'll skip)
@@ -4644,10 +4629,22 @@ const Dashboard: React.FC = () => {
 
   const years = [2023, 2024, 2025, 2026, 2027];
 
-  // Add useEffect to refetch data when month/year changes
+  // Add useEffect to refetch data when month/year changes (shared department + category fetch for faster load)
   useEffect(() => {
-    fetchDepartmentPerformance();
-    fetchInvoicedData();
+    let cancelled = false;
+    (async () => {
+      try {
+        const shared = await fetchDepartmentsAndCategories();
+        if (cancelled) return;
+        await Promise.all([fetchDepartmentPerformance(shared), fetchInvoicedData(shared)]);
+      } catch (e) {
+        if (!cancelled) {
+          fetchDepartmentPerformance();
+          fetchInvoicedData();
+        }
+      }
+    })();
+    return () => { cancelled = true; };
   }, [selectedMonth, selectedYear]);
 
   // Fetch unavailable employees data on component mount and when date changes
@@ -5192,34 +5189,52 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  // Split department name at space near middle for two-line header on mobile (saves column width)
+  const splitCategoryTwoLines = (name: string): [string, string] => {
+    const t = name.trim();
+    if (!t) return ['', ''];
+    const mid = Math.floor(t.length / 2);
+    const spaceBefore = t.lastIndexOf(' ', mid);
+    const spaceAfter = t.indexOf(' ', mid);
+    if (spaceBefore === -1 && spaceAfter === -1) return [t, ''];
+    if (spaceBefore === -1) return [t.slice(0, spaceAfter), t.slice(spaceAfter + 1)];
+    if (spaceAfter === -1) return [t.slice(0, spaceBefore), t.slice(spaceBefore + 1)];
+    const splitAt = (mid - spaceBefore <= spaceAfter - mid) ? spaceBefore : spaceAfter;
+    return [t.slice(0, splitAt), t.slice(splitAt + 1)];
+  };
+
   // Helper function to render table in columns view (departments as columns)
   const renderColumnsView = (tableType: 'agreement' | 'invoiced') => {
     const categories = scoreboardCategories.filter(cat => cat !== 'General' && cat !== 'Total');
     const visibleColumns: string[] = [];
-    // Show "Today" column based on filter mode - if week is active, show that data instead
     if (showTodayCols) {
-      if (todayFilterMode === 'week') {
-        visibleColumns.push('Week');
-      } else {
-        visibleColumns.push('Today');
-      }
+      if (todayFilterMode === 'week') visibleColumns.push('Week');
+      else visibleColumns.push('Today');
     }
     if (showLast30Cols) visibleColumns.push('Last 30d');
     if (showLastMonthCols) visibleColumns.push(selectedMonth);
 
-    // Use the correct data based on table type
     const dataSource: { [key: string]: { count: number; amount: number; expected: number }[] } = tableType === 'agreement' ? agreementData : invoicedData;
+    const totalIndexToday = departmentNames.length + 1;
+    const totalIndexMonth = departmentNames.length;
 
+    // Table full width on mobile (no inner box); department headers in two rows on mobile to narrow columns
     return (
-      <div className="overflow-x-auto -mx-2 md:mx-0 px-2 md:px-0">
+      <div className="overflow-x-auto -mx-4 md:mx-0 pl-5 pr-2 md:pl-0 md:pr-0 w-full">
         <table className="min-w-full text-xs md:text-sm w-full">
           <thead className="bg-slate-50 border-b border-slate-200">
             <tr>
-              <th className="text-left px-1 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700"></th>
-              {categories.map(category => (
-                <th key={category} className="text-center px-0.5 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">{category}</th>
-              ))}
-              <th className="text-center px-1 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700">Total</th>
+              <th className="text-left px-0.5 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700"></th>
+              {categories.map(category => {
+                const [line1, line2] = splitCategoryTwoLines(category);
+                return (
+                  <th key={category} className="text-center px-0.5 md:px-5 py-1 md:py-3 text-[10px] md:text-sm font-semibold text-slate-700 align-bottom">
+                    <span className="hidden md:inline whitespace-nowrap">{category}</span>
+                    <span className="md:hidden leading-tight">{line1}{line2 ? <><br />{line2}</> : ''}</span>
+                  </th>
+                );
+              })}
+              <th className="text-center px-0.5 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700">Total</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -5232,107 +5247,63 @@ const Dashboard: React.FC = () => {
 
               return (
                 <React.Fragment key={columnType}>
-                  {/* Combined Count and Amount row */}
                   <tr className="hover:bg-slate-50">
-                    <td className="px-1 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">{columnType}</td>
+                    <td className="px-0.5 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">{columnType}</td>
                     {categories.map((category, index) => {
-                      // Find the correct department index in departmentNames to match the data structure
                       const deptIndexInNames = departmentNames.indexOf(category);
                       const dataIndex = deptIndexInNames >= 0 ? deptIndexInNames : index;
-                      const data = isToday ? dataSource["Today"][dataIndex + 1] : // Skip General row
-                        isYesterday ? dataSource["Yesterday"][dataIndex + 1] : // Skip General row
-                          isWeek ? dataSource["Week"][dataIndex + 1] : // Skip General row
-                            isLast30 ? dataSource["Last 30d"][dataIndex + 1] : // Skip General row
-                              dataSource[selectedMonth]?.[dataIndex]; // This month uses selected month data (no General row)
-                      const amount = data?.amount || 0;
-                      const target = data?.expected || 0;
-                      const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
-
+                      const data = isToday ? dataSource["Today"]?.[dataIndex + 1] :
+                        isYesterday ? dataSource["Yesterday"]?.[dataIndex + 1] :
+                          isWeek ? dataSource["Week"]?.[dataIndex + 1] :
+                            isLast30 ? dataSource["Last 30d"]?.[dataIndex + 1] :
+                              dataSource[selectedMonth]?.[dataIndex];
+                      const amount = data?.amount ?? 0;
                       return (
-                        <td key={`${category}-combined`} className="px-0.5 md:px-5 py-1.5 md:py-3 text-center">
+                        <td key={`${category}-combined`} className="px-0.5 md:px-5 py-1 md:py-3 text-center">
                           <div className="space-y-0.5 md:space-y-1">
-                            <div className="badge text-[11px] md:text-xs font-semibold px-1 md:px-2 py-0.5 md:py-1 bg-slate-100 text-slate-700 border border-slate-200">{data?.count || 0}</div>
+                            <div className="badge text-[10px] md:text-xs font-semibold px-0.5 md:px-2 py-0.5 bg-slate-100 text-slate-700 border border-slate-200">{data?.count ?? 0}</div>
                             <div className="border-t border-slate-200 my-0.5 md:my-1"></div>
-                            <div className="text-[11px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">₪{Math.ceil(amount).toLocaleString()}</div>
+                            <div className="text-[10px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">₪{Math.ceil(amount).toLocaleString()}</div>
                           </div>
                         </td>
                       );
                     })}
-                    {/* Total column for this time period */}
-                    <td className="px-1 md:px-5 py-1.5 md:py-3 text-center text-slate-700">
+                    <td className="px-0.5 md:px-5 py-1 md:py-3 text-center text-slate-700">
                       <div className="space-y-0.5 md:space-y-1">
                         <div className="flex items-center justify-center">
-                          <div className="badge text-[11px] md:text-xs bg-slate-100 text-slate-700 font-semibold px-1 md:px-2 py-0.5 md:py-1 border border-slate-200">
-                            {(() => {
-                              // Calculate the correct total index based on number of departments
-                              const totalIndexToday = departmentNames.length + 1; // General + departments + Total
-                              const totalIndexMonth = departmentNames.length; // departments + Total (no General)
-
-                              if (isToday) {
-                                // Use pre-calculated total from data structure
-                                return dataSource["Today"]?.[totalIndexToday]?.count || 0;
-                              } else if (isWeek) {
-                                // Use pre-calculated total from data structure
-                                return dataSource["Week"]?.[totalIndexToday]?.count || 0;
-                              } else if (isLast30) {
-                                // Use pre-calculated total from data structure
-                                return dataSource["Last 30d"]?.[totalIndexToday]?.count || 0;
-                              } else {
-                                // Use pre-calculated total from data structure for month
-                                return dataSource[selectedMonth]?.[totalIndexMonth]?.count || 0;
-                              }
-                            })()}
+                          <div className="badge text-[10px] md:text-xs bg-slate-100 text-slate-700 font-semibold px-0.5 md:px-2 py-0.5 border border-slate-200">
+                            {isToday ? (dataSource["Today"]?.[totalIndexToday]?.count ?? 0) :
+                              isWeek ? (dataSource["Week"]?.[totalIndexToday]?.count ?? 0) :
+                                isLast30 ? (dataSource["Last 30d"]?.[totalIndexToday]?.count ?? 0) :
+                                  (dataSource[selectedMonth]?.[totalIndexMonth]?.count ?? 0)}
                           </div>
                         </div>
                         <div className="border-t border-slate-200 my-0.5 md:my-1"></div>
-                        <div className="text-[11px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">
-                          ₪{(() => {
-                            // Calculate the correct total index based on number of departments
-                            const totalIndexToday = departmentNames.length + 1; // General + departments + Total
-                            const totalIndexMonth = departmentNames.length; // departments + Total (no General)
-
-                            if (isToday) {
-                              // Use pre-calculated total from data structure
-                              return Math.ceil(dataSource["Today"]?.[totalIndexToday]?.amount || 0).toLocaleString();
-                            } else if (isWeek) {
-                              // Use pre-calculated total from data structure
-                              return Math.ceil(dataSource["Week"]?.[totalIndexToday]?.amount || 0).toLocaleString();
-                            } else if (isLast30) {
-                              // Use pre-calculated total from data structure
-                              return Math.ceil(dataSource["Last 30d"]?.[totalIndexToday]?.amount || 0).toLocaleString();
-                            } else {
-                              // Use pre-calculated total from data structure for month
-                              return Math.ceil(dataSource[selectedMonth]?.[totalIndexMonth]?.amount || 0).toLocaleString();
-                            }
-                          })()}
+                        <div className="text-[10px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">
+                          ₪{Math.ceil(isToday ? (dataSource["Today"]?.[totalIndexToday]?.amount ?? 0) :
+                            isWeek ? (dataSource["Week"]?.[totalIndexToday]?.amount ?? 0) :
+                              isLast30 ? (dataSource["Last 30d"]?.[totalIndexToday]?.amount ?? 0) :
+                                (dataSource[selectedMonth]?.[totalIndexMonth]?.amount ?? 0)).toLocaleString()}
                         </div>
                       </div>
                     </td>
                   </tr>
-                  {/* Target row - only show for current month */}
                   {isThisMonth && (
                     <tr className="bg-white border border-slate-200">
-                      <td className="px-1 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">Target {columnType}</td>
+                      <td className="px-0.5 md:px-5 py-1 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">Target {columnType}</td>
                       {categories.map((category, index) => {
-                        // Find the correct department index in departmentNames to match the data structure
-                        const deptIndexInNames = departmentNames.indexOf(category);
-                        const dataIndex = deptIndexInNames >= 0 ? deptIndexInNames : index;
-                        const data = dataSource[selectedMonth]?.[dataIndex];
-                        const amount = data?.amount || 0;
-                        const target = data?.expected || 0;
+                        const data = dataSource[selectedMonth]?.[index];
+                        const amount = data?.amount ?? 0;
+                        const target = data?.expected ?? 0;
                         const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
-
                         return (
-                          <td key={`${category}-target`} className={`px-0.5 md:px-5 py-1.5 md:py-3 text-center text-[11px] md:text-sm font-semibold ${targetClass} whitespace-nowrap`}>
+                          <td key={`${category}-target`} className={`px-0.5 md:px-5 py-1 md:py-3 text-center text-[10px] md:text-sm font-semibold ${targetClass} whitespace-nowrap`}>
                             {target ? `₪${Math.ceil(target).toLocaleString()}` : '—'}
                           </td>
                         );
                       })}
-                      {/* Total target column */}
-                      <td className="px-1 md:px-5 py-1.5 md:py-3 text-center text-[11px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">
+                      <td className="px-0.5 md:px-5 py-1 md:py-3 text-center text-[10px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">
                         {(() => {
-                          // Sum all department targets (excluding Total row)
-                          // For month data, departments are at indices 0 to departmentNames.length - 1
                           const numDepartments = departmentNames.length;
                           const totalTarget = dataSource[selectedMonth]?.slice(0, numDepartments).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0), 0) || 0;
                           return totalTarget ? `₪${Math.ceil(totalTarget).toLocaleString()}` : '—';
@@ -5584,7 +5555,9 @@ const Dashboard: React.FC = () => {
               parent_id,
               misc_maincategory!parent_id(
                 id,
-                name
+                name,
+                department_id,
+                tenant_departement!fk_misc_maincategory_department_id(id, name)
               )
             `)
             .in('id', allCategoryIds);
@@ -6067,8 +6040,10 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  // External user check is now done at the top of the component (before all hooks)
-  // This ensures external users never see the regular dashboard flash
+  // Render external user dashboard only after all hooks have run (avoids "Rendered fewer hooks than expected")
+  if (isExternalUser) {
+    return <ExternalUserDashboard userName={externalUserName} />;
+  }
 
   return (
     <div className="p-0 md:p-6 space-y-8 animate-fade-in">
@@ -7294,9 +7269,9 @@ const Dashboard: React.FC = () => {
                   </div>
                   <h3 className="text-lg font-semibold text-slate-800">Department Performance</h3>
                 </div>
-                {/* Performance tables - Desktop and Mobile */}
+                {/* Performance tables - no box on mobile to use max space; box on desktop */}
                 <div>
-                  <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden -mx-2 md:mx-0">
+                  <div className="md:bg-white md:rounded-xl md:border md:border-gray-200 md:shadow-lg overflow-hidden -mx-4 md:mx-0">
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between px-2 md:p-3 py-2 md:py-3 border-b border-slate-200 bg-slate-50 gap-2">
                       <div className={`text-xs md:text-sm font-semibold ${isAltTheme ? 'text-green-600' : 'text-[#3b28c7]'}`}>Agreement signed</div>
                       <div className="flex flex-wrap items-center gap-1 md:gap-2">
@@ -7376,7 +7351,7 @@ const Dashboard: React.FC = () => {
 
                 {/* Duplicate table for Invoiced section */}
                 <div className="mt-4 md:mt-6">
-                  <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden -mx-2 md:mx-0">
+                  <div className="md:bg-white md:rounded-xl md:border md:border-gray-200 md:shadow-lg overflow-hidden -mx-4 md:mx-0">
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between px-2 md:p-3 py-2 md:py-3 border-b border-slate-200 bg-slate-50 gap-2">
                       <div className={`text-xs md:text-sm font-semibold ${isAltTheme ? 'text-green-600' : 'text-[#3b28c7]'}`}>Invoiced</div>
                       <div className="flex flex-wrap items-center gap-1 md:gap-2">
@@ -7639,18 +7614,17 @@ const Dashboard: React.FC = () => {
                   <div>
                     <h2 className="text-lg font-bold text-gray-900">Team Availability</h2>
                     <p className="text-sm text-gray-500">
-                      Employees unavailable {getDateDescription(teamAvailabilityDate)}
+                  {getDateDescription(teamAvailabilityDate)}
                     </p>
                   </div>
                 </div>
-                {/* My Availability Button - Mobile Only */}
+                {/* My Availability Button - Mobile Only (icon only) */}
                 <button
                   onClick={() => setIsMyAvailabilityModalOpen(true)}
-                  className="btn btn-sm btn-primary lg:hidden"
+                  className="btn btn-sm btn-primary lg:hidden btn-square"
                   title="My Availability"
                 >
-                  <CalendarIcon className="w-5 h-5 mr-2" />
-                  My Availability
+                  <CalendarIcon className="w-5 h-5" />
                 </button>
               </div>
 
@@ -7735,54 +7709,74 @@ const Dashboard: React.FC = () => {
                       .toUpperCase()
                       .slice(0, 2);
 
+                    const hasMore = item.allUnavailabilities && item.allUnavailabilities.length > 1;
+
                     return (
                       <>
                         <div
                           key={item.id}
-                          className="flex items-center gap-4 px-6 py-3 hover:bg-gray-50 transition-colors border-b border-gray-100 last:border-b-0"
+                          role={hasMore ? 'button' : undefined}
+                          tabIndex={hasMore ? 0 : undefined}
+                          onClick={hasMore ? () => setExpandedEmployeeCards(prev => {
+                            const newSet = new Set(prev);
+                            if (newSet.has(item.employeeId)) newSet.delete(item.employeeId);
+                            else newSet.add(item.employeeId);
+                            return newSet;
+                          }) : undefined}
+                          onKeyDown={hasMore ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpandedEmployeeCards(prev => { const newSet = new Set(prev); if (newSet.has(item.employeeId)) newSet.delete(item.employeeId); else newSet.add(item.employeeId); return newSet; }); } } : undefined}
+                          className={`flex items-center gap-2 md:gap-4 px-3 md:px-6 py-3 hover:bg-gray-50 transition-colors border-b border-gray-100 last:border-b-0 min-w-0 ${hasMore ? 'cursor-pointer' : ''}`}
                         >
-                          {/* Avatar */}
-                          <div className="flex-shrink-0">
-                            {item.photo_url ? (
-                              <img
-                                src={item.photo_url}
-                                alt={item.employeeName}
-                                className="w-12 h-12 rounded-full object-cover"
-                                onError={(e) => {
-                                  const target = e.target as HTMLImageElement;
-                                  const targetParent = target.parentElement;
-                                  if (targetParent) {
-                                    target.style.display = 'none';
-                                    const fallback = document.createElement('div');
-                                    fallback.className = 'w-12 h-12 rounded-full flex items-center justify-center bg-gradient-to-br from-blue-500 to-purple-600 text-white text-sm font-bold';
-                                    fallback.textContent = employeeInitials;
-                                    targetParent.insertBefore(fallback, target);
-                                  }
-                                }}
-                              />
-                            ) : (
-                              <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gradient-to-br from-blue-500 to-purple-600 text-white text-sm font-bold">
-                                {employeeInitials}
-                              </div>
-                            )}
+                          {/* Avatar + Name: on mobile name under avatar; on desktop avatar left of name+department */}
+                          <div className="flex flex-col md:flex-row md:items-center gap-1 md:gap-4 flex-shrink-0 md:flex-1 md:min-w-0">
+                            <div className="flex-shrink-0">
+                              {item.photo_url ? (
+                                <img
+                                  src={item.photo_url}
+                                  alt={item.employeeName}
+                                  className="w-12 h-12 rounded-full object-cover"
+                                  onError={(e) => {
+                                    const target = e.target as HTMLImageElement;
+                                    const targetParent = target.parentElement;
+                                    if (targetParent) {
+                                      target.style.display = 'none';
+                                      const fallback = document.createElement('div');
+                                      fallback.className = 'w-12 h-12 rounded-full flex items-center justify-center bg-gradient-to-br from-blue-500 to-purple-600 text-white text-sm font-bold';
+                                      fallback.textContent = employeeInitials;
+                                      targetParent.insertBefore(fallback, target);
+                                    }
+                                  }}
+                                />
+                              ) : (
+                                <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gradient-to-br from-blue-500 to-purple-600 text-white text-sm font-bold">
+                                  {employeeInitials}
+                                </div>
+                              )}
+                            </div>
+                            <div className="min-w-0 text-center md:text-left">
+                              <div className="font-semibold text-gray-900 text-sm md:text-base truncate">{item.employeeName}</div>
+                              <div className="text-sm text-gray-500 truncate hidden md:block">{item.department || 'N/A'}</div>
+                            </div>
                           </div>
 
-                          {/* Name and Department */}
-                          <div className="flex-1 min-w-0">
-                            <div className="font-semibold text-gray-900 truncate">{item.employeeName}</div>
-                            <div className="text-sm text-gray-500 truncate">{item.department || 'N/A'}</div>
-                          </div>
-
-                          {/* Status Badge with Custom Reason */}
-                          <div className="flex-shrink-0">
-                            <span className={`px-3 py-1 rounded-full text-sm font-semibold ${badgeColor}`}>
+                          {/* Status Badge: RTL-aware for Hebrew, uses remaining space on mobile */}
+                          <div className="flex-1 min-w-0 md:flex-initial md:max-w-none">
+                            <span
+                              className={`inline-block px-3 py-1 rounded-full text-sm font-semibold truncate max-w-full ${badgeColor}`}
+                              title={item.reason || badgeText}
+                              dir="auto"
+                            >
                               {item.reason || badgeText}
                             </span>
                           </div>
 
-                          {/* Time - Always Display */}
-                          <div className="flex-shrink-0 text-right min-w-[100px]">
-                            <div className="font-semibold text-gray-900">
+                          {/* Count (if more) on top of time, at right */}
+                          <div className="flex flex-shrink-0 flex-col items-end gap-0.5 ml-auto text-right min-w-0">
+                            {hasMore && (
+                              <span className={`px-3 py-1 rounded-full text-sm font-semibold ${badgeColor}`} title={`${item.allUnavailabilities!.length - 1} more`}>
+                                +{item.allUnavailabilities!.length - 1}
+                              </span>
+                            )}
+                            <div className="font-semibold text-gray-900 text-sm md:text-base whitespace-nowrap">
                               {item.time && item.time !== 'All Day'
                                 ? item.time.includes(' - ')
                                   ? item.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
@@ -7790,40 +7784,9 @@ const Dashboard: React.FC = () => {
                                 : 'All Day'}
                             </div>
                             {item.date && item.date.includes('to') && (
-                              <div className="text-xs text-gray-500 mt-1">{item.date}</div>
+                              <div className="text-xs text-gray-500">{item.date}</div>
                             )}
                           </div>
-
-                          {/* Expand button for multiple unavailabilities */}
-                          {item.allUnavailabilities && item.allUnavailabilities.length > 1 && (
-                            <div className="flex-shrink-0 flex items-center gap-1">
-                              <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${badgeColor}`}>
-                                +{item.allUnavailabilities.length - 1}
-                              </span>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setExpandedEmployeeCards(prev => {
-                                    const newSet = new Set(prev);
-                                    if (newSet.has(item.employeeId)) {
-                                      newSet.delete(item.employeeId);
-                                    } else {
-                                      newSet.add(item.employeeId);
-                                    }
-                                    return newSet;
-                                  });
-                                }}
-                                className="btn btn-sm btn-ghost btn-circle"
-                                title={`${item.allUnavailabilities.length - 1} more`}
-                              >
-                                {expandedEmployeeCards.has(item.employeeId) ? (
-                                  <ChevronUpIcon className="w-4 h-4" />
-                                ) : (
-                                  <ChevronDownIcon className="w-4 h-4" />
-                                )}
-                              </button>
-                            </div>
-                          )}
                         </div>
 
                         {/* Expandable section for additional unavailabilities */}
@@ -7836,33 +7799,26 @@ const Dashboard: React.FC = () => {
                               return (
                                 <div
                                   key={unav.id || idx}
-                                  className="flex items-center gap-4 px-6 py-3 hover:bg-gray-100 transition-colors"
+                                  className="flex items-center gap-3 md:gap-4 px-4 md:px-6 py-3 hover:bg-gray-100 transition-colors"
                                 >
-                                  {/* Empty space for avatar alignment */}
-                                  <div className="flex-shrink-0 w-12"></div>
-
-                                  {/* Empty space for name/department alignment */}
-                                  <div className="flex-1 min-w-0"></div>
-
-                                  {/* Status Badge with Custom Reason - aligned with main row */}
-                                  <div className="flex-shrink-0">
-                                    <span className={`px-3 py-1 rounded-full text-sm font-semibold ${badgeColor}`}>
+                                  {/* Reason badge - left-aligned (no avatar/name in these rows) */}
+                                  <div className="flex-shrink-0 min-w-0 max-w-[50%] md:max-w-none">
+                                    <span className={`inline-block px-3 py-1 rounded-full text-sm font-semibold truncate max-w-full ${badgeColor}`} title={unav.reason || badgeText} dir="auto">
                                       {unav.reason || badgeText}
                                     </span>
                                   </div>
 
-                                  {/* Time - aligned with main row */}
-                                  <div className="flex-shrink-0 text-right min-w-[100px]">
-                                    <div className="font-semibold text-gray-900">
+                                  <div className="flex-1 min-w-0" />
+
+                                  {/* Time - right-aligned */}
+                                  <div className="flex-shrink-0 text-right min-w-0">
+                                    <div className="font-semibold text-gray-900 text-sm md:text-base whitespace-nowrap">
                                       {formattedTime}
                                     </div>
                                     {unav.date && unav.date.includes('to') && (
-                                      <div className="text-xs text-gray-500 mt-1">{unav.date}</div>
+                                      <div className="text-xs text-gray-500 mt-0.5">{unav.date}</div>
                                     )}
                                   </div>
-
-                                  {/* Empty space for expand button alignment */}
-                                  <div className="flex-shrink-0 w-8"></div>
                                 </div>
                               );
                             })}
@@ -7978,8 +7934,8 @@ const Dashboard: React.FC = () => {
         </Suspense>
       </div>
 
-      {/* 4. My Performance Graph (Full Width) */}
-      <div className="w-full mt-12">
+      {/* 4. My Performance Graph (Full Width) - hidden on mobile */}
+      <div className="w-full mt-12 hidden md:block">
         <div className="bg-white rounded-2xl shadow-lg border border-gray-200 w-full max-w-full">
           <div className="p-8">
             <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-6 gap-4">

@@ -159,8 +159,6 @@ const DepartmentList: React.FC<DepartmentListProps> = ({
     
     const normalizedCurrency = currency?.toUpperCase().trim();
     const rate = currencyRates[normalizedCurrency as keyof typeof currencyRates] || 1;
-    
-    console.log(`💰 Converting ${amount} ${currency} to NIS (rate: ${rate}) = ${amount * rate}`);
     return amount * rate;
   };
 
@@ -202,18 +200,7 @@ const DepartmentList: React.FC<DepartmentListProps> = ({
       if (departmentsError) throw departmentsError;
       setDepartments(departmentsData || []);
       setAllCategories(categoryMappingData || []);
-      
-      console.log('🔍 Department data loaded with JOINs:', {
-        departments: departmentsData?.length || 0,
-        categories: categoryMappingData?.length || 0,
-        sampleCategories: categoryMappingData?.slice(0, 3).map((cat: any) => ({ 
-          id: cat.id, 
-          name: cat.name, 
-          mainCategory: cat.misc_maincategory?.name,
-          department: cat.misc_maincategory?.tenant_departement?.name
-        }))
-      });
-      
+
     } catch (error) {
       console.error('Error fetching department data:', error);
     } finally {
@@ -240,19 +227,10 @@ const DepartmentList: React.FC<DepartmentListProps> = ({
       const lead = meeting.lead || {};
       let categoryId = lead.category_id || meeting.category_id;
       let categoryName = lead.category || meeting.category || '';
-      
-      console.log('Processing meeting:', {
-        meetingId: meeting.id,
-        categoryId: categoryId,
-        categoryName: categoryName,
-        calendarType: meeting.calendar_type,
-        allCategoriesLength: allCategories.length
-      });
-      
+
       // Check if this is a staff meeting first
       if (meeting.calendar_type === 'staff') {
         grouped['Staff Meeting'].push(meeting);
-        console.log(`✅ Staff meeting assigned to Staff Meeting department`);
         continue;
       }
       
@@ -260,10 +238,8 @@ const DepartmentList: React.FC<DepartmentListProps> = ({
       
       // For legacy leads, categoryName might actually be a category ID (number)
       if (!categoryId && categoryName && !isNaN(Number(categoryName))) {
-        const originalCategoryName = categoryName;
         categoryId = categoryName;
         categoryName = '';
-        console.log(`Legacy lead detected: treating categoryName "${originalCategoryName}" as categoryId "${categoryId}"`);
       }
       
       // Find category by ID and get department directly from JOINed data
@@ -274,29 +250,24 @@ const DepartmentList: React.FC<DepartmentListProps> = ({
         
         if (foundCategory && foundCategory.misc_maincategory?.tenant_departement) {
           departmentName = foundCategory.misc_maincategory.tenant_departement.name;
-          console.log(`Found category by ID ${categoryId}: "${foundCategory.name}" -> Dept: "${departmentName}"`);
         }
       }
-      
+
       // If not found by ID, try to find by category name
       if (!departmentName && categoryName && allCategories.length > 0) {
-        const foundCategory = allCategories.find((cat: any) => 
+        const foundCategory = allCategories.find((cat: any) =>
           cat.name.toLowerCase().trim() === String(categoryName).toLowerCase().trim()
         );
-        
+
         if (foundCategory && foundCategory.misc_maincategory?.tenant_departement) {
           departmentName = foundCategory.misc_maincategory.tenant_departement.name;
-          console.log(`Found category by name "${categoryName}": "${foundCategory.name}" -> Dept: "${departmentName}"`);
         }
       }
-      
+
       if (departmentName && grouped[departmentName]) {
         grouped[departmentName].push(meeting);
-        console.log(`✅ Assigned to department: ${departmentName}`);
       } else {
-        // If no mapping found and it's not a staff meeting, add to unassigned
         grouped['Unassigned'].push(meeting);
-        console.log(`❌ No mapping found, assigned to Unassigned`);
       }
     }
     
@@ -316,17 +287,6 @@ const DepartmentList: React.FC<DepartmentListProps> = ({
     );
   }
 
-  console.log('🔍 DepartmentList: About to group meetings:', {
-    meetingsCount: meetings.length,
-    allCategoriesLength: allCategories.length,
-    sampleAllCategories: allCategories.slice(0, 3).map(cat => ({ 
-      id: cat.id, 
-      name: cat.name, 
-      mainCategory: cat.misc_maincategory?.name,
-      department: cat.misc_maincategory?.tenant_departement?.name
-    }))
-  });
-  
   const departmentMeetings = groupMeetingsByDepartment(meetings, departments);
 
   return (

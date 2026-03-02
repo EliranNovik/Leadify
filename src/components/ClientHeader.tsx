@@ -100,6 +100,14 @@ interface ClientHeaderProps {
     hasScheduledMeetings?: boolean;
     isStageNumeric?: boolean;
     stageNumeric?: number;
+    /** When true, hides Timeline and History buttons (e.g. external user modal) */
+    hideHistoryAndTimeline?: boolean;
+    /** When true, hides the Actions dropdown (cog icon) (e.g. external user modal) */
+    hideActionsDropdown?: boolean;
+    /** When true, hides the Total Value badge (e.g. external user modal) */
+    hideTotalValueBadge?: boolean;
+    /** When true, category is display-only and does not open the category modal on click (e.g. external user modal) */
+    disableCategoryModal?: boolean;
 }
 
 const ClientHeader: React.FC<ClientHeaderProps> = ({
@@ -141,6 +149,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     hasScheduledMeetings,
     isStageNumeric,
     stageNumeric,
+    hideHistoryAndTimeline = false,
+    hideActionsDropdown = false,
+    hideTotalValueBadge = false,
+    disableCategoryModal = false,
 }) => {
     const navigate = useNavigate();
     const [isEditingCategory, setIsEditingCategory] = useState(false);
@@ -825,68 +837,70 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         </div>
 
                         {/* Actions Dropdown - Right side */}
-                        <div className="dropdown dropdown-end">
-                            <label tabIndex={0} className="btn btn-ghost btn-square">
-                                <Cog6ToothIcon className="w-6 h-6" />
-                            </label>
-                            <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2">
-                                {/* Stage Specific Actions */}
-                                {dropdownItems && (
-                                    <>
-                                        {dropdownItems}
-                                        <div className="divider my-1"></div>
-                                    </>
-                                )}
+                        {!hideActionsDropdown && (
+                            <div className="dropdown dropdown-end">
+                                <label tabIndex={0} className="btn btn-ghost btn-square">
+                                    <Cog6ToothIcon className="w-6 h-6" />
+                                </label>
+                                <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2">
+                                    {/* Stage Specific Actions */}
+                                    {dropdownItems && (
+                                        <>
+                                            {dropdownItems}
+                                            <div className="divider my-1"></div>
+                                        </>
+                                    )}
 
-                                {/* Activation/Spam Toggle */}
-                                {(() => {
-                                    const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                                    const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
-                                    return isUnactivated ? (
-                                        <li><a className="text-green-600 font-medium" onClick={handleActivation}><CheckCircleIcon className="w-4 h-4" /> Activate Case</a></li>
-                                    ) : (
-                                        <li><a className="text-red-600 font-medium" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-4 h-4" /> Deactivate / Spam</a></li>
-                                    );
-                                })()}
-
-                                {/* Highlights Toggle */}
-                                <li>
-                                    <a onClick={async () => {
-                                        if (!selectedClient?.id) return;
-                                        const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                        const leadId = isLegacyLead ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id) : selectedClient.id;
-                                        const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-
-                                        if (isInHighlightsState) {
-                                            await removeFromHighlights(leadId, isLegacyLead);
-                                        } else {
-                                            await addToHighlights(leadId, leadNumber, isLegacyLead);
-                                        }
-                                        (document.activeElement as HTMLElement | null)?.blur();
-                                    }}>
-                                        {isInHighlightsState ? (
-                                            <><StarIcon className="w-4 h-4 fill-current text-purple-600" /> Remove from Highlights</>
+                                    {/* Activation/Spam Toggle */}
+                                    {(() => {
+                                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                                        const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
+                                        return isUnactivated ? (
+                                            <li><a className="text-green-600 font-medium" onClick={handleActivation}><CheckCircleIcon className="w-4 h-4" /> Activate Case</a></li>
                                         ) : (
-                                            <><StarIcon className="w-4 h-4" /> Add to Highlights</>
-                                        )}
-                                    </a>
-                                </li>
+                                            <li><a className="text-red-600 font-medium" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-4 h-4" /> Deactivate / Spam</a></li>
+                                        );
+                                    })()}
 
-                                <div className="divider my-1"></div>
+                                    {/* Highlights Toggle */}
+                                    <li>
+                                        <a onClick={async () => {
+                                            if (!selectedClient?.id) return;
+                                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                            const leadId = isLegacyLead ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id) : selectedClient.id;
+                                            const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
 
-                                {/* Edit / Sub-Lead */}
-                                <li><a onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-4 h-4" /> Edit Details</a></li>
-                                <li><a onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-4 h-4" /> Create Sub-Lead</a></li>
+                                            if (isInHighlightsState) {
+                                                await removeFromHighlights(leadId, isLegacyLead);
+                                            } else {
+                                                await addToHighlights(leadId, leadNumber, isLegacyLead);
+                                            }
+                                            (document.activeElement as HTMLElement | null)?.blur();
+                                        }}>
+                                            {isInHighlightsState ? (
+                                                <><StarIcon className="w-4 h-4 fill-current text-purple-600" /> Remove from Highlights</>
+                                            ) : (
+                                                <><StarIcon className="w-4 h-4" /> Add to Highlights</>
+                                            )}
+                                        </a>
+                                    </li>
 
-                                {/* Delete (Superuser only) */}
-                                {isSuperuser && (
-                                    <>
-                                        <div className="divider my-1"></div>
-                                        <li><a className="text-red-600 hover:bg-red-50" onClick={() => { setShowDeleteModal(true); (document.activeElement as HTMLElement)?.blur(); }}><TrashIcon className="w-4 h-4" /> Delete Lead</a></li>
-                                    </>
-                                )}
-                            </ul>
-                        </div>
+                                    <div className="divider my-1"></div>
+
+                                    {/* Edit / Sub-Lead */}
+                                    <li><a onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-4 h-4" /> Edit Details</a></li>
+                                    <li><a onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-4 h-4" /> Create Sub-Lead</a></li>
+
+                                    {/* Delete (Superuser only) */}
+                                    {isSuperuser && (
+                                        <>
+                                            <div className="divider my-1"></div>
+                                            <li><a className="text-red-600 hover:bg-red-50" onClick={() => { setShowDeleteModal(true); (document.activeElement as HTMLElement)?.blur(); }}><TrashIcon className="w-4 h-4" /> Delete Lead</a></li>
+                                        </>
+                                    )}
+                                </ul>
+                            </div>
+                        )}
                     </div>
 
                     {/* First row: Client name and info */}
@@ -963,12 +977,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     {/* Category Display/Edit */}
                                     <div className="flex items-center gap-1 relative">
                                         <TagIcon className="w-4 h-4" />
-                                        <span className="cursor-pointer hover:text-indigo-600 flex items-center gap-1" onClick={() => {
-                                            setShowCategoryModal(true);
-                                            setCategoryInputValue(displayCategory);
-                                        }}>
+                                        <span
+                                            className={`flex items-center gap-1 ${disableCategoryModal ? 'cursor-default' : 'cursor-pointer hover:text-indigo-600'}`}
+                                            onClick={disableCategoryModal ? undefined : () => {
+                                                setShowCategoryModal(true);
+                                                setCategoryInputValue(displayCategory);
+                                            }}
+                                        >
                                             {displayCategory}
-                                            <PencilIcon className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                            {!disableCategoryModal && <PencilIcon className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" />}
                                         </span>
                                     </div>
                                     {/* Topic - Desktop only */}
@@ -994,20 +1011,24 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         {/* Stage Badge and Actions Dropdown - Top Right (Desktop only) */}
                         <div className="hidden md:flex items-center gap-3">
                             {/* Timeline and History Buttons - Circle Icon Buttons (moved to left of stage badge) */}
-                            <button
-                                onClick={handleTimelineClick}
-                                className="btn btn-circle btn-outline btn-sm"
-                                title="View Timeline"
-                            >
-                                <ClockIcon className="w-5 h-5" />
-                            </button>
-                            <button
-                                onClick={handleHistoryClick}
-                                className="btn btn-circle btn-outline btn-sm"
-                                title="View History"
-                            >
-                                <ArchiveBoxIcon className="w-5 h-5" />
-                            </button>
+                            {!hideHistoryAndTimeline && (
+                                <>
+                                    <button
+                                        onClick={handleTimelineClick}
+                                        className="btn btn-circle btn-outline btn-sm"
+                                        title="View Timeline"
+                                    >
+                                        <ClockIcon className="w-5 h-5" />
+                                    </button>
+                                    <button
+                                        onClick={handleHistoryClick}
+                                        className="btn btn-circle btn-outline btn-sm"
+                                        title="View History"
+                                    >
+                                        <ArchiveBoxIcon className="w-5 h-5" />
+                                    </button>
+                                </>
+                            )}
 
                             {/* Stage Badge */}
                             <div className="flex items-center gap-2">
@@ -1028,68 +1049,70 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             )}
 
                             {/* Actions Dropdown */}
-                            <div className="dropdown dropdown-end">
-                                <label tabIndex={0} className="btn btn-ghost btn-square">
-                                    <Cog6ToothIcon className="w-6 h-6" />
-                                </label>
-                                <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2">
-                                    {/* Stage Specific Actions */}
-                                    {dropdownItems && (
-                                        <>
-                                            {dropdownItems}
-                                            <div className="divider my-1"></div>
-                                        </>
-                                    )}
+                            {!hideActionsDropdown && (
+                                <div className="dropdown dropdown-end">
+                                    <label tabIndex={0} className="btn btn-ghost btn-square">
+                                        <Cog6ToothIcon className="w-6 h-6" />
+                                    </label>
+                                    <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2">
+                                        {/* Stage Specific Actions */}
+                                        {dropdownItems && (
+                                            <>
+                                                {dropdownItems}
+                                                <div className="divider my-1"></div>
+                                            </>
+                                        )}
 
-                                    {/* Activation/Spam Toggle */}
-                                    {(() => {
-                                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                                        const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
-                                        return isUnactivated ? (
-                                            <li><a className="text-green-600 font-medium" onClick={handleActivation}><CheckCircleIcon className="w-4 h-4" /> Activate Case</a></li>
-                                        ) : (
-                                            <li><a className="text-red-600 font-medium" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-4 h-4" /> Deactivate / Spam</a></li>
-                                        );
-                                    })()}
-
-                                    {/* Highlights Toggle */}
-                                    <li>
-                                        <a onClick={async () => {
-                                            if (!selectedClient?.id) return;
-                                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                            const leadId = isLegacyLead ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id) : selectedClient.id;
-                                            const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-
-                                            if (isInHighlightsState) {
-                                                await removeFromHighlights(leadId, isLegacyLead);
-                                            } else {
-                                                await addToHighlights(leadId, leadNumber, isLegacyLead);
-                                            }
-                                            (document.activeElement as HTMLElement | null)?.blur();
-                                        }}>
-                                            {isInHighlightsState ? (
-                                                <><StarIcon className="w-4 h-4 fill-current text-purple-600" /> Remove from Highlights</>
+                                        {/* Activation/Spam Toggle */}
+                                        {(() => {
+                                            const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                                            const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
+                                            return isUnactivated ? (
+                                                <li><a className="text-green-600 font-medium" onClick={handleActivation}><CheckCircleIcon className="w-4 h-4" /> Activate Case</a></li>
                                             ) : (
-                                                <><StarIcon className="w-4 h-4" /> Add to Highlights</>
-                                            )}
-                                        </a>
-                                    </li>
+                                                <li><a className="text-red-600 font-medium" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-4 h-4" /> Deactivate / Spam</a></li>
+                                            );
+                                        })()}
 
-                                    <div className="divider my-1"></div>
+                                        {/* Highlights Toggle */}
+                                        <li>
+                                            <a onClick={async () => {
+                                                if (!selectedClient?.id) return;
+                                                const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                                const leadId = isLegacyLead ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id) : selectedClient.id;
+                                                const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
 
-                                    {/* Edit / Sub-Lead */}
-                                    <li><a onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-4 h-4" /> Edit Details</a></li>
-                                    <li><a onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-4 h-4" /> Create Sub-Lead</a></li>
+                                                if (isInHighlightsState) {
+                                                    await removeFromHighlights(leadId, isLegacyLead);
+                                                } else {
+                                                    await addToHighlights(leadId, leadNumber, isLegacyLead);
+                                                }
+                                                (document.activeElement as HTMLElement | null)?.blur();
+                                            }}>
+                                                {isInHighlightsState ? (
+                                                    <><StarIcon className="w-4 h-4 fill-current text-purple-600" /> Remove from Highlights</>
+                                                ) : (
+                                                    <><StarIcon className="w-4 h-4" /> Add to Highlights</>
+                                                )}
+                                            </a>
+                                        </li>
 
-                                    {/* Delete (Superuser only) */}
-                                    {isSuperuser && (
-                                        <>
-                                            <div className="divider my-1"></div>
-                                            <li><a className="text-red-600 hover:bg-red-50" onClick={() => { setShowDeleteModal(true); (document.activeElement as HTMLElement)?.blur(); }}><TrashIcon className="w-4 h-4" /> Delete Lead</a></li>
-                                        </>
-                                    )}
-                                </ul>
-                            </div>
+                                        <div className="divider my-1"></div>
+
+                                        {/* Edit / Sub-Lead */}
+                                        <li><a onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-4 h-4" /> Edit Details</a></li>
+                                        <li><a onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-4 h-4" /> Create Sub-Lead</a></li>
+
+                                        {/* Delete (Superuser only) */}
+                                        {isSuperuser && (
+                                            <>
+                                                <div className="divider my-1"></div>
+                                                <li><a className="text-red-600 hover:bg-red-50" onClick={() => { setShowDeleteModal(true); (document.activeElement as HTMLElement)?.blur(); }}><TrashIcon className="w-4 h-4" /> Delete Lead</a></li>
+                                            </>
+                                        )}
+                                    </ul>
+                                </div>
+                            )}
                         </div>
                     </div>
 
@@ -1175,6 +1198,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                         {/* Total Value - Right side aligned with email on mobile, centered on desktop */}
                         {(() => {
+                            if (hideTotalValueBadge) return null;
                             const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
 
                             // Currency Resolution
@@ -1307,6 +1331,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     </div>
 
                     {/* Total Value - Mobile: Centered under stage badge (moved from below) */}
+                    {!hideTotalValueBadge && (
                     <div className="flex md:hidden flex-col items-center">
                         {(() => {
                             const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
@@ -1439,6 +1464,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             );
                         })()}
                     </div>
+                    )}
 
                     {/* Case unactivated Badge - Between client name and stage badge */}
                     {(() => {
@@ -1834,7 +1860,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                         // Helper functions for display
                         const getCloserDisplay = (): string => {
-                            if (isLegacyLead) return getEmployeeDisplayNameFromId((selectedClient as any).closer_id);
+                            if (isLegacyLead) {
+                              const fromJoin = (selectedClient as any).closer;
+                              if (fromJoin && String(fromJoin).trim() && String(fromJoin).trim() !== '---') return String(fromJoin).trim();
+                              return getEmployeeDisplayNameFromId((selectedClient as any).closer_id);
+                            }
                             const closer = selectedClient.closer;
                             if (!closer || closer === '---' || closer === '--') return '---';
                             if (/^\d+$/.test(String(closer).trim())) return getEmployeeDisplayNameFromId(Number(closer));
@@ -1843,12 +1873,18 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         };
 
                         const getExpertDisplay = (): string => {
-                            if (isLegacyLead) return getEmployeeDisplayNameFromId((selectedClient as any).expert_id);
+                            if (isLegacyLead) {
+                              const fromJoin = (selectedClient as any).expert;
+                              if (fromJoin && String(fromJoin).trim() && String(fromJoin).trim() !== '---') return String(fromJoin).trim();
+                              return getEmployeeDisplayNameFromId((selectedClient as any).expert_id);
+                            }
                             return getEmployeeDisplayNameFromId((selectedClient as any).expert) || '---';
                         };
 
                         const getHandlerDisplay = (): string => {
                             if (isLegacyLead) {
+                                const fromJoin = (selectedClient as any).handler;
+                                if (fromJoin && String(fromJoin).trim() && String(fromJoin).trim() !== '---' && String(fromJoin).toLowerCase() !== 'not assigned') return String(fromJoin).trim();
                                 const handlerId = (selectedClient as any).case_handler_id;
                                 if (handlerId) return getEmployeeDisplayNameFromId(handlerId) || '---';
                                 return '---';
@@ -1866,7 +1902,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         };
 
                         const getSchedulerDisplay = (): string => {
-                            if (isLegacyLead) return getEmployeeDisplayNameFromId((selectedClient as any).meeting_scheduler_id);
+                            if (isLegacyLead) {
+                              const fromJoin = (selectedClient as any).scheduler;
+                              if (fromJoin && String(fromJoin).trim() && String(fromJoin).trim() !== '---') return String(fromJoin).trim();
+                              return getEmployeeDisplayNameFromId((selectedClient as any).meeting_scheduler_id);
+                            }
                             return selectedClient.scheduler || '---';
                         };
 

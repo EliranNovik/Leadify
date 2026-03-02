@@ -213,12 +213,18 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         if (user.email.includes('@')) {
           const { data: userRow } = await supabase
             .from('users')
-            .select('id, full_name, email')
+            .select('id, full_name, email, tenants_employee!users_employee_id_fkey(display_name)')
             .eq('email', user.email)
             .single();
 
           if (userRow) {
-            setCurrentUser(userRow);
+            const emp = Array.isArray((userRow as any).tenants_employee) ? (userRow as any).tenants_employee[0] : (userRow as any).tenants_employee;
+            const displayName = emp?.display_name;
+            setCurrentUser({
+              id: userRow.id,
+              full_name: displayName || userRow.full_name || userRow.email,
+              email: userRow.email,
+            });
             return;
           }
         }
@@ -1065,70 +1071,65 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         if (isLegacyLead) {
           const legacyId = parseInt(client.id.replace('legacy_', ''));
 
-          // For legacy leads, fetch from leads_leadinteractions table
-          const { data: interactions, error: interactionsError } = await supabase
+          // For legacy leads, fetch from leads_leadinteractions with optional creator join
+          let result = await supabase
             .from('leads_leadinteractions')
-            .select('*')
+            .select(`id, cdate, date, time, content, description, creator_id, direction, kind,
+              creator_employee:tenants_employee!leads_leadinteractions_creator_id_fkey(id, display_name, official_name)`)
             .eq('lead_id', legacyId)
-            .eq('kind', 'w') // 'w' for WhatsApp
+            .eq('kind', 'w')
             .order('cdate', { ascending: true });
-
+          let interactions: any[] | null = result.data;
+          const interactionsError = result.error;
           if (interactionsError) {
-            console.error('Error fetching legacy interactions:', interactionsError);
-            // Fallback to whatsapp_messages if leads_leadinteractions fails
-            query = query.eq('legacy_id', legacyId);
-            const { data, error } = await query.order('sent_at', { ascending: true });
-            if (error) {
-              console.error('Error fetching messages:', error);
+            const fallback = await supabase
+              .from('leads_leadinteractions')
+              .select('id, cdate, date, time, content, description, creator_id, direction, kind')
+              .eq('lead_id', legacyId)
+              .eq('kind', 'w')
+              .order('cdate', { ascending: true });
+            interactions = fallback.data as any[] | null;
+            if (fallback.error) {
+              console.error('Error fetching legacy interactions:', fallback.error);
+              query = query.eq('legacy_id', legacyId);
+              const { data, error } = await query.order('sent_at', { ascending: true });
+              if (error) {
+                console.error('Error fetching messages:', error);
+                return;
+              }
+              const processedMessages = (data || []).map(processTemplateMessage);
+              if (!isPolling) setMessages(processedMessages);
+              else setMessages(prev => (processedMessages.length !== prev.length || processedMessages.some((m, i) => prev[i]?.id !== m.id)) ? processedMessages : prev);
               return;
             }
-            const processedMessages = (data || []).map(processTemplateMessage);
-            if (!isPolling) {
-              setMessages(processedMessages);
-            } else {
-              setMessages(prevMessages => {
-                const hasChanges = processedMessages.length !== prevMessages.length ||
-                  processedMessages.some((newMsg, index) => {
-                    const prevMsg = prevMessages[index];
-                    return !prevMsg ||
-                      newMsg.id !== prevMsg.id ||
-                      newMsg.message !== prevMsg.message ||
-                      newMsg.whatsapp_status !== prevMsg.whatsapp_status;
-                  });
-
-                if (hasChanges) {
-                  return processedMessages;
-                }
-                return prevMessages;
-              });
-            }
-            return;
           }
 
-          // Fetch employee display names for creator_ids
           const creatorIds = [...new Set((interactions || [])
-            .map((interaction: any) => interaction.creator_id)
-            .filter((id: any) => id && id !== '\\N' && id !== 'EMPTY' && id !== null && id !== undefined)
+            .map((i: any) => i.creator_id)
+            .filter((id: any) => id && id !== '\\N' && id !== 'EMPTY' && id != null)
             .map((id: any) => Number(id))
             .filter((id: number) => !isNaN(id))
           )];
-
           let employeeNameMap: Record<number, string> = {};
           if (creatorIds.length > 0) {
             const { data: employees, error: employeeError } = await supabase
               .from('tenants_employee')
               .select('id, display_name')
               .in('id', creatorIds);
-
             if (!employeeError && employees) {
-              employeeNameMap = employees.reduce((acc, emp) => {
-                acc[emp.id] = emp.display_name;
+              employeeNameMap = (employees as { id: number; display_name: string | null }[]).reduce((acc, emp) => {
+                if (emp.display_name) acc[emp.id] = emp.display_name;
                 return acc;
               }, {} as Record<number, string>);
             }
           }
 
-          // Transform legacy interactions to WhatsAppMessage format
+          const fromJoin = (rel: any) => {
+            const r = Array.isArray(rel) ? rel[0] : rel;
+            const name = r?.display_name ?? r?.official_name;
+            return name && String(name).trim() ? String(name).trim() : null;
+          };
+
           const transformedMessages: WhatsAppMessage[] = (interactions || []).map((interaction: any) => {
             // Combine date and time to create sent_at
             const dateStr = interaction.date || '';
@@ -1158,11 +1159,14 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               sentAt = interaction.cdate;
             }
 
-            // Get sender name from creator_id
+            // Get sender name from join (creator_employee) or fallback to employeeNameMap
             let senderName = 'Unknown';
             if (interaction.creator_id && interaction.creator_id !== '\\N' && interaction.creator_id !== 'EMPTY') {
+              const fromJoinName = fromJoin(interaction.creator_employee);
               const creatorId = Number(interaction.creator_id);
-              if (!isNaN(creatorId) && employeeNameMap[creatorId]) {
+              if (fromJoinName) {
+                senderName = fromJoinName;
+              } else if (!isNaN(creatorId) && employeeNameMap[creatorId]) {
                 senderName = employeeNameMap[creatorId];
               } else if (!isNaN(creatorId)) {
                 senderName = `Employee ${creatorId}`;

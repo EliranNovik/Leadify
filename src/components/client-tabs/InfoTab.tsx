@@ -113,7 +113,7 @@ const isLegacyLead = (client: any) => {
   return client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
 };
 
-const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
+const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = false }) => {
   if (!client) {
     return <div className="flex justify-center items-center h-32"><span className="loading loading-spinner loading-md text-primary"></span></div>;
   }
@@ -862,42 +862,44 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
-  const EditButtons = ({ isEditing, onEdit, onSave, onCancel, editButtonClassName, editIconClassName }: {
-    isEditing: boolean;
-    onEdit: () => void;
-    onSave: () => void;
-    onCancel: () => void;
-    editButtonClassName?: string;
-    editIconClassName?: string;
-  }) => (
-    <div className="flex gap-2">
-      {isEditing ? (
-        <>
-          <button
-            className="btn btn-circle btn-ghost btn-sm"
-            onClick={onSave}
-          >
-            <CheckIcon className="w-4 h-4 text-success" />
-          </button>
-          <button
-            className="btn btn-circle btn-ghost btn-sm"
-            onClick={onCancel}
-          >
-            <XMarkIcon className="w-4 h-4 text-error" />
-          </button>
-        </>
-      ) : (
-        <>
-          <button
-            className={`${editButtonClassName} btn btn-sm`}
-            onClick={onEdit}
-          >
-            <PencilSquareIcon className={`w-4 h-4 ${editIconClassName}`} />
-          </button>
-        </>
-      )}
-    </div>
-  );
+  const EditButtons = readOnly
+    ? () => null
+    : ({ isEditing, onEdit, onSave, onCancel, editButtonClassName, editIconClassName }: {
+        isEditing: boolean;
+        onEdit: () => void;
+        onSave: () => void;
+        onCancel: () => void;
+        editButtonClassName?: string;
+        editIconClassName?: string;
+      }) => (
+        <div className="flex gap-2">
+          {isEditing ? (
+            <>
+              <button
+                className="btn btn-circle btn-ghost btn-sm"
+                onClick={onSave}
+              >
+                <CheckIcon className="w-4 h-4 text-success" />
+              </button>
+              <button
+                className="btn btn-circle btn-ghost btn-sm"
+                onClick={onCancel}
+              >
+                <XMarkIcon className="w-4 h-4 text-error" />
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className={`${editButtonClassName} btn btn-sm`}
+                onClick={onEdit}
+              >
+                <PencilSquareIcon className={`w-4 h-4 ${editIconClassName}`} />
+              </button>
+            </>
+          )}
+        </div>
+      );
 
   const getEligibilityDisplay = (status: string | undefined) => {
     switch (status) {
@@ -977,9 +979,11 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   min="0"
                   max="100"
                   value={probability}
-                  onChange={handleProbabilityChange}
+                  onChange={readOnly ? undefined : handleProbabilityChange}
                   className="range range-primary w-full"
                   step="1"
+                  disabled={readOnly}
+                  readOnly={readOnly}
                 />
                 <div className="flex justify-between text-xs text-gray-400">
                   <span>0%</span>
@@ -1006,25 +1010,27 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       <span className="text-sm font-medium text-gray-500">Next Follow-up</span>
                       <span className="text-base font-semibold text-gray-900">{nextFollowupDate.toLocaleDateString()}</span>
                     </div>
-                    <div className="flex gap-2 justify-end">
-                      <button
-                        className="btn btn-primary btn-sm gap-2"
-                        onClick={() => {
-                          setIsEditingFollowup(true);
-                          setFollowupDate(nextFollowupDate.toISOString().split('T')[0]);
-                        }}
-                      >
-                        <PencilSquareIcon className="w-4 h-4" />
-                        Change Follow-up
-                      </button>
-                      <button
-                        className="btn btn-ghost btn-sm gap-2 text-gray-700 hover:text-gray-900"
-                        onClick={handleDeleteFollowup}
-                      >
-                        <TrashIcon className="w-4 h-4" />
-                        Delete
-                      </button>
-                    </div>
+                    {!readOnly && (
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          className="btn btn-primary btn-sm gap-2"
+                          onClick={() => {
+                            setIsEditingFollowup(true);
+                            setFollowupDate(nextFollowupDate.toISOString().split('T')[0]);
+                          }}
+                        >
+                          <PencilSquareIcon className="w-4 h-4" />
+                          Change Follow-up
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-sm gap-2 text-gray-700 hover:text-gray-900"
+                          onClick={handleDeleteFollowup}
+                        >
+                          <TrashIcon className="w-4 h-4" />
+                          Delete
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ) : isAddingFollowup || isEditingFollowup ? (
                   <div className="space-y-3">
@@ -1036,37 +1042,43 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         value={followupDate}
                         onChange={(e) => setFollowupDate(e.target.value)}
                         min={new Date().toISOString().split('T')[0]}
+                        readOnly={readOnly}
+                        disabled={readOnly}
                       />
                     </div>
-                    <div className="flex gap-2 justify-end">
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => {
-                          setIsAddingFollowup(false);
-                          setIsEditingFollowup(false);
-                          setFollowupDate('');
-                        }}
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        className="btn btn-primary btn-sm"
-                        onClick={isEditingFollowup ? handleUpdateFollowup : handleAddFollowup}
-                      >
-                        Save
-                      </button>
-                    </div>
+                    {!readOnly && (
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => {
+                            setIsAddingFollowup(false);
+                            setIsEditingFollowup(false);
+                            setFollowupDate('');
+                          }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          onClick={isEditingFollowup ? handleUpdateFollowup : handleAddFollowup}
+                        >
+                          Save
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="flex flex-col items-center justify-center py-4">
                     <p className="text-sm text-gray-500 mb-3">No follow-up scheduled</p>
-                    <button
-                      className="btn btn-primary btn-sm gap-2"
-                      onClick={() => setIsAddingFollowup(true)}
-                    >
-                      <PlusIcon className="w-4 h-4" />
-                      Add Follow-up
-                    </button>
+                    {!readOnly && (
+                      <button
+                        className="btn btn-primary btn-sm gap-2"
+                        onClick={() => setIsAddingFollowup(true)}
+                      >
+                        <PlusIcon className="w-4 h-4" />
+                        Add Follow-up
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -1112,7 +1124,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     type="checkbox"
                     className="toggle toggle-success"
                     checked={eligible}
-                    onChange={(e) => handleEligibleToggle(e.target.checked)}
+                    onChange={readOnly ? undefined : (e) => handleEligibleToggle(e.target.checked)}
+                    disabled={readOnly}
                   />
                   <span className="text-sm font-medium text-gray-700">
                     {eligible ? 'Yes' : 'No'}

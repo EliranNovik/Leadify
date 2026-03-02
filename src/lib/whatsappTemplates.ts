@@ -44,42 +44,42 @@ export async function fetchWhatsAppTemplates(): Promise<WhatsAppTemplate[]> {
   }
 }
 
-// Function to fetch from database
+// Function to fetch from database (prefer app view for zero client-side mapping)
 async function fetchTemplatesFromDatabase(): Promise<WhatsAppTemplate[]> {
   try {
     console.log('🔍 Fetching WhatsApp templates from database...');
-    
-    // Fetch only active templates from new table (whatsapp_templates_v2)
+    // Prefer view that returns app-ready shape (no client mapping)
+    const { data: viewData, error: viewError } = await supabase
+      .from('whatsapp_templates_app')
+      .select('id, title, name360, params, active, category_id, firm_id, number_id, content, language')
+      .order('title', { ascending: true });
+    if (!viewError && Array.isArray(viewData)) {
+      console.log('✅ Templates loaded from view (no mapping):', viewData.length);
+      return viewData as WhatsAppTemplate[];
+    }
+    // Fallback: select from table and map (when view not yet deployed)
     const { data, error } = await supabase
       .from('whatsapp_templates_v2')
       .select('id, name, language, content, params, active, whatsapp_template_id')
-      .eq('active', true) // Only fetch active templates
+      .eq('active', true)
       .order('name', { ascending: true });
-
     if (error) {
       console.error('❌ Error fetching from database:', error);
       return [];
     }
-
-    console.log('✅ Templates fetched from database:', data?.length || 0);
-    
-    // Map database templates to our format (new table structure only)
-    const mappedTemplates: WhatsAppTemplate[] = (data || []).map((template: any) => {
-      return {
-        id: template.id, // Auto-incrementing database primary key (1, 2, 3, 4...)
-        title: template.name || '',
-        name360: template.name || '',
-        params: template.params || '0',
-        active: template.active === true ? 't' : 'f',
-        category_id: '',
-        firm_id: 0,
-        number_id: template.whatsapp_template_id ? Number(template.whatsapp_template_id) : 0, // WhatsApp template ID
-        content: template.content || '', // Template message content
-        language: template.language || 'en_US',
-      };
-    });
-    
-    console.log('✅ Mapped templates with IDs:', mappedTemplates.map(t => ({ id: t.id, name360: t.name360, language: t.language })));
+    console.log('✅ Templates fetched from table (with mapping):', data?.length || 0);
+    const mappedTemplates: WhatsAppTemplate[] = (data || []).map((template: any) => ({
+      id: template.id,
+      title: template.name || '',
+      name360: template.name || '',
+      params: template.params || '0',
+      active: template.active === true ? 't' : 'f',
+      category_id: '',
+      firm_id: 0,
+      number_id: template.whatsapp_template_id ? Number(template.whatsapp_template_id) : 0,
+      content: template.content || '',
+      language: template.language || 'en_US',
+    }));
     return mappedTemplates || [];
   } catch (error) {
     console.error('❌ Error fetching from database:', error);
@@ -184,7 +184,7 @@ async function fetchTemplatesFromAPI(): Promise<WhatsAppTemplate[]> {
         };
       });
 
-      console.log('📋 Mapped templates:', mappedTemplates.length);
+      console.log('📋 Templates loaded:', mappedTemplates.length);
       return mappedTemplates;
     }
 

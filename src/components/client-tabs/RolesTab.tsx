@@ -229,11 +229,17 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
       ];
     }
 
+    const legacyDisplay = (field: string) => {
+      const v = (client as any)[field];
+      if (v != null && String(v).trim() !== '' && String(v).trim() !== '---' && String(v).toLowerCase() !== 'not assigned') return String(v).trim();
+      return null;
+    };
+
     return [
       {
         id: 'scheduler',
         title: 'Scheduler',
-        assignee: isLegacyLead ? getEmployeeDisplayName((client as any).meeting_scheduler_id, employeesToUse) : client.scheduler || '---',
+        assignee: isLegacyLead ? (legacyDisplay('scheduler') ?? getEmployeeDisplayName((client as any).meeting_scheduler_id, employeesToUse)) : client.scheduler || '---',
         fieldName: 'scheduler',
         legacyFieldName: 'meeting_scheduler_id'
       },
@@ -241,7 +247,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
         id: 'manager',
         title: 'Manager',
         assignee: isLegacyLead
-          ? getEmployeeDisplayName((client as any).meeting_manager_id, employeesToUse)
+          ? (legacyDisplay('manager') ?? getEmployeeDisplayName((client as any).meeting_manager_id, employeesToUse))
           : getEmployeeDisplayName((client as any).manager, employeesToUse) || '---',
         fieldName: 'manager',
         legacyFieldName: 'meeting_manager_id'
@@ -259,7 +265,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
         id: 'expert',
         title: 'Expert',
         assignee: isLegacyLead
-          ? getEmployeeDisplayName((client as any).expert_id, employeesToUse)
+          ? (legacyDisplay('expert') ?? getEmployeeDisplayName((client as any).expert_id, employeesToUse))
           : getEmployeeDisplayName((client as any).expert, employeesToUse) || '---',
         fieldName: 'expert',
         legacyFieldName: 'expert_id'
@@ -269,7 +275,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
         title: 'Closer',
         assignee: (() => {
           if (isLegacyLead) {
-            return getEmployeeDisplayName((client as any).closer_id, employeesToUse);
+            return legacyDisplay('closer') ?? getEmployeeDisplayName((client as any).closer_id, employeesToUse);
           }
           // For new leads, closer is saved as display_name (text) or potentially as ID
           const closer = client.closer;
@@ -295,12 +301,10 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
         title: 'Handler',
         assignee: isLegacyLead
           ? (() => {
-            // For legacy leads, get display name from case_handler_id
+            const fromJoin = legacyDisplay('handler');
+            if (fromJoin) return fromJoin;
             const handlerDisplayName = getEmployeeDisplayName((client as any).case_handler_id, employeesToUse);
-            // Normalize "Not_assigned", "Not assigned", etc. to '---'
-            if (!handlerDisplayName || handlerDisplayName === '---' || handlerDisplayName.toLowerCase() === 'not_assigned' || handlerDisplayName.toLowerCase() === 'not assigned') {
-              return '---';
-            }
+            if (!handlerDisplayName || handlerDisplayName === '---' || handlerDisplayName.toLowerCase() === 'not_assigned' || handlerDisplayName.toLowerCase() === 'not assigned') return '---';
             return handlerDisplayName;
           })()
           : (() => {

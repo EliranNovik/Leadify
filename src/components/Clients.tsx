@@ -574,6 +574,22 @@ const Clients: React.FC<ClientsProps> = ({
     return `${countryCode}${number}`;
   };
 
+  /** Get stage name and colour from joined lead_stages relation (legacy leads). Fallback to getStageName/getStageColour when join missing. */
+  const getStageDisplayFromJoin = (stageInfo: any, stageId?: string | number | null): { name: string; colour: string } => {
+    const rec = Array.isArray(stageInfo) ? stageInfo[0] : stageInfo;
+    const name = rec?.name != null && String(rec.name).trim() ? String(rec.name).trim() : (stageId != null ? getStageName(String(stageId)) : '');
+    const colour = rec?.colour != null && String(rec.colour).trim() ? String(rec.colour).trim() : (stageId != null ? getStageColour(String(stageId)) : '');
+    return { name, colour };
+  };
+
+  /** Get display name from joined tenants_employee relation (legacy leads). Fallback to getEmployeeDisplayName(id) when join missing. */
+  const getLegacyEmployeeDisplayFromJoin = (joinedRelation: any, fallbackId?: string | number | null): string => {
+    const rec = Array.isArray(joinedRelation) ? joinedRelation[0] : joinedRelation;
+    if (rec?.display_name && String(rec.display_name).trim()) return String(rec.display_name).trim();
+    if (fallbackId !== null && fallbackId !== undefined) return getEmployeeDisplayName(fallbackId);
+    return 'Not assigned';
+  };
+
   // Helper function to get employee display name from ID
   const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
     if (!employeeId || employeeId === '---' || employeeId === null || employeeId === undefined) return 'Not assigned';
@@ -2945,7 +2961,13 @@ const Clients: React.FC<ClientsProps> = ({
             accounting_currencies!leads_lead_currency_id_fkey (
               name,
               iso_code
-            )
+            ),
+            scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
+            manager_employee:tenants_employee!fk_leads_lead_meeting_manager_id(id, display_name),
+            closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name),
+            expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
+            handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name),
+            stage_info:lead_stages!fk_leads_lead_stage(id, name, colour)
           `)
           .eq('id', legacyId)
           .single();
@@ -2988,6 +3010,7 @@ const Clients: React.FC<ClientsProps> = ({
 
           // Transform legacy lead to match new lead structure
           const legacyStageId = resolveStageId(data.stage);
+          const { name: stageNameFromJoin, colour: stageColourFromJoin } = getStageDisplayFromJoin(data.stage_info, data.stage);
           // Extract language name from joined table (with fallback fetch if join missing)
           let languageName = getLanguageDisplayFromJoin(data) ?? '';
           if (!languageName && data.language_id) {
@@ -3014,6 +3037,8 @@ const Clients: React.FC<ClientsProps> = ({
             topic: data.topic || '',
             lead_number: formatLegacyLeadNumber(data, subLeadSuffix), // Format lead number with /1 for master, /X for sub-leads
             stage: legacyStageId ?? (typeof data.stage === 'number' ? data.stage : null),
+            stage_name: stageNameFromJoin || undefined,
+            stage_colour: stageColourFromJoin || undefined,
             source: sourceName || String(data.source_id || ''), // Get source name from separate query
             created_at: data.cdate,
             updated_at: data.udate,
@@ -3058,13 +3083,15 @@ const Clients: React.FC<ClientsProps> = ({
             // Add missing fields with defaults
             client_country: null,
             emails: [],
-            closer: data.closer_id, // Use closer_id from legacy table
+            closer: getLegacyEmployeeDisplayFromJoin(data.closer_employee, data.closer_id) || '---',
             closer_id: data.closer_id || null, // Include closer_id for RolesTab
-            handler:
-              data.case_handler_id !== null && data.case_handler_id !== undefined
-                ? getEmployeeDisplayName(String(data.case_handler_id))
-                : 'Not assigned',
+            handler: (data.case_handler_id != null || data.handler_employee)
+              ? (getLegacyEmployeeDisplayFromJoin(data.handler_employee, data.case_handler_id) || 'Not assigned')
+              : 'Not assigned',
             case_handler_id: data.case_handler_id || null, // Include case_handler_id for RolesTab
+            scheduler: getLegacyEmployeeDisplayFromJoin(data.scheduler_employee, data.meeting_scheduler_id) || '---',
+            manager: getLegacyEmployeeDisplayFromJoin(data.manager_employee, data.meeting_manager_id) || '---',
+            expert: getLegacyEmployeeDisplayFromJoin(data.expert_employee, data.expert_id) || '---',
             unactivation_reason: data.unactivation_reason || null, // Use unactivation_reason from legacy table
             deactivate_notes: data.deactivate_notes || null, // Include deactivate_notes for inactive badge
             potential_total: data.potential_total || null, // Include potential_total for legacy leads
@@ -3532,7 +3559,13 @@ const Clients: React.FC<ClientsProps> = ({
                     name
                   )
                 ),
-                misc_leadsource!leads_lead_source_id_fkey ( id, name )
+                misc_leadsource!leads_lead_source_id_fkey ( id, name ),
+                scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
+                manager_employee:tenants_employee!fk_leads_lead_meeting_manager_id(id, display_name),
+                closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name),
+                expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
+                handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name),
+                stage_info:lead_stages!fk_leads_lead_stage(id, name, colour)
               `)
                 .eq('id', parseInt(effectiveLeadNumber))
                 .single()
@@ -3560,7 +3593,13 @@ const Clients: React.FC<ClientsProps> = ({
                       parent_id,
                       misc_maincategory!parent_id ( id, name )
                     ),
-                    misc_leadsource!leads_lead_source_id_fkey ( id, name )
+                    misc_leadsource!leads_lead_source_id_fkey ( id, name ),
+                    scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
+                    manager_employee:tenants_employee!fk_leads_lead_meeting_manager_id(id, display_name),
+                    closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name),
+                    expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
+                    handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name),
+                    stage_info:lead_stages!fk_leads_lead_stage(id, name, colour)
                   `)
                   .eq('master_id', masterId)
                   .not('master_id', 'is', null)
@@ -3690,16 +3729,20 @@ const Clients: React.FC<ClientsProps> = ({
                 const legacyCurrencyRecord = Array.isArray(legacyLead.accounting_currencies)
                   ? legacyLead.accounting_currencies[0]
                   : legacyLead.accounting_currencies;
-                // Get scheduler name if available (defer to avoid blocking)
-                let schedulerName = '---';
-                if (legacyLead.meeting_scheduler_id) {
-                  schedulerName = getEmployeeDisplayName(String(legacyLead.meeting_scheduler_id));
-                }
+                // Get role display names from join when available (legacy leads)
+                const schedulerName = getLegacyEmployeeDisplayFromJoin(legacyLead.scheduler_employee, legacyLead.meeting_scheduler_id) || '---';
+                const managerName = getLegacyEmployeeDisplayFromJoin(legacyLead.manager_employee, legacyLead.meeting_manager_id) || '---';
+                const closerDisplayName = getLegacyEmployeeDisplayFromJoin(legacyLead.closer_employee, legacyLead.closer_id) || '---';
+                const expertDisplayName = getLegacyEmployeeDisplayFromJoin(legacyLead.expert_employee, legacyLead.expert_id) || '---';
+                const handlerDisplayName = (legacyLead.case_handler_id != null || legacyLead.handler_employee)
+                  ? (getLegacyEmployeeDisplayFromJoin(legacyLead.handler_employee, legacyLead.case_handler_id) || 'Not assigned')
+                  : 'Not assigned';
 
                 // Defer sub-lead suffix so it doesn't block first paint (suffix fetched after setLocalLoading(false))
                 const subLeadSuffix: number | undefined = undefined;
 
                 const legacyStageId = resolveStageId(legacyLead.stage);
+                const { name: stageNameFromJoin, colour: stageColourFromJoin } = getStageDisplayFromJoin(legacyLead.stage_info, legacyLead.stage);
 
                 // Extract language name from joined table (with fallback fetch if join missing)
                 let languageName = getLanguageDisplayFromJoin(legacyLead) ?? '';
@@ -3727,6 +3770,8 @@ const Clients: React.FC<ClientsProps> = ({
                   topic: legacyLead.topic || '',
                   lead_number: formatLegacyLeadNumber(legacyLead, subLeadSuffix),
                   stage: legacyStageId ?? (typeof legacyLead.stage === 'number' ? legacyLead.stage : null),
+                  stage_name: stageNameFromJoin || undefined,
+                  stage_colour: stageColourFromJoin || undefined,
                   source: getSourceDisplayFromJoin(legacyLead) ?? String(legacyLead.source_id || ''),
                   created_at: legacyLead.cdate,
                   updated_at: legacyLead.udate,
@@ -3749,14 +3794,13 @@ const Clients: React.FC<ClientsProps> = ({
                   lead_type: 'legacy',
                   client_country: null,
                   emails: [],
-                  closer: legacyLead.closer_id,
+                  closer: closerDisplayName,
                   closer_id: legacyLead.closer_id || null, // Include closer_id for RolesTab
-                  handler:
-                    legacyLead.case_handler_id !== null && legacyLead.case_handler_id !== undefined
-                      ? getEmployeeDisplayName(String(legacyLead.case_handler_id))
-                      : 'Not assigned',
+                  handler: handlerDisplayName,
                   case_handler_id: legacyLead.case_handler_id || null, // Include case_handler_id for RolesTab
                   scheduler: schedulerName,
+                  manager: managerName,
+                  expert: expertDisplayName,
                   unactivation_reason: legacyLead.unactivation_reason || null,
                   deactivate_notes: legacyLead.deactivate_notes || null,
                   unactivated_by: legacyLead.unactivated_by || null,
@@ -4981,16 +5025,17 @@ const Clients: React.FC<ClientsProps> = ({
     }
   };
 
-  const getStageBadge = (stage: string | number, anchor: StageDropdownAnchor = 'badge') => {
-    const stageName = getStageName(String(stage));
+  const getStageBadge = (stage: string | number, anchor: StageDropdownAnchor = 'badge', fromJoin?: { name?: string; colour?: string } | null) => {
+    const stageName = (fromJoin?.name && String(fromJoin.name).trim()) ? String(fromJoin.name).trim() : getStageName(String(stage));
     const currentStageId = resolveStageId(stage);
     const currentStageIndex = sortedStages.findIndex(
       stageOption => resolveStageId(stageOption.id) === currentStageId
     );
     const dropdownRef = getDropdownRef(anchor);
+    const stageColourFromJoin = fromJoin?.colour && String(fromJoin.colour).trim() ? String(fromJoin.colour).trim() : null;
     const stageColourFromList =
       sortedStages.find(stageOption => resolveStageId(stageOption.id) === currentStageId)?.colour ?? null;
-    const fallbackStageColour = stageColourFromList || getStageColour(String(stage)) || '#ffffff';
+    const fallbackStageColour = stageColourFromJoin || stageColourFromList || getStageColour(String(stage)) || '#ffffff';
     // Force white text for "Scheduler assigned" stage
     const badgeTextColour = (stageName === 'Scheduler assigned' || stageName === 'scheduler assigned' || stageName === 'scheduler_assigned')
       ? '#ffffff'
@@ -14067,7 +14112,7 @@ const Clients: React.FC<ClientsProps> = ({
             openEditLeadDrawer={openEditLeadDrawer}
             handleActivation={handleActivation}
             setShowUnactivationModal={setShowUnactivationModal}
-            renderStageBadge={(anchor) => getStageBadge(selectedClient.stage, anchor)}
+            renderStageBadge={(anchor) => getStageBadge(selectedClient.stage, anchor, selectedClient?.stage_name != null || selectedClient?.stage_colour != null ? { name: selectedClient?.stage_name, colour: selectedClient?.stage_colour } : undefined)}
             getEmployeeDisplayName={getEmployeeDisplayName}
             allEmployees={allEmployees}
             dropdownItems={dropdownItems}

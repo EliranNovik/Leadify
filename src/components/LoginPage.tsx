@@ -31,36 +31,56 @@ const LoginPage: React.FC = () => {
       let imageUrl = '';
 
       if (data?.user?.email) {
-        const { data: userData, error: userError } = await supabase
+        // Fetch user with joined employee (image, name) via users.employee_id -> tenants_employee.id
+        let userData: { first_name?: string; last_name?: string; full_name?: string; employee_id?: number; tenants_employee?: any } | null = null;
+        let userError: Error | null = null;
+
+        const { data: withJoin, error: joinErr } = await supabase
           .from('users')
           .select(`
-            first_name, 
-            last_name, 
+            first_name,
+            last_name,
             full_name,
             employee_id,
             tenants_employee!users_employee_id_fkey(
               official_name,
               display_name,
+              photo,
               photo_url
             )
           `)
           .eq('email', data.user.email)
           .single();
 
+        if (!joinErr && withJoin) {
+          userData = withJoin;
+        } else {
+          userError = joinErr ?? null;
+          // Fallback: fetch without join if FK missing or join fails
+          const { data: fallbackData, error: fallbackErr } = await supabase
+            .from('users')
+            .select('first_name, last_name, full_name, employee_id')
+            .eq('email', data.user.email)
+            .single();
+          if (!fallbackErr && fallbackData) {
+            userData = fallbackData;
+          } else {
+            userError = fallbackErr ?? userError;
+          }
+        }
+
         console.log('Login - User data fetched:', userData);
-        console.log('Login - User error:', userError);
+        if (userError) console.log('Login - User error:', userError);
 
         if (!userError && userData) {
-          // Handle both array and single object responses
-          const empData = userData.tenants_employee ?
-            (Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee) :
-            null;
+          const empData = userData.tenants_employee
+            ? (Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee)
+            : null;
 
-          console.log('Login - Employee data:', empData);
+          console.log('Login - Employee data (from join):', empData);
 
-          // Set profile image if available
-          if (empData?.photo_url) {
-            imageUrl = empData.photo_url;
+          if (empData) {
+            imageUrl = (empData.photo_url && String(empData.photo_url).trim()) || (empData.photo && String(empData.photo).trim()) || '';
           }
 
           // Priority: official_name > display_name > first_name + last_name > full_name
@@ -456,14 +476,11 @@ const LoginPage: React.FC = () => {
           {/* Animated gradient background */}
           <div className="absolute inset-0 w-full h-full bg-gradient-to-br from-[#0b1e3d] via-[#0f4c75] to-[#06b6d4] animate-gradient z-0" />
           {/* Welcome message and icon */}
-          <div className="relative z-10 flex flex-col items-center justify-center w-full h-full gap-6">
+          <div className="relative z-10 flex flex-col items-center justify-center w-full h-full gap-6 -mt-16">
             {/* Welcome text above */}
             <div className="flex flex-col items-center gap-2 slide-fade-in">
               <div className="text-4xl font-bold text-white">
                 Welcome to RMQ 2.0.
-              </div>
-              <div className="text-xl text-white/90 font-medium">
-                Enjoy the future today.
               </div>
             </div>
 

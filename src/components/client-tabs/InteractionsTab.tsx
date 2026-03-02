@@ -39,6 +39,7 @@ import 'react-quill/dist/quill.snow.css';
 import { useLocation, useNavigate } from 'react-router-dom';
 import sanitizeHtml from 'sanitize-html';
 import { buildApiUrl } from '../../lib/api';
+// Legacy interactions use employee join (creator_employee / employee_employee) in legacyInteractionsApi for display names
 import { fetchLegacyInteractions } from '../../lib/legacyInteractionsApi';
 import { appendEmailSignature } from '../../lib/emailSignature';
 import SchedulerWhatsAppModal from '../SchedulerWhatsAppModal';
@@ -737,54 +738,50 @@ const isOfficeEmail = (email: string | null | undefined): boolean => {
   return email.toLowerCase().endsWith('@lawoffice.org.il');
 };
 
-// Build email-to-display-name mapping for all employees
+// Build email-to-display-name mapping using users + tenants_employee join (one query when FK exists)
 const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
   const emailToNameMap = new Map<string, string>();
-  
   try {
-    // Fetch all employees and users in parallel
+    const { data: usersWithEmployee, error } = await supabase
+      .from('users')
+      .select('employee_id, email, tenants_employee!users_employee_id_fkey(display_name)')
+      .not('email', 'is', null);
+    if (!error && usersWithEmployee?.length) {
+      usersWithEmployee.forEach((row: any) => {
+        const email = row.email?.toLowerCase();
+        const emp = Array.isArray(row.tenants_employee) ? row.tenants_employee[0] : row.tenants_employee;
+        const displayName = emp?.display_name;
+        if (email) emailToNameMap.set(email, displayName || email);
+        if (displayName) {
+          const patternEmail = `${displayName.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`;
+          emailToNameMap.set(patternEmail, displayName);
+        }
+      });
+      return emailToNameMap;
+    }
+    // Fallback: two queries when join/FK not available
     const [employeesResult, usersResult] = await Promise.all([
-      supabase
-        .from('tenants_employee')
-        .select('id, display_name')
-        .not('display_name', 'is', null),
-      supabase
-        .from('users')
-        .select('employee_id, email')
-        .not('email', 'is', null)
+      supabase.from('tenants_employee').select('id, display_name').not('display_name', 'is', null),
+      supabase.from('users').select('employee_id, email').not('email', 'is', null),
     ]);
-    
     if (employeesResult.error || usersResult.error) {
       console.error('Error fetching employees/users for email mapping:', employeesResult.error || usersResult.error);
       return emailToNameMap;
     }
-    
-    // Create employee_id to email mapping from users table
     const employeeIdToEmail = new Map<number, string>();
     usersResult.data?.forEach((user: any) => {
-      if (user.employee_id && user.email) {
-        employeeIdToEmail.set(user.employee_id, user.email.toLowerCase());
-      }
+      if (user.employee_id && user.email) employeeIdToEmail.set(user.employee_id, user.email.toLowerCase());
     });
-    
-    // Map emails to display names
     employeesResult.data?.forEach((emp: any) => {
       if (!emp.display_name) return;
-      
-      // Method 1: Use email from users table (employee_id match)
       const emailFromUsers = employeeIdToEmail.get(emp.id);
-      if (emailFromUsers) {
-        emailToNameMap.set(emailFromUsers, emp.display_name);
-      }
-      
-      // Method 2: Use pattern matching (display_name.toLowerCase().replace(/\s+/g, '.') + '@lawoffice.org.il')
+      if (emailFromUsers) emailToNameMap.set(emailFromUsers, emp.display_name);
       const patternEmail = `${emp.display_name.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`;
       emailToNameMap.set(patternEmail, emp.display_name);
     });
   } catch (error) {
     console.error('Error building employee email-to-name map:', error);
   }
-  
   return emailToNameMap;
 };
 
@@ -1167,7 +1164,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         const persistedKey = `interactions_${client.id}`;
         sessionStorage.setItem(persistedKey, JSON.stringify(interactions));
       } catch (e) {
-        console.warn('Failed to persist interactions to sessionStorage:', e);
+        const isQuota = e instanceof DOMException && e.name === 'QuotaExceededError';
+        if (isQuota) console.warn('SessionStorage full; skipping persist of interactions for this client.');
+        else console.warn('Failed to persist interactions to sessionStorage:', e);
       }
     } else if (!client?.id || interactions.length === 0) {
       interactionsClientIdRef.current = null;
@@ -3273,7 +3272,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             }
           })() : Promise.resolve({ data: [], error: null }),
 
-          // Legacy interactions query - only for legacy leads, with limit
+          // Legacy interactions: fetchLegacyInteractions uses tenants_employee join for creator/employee display names
           isLegacyLead && client?.id ? (async () => {
             try {
               const interactions = await fetchLegacyInteractions(client.id, client.name);
@@ -3313,7 +3312,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 let emailQuery = supabase
                   .from('emails')
                   .select(
-                    'id, message_id, subject, sent_at, direction, sender_email, recipient_list, body_html, body_preview, attachments, contact_id, client_id, legacy_id'
+                    `id, message_id, subject, sent_at, direction, sender_email, recipient_list, body_html, body_preview, attachments, contact_id, client_id, legacy_id,
+                    contact:leads_contact!emails_contact_id_fkey(id, name)`
                   )
                   .limit(EMAIL_MODAL_LIMIT)
                   .order('sent_at', { ascending: false });
@@ -3360,7 +3360,35 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   emailFilters,
                 });
 
-                const { data, error } = await emailQuery;
+                let { data, error } = await emailQuery;
+                if (error) {
+                  const fallbackQuery = supabase
+                    .from('emails')
+                    .select('id, message_id, subject, sent_at, direction, sender_email, recipient_list, body_html, body_preview, attachments, contact_id, client_id, legacy_id')
+                    .limit(EMAIL_MODAL_LIMIT)
+                    .order('sent_at', { ascending: false });
+                  const sameFilters = (q: any) => {
+                    if (isLegacyLead && legacyId !== null) {
+                      if (emailFilters.length > 1) {
+                        const emailOnlyFilters = emailFilters.filter((f: string) => !f.startsWith('legacy_id.eq.'));
+                        if (emailOnlyFilters.length > 0) return q.or(`legacy_id.eq.${legacyId},${emailOnlyFilters.join(',')}`);
+                      }
+                      return q.eq('legacy_id', legacyId);
+                    }
+                    if (!isLegacyLead && client.id) {
+                      if (emailFilters.length > 1) {
+                        const emailOnlyFilters = emailFilters.filter((f: string) => !f.startsWith('client_id.eq.'));
+                        if (emailOnlyFilters.length > 0) return q.or(`client_id.eq.${client.id},${emailOnlyFilters.join(',')}`);
+                      }
+                      return q.eq('client_id', client.id);
+                    }
+                    if (emailFilters.length > 0) return q.or(emailFilters.join(','));
+                    return q;
+                  };
+                  const fallback = await sameFilters(fallbackQuery);
+                  data = fallback.data;
+                  error = fallback.error;
+                }
                 
                 // Debug: Log results
                 console.log('📧 InteractionsTab email query results:', {
@@ -3884,7 +3912,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               leadId: clientLeadId,
               legacyResultType: Array.isArray(legacyResult) ? 'array' : typeof legacyResult,
               legacyInteractionsCount: legacyInteractions.length,
-              legacyInteractionIds: legacyInteractions.slice(0, 20).map((i: any) => i.id) // First 20 IDs
+              legacyInteractionIds: legacyInteractions.slice(0, 20).map((i: any) => i.id)
             });
             return legacyInteractions;
           })()
@@ -4271,14 +4299,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               || senderEmail 
               || 'Team';
           } else {
-            // For client emails - use contact name or client name
-            // Find contact by contact_id if available
-            let contactName = null;
-            if (e.contact_id && leadContacts && leadContacts.length > 0) {
+            // For client emails - use contact name from join or fallback to leadContacts lookup
+            const contactFromJoin = Array.isArray((e as any).contact) ? (e as any).contact[0] : (e as any).contact;
+            let contactName = contactFromJoin?.name ?? null;
+            if (!contactName && e.contact_id && leadContacts && leadContacts.length > 0) {
               const contact = leadContacts.find((c: any) => c.id === Number(e.contact_id));
-              if (contact) {
-                contactName = contact.name;
-              }
+              if (contact) contactName = contact.name;
             }
             employeeName = contactName || client.name || senderEmail || 'Client';
             
@@ -4759,7 +4785,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           try {
             sessionStorage.setItem(`interactions_${client.id}`, JSON.stringify(sorted));
           } catch (e) {
-            console.warn('Failed to persist interactions to sessionStorage:', e);
+            const isQuota = e instanceof DOMException && e.name === 'QuotaExceededError';
+            if (isQuota) console.warn('SessionStorage full; skipping persist of interactions for this client.');
+            else console.warn('Failed to persist interactions to sessionStorage:', e);
           }
         }
         
@@ -4802,7 +4830,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           try {
             sessionStorage.setItem(`interactions_${client.id}`, JSON.stringify(sorted));
           } catch (e) {
-            console.warn('Failed to persist interactions to sessionStorage:', e);
+            const isQuota = e instanceof DOMException && e.name === 'QuotaExceededError';
+            if (isQuota) console.warn('SessionStorage full; skipping persist of interactions for this client.');
+            else console.warn('Failed to persist interactions to sessionStorage:', e);
           }
         }
         
@@ -5561,7 +5591,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       let emailQuery = supabase
         .from('emails')
         .select(
-          'id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, contact_id'
+          `id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, contact_id,
+          contact:leads_contact!emails_contact_id_fkey(id, name)`
         )
         .order('sent_at', { ascending: true });
 
@@ -5576,7 +5607,25 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       // Note: We'll filter by contact client-side to handle both contact_id and email matching
       // This ensures we catch emails that might not have contact_id set yet
       
-      const { data: emailData, error: emailError } = await emailQuery;
+      let emailData: any[] | null = null;
+      let emailError: any = null;
+      const emailResult = await emailQuery;
+      emailData = emailResult.data;
+      emailError = emailResult.error;
+      if (emailError) {
+        const fallbackQuery = supabase
+          .from('emails')
+          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, contact_id')
+          .order('sent_at', { ascending: true });
+        const q = emailFilters.length > 0
+          ? fallbackQuery.or(emailFilters.join(','))
+          : isLegacyLead && legacyId !== null
+            ? fallbackQuery.eq('legacy_id', legacyId)
+            : fallbackQuery.eq('client_id', client.id);
+        const fallback = await q;
+        emailData = fallback.data;
+        emailError = fallback.error;
+      }
       
       if (emailError) {
         console.error('❌ Error fetching emails for InteractionsTab:', emailError);

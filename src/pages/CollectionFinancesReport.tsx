@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { BanknotesIcon, MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
@@ -88,6 +88,23 @@ const formatCurrency = (value: number, currency: string) => {
 };
 
 const todayIso = new Date().toISOString().split('T')[0];
+
+/** When fromDate > toDate (e.g. Nov–Mar), treat as cross-year range: include dates >= fromDate OR <= toDate */
+function isCrossYearRange(fromDate: string, toDate: string): boolean {
+  return Boolean(fromDate && toDate && fromDate > toDate);
+}
+
+/** Returns true if dateStr falls within [fromDate, toDate], or within cross-year range (>= fromDate OR <= toDate) when fromDate > toDate */
+function dateInRange(dateStr: string, fromDate: string, toDate: string): boolean {
+  if (!dateStr) return false;
+  const normalized = dateStr.split('T')[0];
+  if (isCrossYearRange(fromDate, toDate)) {
+    return normalized >= fromDate || normalized <= toDate;
+  }
+  if (fromDate && normalized < fromDate) return false;
+  if (toDate && normalized > toDate) return false;
+  return true;
+}
 
 // Reports list for search functionality
 type ReportItem = {
@@ -232,6 +249,7 @@ const CollectionFinancesReport: React.FC = () => {
   const [showCollectedDropdown, setShowCollectedDropdown] = useState(false);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const [showOrderDropdown, setShowOrderDropdown] = useState(false);
+  const dropdownTouchHandledRef = useRef(0); // ignore synthetic click after touch (iOS Safari)
 
   // Filter reports based on search query
   const filteredReports = useMemo(() => {
@@ -279,10 +297,11 @@ const CollectionFinancesReport: React.FC = () => {
     fetchHandlers();
   }, []);
 
-  // Close dropdowns when clicking outside
+  // Close dropdowns when clicking/touching outside (touch for iOS)
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
+    const handleClickOutside = (event: MouseEvent | TouchEvent) => {
       const target = event.target as HTMLElement;
+      if (!target?.closest) return;
       if (showCollectedDropdown && !target.closest('.dropdown')) {
         setShowCollectedDropdown(false);
       }
@@ -295,8 +314,12 @@ const CollectionFinancesReport: React.FC = () => {
     };
 
     if (showCollectedDropdown || showCategoryDropdown || showOrderDropdown) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
+      document.addEventListener('mousedown', handleClickOutside as (e: MouseEvent) => void);
+      document.addEventListener('touchstart', handleClickOutside as (e: TouchEvent) => void, { passive: true });
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside as (e: MouseEvent) => void);
+        document.removeEventListener('touchstart', handleClickOutside as (e: TouchEvent) => void);
+      };
     }
   }, [showCollectedDropdown, showCategoryDropdown, showOrderDropdown]);
 
@@ -532,13 +555,12 @@ const loadPayments = async () => {
           }
         }
         
-        // Date range: DB already filtered by the correct column (Ignore: legacy=date, new=due_date; Due included: due_date for both). Keep only rows whose date falls in range.
+        // Date range: DB already filtered by the correct column (Ignore: legacy=date, new=due_date; Due included: due_date for both). Use dateInRange so cross-year (e.g. Nov–Mar) is handled.
         if (filters.fromDate || filters.toDate) {
           const dateToCheck = filters.due === 'ignore' && row.leadType === 'legacy' ? row.planDate : row.dueDate;
           if (!dateToCheck) return false;
           const dateStr = dateToCheck.split('T')[0];
-          if (filters.fromDate && dateStr < filters.fromDate) return false;
-          if (filters.toDate && dateStr > filters.toDate) return false;
+          if (!dateInRange(dateStr, filters.fromDate, filters.toDate)) return false;
         }
         
         return true;
@@ -877,11 +899,22 @@ const loadPayments = async () => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Collected:</span></label>
-            <div className="dropdown dropdown-bottom w-full">
+            <div className={`dropdown dropdown-bottom w-full ${showCollectedDropdown ? 'dropdown-open' : ''}`}>
               <button
                 type="button"
-                className="btn btn-outline w-full justify-between"
-                onClick={() => setShowCollectedDropdown(!showCollectedDropdown)}
+                className="btn btn-outline w-full justify-between touch-manipulation"
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  dropdownTouchHandledRef.current = Date.now();
+                  setShowCollectedDropdown(prev => !prev);
+                }}
+                onClick={(e) => {
+                  if (Date.now() - dropdownTouchHandledRef.current < 500) {
+                    dropdownTouchHandledRef.current = 0;
+                    return;
+                  }
+                  setShowCollectedDropdown(prev => !prev);
+                }}
               >
                 <span>
                   {Array.isArray(filters.collected) && filters.collected.length > 0
@@ -898,7 +931,7 @@ const loadPayments = async () => {
                 </svg>
               </button>
               {showCollectedDropdown && (
-                <ul className="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-full z-[1] border border-gray-200 mt-1">
+                <ul className="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-full z-[9999] border border-gray-200 mt-1">
                   <li>
                     <button
                       type="button"
@@ -950,11 +983,22 @@ const loadPayments = async () => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Category:</span></label>
-            <div className="dropdown dropdown-bottom w-full">
+            <div className={`dropdown dropdown-bottom w-full ${showCategoryDropdown ? 'dropdown-open' : ''}`}>
               <button
                 type="button"
-                className="btn btn-outline w-full justify-between"
-                onClick={() => setShowCategoryDropdown(!showCategoryDropdown)}
+                className="btn btn-outline w-full justify-between touch-manipulation"
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  dropdownTouchHandledRef.current = Date.now();
+                  setShowCategoryDropdown(prev => !prev);
+                }}
+                onClick={(e) => {
+                  if (Date.now() - dropdownTouchHandledRef.current < 500) {
+                    dropdownTouchHandledRef.current = 0;
+                    return;
+                  }
+                  setShowCategoryDropdown(prev => !prev);
+                }}
               >
                 <span>
                   {Array.isArray(filters.categoryId) && filters.categoryId.length > 0
@@ -971,7 +1015,7 @@ const loadPayments = async () => {
                 </svg>
               </button>
               {showCategoryDropdown && (
-                <div className="dropdown-content bg-base-100 shadow-lg rounded-box w-full z-[1] border border-gray-200 mt-1" style={{ maxHeight: '240px', overflowY: 'auto', overflowX: 'hidden' }}>
+                <div className="dropdown-content bg-base-100 shadow-lg rounded-box w-full z-[9999] border border-gray-200 mt-1" style={{ maxHeight: '240px', overflowY: 'auto', overflowX: 'hidden' }}>
                   <div className="p-2">
                     <button
                       type="button"
@@ -1011,11 +1055,22 @@ const loadPayments = async () => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Order:</span></label>
-            <div className="dropdown dropdown-bottom w-full">
+            <div className={`dropdown dropdown-bottom w-full ${showOrderDropdown ? 'dropdown-open' : ''}`}>
               <button
                 type="button"
-                className="btn btn-outline w-full justify-between"
-                onClick={() => setShowOrderDropdown(!showOrderDropdown)}
+                className="btn btn-outline w-full justify-between touch-manipulation"
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  dropdownTouchHandledRef.current = Date.now();
+                  setShowOrderDropdown(prev => !prev);
+                }}
+                onClick={(e) => {
+                  if (Date.now() - dropdownTouchHandledRef.current < 500) {
+                    dropdownTouchHandledRef.current = 0;
+                    return;
+                  }
+                  setShowOrderDropdown(prev => !prev);
+                }}
               >
                 <span>
                   {Array.isArray(filters.order) && filters.order.length > 0
@@ -1032,7 +1087,7 @@ const loadPayments = async () => {
                 </svg>
               </button>
               {showOrderDropdown && (
-                <ul className="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-full z-[1] border border-gray-200 mt-1">
+                <ul className="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-full z-[9999] border border-gray-200 mt-1">
                   <li>
                     <button
                       type="button"
@@ -1333,11 +1388,14 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
   query = query.is('cancel_date', null);
 
   // New leads: always apply date range on due_date (one column, no combining rows).
-  // Ignore = show ALL rows (date range on due_date when set; no ready_to_pay filter).
-  // Due date included = only rows with ready_to_pay = true and due_date in range.
+  // When fromDate > toDate (e.g. Nov–Mar), treat as cross-year: due_date >= fromDate OR due_date <= toDate.
   if (filters.fromDate || filters.toDate) {
-    if (filters.fromDate) query = query.gte('due_date', filters.fromDate);
-    if (filters.toDate) query = query.lte('due_date', filters.toDate);
+    if (isCrossYearRange(filters.fromDate, filters.toDate)) {
+      query = query.or(`due_date.gte.${filters.fromDate},due_date.lte.${filters.toDate}`);
+    } else {
+      if (filters.fromDate) query = query.gte('due_date', filters.fromDate);
+      if (filters.toDate) query = query.lte('due_date', filters.toDate);
+    }
   }
   if (filters.due === 'due_only') {
     query = query.not('due_date', 'is', null).eq('ready_to_pay', true);
@@ -1523,16 +1581,24 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
   query = query.is('cancel_date', null);
 
   // Legacy: Ignore = show ALL rows (date range on date column when set; due_date can be NULL).
-  // Due date included = only rows where due_date IS NOT NULL, date range on due_date.
+  // When fromDate > toDate (e.g. Nov–Mar), treat as cross-year: date >= fromDate OR date <= toDate.
   if (filters.fromDate || filters.toDate) {
     if (filters.due === 'due_only') {
       query = query.not('due_date', 'is', null);
-      if (filters.fromDate) query = query.gte('due_date', filters.fromDate);
-      if (filters.toDate) query = query.lte('due_date', filters.toDate);
+      if (isCrossYearRange(filters.fromDate, filters.toDate)) {
+        query = query.or(`due_date.gte.${filters.fromDate},due_date.lte.${filters.toDate}`);
+      } else {
+        if (filters.fromDate) query = query.gte('due_date', filters.fromDate);
+        if (filters.toDate) query = query.lte('due_date', filters.toDate);
+      }
       console.log(`🔍 [fetchLegacyPayments] Due date included: due_date not null + due_date range`);
     } else {
-      if (filters.fromDate) query = query.gte('date', filters.fromDate);
-      if (filters.toDate) query = query.lte('date', filters.toDate);
+      if (isCrossYearRange(filters.fromDate, filters.toDate)) {
+        query = query.or(`date.gte.${filters.fromDate},date.lte.${filters.toDate}`);
+      } else {
+        if (filters.fromDate) query = query.gte('date', filters.fromDate);
+        if (filters.toDate) query = query.lte('date', filters.toDate);
+      }
       console.log(`🔍 [fetchLegacyPayments] Ignore: all rows in date column range (due_date can be null)`);
     }
   }
@@ -1679,41 +1745,48 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     console.log(`✅ [fetchLegacyPayments] Fetched ${contactMap.size} contact names for client_ids`);
   }
   
-  // Fetch proforma dates from proformainvoice table for legacy leads
+  // Fetch proforma dates from proformainvoice table for legacy leads (batch to avoid URL/param limits with large date ranges)
   // Match by ppr_id when set (payment plan row id), and by lead_id (+ client_id) when ppr_id is null (lead-level proformas)
   const proformaDateMap = new Map<number, string | null>(); // Key: ppr_id (payment plan row id)
   const leadLevelProformaMap = new Map<string, string | null>(); // Key: "leadId" or "leadId_clientId" for proformas with ppr_id null
   if (leadIds.length > 0) {
     const numericLeadIds = leadIds.map((id) => parseInt(id, 10)).filter((id) => !Number.isNaN(id));
     if (numericLeadIds.length > 0) {
-      const { data: proformas, error: proformasError } = await supabase
-        .from('proformainvoice')
-        .select('ppr_id, client_id, cdate')
-        .in('lead_id', numericLeadIds)
-        .is('cxd_date', null); // Only get active proformas (not cancelled) — include both ppr_id set and null
-      
-      if (!proformasError && proformas) {
-        proformas.forEach((proforma: any) => {
-          const normalizedDate = normalizeDate(proforma.cdate);
-          if (proforma.ppr_id != null) {
-            const pprId = Number(proforma.ppr_id);
-            if (!Number.isNaN(pprId)) {
-              const existingDate = proformaDateMap.get(pprId);
+      const PROFORMA_BATCH = 400;
+      for (let i = 0; i < numericLeadIds.length; i += PROFORMA_BATCH) {
+        const batch = numericLeadIds.slice(i, i + PROFORMA_BATCH);
+        const { data: proformas, error: proformasError } = await supabase
+          .from('proformainvoice')
+          .select('ppr_id, client_id, cdate, lead_id')
+          .in('lead_id', batch)
+          .is('cxd_date', null); // Only get active proformas (not cancelled) — include both ppr_id set and null
+
+        if (proformasError) {
+          console.error('❌ [fetchLegacyPayments] Proforma batch error:', proformasError);
+          continue;
+        }
+        if (proformas) {
+          proformas.forEach((proforma: any) => {
+            const normalizedDate = normalizeDate(proforma.cdate);
+            if (proforma.ppr_id != null) {
+              const pprId = Number(proforma.ppr_id);
+              if (!Number.isNaN(pprId)) {
+                const existingDate = proformaDateMap.get(pprId);
+                if (!existingDate || (normalizedDate && existingDate && normalizedDate > existingDate)) {
+                  proformaDateMap.set(pprId, normalizedDate);
+                }
+              }
+            } else {
+              const leadIdStr = proforma.lead_id?.toString() ?? '';
+              const clientIdStr = proforma.client_id != null ? String(proforma.client_id) : 'any';
+              const key = `${leadIdStr}_${clientIdStr}`;
+              const existingDate = leadLevelProformaMap.get(key);
               if (!existingDate || (normalizedDate && existingDate && normalizedDate > existingDate)) {
-                proformaDateMap.set(pprId, normalizedDate);
+                leadLevelProformaMap.set(key, normalizedDate);
               }
             }
-          } else {
-            // Lead-level proforma (ppr_id null): attribute to all payment rows for this lead (and client if set)
-            const leadIdStr = proforma.lead_id?.toString() ?? '';
-            const clientIdStr = proforma.client_id != null ? String(proforma.client_id) : 'any';
-            const key = `${leadIdStr}_${clientIdStr}`;
-            const existingDate = leadLevelProformaMap.get(key);
-            if (!existingDate || (normalizedDate && existingDate && normalizedDate > existingDate)) {
-              leadLevelProformaMap.set(key, normalizedDate);
-            }
-          }
-        });
+          });
+        }
       }
       console.log(`✅ [fetchLegacyPayments] Fetched ${proformaDateMap.size} proforma dates by ppr_id, ${leadLevelProformaMap.size} lead-level proformas`);
       // Debug 168080: what proforma keys exist for this lead

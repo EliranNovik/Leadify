@@ -46,6 +46,7 @@ const CollectionDueReport = () => {
   const [showOrderDropdown, setShowOrderDropdown] = useState(false);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const [showDepartmentDropdown, setShowDepartmentDropdown] = useState(false);
+  const dropdownTouchHandledRef = useRef(0); // ignore synthetic click after touch (iOS Safari)
   const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
   const [allEmployees, setAllEmployees] = useState<any[]>([]); // Store all employees with photo_url for image display
   const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
@@ -3318,10 +3319,11 @@ const CollectionDueReport = () => {
     setDrawerLeads([]);
   };
 
-  // Close dropdowns when clicking outside
+  // Close dropdowns when clicking/touching outside (touch for iOS)
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
+    const handleClickOutside = (event: MouseEvent | TouchEvent) => {
       const target = event.target as HTMLElement;
+      if (!target?.closest) return;
       if (showOrderDropdown && !target.closest('.dropdown')) {
         setShowOrderDropdown(false);
       }
@@ -3334,8 +3336,12 @@ const CollectionDueReport = () => {
     };
 
     if (showOrderDropdown || showCategoryDropdown || showDepartmentDropdown) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
+      document.addEventListener('mousedown', handleClickOutside as (e: MouseEvent) => void);
+      document.addEventListener('touchstart', handleClickOutside as (e: TouchEvent) => void, { passive: true });
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside as (e: MouseEvent) => void);
+        document.removeEventListener('touchstart', handleClickOutside as (e: TouchEvent) => void);
+      };
     }
   }, [showOrderDropdown, showCategoryDropdown, showDepartmentDropdown]);
 
@@ -3440,11 +3446,22 @@ const CollectionDueReport = () => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Category:</span></label>
-            <div className="dropdown dropdown-bottom w-full">
+            <div className={`dropdown dropdown-bottom dropdown-center w-full ${showCategoryDropdown ? 'dropdown-open' : ''}`}>
               <button
                 type="button"
-                className="btn btn-outline w-full justify-between"
-                onClick={() => setShowCategoryDropdown(!showCategoryDropdown)}
+                className="btn btn-outline w-full justify-between touch-manipulation"
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  dropdownTouchHandledRef.current = Date.now();
+                  setShowCategoryDropdown(prev => !prev);
+                }}
+                onClick={(e) => {
+                  if (Date.now() - dropdownTouchHandledRef.current < 500) {
+                    dropdownTouchHandledRef.current = 0;
+                    return;
+                  }
+                  setShowCategoryDropdown(prev => !prev);
+                }}
               >
                 <span>
                   {Array.isArray(filters.category) && filters.category.length > 0
@@ -3461,47 +3478,47 @@ const CollectionDueReport = () => {
                 </svg>
               </button>
               {showCategoryDropdown && (
-                <ul className="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-full z-[1] border border-gray-200 mt-1 overflow-x-hidden">
-                  <li>
+                <ul className="dropdown-content menu menu-vertical flex-nowrap p-2 shadow-lg bg-base-100 rounded-box w-full min-w-0 z-[9999] border border-gray-200 mt-1" style={{ maxHeight: '240px', overflowY: 'auto', overflowX: 'hidden', flexDirection: 'column', flexWrap: 'nowrap' }}>
+                  <li className="min-w-0">
                     <button
                       type="button"
-                      className="btn btn-sm btn-ghost w-full justify-start"
+                      className="btn btn-sm btn-ghost w-full justify-start min-w-0"
                       onClick={handleSelectAllCategories}
                     >
                       Select All
                     </button>
                   </li>
-                  <li>
+                  <li className="min-w-0">
                     <button
                       type="button"
-                      className="btn btn-sm btn-ghost w-full justify-start"
+                      className="btn btn-sm btn-ghost w-full justify-start min-w-0"
                       onClick={handleClearAllCategories}
                     >
                       Clear All
                     </button>
                   </li>
-                  <li className="divider my-1"></li>
+                  <li className="divider my-1 min-w-0"></li>
                   {categories.map(cat => {
                     const isSelected = Array.isArray(filters.category) && filters.category.includes(cat.id);
                     return (
-                      <li key={cat.id}>
+                      <li key={cat.id} className="min-w-0">
                         <button
                           type="button"
-                          className="w-full text-left"
+                          className="w-full text-left min-w-0"
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
                             handleCategoryToggle(cat.id);
                           }}
                         >
-                          <label className="label cursor-pointer justify-start gap-2 py-2 hover:bg-gray-100 rounded w-full">
+                          <label className="label cursor-pointer justify-start gap-2 py-2 hover:bg-gray-100 rounded w-full min-w-0">
                             <input
                               type="checkbox"
-                              className="checkbox checkbox-sm pointer-events-none"
+                              className="checkbox checkbox-sm pointer-events-none shrink-0"
                               checked={isSelected}
                               readOnly
                             />
-                            <span className="label-text flex-1 break-words">{cat.name}</span>
+                            <span className="label-text flex-1 min-w-0 break-words">{cat.name}</span>
                           </label>
                         </button>
                       </li>
@@ -3513,11 +3530,22 @@ const CollectionDueReport = () => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Order:</span></label>
-            <div className="dropdown dropdown-bottom w-full">
+            <div className={`dropdown dropdown-bottom dropdown-center w-full ${showOrderDropdown ? 'dropdown-open' : ''}`}>
               <button
                 type="button"
-                className="btn btn-outline w-full justify-between"
-                onClick={() => setShowOrderDropdown(!showOrderDropdown)}
+                className="btn btn-outline w-full justify-between touch-manipulation"
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  dropdownTouchHandledRef.current = Date.now();
+                  setShowOrderDropdown(prev => !prev);
+                }}
+                onClick={(e) => {
+                  if (Date.now() - dropdownTouchHandledRef.current < 500) {
+                    dropdownTouchHandledRef.current = 0;
+                    return;
+                  }
+                  setShowOrderDropdown(prev => !prev);
+                }}
               >
                 <span>
                   {Array.isArray(filters.order) && filters.order.length > 0
@@ -3534,7 +3562,7 @@ const CollectionDueReport = () => {
                 </svg>
               </button>
               {showOrderDropdown && (
-                <ul className="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-full z-[1] border border-gray-200 mt-1">
+                <ul className="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-full z-[9999] border border-gray-200 mt-1">
                   <li>
                     <button
                       type="button"
@@ -3592,11 +3620,22 @@ const CollectionDueReport = () => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Department:</span></label>
-            <div className="dropdown dropdown-bottom w-full">
+            <div className={`dropdown dropdown-bottom dropdown-center w-full ${showDepartmentDropdown ? 'dropdown-open' : ''}`}>
               <button
                 type="button"
-                className="btn btn-outline w-full justify-between"
-                onClick={() => setShowDepartmentDropdown(!showDepartmentDropdown)}
+                className="btn btn-outline w-full justify-between touch-manipulation"
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  dropdownTouchHandledRef.current = Date.now();
+                  setShowDepartmentDropdown(prev => !prev);
+                }}
+                onClick={(e) => {
+                  if (Date.now() - dropdownTouchHandledRef.current < 500) {
+                    dropdownTouchHandledRef.current = 0;
+                    return;
+                  }
+                  setShowDepartmentDropdown(prev => !prev);
+                }}
               >
                 <span>
                   {Array.isArray(filters.department) && filters.department.length > 0
@@ -3613,47 +3652,47 @@ const CollectionDueReport = () => {
                 </svg>
               </button>
               {showDepartmentDropdown && (
-                <ul className="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-full z-[1] border border-gray-200 mt-1 overflow-x-hidden">
-                  <li>
+                <ul className="dropdown-content menu menu-vertical flex-nowrap p-2 shadow-lg bg-base-100 rounded-box w-full min-w-0 z-[9999] border border-gray-200 mt-1" style={{ maxHeight: '240px', overflowY: 'auto', overflowX: 'hidden', flexDirection: 'column', flexWrap: 'nowrap' }}>
+                  <li className="min-w-0">
                     <button
                       type="button"
-                      className="btn btn-sm btn-ghost w-full justify-start"
+                      className="btn btn-sm btn-ghost w-full justify-start min-w-0"
                       onClick={handleSelectAllDepartments}
                     >
                       Select All
                     </button>
                   </li>
-                  <li>
+                  <li className="min-w-0">
                     <button
                       type="button"
-                      className="btn btn-sm btn-ghost w-full justify-start"
+                      className="btn btn-sm btn-ghost w-full justify-start min-w-0"
                       onClick={handleClearAllDepartments}
                     >
                       Clear All
                     </button>
                   </li>
-                  <li className="divider my-1"></li>
+                  <li className="divider my-1 min-w-0"></li>
                   {departments.map(dept => {
                     const isSelected = Array.isArray(filters.department) && filters.department.includes(dept.id);
                     return (
-                      <li key={dept.id}>
+                      <li key={dept.id} className="min-w-0">
                         <button
                           type="button"
-                          className="w-full text-left"
+                          className="w-full text-left min-w-0"
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
                             handleDepartmentToggle(dept.id);
                           }}
                         >
-                          <label className="label cursor-pointer justify-start gap-2 py-2 hover:bg-gray-100 rounded w-full">
+                          <label className="label cursor-pointer justify-start gap-2 py-2 hover:bg-gray-100 rounded w-full min-w-0">
                             <input
                               type="checkbox"
-                              className="checkbox checkbox-sm pointer-events-none"
+                              className="checkbox checkbox-sm pointer-events-none shrink-0"
                               checked={isSelected}
                               readOnly
                             />
-                            <span className="label-text flex-1 break-words">{dept.name}</span>
+                            <span className="label-text flex-1 min-w-0 break-words">{dept.name}</span>
                           </label>
                         </button>
                       </li>

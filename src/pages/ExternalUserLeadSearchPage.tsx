@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
-import LeadDetailsModal from '../components/LeadDetailsModal';
+import ExternalUserLeadDetailsModal from '../components/ExternalUserLeadDetailsModal';
 import { usePersistedState, usePersistedFilters } from '../hooks/usePersistedState';
 
 // Static dropdown options - moved outside component to prevent re-creation on every render
@@ -3407,9 +3407,10 @@ const ExternalUserLeadSearchPage: React.FC = () => {
         </div>
       )}
 
-      {/* Lead Details Modal */}
-      <LeadDetailsModal
-        lead={selectedLead}
+      {/* Lead Details Modal: ClientHeader + InfoTab only (for external users) */}
+      <ExternalUserLeadDetailsModal
+        leadId={selectedLead?.id ?? ''}
+        leadName={selectedLead?.name}
         isOpen={isModalOpen}
         onClose={() => {
           setIsModalOpen(false);

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
-import { MagnifyingGlassIcon, Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
+import { Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
+import { Search } from 'lucide-react';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 import { useTheme } from '../hooks/useTheme';
@@ -877,29 +878,37 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
           </tr>
         </thead>
         <tbody>
-          {leads.map((lead, index) => (
-            <tr
-              key={lead.id || index}
-              className="hover cursor-pointer transition-colors duration-200 hover:bg-blue-50 active:bg-blue-100"
-              onClick={(e) => {
-                // Pass the full lead object so we can access manual_id and other properties
-                onLeadClick(lead, e);
-              }}
-              title={`Click to view lead ${(lead as any).display_lead_number || (lead as any).lead_number || lead.id}`}
-            >
-              {selectedColumns.map((columnKey) => {
-                const columnValue = getColumnValue(lead, columnKey);
-                const titleText = typeof columnValue === 'string' ? columnValue : (columnValue?.props?.title || '');
-                return (
-                  <td key={columnKey} className="max-w-xs">
-                    <div className="truncate" title={titleText}>
-                      {columnValue}
-                    </div>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
+          {leads.map((lead, index) => {
+            const anyLead = lead as any;
+            const isLegacyInactive = anyLead.lead_type === 'legacy' && anyLead.status != null && (Number(anyLead.status) === 10 || anyLead.status === '10');
+            const isNewInactive = anyLead.lead_type === 'new' && anyLead.unactivated_at != null;
+            const isInactive = isLegacyInactive || isNewInactive;
+            const rowClasses = isInactive
+              ? 'bg-gray-200 text-black hover:bg-gray-300 cursor-pointer transition-colors duration-200 [&_.badge]:!bg-gray-300 [&_.badge]:!border-gray-400 [&_.badge]:![color:black]'
+              : 'hover cursor-pointer transition-colors duration-200 hover:bg-blue-50 active:bg-blue-100';
+            return (
+              <tr
+                key={lead.id || index}
+                className={rowClasses}
+                onClick={(e) => {
+                  onLeadClick(lead, e);
+                }}
+                title={`Click to view lead ${anyLead.display_lead_number || anyLead.lead_number || lead.id}`}
+              >
+                {selectedColumns.map((columnKey) => {
+                  const columnValue = getColumnValue(lead, columnKey);
+                  const titleText = typeof columnValue === 'string' ? columnValue : (columnValue?.props?.title || '');
+                  return (
+                    <td key={columnKey} className="max-w-xs">
+                      <div className="truncate" title={titleText}>
+                        {columnValue}
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -908,10 +917,11 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
 
 const LeadSearchPage: React.FC = () => {
   const { isAltTheme } = useTheme();
-  // State for sticky search button on mobile
+  // State for sticky search button on mobile (circle only when scrolled down; full bar when scrolled up or near top)
   const [showStickySearchButton, setShowStickySearchButton] = useState(false);
-  const scrollThreshold = 100; // Show sticky button after scrolling 100px
-  
+  const scrollThreshold = 100; // Show circle button after scrolling down past this
+  const lastScrollYRef = useRef(0);
+
   // Ref for results section to scroll to after search
   const resultsRef = useRef<HTMLDivElement>(null);
 
@@ -1070,29 +1080,32 @@ const LeadSearchPage: React.FC = () => {
     });
   }, []);
 
-  // Handle scroll detection for sticky search button on mobile
+  // Handle scroll for mobile: full bar when near top or when user scrolls up; circle only when scrolled down and scrolling down
   useEffect(() => {
     const handleScroll = () => {
-      // Check both window scroll and main element scroll
       const windowScrollY = window.scrollY || window.pageYOffset || 0;
-
-      // Also check the main element scroll (since App.tsx has overflow-y-auto on main)
       const mainElement = document.querySelector('main');
       const mainScrollTop = mainElement ? mainElement.scrollTop : 0;
-
-      // Use whichever is greater (handles both cases)
       const scrollY = Math.max(windowScrollY, mainScrollTop);
 
-      const shouldShow = scrollY > scrollThreshold;
-      setShowStickySearchButton(shouldShow);
+      const last = lastScrollYRef.current;
+      const scrollingUp = scrollY < last;
+      lastScrollYRef.current = scrollY;
+
+      // Full bar when: near top (scrollY <= threshold) OR user just scrolled up. Circle only when scrolled down past threshold and not scrolling up.
+      const showCircleOnly = scrollY > scrollThreshold && !scrollingUp;
+      setShowStickySearchButton(showCircleOnly);
     };
 
-    // Initial check after a small delay to ensure DOM is ready
-    const timeoutId = setTimeout(handleScroll, 100);
+    const timeoutId = setTimeout(() => {
+      const windowScrollY = window.scrollY || window.pageYOffset || 0;
+      const mainElement = document.querySelector('main');
+      const mainScrollTop = mainElement ? mainElement.scrollTop : 0;
+      lastScrollYRef.current = Math.max(windowScrollY, mainScrollTop);
+      handleScroll();
+    }, 100);
 
-    // Listen to both window and main element scroll
     window.addEventListener('scroll', handleScroll, { passive: true });
-
     const mainElement = document.querySelector('main');
     if (mainElement) {
       mainElement.addEventListener('scroll', handleScroll, { passive: true });
@@ -1241,12 +1254,12 @@ const LeadSearchPage: React.FC = () => {
         if (error) throw error;
 
         const languages = data?.map(language => language.name) || [];
-        // Add "N/A" option to filter for leads with null language_id and language
+        // Add "N/A" option to filter for leads with null language_id
         setLanguageOptions([...languages, 'N/A']);
       } catch (error) {
         console.error('Error fetching language options:', error);
         // Fallback to hardcoded options if database fetch fails
-        // Add "N/A" option to filter for leads with null language_id and language
+        // Add "N/A" option to filter for leads with null language_id
         setLanguageOptions([
           "English", "Hebrew", "German", "French", "Russian", "Other", "N/A"
         ]);
@@ -1831,6 +1844,26 @@ const LeadSearchPage: React.FC = () => {
       console.error('❌ [Category Mapping] Error fetching categories for mapping:', error);
     }
 
+    // Fetch languages for language_id filter (name -> id)
+    const languageNameToIdMapping = new Map<string, number>();
+    try {
+      const { data: languagesData } = await supabase
+        .from('misc_language')
+        .select('id, name')
+        .order('name');
+      if (languagesData) {
+        languagesData.forEach((lang: { id: number; name: string }) => {
+          languageNameToIdMapping.set(lang.name, lang.id);
+          if (lang.name && lang.name.toUpperCase() !== lang.name) {
+            languageNameToIdMapping.set(lang.name.toUpperCase(), lang.id);
+          }
+        });
+        console.log('✅ [Language Mapping] Created language name to ID mapping:', languageNameToIdMapping.size);
+      }
+    } catch (error) {
+      console.error('❌ [Language Mapping] Error fetching languages:', error);
+    }
+
     try {
       // Helper to build UTC range for a given local date string (YYYY-MM-DD)
       const buildUtcStartOfDay = (dateStr: string) => {
@@ -1952,17 +1985,14 @@ const LeadSearchPage: React.FC = () => {
         console.error('❌ Category join test for legacy leads failed:', testError);
       }
 
-      // Search new leads table with category join for main category information
+      // Search new leads table with joins for category, source, language (no client-side mapping)
       let newLeadsQuery = supabase
         .from('leads')
         .select(`
           *,
-          misc_category!category_id(
-            id,
-            name,
-            parent_id,
-            misc_maincategory!parent_id(id, name)
-          )
+          misc_category!fk_leads_category_id(id, name, parent_id, misc_maincategory!parent_id(id, name)),
+          misc_leadsource!fk_leads_source_id(id, name),
+          misc_language!fk_leads_language_id(id, name)
         `);
 
       console.log('📋 New leads query base:', newLeadsQuery);
@@ -2120,9 +2150,8 @@ const LeadSearchPage: React.FC = () => {
         console.log('🏷️ [New Leads Category Filter] No category filter - filters.category is empty or null');
       }
       if (filters.language && filters.language.length > 0) {
-        console.log('🌐 Adding language filter for new leads:', filters.language);
+        console.log('🌐 Adding language filter for new leads (language_id only):', filters.language);
 
-        // Check if filtering for N/A
         const hasNAFilter = filters.language.some(lang =>
           lang.toUpperCase() === 'N/A' || lang === 'N/A'
         );
@@ -2130,146 +2159,24 @@ const LeadSearchPage: React.FC = () => {
           lang.toUpperCase() !== 'N/A' && lang !== 'N/A'
         );
 
+        const languageIds: number[] = [];
+        nonNALanguages.forEach(lang => {
+          const id = languageNameToIdMapping.get(lang) ?? languageNameToIdMapping.get(lang.toUpperCase());
+          if (id != null) languageIds.push(id);
+        });
+
         if (hasNAFilter && nonNALanguages.length === 0) {
-          // Only filtering for N/A - find leads where language_id is null AND language is null/empty/N/A
-          console.log('🌐 Filtering for N/A language (null language_id AND null/empty/N/A language)');
-          // Use chained filters: language_id must be null (this creates an AND condition with subsequent filters)
-          // Then we'll check language field - but we need to ensure BOTH conditions are met
-          // Since Supabase PostgREST doesn't support complex nested AND/OR easily,
-          // we'll filter by language_id first, then handle language null/empty/N/A in the query
-          // The safest approach: filter by language_id null first (main indicator)
           newLeadsQuery = newLeadsQuery.is('language_id', null);
-          // Then also check that language is null or empty or "N/A"
-          // We can't use .or() after .is() easily, so we'll filter by language_id null first
-          // and accept that this is the primary check. Leads with language_id null but language set
-          // are edge cases that shouldn't exist in normal data.
-          // For strict matching, we'd need to filter client-side or use a custom query
-        } else if (hasNAFilter && nonNALanguages.length > 0) {
-          // Filtering for both N/A and specific languages
-          console.log('🌐 Filtering for both N/A and specific languages:', nonNALanguages);
-
-          // Map language codes to full names for matching
-          const languageCodeToFullName: Record<string, string> = {
-            'EN': 'English',
-            'ENGLISH': 'English',
-            'HE': 'Hebrew',
-            'HEBREW': 'Hebrew',
-            'DE': 'German',
-            'GERMAN': 'German',
-            'FR': 'French',
-            'FRENCH': 'French',
-            'ES': 'Spanish',
-            'SPANISH': 'Spanish',
-            'RU': 'Russian',
-            'RUSSIAN': 'Russian',
-            'AR': 'Arabic',
-            'ARABIC': 'Arabic',
-            'PT': 'Portuguese',
-            'POR': 'Portuguese',
-            'PORTUGUESE': 'Portuguese',
-          };
-
-          // Expand filter array to include both codes and full names for non-N/A languages
-          const expandedLanguageFilter = new Set<string>();
-          nonNALanguages.forEach(lang => {
-            const upperLang = lang.toUpperCase();
-            expandedLanguageFilter.add(lang); // Add original value (case-sensitive match)
-            expandedLanguageFilter.add(upperLang); // Add uppercase version
-
-            // If it's a code, also add the full name
-            if (languageCodeToFullName[upperLang]) {
-              expandedLanguageFilter.add(languageCodeToFullName[upperLang]);
-            }
-
-            // If it's already a full name, also try to find if it maps to a code
-            Object.entries(languageCodeToFullName).forEach(([code, fullName]) => {
-              if (fullName.toLowerCase() === lang.toLowerCase()) {
-                expandedLanguageFilter.add(code);
-                expandedLanguageFilter.add(fullName);
-              }
-            });
-          });
-
-          const expandedFilterArray = Array.from(expandedLanguageFilter);
-
-          // OR condition: (language_id is null OR language is null/N/A) OR language in expanded array
-          // Build OR condition string
-          const orConditions = [
-            'language_id.is.null',
-            'language.is.null',
-            'language.eq.N/A'
-          ];
-
-          // Add language matches
-          expandedFilterArray.forEach(lang => {
-            orConditions.push(`language.eq.${lang}`);
-          });
-
+        } else if (hasNAFilter && languageIds.length > 0) {
+          const orConditions = ['language_id.is.null'];
+          languageIds.forEach(id => orConditions.push(`language_id.eq.${id}`));
           newLeadsQuery = newLeadsQuery.or(orConditions.join(','));
-
-          console.log('🌐 Mixed language filter (N/A + specific languages):', {
-            original: filters.language,
-            expanded: expandedFilterArray,
-            orConditions
-          });
-        } else {
-          // Only filtering for specific languages (not N/A) - exclude N/A/null values
-          // Map language codes to full names for matching
-          const languageCodeToFullName: Record<string, string> = {
-            'EN': 'English',
-            'ENGLISH': 'English',
-            'HE': 'Hebrew',
-            'HEBREW': 'Hebrew',
-            'DE': 'German',
-            'GERMAN': 'German',
-            'FR': 'French',
-            'FRENCH': 'French',
-            'ES': 'Spanish',
-            'SPANISH': 'Spanish',
-            'RU': 'Russian',
-            'RUSSIAN': 'Russian',
-            'AR': 'Arabic',
-            'ARABIC': 'Arabic',
-            'PT': 'Portuguese',
-            'POR': 'Portuguese',
-            'PORTUGUESE': 'Portuguese',
-          };
-
-          // Expand filter array to include both codes and full names
-          const expandedLanguageFilter = new Set<string>();
-          nonNALanguages.forEach(lang => {
-            const upperLang = lang.toUpperCase();
-            expandedLanguageFilter.add(lang); // Add original value (case-sensitive match)
-            expandedLanguageFilter.add(upperLang); // Add uppercase version
-
-            // If it's a code, also add the full name
-            if (languageCodeToFullName[upperLang]) {
-              expandedLanguageFilter.add(languageCodeToFullName[upperLang]);
-            }
-
-            // If it's already a full name, also try to find if it maps to a code
-            Object.entries(languageCodeToFullName).forEach(([code, fullName]) => {
-              if (fullName.toLowerCase() === lang.toLowerCase()) {
-                expandedLanguageFilter.add(code);
-                expandedLanguageFilter.add(fullName);
-              }
-            });
-          });
-
-          const expandedFilterArray = Array.from(expandedLanguageFilter);
-          console.log('🌐 Expanded language filter (excluding N/A):', {
-            original: filters.language,
-            expanded: expandedFilterArray
-          });
-
-          // Use in() to match specific languages
-          // Exclude null/empty/N/A language values to prevent matching leads with N/A language
-          // Note: We don't check language_id because some leads might only have language text
-          newLeadsQuery = newLeadsQuery
-            .in('language', expandedFilterArray)
-            .not('language', 'is', null)
-            .neq('language', '')
-            .neq('language', 'N/A');
+        } else if (languageIds.length > 0) {
+          if (languageIds.length === 1) {
+            newLeadsQuery = newLeadsQuery.eq('language_id', languageIds[0]);
+          } else {
+            newLeadsQuery = newLeadsQuery.in('language_id', languageIds);
+          }
         }
       }
       if (filters.status && filters.status.length > 0) {
@@ -2548,15 +2455,20 @@ const LeadSearchPage: React.FC = () => {
         }
       }
 
-      // Search legacy leads table with joins for language only (source and stage lookup done manually)
+      // Search legacy leads table with joins for language, category, source, employees
       let legacyLeadsQuery = supabase
         .from('leads_lead')
         .select(`
           *,
-          misc_language!leads_lead_language_id_fkey (
-            id,
-            name
-          )
+          misc_language!leads_lead_language_id_fkey(id, name),
+          misc_category!leads_lead_category_id_fkey(id, name, parent_id, misc_maincategory!parent_id(id, name)),
+          misc_leadsource!leads_lead_source_id_fkey(id, name),
+          scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
+          manager_employee:tenants_employee!fk_leads_lead_meeting_manager_id(id, display_name),
+          lawyer_employee:tenants_employee!fk_leads_lead_meeting_lawyer_id(id, display_name),
+          expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
+          closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name),
+          handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name)
         `);
 
       console.log('📋 Legacy leads query base:', legacyLeadsQuery);
@@ -2632,9 +2544,8 @@ const LeadSearchPage: React.FC = () => {
         console.log('🏷️ [Legacy Leads Category Filter] No category filter - filters.category is empty or null');
       }
       if (filters.language && filters.language.length > 0) {
-        console.log('🌐 Adding language filter for legacy leads:', filters.language);
+        console.log('🌐 Adding language filter for legacy leads (language_id only):', filters.language);
 
-        // Check if filtering for N/A
         const hasNAFilter = filters.language.some(lang =>
           lang.toUpperCase() === 'N/A' || lang === 'N/A'
         );
@@ -2642,111 +2553,23 @@ const LeadSearchPage: React.FC = () => {
           lang.toUpperCase() !== 'N/A' && lang !== 'N/A'
         );
 
-        // Map language codes to full names for matching
-        const languageCodeToFullName: Record<string, string> = {
-          'EN': 'English',
-          'ENGLISH': 'English',
-          'HE': 'Hebrew',
-          'HEBREW': 'Hebrew',
-          'DE': 'German',
-          'GERMAN': 'German',
-          'FR': 'French',
-          'FRENCH': 'French',
-          'ES': 'Spanish',
-          'SPANISH': 'Spanish',
-          'RU': 'Russian',
-          'RUSSIAN': 'Russian',
-          'AR': 'Arabic',
-          'ARABIC': 'Arabic',
-          'PT': 'Portuguese',
-          'POR': 'Portuguese',
-          'PORTUGUESE': 'Portuguese',
-        };
+        const legacyLanguageIds: number[] = [];
+        nonNALanguages.forEach(lang => {
+          const id = languageNameToIdMapping.get(lang) ?? languageNameToIdMapping.get(lang.toUpperCase());
+          if (id != null) legacyLanguageIds.push(id);
+        });
 
         if (hasNAFilter && nonNALanguages.length === 0) {
-          // Only filtering for N/A - find leads where language_id is null
-          // For legacy leads, language_id is the primary field, so we just check that
-          console.log('🌐 Filtering for N/A language (null language_id) for legacy leads');
           legacyLeadsQuery = legacyLeadsQuery.is('language_id', null);
-        } else if (hasNAFilter && nonNALanguages.length > 0) {
-          // Filtering for both N/A and specific languages
-          console.log('🌐 Filtering for both N/A and specific languages for legacy leads:', nonNALanguages);
-
-          // Expand filter array to include both codes and full names for non-N/A languages
-          const expandedLanguageFilter = new Set<string>();
-          nonNALanguages.forEach(lang => {
-            const upperLang = lang.toUpperCase();
-            expandedLanguageFilter.add(lang); // Add original value
-            expandedLanguageFilter.add(upperLang); // Add uppercase version
-
-            // If it's a code, also add the full name
-            if (languageCodeToFullName[upperLang]) {
-              expandedLanguageFilter.add(languageCodeToFullName[upperLang]);
-            }
-
-            // If it's already a full name, also try to find if it maps to a code
-            Object.entries(languageCodeToFullName).forEach(([code, fullName]) => {
-              if (fullName.toLowerCase() === lang.toLowerCase()) {
-                expandedLanguageFilter.add(code);
-                expandedLanguageFilter.add(fullName);
-              }
-            });
-          });
-
-          const expandedFilterArray = Array.from(expandedLanguageFilter);
-
-          // OR condition: language_id is null OR misc_language.name in expanded array
+        } else if (hasNAFilter && legacyLanguageIds.length > 0) {
           const orConditions = ['language_id.is.null'];
-          expandedFilterArray.forEach(lang => {
-            orConditions.push(`misc_language.name.eq.${lang}`);
-          });
-
+          legacyLanguageIds.forEach(id => orConditions.push(`language_id.eq.${id}`));
           legacyLeadsQuery = legacyLeadsQuery.or(orConditions.join(','));
-
-          console.log('🌐 Mixed language filter (N/A + specific languages) for legacy leads:', {
-            original: filters.language,
-            expanded: expandedFilterArray,
-            orConditions
-          });
-        } else {
-          // Only filtering for specific languages (not N/A) - exclude N/A/null values
-          // Expand filter array to include both codes and full names
-          const expandedLanguageFilter = new Set<string>();
-          nonNALanguages.forEach(lang => {
-            const upperLang = lang.toUpperCase();
-            expandedLanguageFilter.add(lang); // Add original value
-            expandedLanguageFilter.add(upperLang); // Add uppercase version
-
-            // If it's a code, also add the full name
-            if (languageCodeToFullName[upperLang]) {
-              expandedLanguageFilter.add(languageCodeToFullName[upperLang]);
-            }
-
-            // If it's already a full name, also try to find if it maps to a code
-            Object.entries(languageCodeToFullName).forEach(([code, fullName]) => {
-              if (fullName.toLowerCase() === lang.toLowerCase()) {
-                expandedLanguageFilter.add(code);
-                expandedLanguageFilter.add(fullName);
-              }
-            });
-          });
-
-          const expandedFilterArray = Array.from(expandedLanguageFilter);
-          console.log('🌐 Expanded language filter (excluding N/A) for legacy leads:', {
-            original: filters.language,
-            expanded: expandedFilterArray
-          });
-
-          // Use in() to match specific languages and explicitly exclude null language_id
-          // This prevents matching leads with N/A language
-          if (expandedFilterArray.length === 1) {
-            legacyLeadsQuery = legacyLeadsQuery
-              .eq('misc_language.name', expandedFilterArray[0])
-              .not('language_id', 'is', null);
+        } else if (legacyLanguageIds.length > 0) {
+          if (legacyLanguageIds.length === 1) {
+            legacyLeadsQuery = legacyLeadsQuery.eq('language_id', legacyLanguageIds[0]);
           } else {
-            legacyLeadsQuery = legacyLeadsQuery
-              .in('misc_language.name', expandedFilterArray)
-              .not('language_id', 'is', null);
+            legacyLeadsQuery = legacyLeadsQuery.in('language_id', legacyLanguageIds);
           }
         }
       }
@@ -3358,26 +3181,16 @@ const LeadSearchPage: React.FC = () => {
 
       console.log('🔄 Processing new leads...');
 
-      // If filtering for N/A only, filter out leads with non-empty language values
+      // If filtering for N/A only, filter out leads with non-null language_id (safety; server already filters)
       const hasNAFilterOnly = filters.language &&
         filters.language.length === 1 &&
         (filters.language[0].toUpperCase() === 'N/A' || filters.language[0] === 'N/A') &&
         filters.language.every(lang => lang.toUpperCase() === 'N/A' || lang === 'N/A');
 
-      // Filter leads if N/A only filter is active
       let filteredNewLeads = newLeadsResult.data || [];
       if (hasNAFilterOnly) {
-        console.log('🌐 Applying client-side N/A filter to new leads');
-        filteredNewLeads = filteredNewLeads.filter(lead => {
-          // language_id must be null AND language must be null/empty/N/A
-          const languageIdNull = lead.language_id === null || lead.language_id === undefined;
-          const languageEmpty = !lead.language ||
-            lead.language === null ||
-            lead.language === '' ||
-            lead.language === 'N/A' ||
-            String(lead.language).trim() === '';
-          return languageIdNull && languageEmpty;
-        });
+        console.log('🌐 Applying client-side N/A filter to new leads (language_id only)');
+        filteredNewLeads = filteredNewLeads.filter(lead => lead.language_id === null || lead.language_id === undefined);
         console.log('🌐 Client-side N/A filter result:', {
           before: (newLeadsResult.data || []).length,
           after: filteredNewLeads.length
@@ -3473,12 +3286,9 @@ const LeadSearchPage: React.FC = () => {
             .from('leads')
             .select(`
               *,
-              misc_category!category_id(
-                id,
-                name,
-                parent_id,
-                misc_maincategory!parent_id(id, name)
-              )
+              misc_category!fk_leads_category_id(id, name, parent_id, misc_maincategory!parent_id(id, name)),
+              misc_leadsource!fk_leads_source_id(id, name),
+              misc_language!fk_leads_language_id(id, name)
             `);
 
           // Apply all the same filters as newLeadsQuery, but skip country_id
@@ -3521,68 +3331,27 @@ const LeadSearchPage: React.FC = () => {
               }
             }
           }
-          // Language filter
+          // Language filter (language_id only)
           if (filters.language && filters.language.length > 0) {
             const hasNAFilter = filters.language.some(lang => lang.toUpperCase() === 'N/A' || lang === 'N/A');
             const nonNALanguages = filters.language.filter(lang => lang.toUpperCase() !== 'N/A' && lang !== 'N/A');
+            const phoneLangIds: number[] = [];
+            nonNALanguages.forEach(lang => {
+              const id = languageNameToIdMapping.get(lang) ?? languageNameToIdMapping.get(lang.toUpperCase());
+              if (id != null) phoneLangIds.push(id);
+            });
             if (hasNAFilter && nonNALanguages.length === 0) {
               phoneCheckQuery = phoneCheckQuery.is('language_id', null);
-            } else if (hasNAFilter && nonNALanguages.length > 0) {
-              const languageCodeToFullName: Record<string, string> = {
-                'EN': 'English', 'ENGLISH': 'English', 'HE': 'Hebrew', 'HEBREW': 'Hebrew',
-                'DE': 'German', 'GERMAN': 'German', 'FR': 'French', 'FRENCH': 'French',
-                'ES': 'Spanish', 'SPANISH': 'Spanish', 'RU': 'Russian', 'RUSSIAN': 'Russian',
-                'AR': 'Arabic', 'ARABIC': 'Arabic', 'PT': 'Portuguese', 'POR': 'Portuguese', 'PORTUGUESE': 'Portuguese',
-              };
-              const expandedLanguageFilter = new Set<string>();
-              nonNALanguages.forEach(lang => {
-                const upperLang = lang.toUpperCase();
-                expandedLanguageFilter.add(lang);
-                expandedLanguageFilter.add(upperLang);
-                if (languageCodeToFullName[upperLang]) {
-                  expandedLanguageFilter.add(languageCodeToFullName[upperLang]);
-                }
-                Object.entries(languageCodeToFullName).forEach(([code, fullName]) => {
-                  if (fullName.toLowerCase() === lang.toLowerCase()) {
-                    expandedLanguageFilter.add(code);
-                    expandedLanguageFilter.add(fullName);
-                  }
-                });
-              });
-              const expandedFilterArray = Array.from(expandedLanguageFilter);
-              const orConditions = ['language_id.is.null', 'language.is.null', 'language.eq.N/A'];
-              expandedFilterArray.forEach(lang => {
-                orConditions.push(`language.eq.${lang}`);
-              });
+            } else if (hasNAFilter && phoneLangIds.length > 0) {
+              const orConditions = ['language_id.is.null'];
+              phoneLangIds.forEach(id => orConditions.push(`language_id.eq.${id}`));
               phoneCheckQuery = phoneCheckQuery.or(orConditions.join(','));
-            } else {
-              const languageCodeToFullName: Record<string, string> = {
-                'EN': 'English', 'ENGLISH': 'English', 'HE': 'Hebrew', 'HEBREW': 'Hebrew',
-                'DE': 'German', 'GERMAN': 'German', 'FR': 'French', 'FRENCH': 'French',
-                'ES': 'Spanish', 'SPANISH': 'Spanish', 'RU': 'Russian', 'RUSSIAN': 'Russian',
-                'AR': 'Arabic', 'ARABIC': 'Arabic', 'PT': 'Portuguese', 'POR': 'Portuguese', 'PORTUGUESE': 'Portuguese',
-              };
-              const expandedLanguageFilter = new Set<string>();
-              nonNALanguages.forEach(lang => {
-                const upperLang = lang.toUpperCase();
-                expandedLanguageFilter.add(lang);
-                expandedLanguageFilter.add(upperLang);
-                if (languageCodeToFullName[upperLang]) {
-                  expandedLanguageFilter.add(languageCodeToFullName[upperLang]);
-                }
-                Object.entries(languageCodeToFullName).forEach(([code, fullName]) => {
-                  if (fullName.toLowerCase() === lang.toLowerCase()) {
-                    expandedLanguageFilter.add(code);
-                    expandedLanguageFilter.add(fullName);
-                  }
-                });
-              });
-              const expandedFilterArray = Array.from(expandedLanguageFilter);
-              phoneCheckQuery = phoneCheckQuery
-                .in('language', expandedFilterArray)
-                .not('language', 'is', null)
-                .neq('language', '')
-                .neq('language', 'N/A');
+            } else if (phoneLangIds.length > 0) {
+              if (phoneLangIds.length === 1) {
+                phoneCheckQuery = phoneCheckQuery.eq('language_id', phoneLangIds[0]);
+              } else {
+                phoneCheckQuery = phoneCheckQuery.in('language_id', phoneLangIds);
+              }
             }
           }
           // Status filter
@@ -3842,11 +3611,14 @@ const LeadSearchPage: React.FC = () => {
           }
         }
 
+        const leadAny = lead as any;
         return {
           ...lead,
           lead_type: 'new',
           display_lead_number: String(displayLeadNumber),
           category: formatCategoryDisplay(lead),
+          source: leadAny.misc_leadsource?.name ?? lead.source,
+          language: leadAny.misc_language?.name ?? lead.language,
           roles: {
             scheduler: lead.scheduler || null,
             manager: lead.manager || null,
@@ -3866,17 +3638,18 @@ const LeadSearchPage: React.FC = () => {
         console.log('🔍 First legacy lead sample data:', legacyLeadsResult.data[0]);
       }
 
-      // Create source, stage, category, and employee mapping for legacy leads
+      // Create source, stage, category, language, and employee mapping for legacy leads
       const sourceMapping = new Map<number, string>();
       const stageMapping = new Map<number, string>();
       const categoryMapping = new Map<number, string>();
-      const employeeMapping = new Map<number, string>();
+      const languageIdToName = new Map<number, string>();
 
       try {
-        const [sourcesResult, stagesResult, categoriesResult, employeesResult] = await Promise.all([
+        const [sourcesResult, stagesResult, categoriesResult, languagesResult, employeesResult] = await Promise.all([
           supabase.from('misc_leadsource').select('id, name'),
           supabase.from('lead_stages').select('id, name'),
           supabase.from('misc_category').select('id, name, parent_id, misc_maincategory!parent_id(id, name)'),
+          supabase.from('misc_language').select('id, name'),
           supabase.from('tenants_employee').select('id, display_name').not('display_name', 'is', null)
         ]);
 
@@ -3910,6 +3683,13 @@ const LeadSearchPage: React.FC = () => {
             categoryMapping.set(category.id, categoryName);
           });
           console.log('✅ Loaded category mapping:', categoryMapping.size, 'categories');
+        }
+
+        if (languagesResult.data) {
+          languagesResult.data.forEach((lang: { id: number; name: string }) => {
+            languageIdToName.set(lang.id, lang.name);
+          });
+          console.log('✅ Loaded language mapping:', languageIdToName.size, 'languages');
         }
 
         if (employeesResult.data) {
@@ -3970,29 +3750,54 @@ const LeadSearchPage: React.FC = () => {
         });
       }
 
-      // Map legacy leads to match new leads format using joined data
+      const fromJoin = (rel: any) => {
+        const r = Array.isArray(rel) ? rel[0] : rel;
+        const name = r?.display_name ?? r?.name;
+        return name && String(name).trim() ? String(name).trim() : null;
+      };
+      const categoryFromJoin = (lead: any) => {
+        const cat = lead.misc_category;
+        if (!cat) return null;
+        const mainRel = Array.isArray(cat.misc_maincategory) ? cat.misc_maincategory[0] : cat.misc_maincategory;
+        const mainName = mainRel?.name;
+        return mainName ? `${cat.name} (${mainName})` : cat.name;
+      };
+      const languageFromJoinOrMap = (lead: any) => {
+        const ml = lead.misc_language;
+        const fromJoin = Array.isArray(ml) ? ml[0]?.name : ml?.name;
+        if (fromJoin && String(fromJoin).trim()) return String(fromJoin).trim();
+        const lid = lead.language_id;
+        if (lid != null && languageIdToName.has(Number(lid))) return languageIdToName.get(Number(lid)) ?? null;
+        const text = lead.language;
+        if (text != null && String(text).trim()) return String(text).trim();
+        return null;
+      };
+
+      // Map legacy leads to match new leads format using joined data when present
       let mappedLegacyLeads = filteredLegacyLeads.map(legacyLead => {
-        const sourceName = legacyLead.source_id ?
-          sourceMapping.get(legacyLead.source_id) || legacyLead.source_external_id || 'Unknown' :
-          legacyLead.source_external_id || 'Unknown';
+        const leadAny = legacyLead as any;
+        const sourceName = fromJoin(leadAny.misc_leadsource) ??
+          (legacyLead.source_id ? sourceMapping.get(legacyLead.source_id) : null) ??
+          legacyLead.source_external_id ?? 'Unknown';
 
-        const categoryName = legacyLead.category_id ?
-          categoryMapping.get(legacyLead.category_id) || legacyLead.category || 'No Category' :
-          legacyLead.category || 'No Category';
+        const categoryName = categoryFromJoin(leadAny) ??
+          (legacyLead.category_id ? categoryMapping.get(legacyLead.category_id) : null) ??
+          legacyLead.category ?? 'No Category';
 
-        // Map role IDs to employee names for legacy leads
-        const getEmployeeName = (empId: number | null) => {
+        const getEmployeeName = (empId: number | null, joinRel: any) => {
+          const fromJoinName = fromJoin(joinRel);
+          if (fromJoinName) return fromJoinName;
           if (!empId) return null;
           return idToNameMapping.get(empId) || null;
         };
 
         const roles = {
-          scheduler: getEmployeeName(legacyLead.meeting_scheduler_id),
-          manager: getEmployeeName(legacyLead.meeting_manager_id),
-          lawyer: getEmployeeName(legacyLead.meeting_lawyer_id),
-          expert: getEmployeeName(legacyLead.expert_id),
-          closer: getEmployeeName(legacyLead.closer_id),
-          case_handler: getEmployeeName(legacyLead.case_handler_id),
+          scheduler: getEmployeeName(legacyLead.meeting_scheduler_id, leadAny.scheduler_employee),
+          manager: getEmployeeName(legacyLead.meeting_manager_id, leadAny.manager_employee),
+          lawyer: getEmployeeName(legacyLead.meeting_lawyer_id, leadAny.lawyer_employee),
+          expert: getEmployeeName(legacyLead.expert_id, leadAny.expert_employee),
+          closer: getEmployeeName(legacyLead.closer_id, leadAny.closer_employee),
+          case_handler: getEmployeeName(legacyLead.case_handler_id, leadAny.handler_employee),
         };
 
         // Format lead number with sublead handling (same logic as MasterLeadPage formatLegacyLeadNumber)
@@ -4048,7 +3853,7 @@ const LeadSearchPage: React.FC = () => {
           stage: legacyLead.stage,
           source: sourceName,
           category: categoryName,
-          language: (legacyLead.misc_language as any)?.name || null,
+          language: languageFromJoinOrMap(leadAny),
           status: legacyLead.status ? legacyLead.status.toString() : null,
           eligibility_status: legacyLead.eligibility_status,
           priority: legacyLead.priority,
@@ -4356,8 +4161,10 @@ const LeadSearchPage: React.FC = () => {
       'hover:-translate-y-1',
       'cursor-pointer',
       'group',
-      // Grey background for inactive leads (both legacy and new)
-      isInactive ? 'bg-gray-100' : 'bg-base-100',
+      // Inactive card: light grey background, all text black; stage badges grey with black text
+      isInactive
+        ? 'bg-gray-200 [&_.card-title]:!text-black [&_p]:!text-black [&_span]:!text-black [&_svg]:!text-black [&_.divider]:!border-gray-400 [&_.stage-badge]:!bg-gray-300 [&_.stage-badge]:!border-gray-400 [&_.stage-badge]:![color:black]'
+        : 'bg-base-100',
     ].join(' ');
 
     // Ensure category is always shown as "Subcategory (Main Category)" when possible
@@ -4389,6 +4196,9 @@ const LeadSearchPage: React.FC = () => {
         }}
       >
         <div className="card-body p-5 relative">
+          {isInactive && (
+            <p className="text-center text-black font-medium text-xs mb-2">Inactive</p>
+          )}
           <div className="flex justify-between items-start mb-2">
             <div className="flex items-center gap-2">
               <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors">
@@ -4438,19 +4248,21 @@ const LeadSearchPage: React.FC = () => {
       {/* Desktop Version - Always visible */}
       <div className="hidden md:flex fixed top-16 left-0 right-0 z-[35] justify-center px-4 transition-all duration-300 ease-in-out">
         <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl px-6 py-4 transition-all duration-300 ease-in-out flex items-center gap-4">
-          {/* From Date */}
+          {/* From date */}
           <input
             type="date"
             className="input w-36"
             value={filters.fromDate}
             onChange={e => handleFilterChange('fromDate', e.target.value)}
+            title="From date"
           />
-          {/* To Date */}
+          {/* To date */}
           <input
             type="date"
             className="input w-36"
             value={filters.toDate}
             onChange={e => handleFilterChange('toDate', e.target.value)}
+            title="To date"
           />
           {/* View Mode Toggle - Cards/Table */}
           <div className="flex items-center gap-1 rounded-full p-1">
@@ -4487,34 +4299,47 @@ const LeadSearchPage: React.FC = () => {
             {isSearching ? (
               <span className="loading loading-spinner"></span>
             ) : (
-              <MagnifyingGlassIcon className="w-5 h-5" />
+              <Search className="w-5 h-5" strokeWidth={2.25} />
             )}
           </button>
         </div>
       </div>
 
-      {/* Mobile Version - Always visible */}
+      {/* Mobile: scrolled down = single circle opens full bar; scrolled up = full bar. Circle click does not search. */}
       <div className="md:hidden fixed top-16 left-0 right-0 z-[35] flex justify-center px-4 transition-all duration-300 ease-in-out">
-          <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl px-3 py-2 transition-all duration-300 ease-in-out flex items-center gap-1.5">
-            {/* From Date */}
+        {showStickySearchButton ? (
+          /* Scrolled down: one big circle – click opens full bar (does not run search) */
+          <button
+            className={`min-w-[56px] min-h-[56px] w-14 h-14 rounded-full shadow-2xl flex items-center justify-center transition-all duration-300 ${
+              isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743] active:scale-95' : 'btn-primary hover:opacity-90 active:scale-95'
+            }`}
+            onClick={() => setShowStickySearchButton(false)}
+            title="Open search bar"
+            aria-label="Open search bar"
+          >
+            <Search className="w-7 h-7" strokeWidth={2.25} />
+          </button>
+        ) : (
+          /* Scrolled up: full bar with From/To dates, smaller view toggle, search */
+          <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl px-4 py-3 transition-all duration-300 ease-in-out flex items-center gap-3 min-h-[52px]">
             <input
               type="date"
-              className="input input-xs w-24 text-xs"
+              className="input input-sm w-24 text-sm min-h-[40px]"
               value={filters.fromDate}
               onChange={e => handleFilterChange('fromDate', e.target.value)}
+              title="From date"
             />
-            {/* To Date */}
             <input
               type="date"
-              className="input input-xs w-24 text-xs"
+              className="input input-sm w-24 text-sm min-h-[40px]"
               value={filters.toDate}
               onChange={e => handleFilterChange('toDate', e.target.value)}
+              title="To date"
             />
-            {/* View Mode Toggle - Cards/Table */}
-            <div className="flex items-center gap-1 rounded-full p-1">
+            <div className="flex items-center gap-0.5 rounded-full p-0.5">
               <button
-                className={`btn btn-sm btn-circle transition-all duration-300 ${
-                  viewMode === 'cards' 
+                className={`btn btn-circle min-w-[36px] min-h-[36px] w-9 h-9 transition-all duration-300 ${
+                  viewMode === 'cards'
                     ? (isAltTheme ? 'bg-[#505d57] text-white shadow-md hover:bg-[#3d4743]' : 'btn-primary shadow-md')
                     : 'btn-ghost'
                 }`}
@@ -4524,8 +4349,8 @@ const LeadSearchPage: React.FC = () => {
                 <Squares2X2Icon className="w-4 h-4" />
               </button>
               <button
-                className={`btn btn-sm btn-circle transition-all duration-300 ${
-                  viewMode === 'table' 
+                className={`btn btn-circle min-w-[36px] min-h-[36px] w-9 h-9 transition-all duration-300 ${
+                  viewMode === 'table'
                     ? (isAltTheme ? 'bg-[#505d57] text-white shadow-md hover:bg-[#3d4743]' : 'btn-primary shadow-md')
                     : 'btn-ghost'
                 }`}
@@ -4535,21 +4360,23 @@ const LeadSearchPage: React.FC = () => {
                 <TableCellsIcon className="w-4 h-4" />
               </button>
             </div>
-            {/* Search Button - Icon Only */}
             <button
-              className={isAltTheme ? 'btn btn-circle btn-sm bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn btn-primary btn-circle btn-sm'}
+              className={`btn btn-circle min-w-[44px] min-h-[44px] w-11 h-11 transition-all duration-300 ${
+                isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary'
+              }`}
               onClick={handleSearch}
               disabled={isSearching}
               title="Search"
             >
               {isSearching ? (
-                <span className="loading loading-spinner loading-sm"></span>
+                <span className="loading loading-spinner loading-md"></span>
               ) : (
-                <MagnifyingGlassIcon className="w-5 h-5" />
+                <Search className="w-6 h-6" strokeWidth={2.25} />
               )}
             </button>
           </div>
-        </div>
+        )}
+      </div>
 
       <h1 className="text-3xl font-bold mb-6">Leads Search</h1>
 

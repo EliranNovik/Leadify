@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
@@ -73,6 +74,7 @@ const WhatsAppLeadsPage: React.FC = () => {
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedLead, setSelectedLead] = useState<WhatsAppLead | null>(null);
+  const [isSwitchingChat, setIsSwitchingChat] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [sending, setSending] = useState(false);
@@ -608,8 +610,11 @@ const WhatsAppLeadsPage: React.FC = () => {
     const fetchMessages = async () => {
       if (!selectedLead) {
         setMessages([]);
+        setIsSwitchingChat(false);
         return;
       }
+
+      setIsSwitchingChat(true);
 
       try {
         console.log('🔄 Fetching messages for lead:', selectedLead.phone_number);
@@ -675,6 +680,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         // Process template messages for display
         const processedMessages = messagesWithSenderNames.map(processTemplateMessage);
         setMessages(processedMessages);
+        setIsSwitchingChat(false);
 
         // Mark incoming messages as read when viewing the conversation
         if (currentUser && data && data.length > 0) {
@@ -712,6 +718,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       } catch (error) {
         console.error('Error fetching messages:', error);
         toast.error('Failed to load messages');
+        setIsSwitchingChat(false);
       }
     };
 
@@ -1326,7 +1333,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         p_lead_email: null, // We don't have email from WhatsApp
         p_lead_phone: lead.phone_number,
         p_lead_topic: 'WhatsApp Inquiry', // Default topic
-        p_lead_language: 'English', // Default language
+        p_lead_language: 'HE', // Default language (matches misc_language id 2)
         p_lead_source: 'WhatsApp', // Source is WhatsApp
         p_created_by: user.email,
         p_balance_currency: 'NIS', // Default currency
@@ -1340,6 +1347,9 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       const newLead = data?.[0];
+      if (newLead?.id) {
+        await supabase.from('leads').update({ language_id: 2 }).eq('id', newLead.id);
+      }
       if (!newLead) {
         toast.error('Could not create lead');
         return;
@@ -1770,7 +1780,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         }
       }
 
-      // Create sublead
+      // Create sublead (default language_id 2 = HE)
       const subLeadData: Record<string, any> = {
         lead_number: subLeadNumber,
         master_id: masterId,
@@ -1780,7 +1790,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         phone: selectedLead.phone_number || null,
         mobile: null,
         topic: 'WhatsApp Inquiry',
-        language: 'English',
+        language_id: 2,
         source: 'WhatsApp',
         stage: 0,
         status: 'new',
@@ -2839,9 +2849,18 @@ const WhatsAppLeadsPage: React.FC = () => {
           </div>
 
           {/* Right Panel - Chat */}
-          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-white ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : {}}>
+          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-white relative ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : {}}>
             {selectedLead ? (
               <>
+                {/* Loading overlay when switching between chats */}
+                {isSwitchingChat && (
+                  <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-white/95 backdrop-blur-sm">
+                    <FaWhatsapp className="w-14 h-14 text-green-500 mb-4 animate-pulse" />
+                    <div className="loading loading-spinner loading-lg text-green-500"></div>
+                    <p className="mt-3 text-sm text-gray-500">Loading conversation...</p>
+                  </div>
+                )}
+
                 {/* Mobile Chat Header */}
                 {isMobile && (
                   <div className="flex-none flex items-center gap-2 p-4 border-b border-gray-200 bg-white" style={{ zIndex: 40 }}>
@@ -2854,13 +2873,19 @@ const WhatsAppLeadsPage: React.FC = () => {
                       </svg>
                     </button>
                     <div className="flex items-center gap-2 flex-1 min-w-0">
-                      <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
+                      {/* Avatar - lock as simple icon on top of circle when locked (same as WhatsAppPage) */}
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center relative flex-shrink-0 bg-green-100">
                         {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) ? (
                           <span className="text-green-600 font-semibold text-sm">
                             {selectedLead.sender_name.charAt(0).toUpperCase()}
                           </span>
                         ) : (
                           <PhoneIcon className="w-4 h-4 text-green-600" />
+                        )}
+                        {isLocked && (
+                          <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40">
+                            <LockClosedIcon className="w-3.5 h-3.5 text-white" />
+                          </div>
                         )}
                       </div>
                       <div className="min-w-0 flex-1">
@@ -2879,23 +2904,77 @@ const WhatsAppLeadsPage: React.FC = () => {
                         </p>
                       </div>
                     </div>
-                    {/* Timer/Lock Icon */}
-                    {timeLeft && (
-                      <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium flex-shrink-0 ${isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
-                        }`}>
-                        {isLocked ? (
-                          <>
-                            <LockClosedIcon className="w-4 h-4" />
-                            <span>Locked</span>
-                          </>
-                        ) : (
-                          <>
-                            <ClockIcon className="w-4 h-4" />
-                            <span>{timeLeft}</span>
-                          </>
-                        )}
-                      </div>
-                    )}
+                    {/* Actions dropdown (same as desktop - Convert to Lead, Create Sublead, Add as Contact) */}
+                    <div className="relative flex-shrink-0">
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowActionDropdown(!showActionDropdown);
+                          setShowConnectedLeadsDropdown(false);
+                        }}
+                        style={{ background: '#000000', borderColor: 'transparent' }}
+                      >
+                        <UserPlusIcon className="w-4 h-4" />
+                        <ChevronDownIcon className="w-4 h-4 ml-1" />
+                      </button>
+                      {showActionDropdown && (
+                        <>
+                          <div
+                            className="fixed inset-0 z-40"
+                            onClick={() => setShowActionDropdown(false)}
+                          />
+                          <ul
+                            className="absolute right-0 top-full mt-2 menu p-2 shadow-lg bg-base-100 rounded-box w-64 z-50 border border-gray-200"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <li>
+                              <button
+                                onClick={() => {
+                                  setShowActionDropdown(false);
+                                  handleConvertToLead(selectedLead);
+                                }}
+                                className="flex items-center gap-2 w-full text-left"
+                              >
+                                <UserPlusIcon className="w-4 h-4" />
+                                <span>Convert to Lead</span>
+                              </button>
+                            </li>
+                            <li>
+                              <button
+                                onClick={() => {
+                                  setShowActionDropdown(false);
+                                  setActionType('sublead');
+                                  setShowLeadSearchModal(true);
+                                  setLeadSearchQuery('');
+                                  setLeadSearchResults([]);
+                                }}
+                                className="flex items-center gap-2 w-full text-left"
+                              >
+                                <UserGroupIcon className="w-4 h-4" />
+                                <span>Create a Sublead</span>
+                              </button>
+                            </li>
+                            <li>
+                              <button
+                                onClick={() => {
+                                  setShowActionDropdown(false);
+                                  setActionType('contact');
+                                  setShowLeadSearchModal(true);
+                                  setLeadSearchQuery('');
+                                  setLeadSearchResults([]);
+                                }}
+                                className="flex items-center gap-2 w-full text-left"
+                              >
+                                <LinkIcon className="w-4 h-4" />
+                                <span>Add as Contact to Lead</span>
+                              </button>
+                            </li>
+                          </ul>
+                        </>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -3136,11 +3215,11 @@ const WhatsAppLeadsPage: React.FC = () => {
                             </div>
                           )}
 
-                          <div className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'}`}>
+                          <div className={`flex ${message.direction === 'out' ? 'flex-col items-end' : 'flex-row items-end gap-2'}`}>
                             {message.direction === 'in' && (
-                              <span className="text-sm text-gray-600 mb-1 ml-2 font-medium">
-                                {message.sender_name}
-                              </span>
+                              <div className="flex-shrink-0 w-6 h-6 rounded-full bg-green-100 border border-green-200 flex items-center justify-center text-green-700 text-xs font-semibold">
+                                {(message.sender_name || '?').charAt(0).toUpperCase()}
+                              </div>
                             )}
                             {message.direction === 'out' && (
                               <div className="flex items-center gap-2 mb-1 mr-2">
@@ -3472,10 +3551,9 @@ const WhatsAppLeadsPage: React.FC = () => {
                     }`}
                   style={isMobile ? { zIndex: 50, position: 'sticky', bottom: 0, paddingBottom: `calc(30px + env(safe-area-inset-bottom))` } : { overflow: 'visible' }}
                 >
-                  {/* Template Dropdown - Mobile */}
-                  {showTemplateSelector && isMobile && (
+                  {/* Template Dropdown - Mobile (portaled so it opens above everything) */}
+                  {showTemplateSelector && isMobile && createPortal(
                     <>
-                      {/* Backdrop */}
                       <div
                         className="fixed inset-0 bg-black/50 z-[9998]"
                         onClick={() => setShowTemplateSelector(false)}
@@ -3485,7 +3563,6 @@ const WhatsAppLeadsPage: React.FC = () => {
                         onClick={(e) => e.stopPropagation()}
                       >
                         <div className="bg-white h-full flex flex-col overflow-hidden">
-                          {/* Header with gradient background */}
                           <div className="px-5 py-4 bg-gradient-to-r from-green-500 to-emerald-600 flex-shrink-0">
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2">
@@ -3506,8 +3583,6 @@ const WhatsAppLeadsPage: React.FC = () => {
                               </button>
                             </div>
                           </div>
-
-                          {/* Content */}
                           <div className="p-4 flex-1 flex flex-col min-h-0 overflow-hidden">
                             <div className="mb-4 flex gap-2 flex-shrink-0">
                               <input
@@ -3532,7 +3607,6 @@ const WhatsAppLeadsPage: React.FC = () => {
                                   ))}
                               </select>
                             </div>
-
                             <div className="space-y-3 flex-1 overflow-y-auto">
                               {isLoadingTemplates ? (
                                 <div className="text-center text-gray-500 py-4">
@@ -3590,20 +3664,19 @@ const WhatsAppLeadsPage: React.FC = () => {
                           </div>
                         </div>
                       </div>
-                    </>
+                    </>,
+                    document.body
                   )}
 
-                  {/* Template Dropdown - Desktop */}
-                  {!isMobile && showTemplateSelector && (
-                    <div
-                      className="absolute bottom-full left-0 right-0 mb-2 pointer-events-auto z-[9999]"
-                      style={{
-                        overflow: 'visible',
-                        maxHeight: 'calc(100vh - 120px)',
-                      }}
-                    >
-                      <div className="bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden min-w-[600px] max-w-[800px] flex flex-col" style={{ maxHeight: 'calc(100vh - 200px)' }}>
-                        {/* Header with gradient background */}
+                  {/* Template Dropdown - Desktop (portaled and centered so it's never clipped) */}
+                  {!isMobile && showTemplateSelector && createPortal(
+                    <>
+                      <div className="fixed inset-0 bg-black/50 z-[9998]" onClick={() => setShowTemplateSelector(false)} />
+                      <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 pointer-events-none">
+                        <div
+                        className="bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden min-w-[600px] max-w-[800px] w-full max-h-[calc(100vh-120px)] flex flex-col pointer-events-auto"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         <div className="px-6 py-5 bg-gradient-to-r from-green-500 to-emerald-600 flex-shrink-0">
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-3">
@@ -3619,8 +3692,6 @@ const WhatsAppLeadsPage: React.FC = () => {
                             </button>
                           </div>
                         </div>
-
-                        {/* Content */}
                         <div className="p-6 flex flex-col flex-1 min-h-0 overflow-hidden">
                           <div className="mb-5 flex gap-3 flex-shrink-0">
                             <input
@@ -3645,7 +3716,6 @@ const WhatsAppLeadsPage: React.FC = () => {
                                 ))}
                             </select>
                           </div>
-
                           <div className="flex-1 overflow-y-auto space-y-3 min-h-0" style={{ paddingBottom: '8px' }}>
                             {isLoadingTemplates ? (
                               <div className="text-center text-gray-500 py-4">
@@ -3682,10 +3752,8 @@ const WhatsAppLeadsPage: React.FC = () => {
                                   setShowTemplateSelector(false);
                                   setTemplateSearchTerm('');
                                   setSelectedLanguage('');
-                                  // Always set template content in input field
                                   setNewMessage(template.content || '');
 
-                                  // Expand textarea for desktop when template is inserted
                                   if (textareaRef.current) {
                                     setTimeout(() => {
                                       if (textareaRef.current) {
@@ -3702,6 +3770,8 @@ const WhatsAppLeadsPage: React.FC = () => {
                         </div>
                       </div>
                     </div>
+                    </>,
+                    document.body
                   )}
 
                   {/* Lock Message - Desktop only */}

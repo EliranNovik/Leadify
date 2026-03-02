@@ -15,6 +15,10 @@ interface LegacyInteraction {
   employee_id: string | null;
   description: string | null;
   contact_id: number | null;
+  /** From join when FK exists: tenants_employee for creator_id */
+  creator_employee?: { id?: number; display_name?: string | null; official_name?: string | null } | { id?: number; display_name?: string | null; official_name?: string | null }[];
+  /** From join when FK exists: tenants_employee for employee_id */
+  employee_employee?: { id?: number; display_name?: string | null; official_name?: string | null } | { id?: number; display_name?: string | null; official_name?: string | null }[];
 }
 
 interface EmployeeRecord {
@@ -117,7 +121,7 @@ const transformLegacyInteraction = (
     ? contactMap[interaction.contact_id] 
     : null;
 
-  // Get employee name from creator_id or employee_id (the person who saved/created the interaction)
+  // Get employee name from join (creator_employee / employee_employee) when present, else from employeeMap
   let employeeNameFromId: string | null = null;
   let employeeId: string | number | null = null;
   if (interaction.creator_id && interaction.creator_id !== '\\N' && interaction.creator_id !== 'EMPTY') {
@@ -126,14 +130,22 @@ const transformLegacyInteraction = (
     employeeId = interaction.employee_id;
   }
 
-  if (employeeId) {
-    // Convert to string for map lookup (map keys are strings)
+  const fromJoin = (rel: typeof interaction.creator_employee) => {
+    const rec = Array.isArray(rel) ? rel[0] : rel;
+    const name = rec?.display_name ?? rec?.official_name;
+    return name && String(name).trim() ? String(name).trim() : null;
+  };
+  const creatorDisplayName = fromJoin(interaction.creator_employee);
+  const employeeDisplayName = fromJoin(interaction.employee_employee);
+  if (creatorDisplayName) employeeNameFromId = creatorDisplayName;
+  else if (employeeDisplayName) employeeNameFromId = employeeDisplayName;
+
+  if (!employeeNameFromId && employeeId) {
     const employeeIdStr = String(employeeId);
     if (employeeMap[employeeIdStr]) {
       const record = employeeMap[employeeIdStr];
       employeeNameFromId = record.display_name || record.official_name || employeeIdStr;
     } else {
-      // If not found in map, try to convert to number and look up again (in case of type mismatch)
       const employeeIdNum = typeof employeeId === 'string' ? parseInt(employeeId, 10) : employeeId;
       if (!isNaN(employeeIdNum as number) && employeeMap[String(employeeIdNum)]) {
         const record = employeeMap[String(employeeIdNum)];
@@ -209,14 +221,29 @@ export const fetchLegacyInteractions = async (
     return [];
   }
 
-  const { data, error } = await supabase
+  let result = await supabase
     .from('leads_leadinteractions')
     .select(
-      'id, cdate, kind, date, time, minutes, content, creator_id, direction, employee_id, description, contact_id',
+      `id, cdate, kind, date, time, minutes, content, creator_id, direction, employee_id, description, contact_id,
+      creator_employee:tenants_employee!leads_leadinteractions_creator_id_fkey(id, display_name, official_name),
+      employee_employee:tenants_employee!leads_leadinteractions_employee_id_fkey(id, display_name, official_name)`,
     )
     .eq('lead_id', numericId)
     .order('cdate', { ascending: false })
     .limit(LEGACY_INTERACTION_LIMIT);
+
+  let data: LegacyInteraction[] | null = result.data;
+  let error = result.error;
+  if (error) {
+    const fallback = await supabase
+      .from('leads_leadinteractions')
+      .select('id, cdate, kind, date, time, minutes, content, creator_id, direction, employee_id, description, contact_id')
+      .eq('lead_id', numericId)
+      .order('cdate', { ascending: false })
+      .limit(LEGACY_INTERACTION_LIMIT);
+    data = fallback.data as LegacyInteraction[] | null;
+    error = fallback.error;
+  }
 
   if (error) {
     console.error('❌ Error fetching legacy interactions:', error);
@@ -227,7 +254,7 @@ export const fetchLegacyInteractions = async (
   console.log(`📊 [fetchLegacyInteractions] Fetched ${interactions.length} interactions from database for lead_id ${numericId}`, {
     leadId: numericId,
     fetchedCount: interactions.length,
-    interactionIds: interactions.map(i => i.id).slice(0, 20), // First 20 IDs for debugging
+    interactionIds: interactions.map(i => i.id).slice(0, 20),
     interactionKinds: interactions.reduce((acc, i) => {
       const kind = i.kind || 'null';
       acc[kind] = (acc[kind] || 0) + 1;

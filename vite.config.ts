@@ -12,6 +12,7 @@ export default defineConfig({
   server: {
     allowedHosts: [
       'localhost',
+      '5338-2a00-a041-f225-300-4d8d-dd49-62d1-2c8d.ngrok-free.app',
       'bafe-2a00-a041-f4a8-1500-9c27-aac5-a96b-e949.ngrok-free.app',
       'fdbca99b1373.ngrok-free.app',
       'backend-eligibility-checker.onrender.com'

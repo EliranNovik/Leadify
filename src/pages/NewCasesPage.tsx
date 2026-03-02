@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
-import { ChevronDownIcon, MagnifyingGlassIcon, CalendarIcon, UserIcon, ChartBarIcon, EyeIcon, ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
+import { ChevronDownIcon, ChevronRightIcon, MagnifyingGlassIcon, CalendarIcon, UserIcon, ChartBarIcon, EyeIcon, ChatBubbleLeftRightIcon, FolderIcon, TagIcon, LinkIcon, FunnelIcon } from '@heroicons/react/24/outline';
 import { useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { useMsal } from '@azure/msal-react';
@@ -149,6 +149,24 @@ const NewCasesPage: React.FC = () => {
   const [schedulerStageIds, setSchedulerStageIds] = useState<number[]>([]);
   const [stageIdsResolved, setStageIdsResolved] = useState(false);
 
+  // Mobile view: category selector and scroll state
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
+  const [mobileSelectedCategory, setMobileSelectedCategory] = useState<string | null>(null);
+  const [mobileScrolledPastOvals, setMobileScrolledPastOvals] = useState(false);
+  const categoryOvalsRef = useRef<HTMLDivElement>(null);
+  const mobileContentRef = useRef<HTMLDivElement>(null);
+  // Mobile: employee category breakdown modal (tap on avatar)
+  const [mobileBreakdownModal, setMobileBreakdownModal] = useState<{
+    employeeName: string;
+    breakdown: Array<{ category: string; count: number }>;
+    categoryName: string;
+  } | null>(null);
+  // Mobile: long-press on lead box opens lead; short tap toggles selection
+  const mobileLeadLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mobileLeadLongPressHandledRef = useRef(false);
+
+  const [showFiltersModal, setShowFiltersModal] = useState(false);
+
   // Unactivation reasons list
   const unactivationReasons = [
     'test',
@@ -230,6 +248,25 @@ const NewCasesPage: React.FC = () => {
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
   }, [showSchedulerDropdown, selectedScheduler, showCategoryDropdown, selectedCategory, showInactiveDropdown, showMeetingSchedulerDropdown, selectedMeetingScheduler, showAssignEmployeeDropdown, selectedEmployeeForReassign, showReassignCategoryDropdown, selectedReassignCategoryFilter, showReassignSourceDropdown, selectedReassignSourceFilter, showReassignStageDropdown, selectedReassignStageFilter, showLanguageDropdown, showStatusDropdown]);
+
+  // Mobile: detect viewport and scroll for sticky category oval
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)');
+    const handleResize = () => setIsMobile(mq.matches);
+    handleResize();
+    mq.addEventListener('change', handleResize);
+    return () => mq.removeEventListener('change', handleResize);
+  }, []);
+  useEffect(() => {
+    if (!isMobile || !categoryOvalsRef.current) return;
+    const sentinel = categoryOvalsRef.current;
+    const observer = new IntersectionObserver(
+      ([e]) => setMobileScrolledPastOvals(!e.isIntersecting),
+      { threshold: 0, rootMargin: '-30px 0px 0px 0px' }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [isMobile, categoryGroupedLeads.size]);
 
   // Fetch language options for re-assign modal
   useEffect(() => {
@@ -545,20 +582,18 @@ const NewCasesPage: React.FC = () => {
           </div>
         </div>
 
-        <div className="mt-3 flex items-center gap-4 text-sm">
+        <div className="mt-3 flex items-center gap-2 text-sm" title="Category">
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+          <span className="truncate">{formatCategoryDisplay(lead.category_id, lead.category || lead.topic)}</span>
+        </div>
+
+        <div className="mt-3 pt-3 border-t border-base-200/50 flex items-center justify-between gap-2 flex-shrink-0">
           <div className="flex items-center gap-2 min-w-0 flex-1" title="Topic">
             <ChatBubbleLeftRightIcon className="h-4 w-4 text-base-content/50 flex-shrink-0" />
             <span className="font-semibold text-base-content/80 truncate">{lead.topic || 'No topic specified'}</span>
           </div>
-          <div className="flex items-center gap-2 min-w-0 flex-1" title="Category">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
-            <span className="truncate">{formatCategoryDisplay(lead.category_id, lead.category || lead.topic)}</span>
-          </div>
-        </div>
-
-        <div className="mt-3 pt-3 border-t border-base-200/50 flex justify-end flex-shrink-0">
           <button
-            className="btn btn-ghost btn-sm btn-circle"
+            className="btn btn-ghost btn-sm btn-circle flex-shrink-0"
             onClick={(e) => {
               e.stopPropagation();
               handleCardClick(lead, e);
@@ -726,7 +761,9 @@ const NewCasesPage: React.FC = () => {
             is_active,
             tenants_employee!employee_id(
               id,
-              display_name
+              display_name,
+              photo_url,
+              photo
             )
           `)
           .not('employee_id', 'is', null)
@@ -741,7 +778,9 @@ const NewCasesPage: React.FC = () => {
             const employee = user.tenants_employee as any;
             return {
               id: employee.id,
-              display_name: employee.display_name
+              display_name: employee.display_name,
+              photo_url: employee.photo_url ?? employee.photo ?? null,
+              photo: employee.photo ?? employee.photo_url ?? null
             };
           });
 
@@ -2307,94 +2346,336 @@ const NewCasesPage: React.FC = () => {
 
   return (
     <div className="p-2 sm:p-4 md:p-6 lg:p-8">
-      {/* Re-assign Leads Button */}
-      <div className="mb-4 sm:mb-6">
+      {/* Re-assign Leads Button - commented out for desktop and mobile */}
+      {/* <div className="mb-4 sm:mb-6">
         <button 
           className="btn btn-primary btn-sm sm:btn-md"
           onClick={() => setShowReassignModal(true)}
         >
           Re-assign Leads
         </button>
-      </div>
-
-      {/* Filters Section */}
-      <div className="mb-4 sm:mb-6 md:mb-8 p-3 sm:p-4 md:p-6 bg-base-100 border border-base-200 rounded-lg shadow-sm">
-        <h3 className="text-lg font-semibold mb-4">Filters</h3>
-        
-        {/* Stage Filter and Employee Stats Date Range */}
-        <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 items-end">
-          <div className="flex-1 w-full sm:w-auto">
-            <label className="block text-sm font-medium mb-2">Filter by Stage</label>
-            <select 
-              value={stageFilter}
-              onChange={(e) => setStageFilter(e.target.value)}
-              className="select select-bordered w-full select-sm sm:select-md"
-            >
-              <option value="">All Stages</option>
-              {availableStages.map((stage) => (
-                <option key={stage} value={stage}>
-                  {stage}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="flex-1 w-full sm:w-auto">
-            <label className="block text-sm font-medium mb-2">Employee Stats Date Range</label>
-            <div className="flex gap-2">
-              <div className="flex-1">
-                <label className="block text-sm font-medium mb-2">From Date</label>
-                <input 
-                  type="date" 
-                  value={statsDateFilter.fromDate}
-                  onChange={(e) => setStatsDateFilter(prev => ({ ...prev, fromDate: e.target.value }))}
-                  className="input input-bordered w-full input-sm sm:input-md"
-                  defaultValue={new Date().toISOString().split('T')[0]}
-                />
-              </div>
-              <div className="flex-1">
-                <label className="block text-sm font-medium mb-2">To Date</label>
-                <input 
-                  type="date" 
-                  value={statsDateFilter.toDate}
-                  onChange={(e) => setStatsDateFilter(prev => ({ ...prev, toDate: e.target.value }))}
-                  className="input input-bordered w-full input-sm sm:input-md"
-                  defaultValue={new Date().toISOString().split('T')[0]}
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-        <div className="mt-4 flex flex-col sm:flex-row gap-2 sm:gap-3">
-          <button 
-            className="btn btn-primary btn-sm w-full sm:w-auto"
-            onClick={() => {
-              // Trigger stats refresh for all categories
-              Array.from(categoryGroupedLeads.keys()).forEach(categoryName => {
-                fetchCategoryEmployeeStats(categoryName);
-              });
-            }}
-          >
-            Update All Stats
-          </button>
-          <button 
-            className="btn btn-outline btn-sm w-full sm:w-auto"
-            onClick={() => {
-              setStageFilter('');
-              setStatsDateFilter({
-                fromDate: new Date().toISOString().split('T')[0],
-                toDate: new Date().toISOString().split('T')[0]
-              });
-            }}
-          >
-            Clear Filters
-          </button>
-        </div>
-        </div>
-
+      </div> */}
 
       {/* Category Grouped Tables */}
       {categoryGroupedLeads.size > 0 && (
         <div className="mt-6 sm:mt-8 md:mt-12">
+          {/* Mobile: floating oval category selector + sticky when scrolled */}
+          {isMobile ? (
+            <>
+              <div ref={categoryOvalsRef} className="h-1" aria-hidden />
+              {/* Full oval row: visible when not scrolled; when scrolled + category chosen, invisible but keeps layout so fixed bar works */}
+              <div
+                className={`sticky top-2 z-30 flex flex-wrap justify-center gap-3 mb-4 px-1 ${
+                  mobileScrolledPastOvals && mobileSelectedCategory ? 'opacity-0 pointer-events-none' : ''
+                }`}
+              >
+                {Array.from(categoryGroupedLeads.entries()).map(([categoryName, categoryLeads]) => {
+                  const isSelected = mobileSelectedCategory === categoryName;
+                  const createdStageColor = getStageColour('0') || '#3f28cd';
+                  const createdStageTextColor = getContrastingTextColor(createdStageColor);
+                  return (
+                    <button
+                      key={categoryName}
+                      type="button"
+                      onClick={() => setMobileSelectedCategory(isSelected ? null : categoryName)}
+                      className={`rounded-full px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-all touch-manipulation shadow-md border-2 ${
+                        isSelected
+                          ? ''
+                          : 'border border-white/20 bg-white/70 dark:bg-base-300/70 backdrop-blur-md hover:bg-white/90 dark:hover:bg-base-300/90 text-base-content'
+                      }`}
+                      style={isSelected ? { backgroundColor: createdStageColor, borderColor: createdStageColor, color: createdStageTextColor } : undefined}
+                    >
+                      <span className="truncate max-w-[140px] inline-block align-middle">{categoryName}</span>
+                      <span className="ml-1.5 font-bold tabular-nums">{categoryLeads.length}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {/* Sticky bar when scrolled: only selected category oval - smooth slide in/out */}
+              {mobileSelectedCategory && (() => {
+                const categoryNames = Array.from(categoryGroupedLeads.keys());
+                const currentIndex = categoryNames.indexOf(mobileSelectedCategory);
+                const nextIndex = categoryNames.length > 1 ? (currentIndex + 1) % categoryNames.length : currentIndex;
+                const nextCategory = categoryNames[nextIndex];
+                const createdStageColor = getStageColour('0') || '#3f28cd';
+                const createdStageTextColor = getContrastingTextColor(createdStageColor);
+                const showHeader = mobileScrolledPastOvals;
+                return (
+                  <div
+                    className={`fixed top-0 left-0 right-0 z-[100] flex items-center justify-between gap-2 p-2 bg-white dark:bg-base-300 border-b border-base-200 shadow-lg transition-transform duration-300 ease-out ${showHeader ? 'translate-y-0' : '-translate-y-full pointer-events-none'}`}
+                    style={{ paddingTop: 'max(0.5rem, env(safe-area-inset-top, 0px))' }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setShowFiltersModal(true)}
+                      className="btn btn-circle btn-ghost btn-sm text-base-content hover:bg-base-200 flex-shrink-0"
+                      aria-label="Open filters"
+                    >
+                      <FunnelIcon className="w-6 h-6" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+                      className="rounded-full px-4 py-2.5 text-sm font-medium shadow-md border-2 flex-1 min-w-0 max-w-[160px]"
+                      style={{ backgroundColor: createdStageColor, borderColor: createdStageColor, color: createdStageTextColor }}
+                    >
+                      <span className="truncate block text-center">{mobileSelectedCategory}</span>
+                    </button>
+                    {categoryNames.length > 1 ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMobileSelectedCategory(nextCategory);
+                        }}
+                        className="btn btn-circle btn-ghost btn-sm text-base-content hover:bg-base-200 flex-shrink-0"
+                        aria-label="Next category"
+                      >
+                        <ChevronRightIcon className="w-6 h-6" />
+                      </button>
+                    ) : (
+                      <div className="w-10 flex-shrink-0" />
+                    )}
+                  </div>
+                );
+              })()}
+              {/* Mobile: single category content when one is selected */}
+              {mobileSelectedCategory && (() => {
+                const categoryLeads = categoryGroupedLeads.get(mobileSelectedCategory) || [];
+                return (
+                  <div ref={mobileContentRef} className="space-y-4 mb-6">
+                    {/* Category leads - box view (no card wrapper) */}
+                    <div>
+                      <h3 className="text-base font-semibold flex items-center gap-2 mb-3">
+                        <FolderIcon className="w-4 h-4 text-primary" />
+                        {mobileSelectedCategory} ({categoryLeads.length})
+                      </h3>
+                      {categoryLeads.length === 0 ? (
+                        <p className="text-sm text-base-content/60 py-4">No leads in this category.</p>
+                      ) : (
+                        <div className="space-y-3">
+                            {categoryLeads.map((lead) => {
+                              const fullCategory = formatCategoryDisplay(lead.category_id, lead.category || lead.topic);
+                              const subCategoryOnly = fullCategory.includes(' (') ? fullCategory.split(' (')[0] : fullCategory;
+                              const isLeadSelected = categorySelectedLeads.get(mobileSelectedCategory)?.has(lead.id) || false;
+                              return (
+                                <div
+                                  key={lead.id}
+                                  role="button"
+                                  tabIndex={0}
+                                  className="rounded-xl border-2 border-base-200 bg-base-100 p-3 hover:bg-base-200/40 transition-colors flex items-start gap-3 cursor-pointer touch-manipulation active:bg-base-200/60"
+                                  onPointerDown={(e) => {
+                                    if (mobileLeadLongPressTimerRef.current) return;
+                                    mobileLeadLongPressHandledRef.current = false;
+                                    mobileLeadLongPressTimerRef.current = setTimeout(() => {
+                                      mobileLeadLongPressTimerRef.current = null;
+                                      mobileLeadLongPressHandledRef.current = true;
+                                      handleCardClick(lead, e as unknown as React.MouseEvent);
+                                    }, 500);
+                                  }}
+                                  onPointerUp={() => {
+                                    if (mobileLeadLongPressTimerRef.current) {
+                                      clearTimeout(mobileLeadLongPressTimerRef.current);
+                                      mobileLeadLongPressTimerRef.current = null;
+                                    }
+                                  }}
+                                  onPointerLeave={() => {
+                                    if (mobileLeadLongPressTimerRef.current) {
+                                      clearTimeout(mobileLeadLongPressTimerRef.current);
+                                      mobileLeadLongPressTimerRef.current = null;
+                                    }
+                                  }}
+                                  onClick={(e) => {
+                                    if (mobileLeadLongPressHandledRef.current) {
+                                      mobileLeadLongPressHandledRef.current = false;
+                                      e.preventDefault();
+                                      return;
+                                    }
+                                    e.preventDefault();
+                                    setCategorySelectedLeads((prev) => {
+                                      const next = new Map(prev);
+                                      const cur = next.get(mobileSelectedCategory) || new Set();
+                                      const nextSet = new Set(cur);
+                                      if (nextSet.has(lead.id)) nextSet.delete(lead.id);
+                                      else nextSet.add(lead.id);
+                                      next.set(mobileSelectedCategory!, nextSet);
+                                      return next;
+                                    });
+                                  }}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    className="checkbox checkbox-sm flex-shrink-0 mt-0.5 pointer-events-none"
+                                    checked={isLeadSelected}
+                                    readOnly
+                                    tabIndex={-1}
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center justify-between gap-2 flex-wrap w-full">
+                                      <span className="font-semibold text-sm font-mono">{lead.lead_number}</span>
+                                      <span className="ml-auto flex-shrink-0">{getStageBadge(lead.stage_id ?? lead.stage)}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between gap-2 mt-1.5 text-xs text-base-content/70">
+                                      <span className="flex items-center gap-1 min-w-0 truncate">
+                                        <LinkIcon className="w-3.5 h-3.5 flex-shrink-0 text-base-content/50" />
+                                        {lead.source || '—'}
+                                      </span>
+                                      <span className="flex items-center gap-1 flex-shrink-0 truncate max-w-[50%] justify-end">
+                                        <TagIcon className="w-3.5 h-3.5 flex-shrink-0 text-base-content/50" />
+                                        {subCategoryOnly}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                    </div>
+                    {/* Employee selection - compact */}
+                    <div className="card bg-base-100 shadow-md">
+                      <div className="card-body p-3">
+                        <h3 className="text-base font-semibold flex items-center gap-2">
+                          <UserIcon className="w-4 h-4" />
+                          Assign
+                        </h3>
+                        {mobileSelectedCategory.toLowerCase() === 'no category' && (
+                          <input
+                            type="text"
+                            placeholder="Search employee..."
+                            className="input input-bordered input-sm w-full"
+                            value={categoryEmployeeSearch.get(mobileSelectedCategory) || ''}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setCategoryEmployeeSearch((prev) => {
+                                const next = new Map(prev);
+                                next.set(mobileSelectedCategory, v);
+                                return next;
+                              });
+                            }}
+                          />
+                        )}
+                        {categoryLoadingStats.get(mobileSelectedCategory) ? (
+                          <div className="py-4 text-center">
+                            <span className="loading loading-spinner loading-sm" />
+                            <p className="text-xs mt-1">Loading stats...</p>
+                          </div>
+                        ) : (
+                          <div className="overflow-x-auto overflow-y-hidden -mx-1 pb-2">
+                            <div className="flex gap-3 min-w-max">
+                              {getEmployeesForCategory(mobileSelectedCategory)
+                                .filter((emp) => {
+                                  const searchTerm = (categoryEmployeeSearch.get(mobileSelectedCategory) || '').toLowerCase();
+                                  const shouldFilter = mobileSelectedCategory.toLowerCase() === 'no category' && searchTerm.length > 0;
+                                  if (!shouldFilter) return true;
+                                  return emp.display_name.toLowerCase().includes(searchTerm);
+                                })
+                                .map((emp) => {
+                                  const categoryStats = categoryEmployeeStats.get(mobileSelectedCategory)?.find((s) => s.employee === emp.display_name);
+                                  const fallbackStats = employeeStats.find((s) => s.employee === emp.display_name);
+                                  const useFallback = (!categoryStats || categoryStats.totalLeadsAssigned === 0) && fallbackStats;
+                                  const effectiveStats = useFallback ? fallbackStats : categoryStats || fallbackStats;
+                                  const breakdown = useFallback
+                                    ? (fallbackStats?.categoryBreakdown || [])
+                                    : (categoryStats?.categoryBreakdown || fallbackStats?.categoryBreakdown || []);
+                                  const totalAssigned = effectiveStats?.totalLeadsAssigned || 0;
+                                  const isSelected = categorySelectedEmployees.get(mobileSelectedCategory)?.has(emp.display_name);
+                                  const rawPhoto = (emp as any).photo_url || (emp as any).photo;
+                                  const hasValidPhotoUrl = typeof rawPhoto === 'string' && rawPhoto.trim().length > 0 && (rawPhoto.startsWith('http') || rawPhoto.startsWith('/') || rawPhoto.startsWith('data:'));
+                                  const initial = (emp.display_name && String(emp.display_name).trim())
+                                    ? String(emp.display_name).trim().charAt(0).toUpperCase()
+                                    : 'U';
+                                  return (
+                                    <div
+                                      key={emp.id}
+                                      className="flex-shrink-0 w-36 flex flex-col items-center p-3 rounded-xl border-2 border-base-200 transition-all bg-white shadow-[0_4px_0_0_rgba(0,0,0,0.06),0_6px_12px_rgba(0,0,0,0.08)]"
+                                    >
+                                      <button
+                                        type="button"
+                                        className="avatar mb-2 cursor-pointer rounded-full ring-0 border-0 p-0 focus:outline-none focus:ring-2 focus:ring-primary/50"
+                                        onClick={() => setMobileBreakdownModal({ employeeName: emp.display_name, breakdown, categoryName: mobileSelectedCategory! })}
+                                        aria-label={`View category breakdown for ${emp.display_name}`}
+                                      >
+                                        <div className="w-14 h-14 rounded-full overflow-hidden bg-base-200">
+                                          {hasValidPhotoUrl ? (
+                                            <img
+                                              src={rawPhoto.trim()}
+                                              alt={emp.display_name}
+                                              className="w-full h-full object-cover"
+                                              onError={(e) => {
+                                                e.currentTarget.style.display = 'none';
+                                                const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                                                if (fallback) fallback.style.display = 'flex';
+                                              }}
+                                            />
+                                          ) : null}
+                                          <div
+                                            className="w-full h-full flex items-center justify-center text-base-content font-semibold text-lg"
+                                            style={{ display: hasValidPhotoUrl ? 'none' : 'flex' }}
+                                          >
+                                            {initial}
+                                          </div>
+                                        </div>
+                                      </button>
+                                      <span className="text-sm font-medium truncate w-full text-center mb-1">{emp.display_name}</span>
+                                      <span className="badge badge-sm mb-2">{totalAssigned} leads</span>
+                                      <button
+                                        type="button"
+                                        className={`btn btn-xs w-full ${isSelected ? 'btn-primary' : 'btn-outline'}`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const cur = categorySelectedEmployees.get(mobileSelectedCategory) || new Set();
+                                          const next = new Set(cur);
+                                          if (cur.has(emp.display_name)) next.delete(emp.display_name);
+                                          else next.add(emp.display_name);
+                                          setCategorySelectedEmployees((prev) => {
+                                            const m = new Map(prev);
+                                            m.set(mobileSelectedCategory, next);
+                                            return m;
+                                          });
+                                        }}
+                                      >
+                                        {isSelected ? 'Unselect' : 'Select'}
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                            </div>
+                          </div>
+                        )}
+                        {categorySelectedEmployees.get(mobileSelectedCategory)?.size && categorySelectedLeads.get(mobileSelectedCategory)?.size ? (
+                          <div className="mt-3 pt-3 border-t border-base-200 space-y-2">
+                            <button
+                              className={`btn btn-primary btn-sm w-full ${categoryAssigning.get(mobileSelectedCategory) ? 'loading' : ''}`}
+                              onClick={() => handleCategoryAssignLeads(mobileSelectedCategory)}
+                              disabled={categoryAssigning.get(mobileSelectedCategory)}
+                            >
+                              {categoryAssigning.get(mobileSelectedCategory) ? 'Assigning...' : `Assign ${categorySelectedLeads.get(mobileSelectedCategory)?.size ?? 0} lead(s)`}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-xs w-full"
+                              onClick={() => {
+                                setCategorySelectedEmployees((prev) => {
+                                  const m = new Map(prev);
+                                  m.set(mobileSelectedCategory, new Set());
+                                  return m;
+                                });
+                              }}
+                            >
+                              Clear selection
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </>
+          ) : (
+            <>
           <h2 className="text-xl sm:text-2xl font-bold mb-4 sm:mb-6 md:mb-8 px-1">
             Assign Leads to Employees ({Array.from(categoryGroupedLeads.values()).reduce((sum, leads) => sum + leads.length, 0)} total leads)
           </h2>
@@ -2557,15 +2838,29 @@ const NewCasesPage: React.FC = () => {
                                 : categoryStats?.categoryBreakdown || fallbackStats?.categoryBreakdown || [];
                               const totalAssigned = effectiveStats?.totalLeadsAssigned || 0;
                               const isSelected = categorySelectedEmployees.get(categoryName)?.has(emp.display_name);
+                              const rawPhoto = (emp as any).photo_url || (emp as any).photo;
+                              const hasValidPhotoUrl = typeof rawPhoto === 'string' && rawPhoto.trim().length > 0 && (rawPhoto.startsWith('http') || rawPhoto.startsWith('/') || rawPhoto.startsWith('data:'));
+                              const initial = (emp.display_name && String(emp.display_name).trim()) ? String(emp.display_name).trim().charAt(0).toUpperCase() : 'U';
                               return (
                                 <div 
                                   key={index} 
                                   className={`border rounded-lg p-4 transition-all duration-300 border-base-200 hover:border-primary/50 bg-base-100 shadow-lg hover:shadow-xl hover:-translate-y-1 transform`}
                                 >
                                   <div className="flex items-center justify-between mb-3">
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-3">
+                                      <div className="avatar flex-shrink-0">
+                                        <div className="w-14 h-14 rounded-full overflow-hidden bg-base-200">
+                                          {hasValidPhotoUrl ? (
+                                            <img src={rawPhoto.trim()} alt={emp.display_name} className="w-full h-full object-cover" />
+                                          ) : (
+                                            <div className="w-full h-full flex items-center justify-center text-base-content font-semibold text-base">
+                                              {initial}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
                                       {isSelected && (
-                                        <svg className="w-6 h-6 text-green-600 font-bold" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="3">
+                                        <svg className="w-6 h-6 text-green-600 font-bold flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="3">
                                           <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                                         </svg>
                                       )}
@@ -2711,12 +3006,14 @@ const NewCasesPage: React.FC = () => {
               </div>
             ))}
             </div>
+            </>
+          )}
         </div>
       )}
 
       {/* All Leads Cards Section */}
       {leads.length > 0 && (
-        <div className="mt-6 sm:mt-8 md:mt-12">
+        <div className="mt-14 sm:mt-16 md:mt-20">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-0 mb-4 sm:mb-6">
             <h2 className="text-xl sm:text-2xl font-bold">
               All Leads ({leads.length} total)
@@ -3512,6 +3809,63 @@ const NewCasesPage: React.FC = () => {
         </div>
       )}
 
+      {/* Mobile: employee category breakdown modal (opened by tapping avatar) */}
+      {isMobile && mobileBreakdownModal && (
+        <div className="fixed inset-0 z-[999] flex items-end sm:items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/50"
+            onClick={() => setMobileBreakdownModal(null)}
+            aria-hidden
+          />
+          <div className="relative w-full max-h-[85vh] overflow-hidden bg-base-100 rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-w-md mx-auto">
+            <div className="p-4 border-b border-base-200 flex items-start justify-between gap-2 flex-shrink-0">
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-base-content/60 uppercase tracking-wide">Category breakdown</p>
+                <h3 className="text-lg font-bold mt-1 truncate">{mobileBreakdownModal.employeeName}</h3>
+                <p className="text-sm text-base-content/70 mt-0.5 truncate">{mobileBreakdownModal.categoryName}</p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-sm btn-circle btn-ghost flex-shrink-0"
+                onClick={() => setMobileBreakdownModal(null)}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto flex-1">
+              {mobileBreakdownModal.breakdown.length === 0 ? (
+                <div className="py-6 text-center text-base-content/60 text-sm">
+                  No assignments in this period
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {mobileBreakdownModal.breakdown.map((cat: { category: string; count: number }, idx: number) => (
+                    <div
+                      key={idx}
+                      className="rounded-xl border-2 border-base-200 bg-base-100 p-3 flex flex-wrap items-center justify-between gap-2"
+                    >
+                      <span className="text-sm font-medium text-base-content truncate flex-1 min-w-0">{cat.category}</span>
+                      <span className="badge badge-secondary badge-sm font-semibold flex-shrink-0">{cat.count}</span>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm flex-shrink-0"
+                        onClick={() => {
+                          openCategoryDrawer(cat.category, mobileBreakdownModal.employeeName);
+                          setMobileBreakdownModal(null);
+                        }}
+                      >
+                        View leads
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {drawerOpen && (
         <div className="fixed inset-0 z-[1000] flex">
           <div
@@ -3596,6 +3950,105 @@ const NewCasesPage: React.FC = () => {
                   </table>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Filters button - bottom center (hidden when scrolled header is visible on mobile) */}
+      {!(isMobile && mobileScrolledPastOvals && mobileSelectedCategory) && (
+      <button
+        type="button"
+        onClick={() => setShowFiltersModal(true)}
+        className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 btn btn-primary btn-circle shadow-lg hover:shadow-xl transition-shadow w-14 h-14 flex items-center justify-center"
+        aria-label="Open filters"
+        style={{ paddingBottom: 'max(0px, env(safe-area-inset-bottom, 0px))' }}
+      >
+        <FunnelIcon className="w-6 h-6" />
+      </button>
+      )}
+
+      {/* Filters Modal */}
+      {showFiltersModal && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setShowFiltersModal(false)} aria-hidden />
+          <div className="relative w-full max-w-lg bg-base-100 rounded-2xl shadow-2xl border border-base-200 overflow-hidden">
+            <div className="p-4 sm:p-6 border-b border-base-200 flex items-center justify-between">
+              <h3 className="text-lg font-semibold flex items-center gap-2">
+                <FunnelIcon className="w-5 h-5 text-primary" />
+                Filters
+              </h3>
+              <button
+                type="button"
+                className="btn btn-sm btn-circle btn-ghost"
+                onClick={() => setShowFiltersModal(false)}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-4 sm:p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-2">Filter by Stage</label>
+                <select
+                  value={stageFilter}
+                  onChange={(e) => setStageFilter(e.target.value)}
+                  className="select select-bordered w-full select-sm sm:select-md"
+                >
+                  <option value="">All Stages</option>
+                  {availableStages.map((stage) => (
+                    <option key={stage} value={stage}>{stage}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-2">Employee Stats Date Range</label>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="block text-xs font-medium mb-1">From Date</label>
+                    <input
+                      type="date"
+                      value={statsDateFilter.fromDate}
+                      onChange={(e) => setStatsDateFilter(prev => ({ ...prev, fromDate: e.target.value }))}
+                      className="input input-bordered w-full input-sm"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-xs font-medium mb-1">To Date</label>
+                    <input
+                      type="date"
+                      value={statsDateFilter.toDate}
+                      onChange={(e) => setStatsDateFilter(prev => ({ ...prev, toDate: e.target.value }))}
+                      className="input input-bordered w-full input-sm"
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-row gap-2 pt-2">
+                <button
+                  className="btn btn-primary btn-sm flex-1"
+                  onClick={() => {
+                    Array.from(categoryGroupedLeads.keys()).forEach(categoryName => {
+                      fetchCategoryEmployeeStats(categoryName);
+                    });
+                    setShowFiltersModal(false);
+                  }}
+                >
+                  Update
+                </button>
+                <button
+                  className="btn btn-outline btn-sm flex-1"
+                  onClick={() => {
+                    setStageFilter('');
+                    setStatsDateFilter({
+                      fromDate: new Date().toISOString().split('T')[0],
+                      toDate: new Date().toISOString().split('T')[0]
+                    });
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
             </div>
           </div>
         </div>

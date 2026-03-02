@@ -10,12 +10,10 @@ let isCacheInitialized = false;
  */
 export const fetchStageNames = async (): Promise<{ [key: string]: string }> => {
   if (isCacheInitialized) {
-    console.log('🔍 StageUtils - Using cached stage names:', stageNamesCache);
     return stageNamesCache;
   }
 
   try {
-    console.log('🔍 StageUtils - Fetching stage names from database...');
     const { data, error } = await supabase
       .from('lead_stages')
       .select('id, name, colour')
@@ -35,17 +33,14 @@ export const fetchStageNames = async (): Promise<{ [key: string]: string }> => {
           stageColoursCache[stage.id] = stage.colour;
         }
       });
-      
-      console.log('🔍 StageUtils - Stage names fetched and cached:', stageMapping);
-      
+
       // Update cache
       stageNamesCache = stageMapping;
       isCacheInitialized = true;
       
       return stageMapping;
     }
-    
-    console.log('🔍 StageUtils - No stage data returned from database');
+
     return {};
   } catch (err) {
     console.error('Exception while fetching stages:', err);
@@ -85,22 +80,20 @@ export const getStageName = (stageId: string): string => {
     '150': 'Application submitted',
     '200': 'Case Closed',
     'meeting_scheduled': 'Meeting scheduled',
-    'scheduler_assigned': 'Scheduler assigned'
+    'scheduler_assigned': 'Scheduler assigned',
+    'Staff Meeting': 'Staff Meeting'
   };
-  
+
   // Check special mappings first
   if (specialStageMappings[stageIdStr]) {
     return specialStageMappings[stageIdStr];
   }
-  
+
   // First try to get the name from the cache
   if (stageNamesCache[stageIdStr]) {
     return stageNamesCache[stageIdStr];
   }
-  
-  // Debug logging
-  console.log('🔍 StageUtils - Stage not found in cache:', { stageId: stageIdStr, cacheKeys: Object.keys(stageNamesCache) });
-  
+
   // Fallback to formatting the stage ID if no name is found
   const fallbackName = (stageIdStr !== undefined && stageIdStr !== null && stageIdStr !== '' ? stageIdStr : 'No Stage')
     .replace(/_/g, ' ')
@@ -172,7 +165,6 @@ export const areStagesEquivalent = (stage1: string, stage2: string): boolean => 
  * Clears the stage names cache (useful for testing or when data changes)
  */
 export const clearStageNamesCache = () => {
-  console.log('🔍 StageUtils - Clearing stage names cache');
   stageNamesCache = {};
   stageColoursCache = {};
   isCacheInitialized = false;
@@ -182,7 +174,6 @@ export const clearStageNamesCache = () => {
  * Forces a refresh of the stage names cache
  */
 export const refreshStageNames = async (): Promise<{ [key: string]: string }> => {
-  console.log('🔍 StageUtils - Force refreshing stage names cache');
   clearStageNamesCache();
   return await fetchStageNames();
 };

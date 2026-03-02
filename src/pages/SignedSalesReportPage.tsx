@@ -975,10 +975,20 @@ const SignedSalesReportPage: React.FC = () => {
     return legacyIds.some(id => id === numericId);
   };
 
-  const resolveLegacyEmployeeName = (identifier?: string | number | null) => {
-    if (identifier === null || identifier === undefined) return '';
-    const match = employees.find(emp => emp.id === String(identifier));
-    return match?.display_name || '';
+  /** Get display_name from joined tenants_employee relation (legacy leads). Fallback to employees map when join missing. */
+  const getLegacyEmployeeDisplay = (
+    joinedRelation: any,
+    fallbackId?: string | number | null
+  ): string => {
+    const rec = Array.isArray(joinedRelation) ? joinedRelation[0] : joinedRelation;
+    if (rec?.display_name && String(rec.display_name).trim()) {
+      return String(rec.display_name).trim();
+    }
+    if (fallbackId !== null && fallbackId !== undefined) {
+      const match = employees.find(emp => emp.id === String(fallbackId));
+      return match?.display_name || '';
+    }
+    return '';
   };
 
 const resolveCategoryName = (
@@ -1091,48 +1101,6 @@ const resolveLegacyLanguage = (lead: any) => {
       const languageFilter = filters.language;
       const { startIso, endIso } = computeDateBounds(fromDate, toDate);
 
-      console.log(`🔍 DEBUG Date Filter Input:`, {
-        fromDate,
-        toDate,
-        startIso,
-        endIso,
-        startDate: startIso ? new Date(startIso).toISOString() : null,
-        endDate: endIso ? new Date(endIso).toISOString() : null
-      });
-
-      // DEBUG: First check ALL stage 60 records for lead 6 without date filter
-      const debugLeadId: number = 6;
-      const { data: allRecordsForLead6, error: debugError6 } = await supabase
-        .from('leads_leadstage')
-        .select('id, lead_id, newlead_id, date, cdate, stage')
-        .eq('stage', 60)
-        .eq('lead_id', debugLeadId);
-      
-      if (!debugError6 && allRecordsForLead6 && allRecordsForLead6.length > 0) {
-        console.log(`🔍 DEBUG Lead ${debugLeadId}: Found ${allRecordsForLead6.length} stage 60 records WITHOUT date filter:`, allRecordsForLead6.map(r => ({
-          id: r.id,
-          lead_id: r.lead_id,
-          newlead_id: r.newlead_id,
-          date: r.date,
-          cdate: r.cdate,
-          stage: r.stage,
-          dateISO: r.date ? new Date(r.date).toISOString() : null,
-          cdateISO: r.cdate ? new Date(r.cdate).toISOString() : null,
-          dateInRange: startIso && endIso ? (r.date && r.date >= startIso && r.date < endIso) : 'N/A',
-          cdateInRange: startIso && endIso ? (r.cdate && r.cdate >= startIso && r.cdate < endIso) : 'N/A',
-          dateComparison: startIso && r.date ? {
-            date: r.date,
-            startIso,
-            isGTE: r.date >= startIso,
-            endIso,
-            isLT: r.date < endIso,
-            willPass: r.date >= startIso && r.date < endIso
-          } : null
-        })));
-      } else {
-        console.log(`🔍 DEBUG Lead ${debugLeadId}: No stage 60 records found at all (error: ${debugError6?.message || 'none'})`);
-      }
-
       // Fetch ALL stage 60 records from leads_leadstage filtered by date
       // This is the authoritative source for signed agreements
       let stage60Query = supabase
@@ -1157,36 +1125,6 @@ const resolveLegacyLanguage = (lead: any) => {
       }
 
       console.log(`✅ Fetched ${allStage60Records?.length || 0} stage 60 records with date filter`);
-      console.log(`🔍 Date filter: startIso=${startIso}, endIso=${endIso}`);
-      
-      // DEBUG: Check for specific lead ID 6 in filtered results
-      const debugRecords = (allStage60Records || []).filter(r => r.lead_id === debugLeadId);
-      if (debugRecords.length > 0) {
-        console.log(`🔍 DEBUG Lead ${debugLeadId}: Found ${debugRecords.length} stage 60 records WITH date filter:`, debugRecords.map(r => ({
-          id: r.id,
-          lead_id: r.lead_id,
-          date: r.date,
-          cdate: r.cdate,
-          stage: r.stage,
-          dateInRange: startIso && endIso ? (r.date >= startIso && r.date < endIso) : 'N/A'
-        })));
-      } else {
-        console.log(`🔍 DEBUG Lead ${debugLeadId}: NOT found in filtered results (but exists without filter)`);
-      }
-      
-      // DEBUG: Check for specific lead ID 209614 (keep existing debug)
-      const debugLeadId2: number = 209614;
-      const debugRecords2 = (allStage60Records || []).filter(r => r.lead_id === debugLeadId2);
-      if (debugRecords2.length > 0) {
-        console.log(`🔍 DEBUG Lead ${debugLeadId2}: Found ${debugRecords2.length} stage 60 records:`, debugRecords2.map(r => ({
-          id: r.id,
-          lead_id: r.lead_id,
-          date: r.date,
-          cdate: r.cdate,
-          stage: r.stage,
-          dateInRange: startIso && endIso ? (r.date >= startIso && r.date < endIso) : 'N/A'
-        })));
-      }
 
       // Separate legacy and new leads, and track sign dates (use date from stage 60 record)
       const legacyLeadIdsSet = new Set<number>();
@@ -1245,6 +1183,8 @@ const resolveLegacyLanguage = (lead: any) => {
               created_at,
               category,
               category_id,
+              source_id,
+              language_id,
               stage,
               date_signed,
               currency_id,
@@ -1266,7 +1206,9 @@ const resolveLegacyLanguage = (lead: any) => {
                   id,
                   name
                 )
-              )
+              ),
+              misc_leadsource!fk_leads_source_id(id, name),
+              misc_language!fk_leads_language_id(id, name)
             `
           )
           .in('id', allNewLeadIds)
@@ -1278,37 +1220,12 @@ const resolveLegacyLanguage = (lead: any) => {
 
         newLeads = newLeadsResponse || [];
         console.log(`✅ Loaded ${newLeads.length} new leads`);
-        
-        // Debug: Check category data structure for new leads
-        if (newLeads.length > 0) {
-          const sampleLead = newLeads[0];
-          console.log('🔍 DEBUG New Lead Category Structure:', {
-            leadId: sampleLead.id,
-            leadNumber: sampleLead.lead_number,
-            categoryId: sampleLead.category_id,
-            categoryValue: sampleLead.category,
-            hasMiscCategory: !!sampleLead.misc_category,
-            miscCategory: sampleLead.misc_category,
-            miscCategoryType: typeof sampleLead.misc_category,
-            isArray: Array.isArray(sampleLead.misc_category),
-            miscCategoryKeys: sampleLead.misc_category ? Object.keys(sampleLead.misc_category) : null,
-            miscMaincategory: sampleLead.misc_category?.misc_maincategory,
-            resolvedCategory: resolveCategoryName(sampleLead.category, sampleLead.category_id, sampleLead.misc_category, categoryNameToDataMap)
-          });
-        }
       }
 
       // Fetch legacy leads data (only active leads: status = 0)
       let legacyLeadsData: any[] = [];
       const allLegacyLeadIds = Array.from(legacyLeadIdsSet);
-      
-      // DEBUG: Check if lead 209614 is in the set (debugLeadId already declared above)
-      if (allLegacyLeadIds.includes(debugLeadId)) {
-        console.log(`🔍 DEBUG Lead ${debugLeadId}: Found in legacyLeadIdsSet`);
-      } else {
-        console.log(`🔍 DEBUG Lead ${debugLeadId}: NOT found in legacyLeadIdsSet. Set contains:`, Array.from(legacyLeadIdsSet).slice(0, 10));
-      }
-      
+
       if (allLegacyLeadIds.length > 0) {
         const { data: legacyLeadsResponse, error: legacyLeadsError } = await supabase
           .from('leads_lead')
@@ -1352,7 +1269,12 @@ const resolveLegacyLanguage = (lead: any) => {
               misc_language!leads_lead_language_id_fkey (
                 id,
                 name
-              )
+              ),
+              scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
+              manager_employee:tenants_employee!fk_leads_lead_meeting_manager_id(id, display_name),
+              closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name),
+              expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
+              handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name)
             `
           )
           .in('id', allLegacyLeadIds)
@@ -1364,7 +1286,7 @@ const resolveLegacyLanguage = (lead: any) => {
 
         legacyLeadsData = legacyLeadsResponse || [];
         console.log(`✅ Loaded ${legacyLeadsData.length} legacy leads`);
-        
+
         // Calculate sublead suffixes for legacy leads with master_id
         // Collect all unique master_ids from the fetched leads
         const uniqueMasterIds = new Set<number>();
@@ -1419,56 +1341,6 @@ const resolveLegacyLanguage = (lead: any) => {
         (legacyLeadsData as any[]).forEach((lead: any) => {
           (lead as any)._formattedLeadNumber = formatLegacyLeadNumber(lead);
         });
-        
-        // DEBUG: Check if lead 6 is in the fetched results
-        const debugLead6 = legacyLeadsData.find((l: any) => l.id === 6);
-        if (debugLead6) {
-          console.log(`🔍 DEBUG Lead 6: Found in legacyLeadsData:`, {
-            id: debugLead6.id,
-            name: debugLead6.name,
-            status: debugLead6.status,
-            stage: debugLead6.stage,
-            category: debugLead6.category,
-            category_id: debugLead6.category_id
-          });
-        } else {
-          console.log(`🔍 DEBUG Lead 6: NOT found in legacyLeadsData (might be inactive or filtered out)`);
-          // Check if it exists with different status
-          const { data: debugLeadCheck6, error: debugCheckError6 } = await supabase
-            .from('leads_lead')
-            .select('id, name, status, stage')
-            .eq('id', 6)
-            .maybeSingle();
-          if (!debugCheckError6 && debugLeadCheck6) {
-            console.log(`🔍 DEBUG Lead 6: Exists in database with status=${debugLeadCheck6.status}, stage=${debugLeadCheck6.stage}`);
-          } else {
-            console.log(`🔍 DEBUG Lead 6: Does not exist in database or error:`, debugCheckError6);
-          }
-        }
-        
-        // DEBUG: Check if lead 209614 is in the fetched results
-        const debugLead = legacyLeadsData.find((l: any) => l.id === 209614);
-        if (debugLead) {
-          console.log(`🔍 DEBUG Lead 209614: Found in legacyLeadsData:`, {
-            id: debugLead.id,
-            name: debugLead.name,
-            status: debugLead.status,
-            stage: debugLead.stage
-          });
-        } else {
-          console.log(`🔍 DEBUG Lead 209614: NOT found in legacyLeadsData (might be inactive or filtered out)`);
-          // Check if it exists with different status
-          const { data: debugLeadCheck, error: debugCheckError } = await supabase
-            .from('leads_lead')
-            .select('id, name, status, stage')
-            .eq('id', 209614)
-            .maybeSingle();
-          if (!debugCheckError && debugLeadCheck) {
-            console.log(`🔍 DEBUG Lead 209614: Exists in database with status=${debugLeadCheck.status}, stage=${debugLeadCheck.stage}`);
-          } else {
-            console.log(`🔍 DEBUG Lead 209614: Does not exist in database or error:`, debugCheckError);
-          }
-        }
       }
 
       const filteredNewLeads = (newLeads || [])
@@ -1565,11 +1437,11 @@ const resolveLegacyLanguage = (lead: any) => {
           const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
           const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
 
-          const schedulerName = resolveLegacyEmployeeName(lead.meeting_scheduler_id);
-          const managerName = resolveLegacyEmployeeName(lead.meeting_manager_id);
-          const closerName = resolveLegacyEmployeeName(lead.closer_id);
-          const expertName = resolveLegacyEmployeeName(lead.expert_id);
-          const handlerName = resolveLegacyEmployeeName(lead.case_handler_id);
+          const schedulerName = getLegacyEmployeeDisplay(lead.scheduler_employee, lead.meeting_scheduler_id);
+          const managerName = getLegacyEmployeeDisplay(lead.manager_employee, lead.meeting_manager_id);
+          const closerName = getLegacyEmployeeDisplay(lead.closer_employee, lead.closer_id);
+          const expertName = getLegacyEmployeeDisplay(lead.expert_employee, lead.expert_id);
+          const handlerName = getLegacyEmployeeDisplay(lead.handler_employee, lead.case_handler_id);
 
           // Handler should only use case_handler_id, not fall back to meeting_lawyer_id (helper/lawyer)
           const roleHandler = handlerName;
