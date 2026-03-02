@@ -751,7 +751,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             searchPromises.push(
               supabase
                 .from('leads')
-                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id, lead_stages(name, colour), misc_category!category_id(name)')
                 .or(nameConditions)
                 .limit(15)
             );
@@ -768,14 +768,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               searchPromises.push(
                 supabase
                   .from('leads')
-                  .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id')
+                  .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id, lead_stages(name, colour), misc_category!category_id(name)')
                   .eq('email', exactEmail) // Exact match (case-sensitive)
                   .limit(1)
               );
               searchPromises.push(
                 supabase
                   .from('leads')
-                  .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id')
+                  .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id, lead_stages(name, colour), misc_category!category_id(name)')
                   .ilike('email', exactEmail) // Case-insensitive exact match
                   .limit(1)
               );
@@ -786,7 +786,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             searchPromises.push(
               supabase
                 .from('leads')
-                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id, lead_stages(name, colour), misc_category!category_id(name)')
                 .or(emailPrefixConditions.join(','))
                 .limit(5) // Limit similar matches to 5
             );
@@ -872,6 +872,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 const isContainsMatch = !isExactMatch && !isPrefixMatch && leadName.includes(queryLowerTrimmed);
                 const formattedLeadNumber = formatNewLeadNumber(lead);
                 nameEmailSeen.add(key);
+                const stageJoin = Array.isArray(lead.lead_stages) ? lead.lead_stages[0] : lead.lead_stages;
+                const categoryJoin = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
                 nameEmailResults.push({
                   id: lead.id,
                   lead_number: formattedLeadNumber,
@@ -880,7 +882,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   phone: lead.phone || '',
                   mobile: lead.mobile || '',
                   topic: lead.topic || '',
-                  stage: String(lead.stage ?? ''),
+                  stage: stageJoin?.name ?? String(lead.stage ?? ''),
+                  stage_colour: stageJoin?.colour ?? '',
                   source: '',
                   created_at: lead.created_at || '',
                   updated_at: lead.created_at || '',
@@ -888,7 +891,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   special_notes: '',
                   next_followup: '',
                   probability: '',
-                  category: '',
+                  category: categoryJoin?.name ?? '',
                   language: '',
                   balance: '',
                   lead_type: 'new',
@@ -944,6 +947,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             const key = `new:${lead.id}`;
             if (!nameEmailSeen.has(key)) {
               const formattedLeadNumber = formatNewLeadNumber(lead);
+              const stageJoin = Array.isArray(lead.lead_stages) ? lead.lead_stages[0] : lead.lead_stages;
+              const categoryJoin = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
               nameEmailSeen.add(key);
               nameEmailResults.push({
                 id: lead.id,
@@ -953,7 +958,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 phone: lead.phone || '',
                 mobile: lead.mobile || '',
                 topic: lead.topic || '',
-                stage: String(lead.stage ?? ''),
+                stage: stageJoin?.name ?? String(lead.stage ?? ''),
+                stage_colour: stageJoin?.colour ?? '',
                 source: '',
                 created_at: lead.created_at || '',
                 updated_at: lead.created_at || '',
@@ -961,7 +967,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 special_notes: '',
                 next_followup: '',
                 probability: '',
-                category: '',
+                category: categoryJoin?.name ?? '',
                 language: '',
                 balance: '',
                 lead_type: 'new',
@@ -977,6 +983,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             const key = `new:${lead.id}`;
             if (!nameEmailSeen.has(key)) {
               const formattedLeadNumber = formatNewLeadNumber(lead);
+              const stageJoin = Array.isArray(lead.lead_stages) ? lead.lead_stages[0] : lead.lead_stages;
+              const categoryJoin = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
               nameEmailSeen.add(key);
               nameEmailResults.push({
                 id: lead.id,
@@ -986,7 +994,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 phone: lead.phone || '',
                 mobile: lead.mobile || '',
                 topic: lead.topic || '',
-                stage: String(lead.stage ?? ''),
+                stage: stageJoin?.name ?? String(lead.stage ?? ''),
+                stage_colour: stageJoin?.colour ?? '',
                 source: '',
                 created_at: lead.created_at || '',
                 updated_at: lead.created_at || '',
@@ -994,7 +1003,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 special_notes: '',
                 next_followup: '',
                 probability: '',
-                category: '',
+                category: categoryJoin?.name ?? '',
                 language: '',
                 balance: '',
                 lead_type: 'new',
@@ -1013,7 +1022,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             legacySearchPromises.push(
               supabase
                 .from('leads_lead')
-                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
                 .or(nameConditions)
                 .limit(15)
             );
@@ -1030,14 +1039,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               legacySearchPromises.push(
                 supabase
                   .from('leads_lead')
-                  .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id')
+                  .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
                   .eq('email', exactEmail) // Exact match (case-sensitive)
                   .limit(1)
               );
               legacySearchPromises.push(
                 supabase
                   .from('leads_lead')
-                  .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id')
+                  .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
                   .ilike('email', exactEmail) // Case-insensitive exact match
                   .limit(1)
               );
@@ -1051,7 +1060,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             legacySearchPromises.push(
               supabase
                 .from('leads_lead')
-                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
                 .or(prefixOrCondition)
                 .limit(5) // Limit similar matches to 5
             );
@@ -1247,6 +1256,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 const isContainsMatch = !isExactMatch && !isPrefixMatch && leadName.includes(queryLowerTrimmed);
                 console.log(`🔍 [Header Legacy Name] Processing lead ${lead.id}, master_id: ${lead.master_id || 'null'}`);
                 const formattedLeadNumber = formatLegacyLeadNumberForSearch(lead, subleadSuffixMap);
+                const legacyStageJoin = Array.isArray(lead.lead_stages) ? lead.lead_stages[0] : lead.lead_stages;
+                const legacyLangJoin = Array.isArray(lead.misc_language) ? lead.misc_language[0] : lead.misc_language;
                 nameEmailSeen.add(key);
                 nameEmailResults.push({
                   id: `legacy_${lead.id}`,
@@ -1257,7 +1268,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   phone: lead.phone || '',
                   mobile: lead.mobile || '',
                   topic: lead.topic || '',
-                  stage: String(lead.stage ?? ''),
+                  stage: legacyStageJoin?.name ?? String(lead.stage ?? ''),
+                  stage_colour: legacyStageJoin?.colour ?? '',
                   source: '',
                   created_at: lead.cdate || '',
                   updated_at: lead.cdate || '',
@@ -1266,7 +1278,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   next_followup: '',
                   probability: '',
                   category: '',
-                  language: '',
+                  language: legacyLangJoin?.name ?? '',
                   balance: '',
                   lead_type: 'legacy',
                   unactivation_reason: null,
@@ -1322,6 +1334,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             if (!nameEmailSeen.has(key)) {
               console.log(`🔍 [Header Legacy Exact Email] Processing lead ${lead.id}, master_id: ${lead.master_id || 'null'}`);
               const formattedLeadNumber = formatLegacyLeadNumberForSearch(lead, subleadSuffixMap);
+              const legacyStageJoin = Array.isArray(lead.lead_stages) ? lead.lead_stages[0] : lead.lead_stages;
+              const legacyLangJoin = Array.isArray(lead.misc_language) ? lead.misc_language[0] : lead.misc_language;
               nameEmailSeen.add(key);
               nameEmailResults.push({
                 id: `legacy_${lead.id}`,
@@ -1332,7 +1346,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 phone: lead.phone || '',
                 mobile: lead.mobile || '',
                 topic: lead.topic || '',
-                stage: String(lead.stage ?? ''),
+                stage: legacyStageJoin?.name ?? String(lead.stage ?? ''),
+                stage_colour: legacyStageJoin?.colour ?? '',
                 source: '',
                 created_at: lead.cdate || '',
                 updated_at: lead.cdate || '',
@@ -1341,7 +1356,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 next_followup: '',
                 probability: '',
                 category: '',
-                language: '',
+                language: legacyLangJoin?.name ?? '',
                 balance: '',
                 lead_type: 'legacy',
                 unactivation_reason: null,
@@ -1357,6 +1372,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             if (!nameEmailSeen.has(key)) {
               console.log(`🔍 [Header Legacy Similar Email] Processing lead ${lead.id}, master_id: ${lead.master_id || 'null'}`);
               const formattedLeadNumber = formatLegacyLeadNumberForSearch(lead, subleadSuffixMap);
+              const legacyStageJoin = Array.isArray(lead.lead_stages) ? lead.lead_stages[0] : lead.lead_stages;
+              const legacyLangJoin = Array.isArray(lead.misc_language) ? lead.misc_language[0] : lead.misc_language;
               nameEmailSeen.add(key);
               nameEmailResults.push({
                 id: `legacy_${lead.id}`,
@@ -1367,7 +1384,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 phone: lead.phone || '',
                 mobile: lead.mobile || '',
                 topic: lead.topic || '',
-                stage: String(lead.stage ?? ''),
+                stage: legacyStageJoin?.name ?? String(lead.stage ?? ''),
+                stage_colour: legacyStageJoin?.colour ?? '',
                 source: '',
                 created_at: lead.cdate || '',
                 updated_at: lead.cdate || '',
@@ -1376,7 +1394,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 next_followup: '',
                 probability: '',
                 category: '',
-                language: '',
+                language: legacyLangJoin?.name ?? '',
                 balance: '',
                 lead_type: 'legacy',
                 unactivation_reason: null,
@@ -1646,12 +1664,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             const [contactLeads, contactLegacyLeads] = await Promise.all([
               uniqueLeadIds.size > 0 ? supabase
                 .from('leads')
-                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, lead_stages(name, colour), misc_category!category_id(name)')
                 .in('id', Array.from(uniqueLeadIds))
                 .limit(50) : Promise.resolve({ data: [] }),
               uniqueLegacyIds.size > 0 ? supabase
                 .from('leads_lead')
-                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
                 .in('id', Array.from(uniqueLegacyIds))
                 .limit(50) : Promise.resolve({ data: [] })
             ]);
@@ -1672,6 +1690,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   // Check if the matching contact was an exact match
                   const isContactExactMatch = matchingContact && exactContactIdsSet.has(matchingContact.id);
 
+                  const stageJoin = Array.isArray(lead.lead_stages) ? lead.lead_stages[0] : lead.lead_stages;
+                  const categoryJoin = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
                   nameEmailSeen.add(key);
                   nameEmailResults.push({
                     id: lead.id,
@@ -1681,7 +1701,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     phone: matchingContact?.phone || lead.phone || '',
                     mobile: matchingContact?.mobile || lead.mobile || '',
                     topic: lead.topic || '',
-                    stage: String(lead.stage ?? ''),
+                    stage: stageJoin?.name ?? String(lead.stage ?? ''),
+                    stage_colour: stageJoin?.colour ?? '',
                     source: '',
                     created_at: lead.created_at || '',
                     updated_at: lead.created_at || '',
@@ -1689,7 +1710,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     special_notes: '',
                     next_followup: '',
                     probability: '',
-                    category: '',
+                    category: categoryJoin?.name ?? '',
                     language: '',
                     balance: '',
                     lead_type: 'new',
@@ -1716,6 +1737,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   // Check if the matching contact was an exact match
                   const isContactExactMatch = matchingContact && exactContactIdsSet.has(matchingContact.id);
 
+                  const legacyStageJoin = Array.isArray(lead.lead_stages) ? lead.lead_stages[0] : lead.lead_stages;
+                  const legacyLangJoin = Array.isArray(lead.misc_language) ? lead.misc_language[0] : lead.misc_language;
                   nameEmailSeen.add(key);
                   nameEmailResults.push({
                     id: `legacy_${lead.id}`,
@@ -1726,7 +1749,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     phone: matchingContact?.phone || lead.phone || '',
                     mobile: matchingContact?.mobile || lead.mobile || '',
                     topic: lead.topic || '',
-                    stage: String(lead.stage ?? ''),
+                    stage: legacyStageJoin?.name ?? String(lead.stage ?? ''),
+                    stage_colour: legacyStageJoin?.colour ?? '',
                     source: '',
                     created_at: lead.cdate || '',
                     updated_at: lead.cdate || '',
@@ -1735,7 +1759,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     next_followup: '',
                     probability: '',
                     category: '',
-                    language: '',
+                    language: legacyLangJoin?.name ?? '',
                     balance: '',
                     lead_type: 'legacy',
                     unactivation_reason: null,
@@ -2139,7 +2163,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           const newLeadsQueryStartTime = performance.now();
           const { data: newLeads, error: newLeadsError } = await supabase
             .from('leads')
-            .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
+            .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, lead_stages(name, colour), misc_category!category_id(name)')
             .or(combinedConditions)
             .limit(50);
           const newLeadsQueryTime = performance.now() - newLeadsQueryStartTime;
@@ -2184,6 +2208,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 }
 
                 if (isPrefixMatch || isSuffixMatch) {
+                  const stageJoin = Array.isArray(lead.lead_stages) ? lead.lead_stages[0] : lead.lead_stages;
+                  const categoryJoin = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
                   phoneSeen.add(key);
                   phoneResults.push({
                     id: lead.id,
@@ -2193,7 +2219,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     phone: lead.phone || '',
                     mobile: lead.mobile || '',
                     topic: lead.topic || '',
-                    stage: String(lead.stage ?? ''),
+                    stage: stageJoin?.name ?? String(lead.stage ?? ''),
+                    stage_colour: stageJoin?.colour ?? '',
                     source: '',
                     created_at: lead.created_at || '',
                     updated_at: lead.created_at || '',
@@ -2201,7 +2228,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     special_notes: '',
                     next_followup: '',
                     probability: '',
-                    category: '',
+                    category: categoryJoin?.name ?? '',
                     language: '',
                     balance: '',
                     lead_type: 'new',
@@ -2218,7 +2245,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           const legacyLeadsQueryStartTime = performance.now();
           const { data: legacyLeads, error: legacyLeadsError } = await supabase
             .from('leads_lead')
-            .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
+            .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
             .or(combinedConditions)
             .limit(50);
           const legacyLeadsQueryTime = performance.now() - legacyLeadsQueryStartTime;
@@ -2361,6 +2388,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 }
 
                 if (isExactMatch || isPrefixMatch || isSuffixMatch) {
+                  const legacyStageJoin = Array.isArray(lead.lead_stages) ? lead.lead_stages[0] : lead.lead_stages;
+                  const legacyLangJoin = Array.isArray(lead.misc_language) ? lead.misc_language[0] : lead.misc_language;
                   phoneSeen.add(key);
                   phoneResults.push({
                     id: `legacy_${lead.id}`,
@@ -2371,7 +2400,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     phone: lead.phone || '',
                     mobile: lead.mobile || '',
                     topic: lead.topic || '',
-                    stage: String(lead.stage ?? ''),
+                    stage: legacyStageJoin?.name ?? String(lead.stage ?? ''),
+                    stage_colour: legacyStageJoin?.colour ?? '',
                     source: '',
                     created_at: lead.cdate || '',
                     updated_at: lead.cdate || '',
@@ -2380,7 +2410,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     next_followup: '',
                     probability: '',
                     category: '',
-                    language: '',
+                    language: legacyLangJoin?.name ?? '',
                     balance: '',
                     lead_type: 'legacy',
                     unactivation_reason: null,
@@ -2851,7 +2881,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             if (uniqueLeadIds.size > 0) {
               const { data: contactLeads, error: contactLeadsError } = await supabase
                 .from('leads')
-                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, lead_stages(name, colour), misc_category!category_id(name)')
                 .in('id', Array.from(uniqueLeadIds))
                 .limit(50);
 
@@ -2874,6 +2904,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     // Check if the matching contact had an exact match
                     const contactHadExactMatch = matchingContact ? contactExactMatchMap.get(matchingContact.id) || false : false;
 
+                    const stageJoin = Array.isArray(lead.lead_stages) ? lead.lead_stages[0] : lead.lead_stages;
+                    const categoryJoin = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
                     seen.add(key);
                     results.push({
                       id: lead.id,
@@ -2883,7 +2915,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       phone: matchingContact?.phone || lead.phone || '',
                       mobile: matchingContact?.mobile || lead.mobile || '',
                       topic: lead.topic || '',
-                      stage: String(lead.stage ?? ''),
+                      stage: stageJoin?.name ?? String(lead.stage ?? ''),
                       source: '',
                       created_at: lead.created_at || '',
                       updated_at: lead.created_at || '',
@@ -2891,7 +2923,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       special_notes: '',
                       next_followup: '',
                       probability: '',
-                      category: '',
+                      category: categoryJoin?.name ?? '',
                       language: '',
                       balance: '',
                       lead_type: 'new',
@@ -2911,7 +2943,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             if (uniqueLegacyIds.size > 0) {
               const { data: contactLegacyLeads, error: contactLegacyLeadsError } = await supabase
                 .from('leads_lead')
-                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
                 .in('id', Array.from(uniqueLegacyIds))
                 .limit(50);
 
@@ -2934,6 +2966,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     // Check if the matching contact had an exact match
                     const contactHadExactMatch = matchingContact ? contactExactMatchMap.get(matchingContact.id) || false : false;
 
+                    const legacyStageJoin = Array.isArray(lead.lead_stages) ? lead.lead_stages[0] : lead.lead_stages;
+                    const legacyLangJoin = Array.isArray(lead.misc_language) ? lead.misc_language[0] : lead.misc_language;
                     seen.add(key);
                     results.push({
                       id: `legacy_${lead.id}`,
@@ -2944,7 +2978,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       phone: matchingContact?.phone || lead.phone || '',
                       mobile: matchingContact?.mobile || lead.mobile || '',
                       topic: lead.topic || '',
-                      stage: String(lead.stage ?? ''),
+                      stage: legacyStageJoin?.name ?? String(lead.stage ?? ''),
                       source: '',
                       created_at: lead.cdate || '',
                       updated_at: lead.cdate || '',
@@ -2953,7 +2987,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       next_followup: '',
                       probability: '',
                       category: '',
-                      language: '',
+                      language: legacyLangJoin?.name ?? '',
                       balance: '',
                       lead_type: 'legacy',
                       unactivation_reason: null,
@@ -3038,7 +3072,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         // Search new leads by name
         const { data: newLeads } = await supabase
           .from('leads')
-          .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
+          .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, lead_stages(name, colour), misc_category!category_id(name)')
           .or(nameConditions)
           .limit(20);
 
@@ -3049,6 +3083,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               const leadName = (lead.name || '').toLowerCase();
               const isExactMatch = leadName === lower;
               const isPrefixMatch = leadName.startsWith(lower);
+              const stageJoin = Array.isArray(lead.lead_stages) ? lead.lead_stages[0] : lead.lead_stages;
+              const categoryJoin = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
               seen.add(key);
               results.push({
                 id: lead.id,
@@ -3058,7 +3094,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 phone: lead.phone || '',
                 mobile: lead.mobile || '',
                 topic: lead.topic || '',
-                stage: String(lead.stage ?? ''),
+                stage: stageJoin?.name ?? String(lead.stage ?? ''),
+                stage_colour: stageJoin?.colour ?? '',
                 source: '',
                 created_at: lead.created_at || '',
                 updated_at: lead.created_at || '',
@@ -3066,7 +3103,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 special_notes: '',
                 next_followup: '',
                 probability: '',
-                category: '',
+                category: categoryJoin?.name ?? '',
                 language: '',
                 balance: '',
                 lead_type: 'new',
@@ -3081,7 +3118,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         // Search legacy leads by name
         const { data: legacyLeads } = await supabase
           .from('leads_lead')
-          .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
+          .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
           .or(nameConditions)
           .limit(20);
 
@@ -3092,6 +3129,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               const leadName = (lead.name || '').toLowerCase();
               const isExactMatch = leadName === lower;
               const isPrefixMatch = leadName.startsWith(lower);
+              const legacyStageJoin = Array.isArray(lead.lead_stages) ? lead.lead_stages[0] : lead.lead_stages;
+              const legacyLangJoin = Array.isArray(lead.misc_language) ? lead.misc_language[0] : lead.misc_language;
               seen.add(key);
               results.push({
                 id: `legacy_${lead.id}`,
@@ -3102,7 +3141,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 phone: lead.phone || '',
                 mobile: lead.mobile || '',
                 topic: lead.topic || '',
-                stage: String(lead.stage ?? ''),
+                stage: legacyStageJoin?.name ?? String(lead.stage ?? ''),
+                stage_colour: legacyStageJoin?.colour ?? '',
                 source: '',
                 created_at: lead.cdate || '',
                 updated_at: lead.cdate || '',
@@ -3111,7 +3151,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 next_followup: '',
                 probability: '',
                 category: '',
-                language: '',
+                language: legacyLangJoin?.name ?? '',
                 balance: '',
                 lead_type: 'legacy',
                 unactivation_reason: null,
@@ -6496,30 +6536,48 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     return { exactMatches, fuzzyMatches };
   }, [searchResults, searchValue]);
 
-  // Stage badge function for search results
-  const getStageBadge = (stage: string | number | null | undefined) => {
+  // Stage badge function for search results (accepts stage ID or stage name; colour from lead_stages when provided; useInactiveStyle = grey badge with black text)
+  const getStageBadge = (stage: string | number | null | undefined, stageColour?: string | null, useInactiveStyle?: boolean) => {
     const stageStr = stage ? String(stage).trim() : '';
-    const stageName = stageStr ? getStageName(stageStr) : 'Contact';
+    const stageName = stageStr
+      ? /^\d+$/.test(stageStr)
+        ? getStageName(stageStr)
+        : stageStr
+      : 'Contact';
     const isContact = !stageStr;
+
+    if (useInactiveStyle) {
+      return (
+        <span className="badge badge-xs md:badge-sm text-xs md:text-sm px-1.5 py-0.5 md:px-2 md:py-1 bg-gray-300 text-black border border-gray-400">
+          {stageName}
+        </span>
+      );
+    }
 
     // Use gradient for Contact badge (same as new messages box), solid color for stages
     if (isContact) {
       return (
         <span
-          className="badge badge-xs md:badge-sm text-[9px] md:text-xs px-1.5 py-0.5 md:px-2 md:py-1 bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white border-none"
+          className="badge badge-xs md:badge-sm text-xs md:text-sm px-1.5 py-0.5 md:px-2 md:py-1 bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white border-none"
         >
           {stageName}
         </span>
       );
     }
 
-    // Force all search result stage badges to use #391BC8
-    const backgroundColor = '#391BC8';
-    const textColor = getContrastingTextColor(backgroundColor);
+    // Use colour from lead_stages table when provided, else resolve by stage ID, else fallback
+    const backgroundColor =
+      (stageColour && stageColour.trim()) ||
+      (/^\d+$/.test(stageStr) ? getStageColour(stageStr) : '') ||
+      '#391BC8';
+    let textColor = getContrastingTextColor(backgroundColor);
+    if (stageName === 'Scheduler assigned' || stageStr === '10') {
+      textColor = '#ffffff';
+    }
 
     return (
       <span
-        className="badge badge-xs md:badge-sm text-[9px] md:text-xs px-1.5 py-0.5 md:px-2 md:py-1"
+        className="badge badge-xs md:badge-sm text-xs md:text-sm px-1.5 py-0.5 md:px-2 md:py-1"
         style={{
           backgroundColor: backgroundColor,
           color: textColor,
@@ -7108,43 +7166,38 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
                                 const displayName = result.contactName || result.name || '';
 
+                                const inactive = isInactiveLead(result);
                                 return (
                                   <button
                                     key={uniqueKey}
                                     onClick={() => handleSearchResultClick(result)}
-                                    className="w-full px-2 py-2 md:px-4 md:py-3 text-left hover:bg-base-200 transition-colors rounded-lg border border-base-300 relative"
+                                    className={`w-full px-2 py-2 md:px-4 md:py-3 text-left transition-colors rounded-lg border relative ${inactive ? 'bg-gray-100 hover:bg-gray-200 border-gray-200 text-black' : 'hover:bg-base-200 border-base-300'}`}
                                   >
-                                    <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10 flex flex-col gap-1 items-end">
-                                      {getStageBadge(result.stage)}
-                                      {isInactiveLead(result) && (
-                                        <span className="badge badge-xs md:badge-sm text-[9px] md:text-xs px-1.5 py-0.5 md:px-2 md:py-1 bg-gray-500 text-white border-none">
-                                          Inactive
-                                        </span>
-                                      )}
+                                    {inactive && (
+                                      <div className="absolute top-1 left-1/2 -translate-x-1/2 text-[10px] md:text-xs text-black font-medium z-10">Inactive</div>
+                                    )}
+                                    <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10 flex flex-row items-center gap-1.5 justify-end">
+                                      {getStageBadge(result.stage, result.stage_colour, inactive)}
                                     </div>
-                                    <div className="flex items-start gap-2 md:gap-3 pr-20 md:pr-20">
-                                      <div className="hidden md:flex w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 items-center justify-center flex-shrink-0">
-                                        <span className="font-semibold text-white">
-                                          {displayName.charAt(0).toUpperCase()}
-                                        </span>
-                                      </div>
-                                      <div className="flex-1 min-w-0" style={{ maxWidth: 'calc(100% - 60px)' }}>
+                                    <div className={`flex items-start gap-2 md:gap-3 pr-20 md:pr-20 ${inactive ? 'text-black' : ''}`}>
+                                      <div className="flex-1 min-w-0">
                                         <div className="mb-0.5 md:mb-1">
-                                          <p className="text-[9px] md:text-base font-semibold text-base-content break-words line-clamp-2 leading-tight" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                          <p className={`text-sm md:text-base font-semibold break-words line-clamp-2 leading-tight ${inactive ? 'text-black' : 'text-base-content'}`} style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
                                             {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
                                           </p>
                                         </div>
                                         <div className="mb-0.5 md:mb-1">
-                                          <span className="text-[8px] md:text-xs text-base-content/70 font-mono">{result.lead_number}</span>
+                                          <span className={`text-xs md:text-sm font-mono ${inactive ? 'text-black' : 'text-base-content/70'}`}>{result.lead_number ? `#${result.lead_number}` : ''}</span>
                                         </div>
                                         {result.category && (
-                                          <p className="text-[8px] md:text-sm text-base-content/80 truncate">
+                                          <p className={`text-xs md:text-sm truncate ${inactive ? 'text-black' : 'text-base-content/80'}`}>
                                             <span className="font-medium">Category:</span> {result.category}
                                           </p>
                                         )}
                                         {result.topic && (
-                                          <p className="text-[8px] md:text-sm text-base-content/80 truncate">
-                                            <span className="font-medium">Topic:</span> {result.topic}
+                                          <p className={`text-xs md:text-sm truncate flex items-center gap-1 ${inactive ? 'text-black' : 'text-base-content/80'}`}>
+                                            <ChatBubbleLeftRightIcon className="w-3.5 h-3.5 flex-shrink-0 opacity-70" aria-hidden />
+                                            {result.topic}
                                           </p>
                                         )}
                                       </div>
@@ -7163,14 +7216,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                           5. Not in advanced search mode */}
                           {showNoExactMatch && exactMatches.length === 0 && fuzzyMatches.length > 0 && !isSearching && !isAdvancedSearching && (
                             <div className="px-2 py-1.5 md:px-4 md:py-2 border-b border-base-300">
-                              <p className="text-[10px] md:text-sm text-base-content/70 font-medium">No exact matches found</p>
+                              <p className="text-xs md:text-sm text-base-content/70 font-medium">No exact matches found</p>
                             </div>
                           )}
 
                           {/* Divider between exact and fuzzy matches */}
                           {exactMatches.length > 0 && fuzzyMatches.length > 0 && (
                             <div className="px-2 py-1.5 md:px-4 md:py-2 border-t border-base-300">
-                              <p className="text-[10px] md:text-sm text-base-content/60 font-medium">Similar matches</p>
+                              <p className="text-xs md:text-sm text-base-content/60 font-medium">Similar matches</p>
                             </div>
                           )}
 
@@ -7184,43 +7237,38 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
                                 const displayName = result.contactName || result.name || '';
 
+                                const inactive = isInactiveLead(result);
                                 return (
                                   <button
                                     key={uniqueKey}
                                     onClick={() => handleSearchResultClick(result)}
-                                    className="w-full px-2 py-2 md:px-4 md:py-3 text-left hover:bg-base-200 transition-colors rounded-lg border border-base-300 relative opacity-90"
+                                    className={`w-full px-2 py-2 md:px-4 md:py-3 text-left transition-colors rounded-lg border relative ${inactive ? 'bg-gray-100 hover:bg-gray-200 border-gray-200 text-black opacity-90' : 'hover:bg-base-200 border-base-300 opacity-90'}`}
                                   >
-                                    <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10 flex flex-col gap-1 items-end">
-                                      {getStageBadge(result.stage)}
-                                      {isInactiveLead(result) && (
-                                        <span className="badge badge-xs md:badge-sm text-[9px] md:text-xs px-1.5 py-0.5 md:px-2 md:py-1 bg-gray-500 text-white border-none">
-                                          Inactive
-                                        </span>
-                                      )}
+                                    {inactive && (
+                                      <div className="absolute top-1 left-1/2 -translate-x-1/2 text-[10px] md:text-xs text-black font-medium z-10">Inactive</div>
+                                    )}
+                                    <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10 flex flex-row items-center gap-1.5 justify-end">
+                                      {getStageBadge(result.stage, result.stage_colour, inactive)}
                                     </div>
-                                    <div className="flex items-start gap-2 md:gap-3 pr-20 md:pr-20">
-                                      <div className="hidden md:flex w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 items-center justify-center flex-shrink-0 opacity-80">
-                                        <span className="font-semibold text-white">
-                                          {displayName.charAt(0).toUpperCase()}
-                                        </span>
-                                      </div>
-                                      <div className="flex-1 min-w-0" style={{ maxWidth: 'calc(100% - 60px)' }}>
+                                    <div className={`flex items-start gap-2 md:gap-3 pr-20 md:pr-20 ${inactive ? 'text-black' : ''}`}>
+                                      <div className="flex-1 min-w-0">
                                         <div className="mb-0.5 md:mb-1">
-                                          <p className="text-[9px] md:text-base font-semibold text-base-content break-words line-clamp-2 leading-tight" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                          <p className={`text-sm md:text-base font-semibold break-words line-clamp-2 leading-tight ${inactive ? 'text-black' : 'text-base-content'}`} style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
                                             {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
                                           </p>
                                         </div>
                                         <div className="mb-0.5 md:mb-1">
-                                          <span className="text-[8px] md:text-xs text-base-content/70 font-mono">{result.lead_number}</span>
+                                          <span className={`text-xs md:text-sm font-mono ${inactive ? 'text-black' : 'text-base-content/70'}`}>{result.lead_number ? `#${result.lead_number}` : ''}</span>
                                         </div>
                                         {result.category && (
-                                          <p className="text-[8px] md:text-sm text-base-content/80 truncate">
+                                          <p className={`text-xs md:text-sm truncate ${inactive ? 'text-black' : 'text-base-content/80'}`}>
                                             <span className="font-medium">Category:</span> {result.category}
                                           </p>
                                         )}
                                         {result.topic && (
-                                          <p className="text-[8px] md:text-sm text-base-content/80 truncate">
-                                            <span className="font-medium">Topic:</span> {result.topic}
+                                          <p className={`text-xs md:text-sm truncate flex items-center gap-1 ${inactive ? 'text-black' : 'text-base-content/80'}`}>
+                                            <ChatBubbleLeftRightIcon className="w-3.5 h-3.5 flex-shrink-0 opacity-70" aria-hidden />
+                                            {result.topic}
                                           </p>
                                         )}
                                       </div>
@@ -7353,7 +7401,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                         (async () => {
                           let legacyQuery = supabase
                             .from('leads_lead')
-                            .select('id, name, email, phone, mobile, topic, stage, cdate, lead_number, deactivate_notes, language_id')
+                            .select('id, name, email, phone, mobile, topic, stage, cdate, lead_number, deactivate_notes, language_id, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
                             .limit(50);
 
 
@@ -7391,7 +7439,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                         (async () => {
                           let newQuery = supabase
                             .from('leads')
-                            .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
+                            .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, lead_stages(name, colour), misc_category!category_id(name)')
                             .limit(50);
 
 
@@ -7426,85 +7474,71 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
                       const results: any[] = [];
 
-                      // Process legacy results
+                      // Process legacy results (use joined stage and language from query)
                       if (legacyPromise.status === 'fulfilled' && legacyPromise.value.data) {
-                        // Fetch stage mapping
-                        const { data: stageMapping } = await supabase
-                          .from('lead_stages')
-                          .select('id, name');
-
-                        const stageMap = new Map();
-                        if (stageMapping) {
-                          stageMapping.forEach(stage => {
-                            stageMap.set(stage.id, stage.name);
-                          });
-                        }
-
-                        // Fetch language mapping
-                        const { data: languageMapping } = await supabase
-                          .from('misc_language')
-                          .select('id, name');
-
-                        const languageMap = new Map();
-                        if (languageMapping) {
-                          languageMapping.forEach(language => {
-                            languageMap.set(language.id, language.name);
-                          });
-                        }
-
-                        const transformedLegacyLeads = legacyPromise.value.data.map(lead => ({
-                          id: `legacy_${lead.id}`,
-                          lead_number: String(lead.id),
-                          name: lead.name || '',
-                          email: lead.email || '',
-                          phone: lead.phone || '',
-                          mobile: lead.mobile || '',
-                          topic: lead.topic || '',
-                          stage: stageMap.get(lead.stage) || String(lead.stage || ''),
-                          source: '',
-                          created_at: lead.cdate || '',
-                          updated_at: lead.cdate || '',
-                          notes: '',
-                          special_notes: '',
-                          next_followup: '',
-                          probability: '',
-                          category: '',
-                          language: languageMap.get(lead.language_id) || '',
-                          balance: '',
-                          lead_type: 'legacy' as const,
-                          unactivation_reason: null,
-                          deactivate_note: lead.deactivate_notes || null,
-                          isFuzzyMatch: false,
-                        }));
+                        const transformedLegacyLeads = legacyPromise.value.data.map((lead: any) => {
+                          const stageJoin = Array.isArray(lead.lead_stages) ? lead.lead_stages[0] : lead.lead_stages;
+                          const languageJoin = Array.isArray(lead.misc_language) ? lead.misc_language[0] : lead.misc_language;
+                          return {
+                            id: `legacy_${lead.id}`,
+                            lead_number: String(lead.id),
+                            name: lead.name || '',
+                            email: lead.email || '',
+                            phone: lead.phone || '',
+                            mobile: lead.mobile || '',
+                            topic: lead.topic || '',
+                            stage: stageJoin?.name ?? String(lead.stage || ''),
+                            stage_colour: stageJoin?.colour ?? '',
+                            source: '',
+                            created_at: lead.cdate || '',
+                            updated_at: lead.cdate || '',
+                            notes: '',
+                            special_notes: '',
+                            next_followup: '',
+                            probability: '',
+                            category: '',
+                            language: languageJoin?.name ?? '',
+                            balance: '',
+                            lead_type: 'legacy' as const,
+                            unactivation_reason: null,
+                            deactivate_note: lead.deactivate_notes || null,
+                            isFuzzyMatch: false,
+                          };
+                        });
                         results.push(...transformedLegacyLeads);
                       }
 
-                      // Process new leads results
+                      // Process new leads results (use joined stage and category from query)
                       if (newPromise.status === 'fulfilled' && newPromise.value.data) {
-                        const transformedNewLeads = newPromise.value.data.map(lead => ({
-                          id: lead.id,
-                          lead_number: lead.lead_number || '',
-                          name: lead.name || '',
-                          email: lead.email || '',
-                          phone: lead.phone || '',
-                          mobile: lead.mobile || '',
-                          topic: lead.topic || '',
-                          stage: lead.stage || '',
-                          source: '',
-                          created_at: lead.created_at || '',
-                          updated_at: lead.created_at || '',
-                          notes: '',
-                          special_notes: '',
-                          next_followup: '',
-                          probability: '',
-                          category: '',
-                          language: '',
-                          balance: '',
-                          lead_type: 'new' as const,
-                          unactivation_reason: null,
-                          deactivate_note: null,
-                          isFuzzyMatch: false,
-                        }));
+                        const transformedNewLeads = newPromise.value.data.map((lead: any) => {
+                          const stageJoin = Array.isArray(lead.lead_stages) ? lead.lead_stages[0] : lead.lead_stages;
+                          const categoryJoin = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
+                          return {
+                            id: lead.id,
+                            lead_number: lead.lead_number || '',
+                            name: lead.name || '',
+                            email: lead.email || '',
+                            phone: lead.phone || '',
+                            mobile: lead.mobile || '',
+                            topic: lead.topic || '',
+                            stage: stageJoin?.name ?? String(lead.stage ?? ''),
+                            stage_colour: stageJoin?.colour ?? '',
+                            source: '',
+                            created_at: lead.created_at || '',
+                            updated_at: lead.created_at || '',
+                            notes: '',
+                            special_notes: '',
+                            next_followup: '',
+                            probability: '',
+                            category: categoryJoin?.name ?? '',
+                            language: '',
+                            balance: '',
+                            lead_type: 'new' as const,
+                            unactivation_reason: null,
+                            deactivate_note: null,
+                            isFuzzyMatch: false,
+                          };
+                        });
                         results.push(...transformedNewLeads);
                       }
 

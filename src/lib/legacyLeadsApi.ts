@@ -15,6 +15,7 @@ export interface CombinedLead {
   mobile: string;
   topic: string;
   stage: string;
+  stage_colour?: string;
   source: string;
   created_at: string;
   updated_at: string;

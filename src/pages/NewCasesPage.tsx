@@ -161,10 +161,6 @@ const NewCasesPage: React.FC = () => {
     breakdown: Array<{ category: string; count: number }>;
     categoryName: string;
   } | null>(null);
-  // Mobile: long-press on lead box opens lead; short tap toggles selection
-  const mobileLeadLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mobileLeadLongPressHandledRef = useRef(false);
-
   const [showFiltersModal, setShowFiltersModal] = useState(false);
 
   // Unactivation reasons list
@@ -2464,33 +2460,7 @@ const NewCasesPage: React.FC = () => {
                                   role="button"
                                   tabIndex={0}
                                   className="rounded-xl border-2 border-base-200 bg-base-100 p-3 hover:bg-base-200/40 transition-colors flex items-start gap-3 cursor-pointer touch-manipulation active:bg-base-200/60"
-                                  onPointerDown={(e) => {
-                                    if (mobileLeadLongPressTimerRef.current) return;
-                                    mobileLeadLongPressHandledRef.current = false;
-                                    mobileLeadLongPressTimerRef.current = setTimeout(() => {
-                                      mobileLeadLongPressTimerRef.current = null;
-                                      mobileLeadLongPressHandledRef.current = true;
-                                      handleCardClick(lead, e as unknown as React.MouseEvent);
-                                    }, 500);
-                                  }}
-                                  onPointerUp={() => {
-                                    if (mobileLeadLongPressTimerRef.current) {
-                                      clearTimeout(mobileLeadLongPressTimerRef.current);
-                                      mobileLeadLongPressTimerRef.current = null;
-                                    }
-                                  }}
-                                  onPointerLeave={() => {
-                                    if (mobileLeadLongPressTimerRef.current) {
-                                      clearTimeout(mobileLeadLongPressTimerRef.current);
-                                      mobileLeadLongPressTimerRef.current = null;
-                                    }
-                                  }}
                                   onClick={(e) => {
-                                    if (mobileLeadLongPressHandledRef.current) {
-                                      mobileLeadLongPressHandledRef.current = false;
-                                      e.preventDefault();
-                                      return;
-                                    }
                                     e.preventDefault();
                                     setCategorySelectedLeads((prev) => {
                                       const next = new Map(prev);
@@ -2503,28 +2473,44 @@ const NewCasesPage: React.FC = () => {
                                     });
                                   }}
                                 >
-                                  <input
-                                    type="checkbox"
-                                    className="checkbox checkbox-sm flex-shrink-0 mt-0.5 pointer-events-none"
-                                    checked={isLeadSelected}
-                                    readOnly
-                                    tabIndex={-1}
-                                    onClick={(e) => e.stopPropagation()}
-                                  />
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex items-center justify-between gap-2 flex-wrap w-full">
-                                      <span className="font-semibold text-sm font-mono">{lead.lead_number}</span>
-                                      <span className="ml-auto flex-shrink-0">{getStageBadge(lead.stage_id ?? lead.stage)}</span>
-                                    </div>
-                                    <div className="flex items-center justify-between gap-2 mt-1.5 text-xs text-base-content/70">
-                                      <span className="flex items-center gap-1 min-w-0 truncate">
-                                        <LinkIcon className="w-3.5 h-3.5 flex-shrink-0 text-base-content/50" />
-                                        {lead.source || '—'}
-                                      </span>
-                                      <span className="flex items-center gap-1 flex-shrink-0 truncate max-w-[50%] justify-end">
-                                        <TagIcon className="w-3.5 h-3.5 flex-shrink-0 text-base-content/50" />
-                                        {subCategoryOnly}
-                                      </span>
+                                  <div className="flex items-start gap-3 flex-1 min-w-0">
+                                    <input
+                                      type="checkbox"
+                                      className="checkbox checkbox-sm flex-shrink-0 mt-0.5 pointer-events-none"
+                                      checked={isLeadSelected}
+                                      readOnly
+                                      tabIndex={-1}
+                                      onClick={(e) => e.stopPropagation()}
+                                    />
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center justify-between gap-2 flex-wrap w-full">
+                                        <span className="flex items-center gap-1.5">
+                                          <span className="font-semibold text-sm font-mono">{lead.lead_number}</span>
+                                          <button
+                                            type="button"
+                                            className="btn btn-ghost btn-circle btn-sm min-h-0 h-7 w-7 p-0 text-base-content/60 hover:text-primary"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleCardClick(lead);
+                                            }}
+                                            title="View lead page"
+                                            aria-label="View lead page"
+                                          >
+                                            <EyeIcon className="w-4 h-4" />
+                                          </button>
+                                        </span>
+                                        <span className="ml-auto flex-shrink-0">{getStageBadge(lead.stage_id ?? lead.stage)}</span>
+                                      </div>
+                                      <div className="flex items-center justify-between gap-2 mt-1.5 text-xs text-base-content/70">
+                                        <span className="flex items-center gap-1 min-w-0 truncate">
+                                          <LinkIcon className="w-3.5 h-3.5 flex-shrink-0 text-base-content/50" />
+                                          {lead.source || '—'}
+                                        </span>
+                                        <span className="flex items-center gap-1 flex-shrink-0 truncate max-w-[50%] justify-end">
+                                          <TagIcon className="w-3.5 h-3.5 flex-shrink-0 text-base-content/50" />
+                                          {subCategoryOnly}
+                                        </span>
+                                      </div>
                                     </div>
                                   </div>
                                 </div>
