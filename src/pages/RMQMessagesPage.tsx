@@ -233,6 +233,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Employee modal state
   const [showEmployeeInfoModal, setShowEmployeeInfoModal] = useState(false);
   const [showEmployeeProfileModal, setShowEmployeeProfileModal] = useState(false);
+  const [showBusinessCardModal, setShowBusinessCardModal] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<any>(null);
 
   // Employee availability state
@@ -250,6 +251,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [messageToEdit, setMessageToEdit] = useState<Message | null>(null);
   const [editingMessageText, setEditingMessageText] = useState('');
   const [messageActionMenu, setMessageActionMenu] = useState<number | null>(null);
+  const [mobileMessageActionMessage, setMobileMessageActionMessage] = useState<Message | null>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressMessageRef = useRef<Message | null>(null);
+  const longPressHandledRef = useRef<boolean>(false);
 
   // Online status state
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
@@ -305,21 +310,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [isUserScrolling, setIsUserScrolling] = useState(false);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
   const [newMessagesCount, setNewMessagesCount] = useState(0);
-  const [showFloatingDate, setShowFloatingDate] = useState(false);
-  const [floatingDate, setFloatingDate] = useState<string | null>(null);
-  const [floatingDateOpacity, setFloatingDateOpacity] = useState(0);
   const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const floatingDateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const isScrollingForDateRef = useRef(false);
-  const rafRef = useRef<number | null>(null);
-  const lastDateRef = useRef<string | null>(null);
-  const opacityRef = useRef(0);
   const initialLoadRef = useRef<number | null>(null);
   const firstUnreadMessageIdRef = useRef<number | null>(null);
-  const isFadingOutRef = useRef(false);
   const lastScrollPositionRef = useRef<number>(0);
   const scrollPositionCheckRef = useRef<NodeJS.Timeout | null>(null);
+  const userJustScrolledToBottomRef = useRef<boolean>(false);
 
   // Loading state for messages
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
@@ -537,14 +533,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           parts.push(line.slice(lastIndex, match.index));
         }
 
-        // Add the clickable link with appropriate styling based on message ownership
+        // Add the clickable link - darker green for sent messages (readable on bubble), blue for received
         parts.push(
           <a
             key={`link-${lineIndex}-${linkKey++}`}
             href={match[2]}
             target="_blank"
             rel="noopener noreferrer"
-            className={isOwn ? "text-white hover:text-gray-200 underline" : "text-blue-600 hover:text-blue-800 underline"}
+            className={isOwn ? "underline font-semibold" : "text-blue-600 hover:text-blue-800 underline"}
+            style={isOwn ? { color: '#a7f3d0' } : undefined}
           >
             {match[1]}
           </a>
@@ -1012,42 +1009,37 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     return 'sent';
   };
 
-  // Render read receipt checkmarks (WhatsApp-style)
+  // Render read receipt checkmarks (WhatsApp-style: single icon with one or two hooks)
   const renderReadReceipts = (message: Message) => {
     const status = getReadReceiptStatus(message);
+    const singleCheck = (
+      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+    );
 
     if (status === 'sent') {
-      // One white checkmark
+      // Single check (sent)
       return (
-        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
-          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+        <svg className="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
+          {singleCheck}
         </svg>
       );
-    } else if (status === 'delivered') {
-      // Two white checkmarks
+    }
+    if (status === 'delivered') {
+      // Double check in one icon (delivered) - WhatsApp style, two ticks
       return (
-        <div className="flex items-center -space-x-1">
-          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
-            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-          </svg>
-          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
-            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-          </svg>
-        </div>
-      );
-    } else {
-      // Two bright green checkmarks
-      return (
-        <div className="flex items-center -space-x-1">
-          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#10ff88' }}>
-            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-          </svg>
-          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#10ff88' }}>
-            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-          </svg>
-        </div>
+        <svg className="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 25 20" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
+          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" transform="translate(5, 0)" />
+        </svg>
       );
     }
+    // Read: double check in one icon, neon green
+    return (
+      <svg className="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 25 20" style={{ color: '#39ff14' }}>
+        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" transform="translate(5, 0)" />
+      </svg>
+    );
   };
 
   // Generate waveform data from audio blob (similar to WhatsApp)
@@ -1778,7 +1770,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               is_active: otherParticipant.user.is_active,
               user: otherParticipant.user
             });
-            setShowEmployeeInfoModal(true);
+            setShowBusinessCardModal(true);
           }
         };
         return (
@@ -4743,222 +4735,32 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     const scrollPositionChanged = Math.abs(currentScrollPosition - lastScrollPositionRef.current) > 1;
     lastScrollPositionRef.current = currentScrollPosition;
 
-    // If we're fading out, completely ignore all scroll events for a period
-    if (isFadingOutRef.current) {
-      return;
-    }
+    if (!scrollPositionChanged) return;
 
-    // Only process if position actually changed
-    if (!scrollPositionChanged) {
-      return;
-    }
-
-    // Mark that we're scrolling
-    isScrollingForDateRef.current = true;
-
-    // Clear any existing floating date timeout
-    if (floatingDateTimeoutRef.current) {
-      clearTimeout(floatingDateTimeoutRef.current);
-      floatingDateTimeoutRef.current = null;
-    }
-
-    // Clear scroll position check timeout
-    if (scrollPositionCheckRef.current) {
-      clearTimeout(scrollPositionCheckRef.current);
-      scrollPositionCheckRef.current = null;
-    }
-
-    // Don't clear hideTimeoutRef if we're fading out - let it complete
-    if (hideTimeoutRef.current && !nearBottom && !isFadingOutRef.current) {
-      clearTimeout(hideTimeoutRef.current);
-      hideTimeoutRef.current = null;
-    } else if (hideTimeoutRef.current && isFadingOutRef.current) {
-      isScrollingForDateRef.current = false;
-    }
-
-    // If user scrolls to bottom, enable auto-scroll and reset count
+    // If user scrolls to bottom, enable auto-scroll and reset count (and skip ResizeObserver scroll for a short time to prevent "pull up" animation)
     if (nearBottom) {
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
       setNewMessagesCount(0);
-      isScrollingForDateRef.current = false;
-      isFadingOutRef.current = false;
-      if (hideTimeoutRef.current) {
-        clearTimeout(hideTimeoutRef.current);
-        hideTimeoutRef.current = null;
+      userJustScrolledToBottomRef.current = true;
+      if (scrollPositionCheckRef.current) {
+        clearTimeout(scrollPositionCheckRef.current);
       }
-      opacityRef.current = 0;
-      setFloatingDateOpacity(0);
-      hideTimeoutRef.current = setTimeout(() => {
-        setShowFloatingDate(false);
-        setFloatingDate(null);
-        lastDateRef.current = null;
-        opacityRef.current = 0;
-        isFadingOutRef.current = false;
-        hideTimeoutRef.current = null;
-      }, 200);
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
+      scrollPositionCheckRef.current = setTimeout(() => {
+        userJustScrolledToBottomRef.current = false;
+        scrollPositionCheckRef.current = null;
+      }, 600);
       return;
     }
 
-    // If user scrolls up, disable auto-scroll temporarily
-    // Use a more aggressive check to prevent auto-scroll from interfering
+    // If user scrolls up, disable auto-scroll
     setShouldAutoScroll(false);
     setIsUserScrolling(true);
 
-    // Clear any pending scroll operations
     if (scrollTimeoutRef.current) {
       clearTimeout(scrollTimeoutRef.current);
       scrollTimeoutRef.current = null;
     }
-
-    // Cancel any pending RAF and schedule a new one to batch updates
-    if (rafRef.current !== null) {
-      cancelAnimationFrame(rafRef.current);
-    }
-
-    rafRef.current = requestAnimationFrame(() => {
-      // Don't update date if we're fading out
-      if (isFadingOutRef.current) {
-        rafRef.current = null;
-        return;
-      }
-
-      // Calculate which date is visible at the top when scrolling
-      let container: HTMLDivElement | null = null;
-      if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetParent) {
-        container = mobileMessagesContainerRef.current;
-      } else if (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetParent) {
-        container = desktopMessagesContainerRef.current;
-      } else if (messagesContainerRef.current && messagesContainerRef.current.offsetParent) {
-        container = messagesContainerRef.current;
-      }
-
-      if (container && messages.length > 0) {
-        const containerRect = container.getBoundingClientRect();
-        const containerTop = containerRect.top;
-
-        let visibleDate: string | null = null;
-        let closestDistance = Infinity;
-        const messageElements = container.querySelectorAll('[data-message-id]');
-
-        for (let i = 0; i < messageElements.length; i++) {
-          const element = messageElements[i] as HTMLElement;
-          const elementRect = element.getBoundingClientRect();
-
-          // Check if element is roughly at the top of the container
-          const isVisible = elementRect.top < containerRect.bottom && elementRect.bottom > containerTop;
-
-          if (isVisible) {
-            const distanceFromTop = elementRect.top - containerTop;
-
-            if (distanceFromTop >= -50 && distanceFromTop < 200) {
-              const messageId = element.getAttribute('data-message-id');
-              if (messageId) {
-                const message = messages.find(m => String(m.id) === messageId);
-                if (message) {
-                  if (distanceFromTop < closestDistance) {
-                    visibleDate = message.sent_at;
-                    closestDistance = distanceFromTop;
-                  }
-                }
-              }
-            }
-          }
-        }
-
-        if (visibleDate) {
-          if (lastDateRef.current !== visibleDate) {
-            lastDateRef.current = visibleDate;
-            setFloatingDate(visibleDate);
-            setShowFloatingDate(true);
-            if (opacityRef.current !== 1 && !isFadingOutRef.current) {
-              opacityRef.current = 1;
-              setFloatingDateOpacity(1);
-            }
-          } else if (opacityRef.current < 0.5 && !isFadingOutRef.current) {
-            opacityRef.current = 1;
-            setFloatingDateOpacity(1);
-          }
-        } else if (messageElements.length > 0) {
-          // Fallback: mostly for scrolling up where exact top element might be tricky
-          for (let i = 0; i < messageElements.length; i++) {
-            const element = messageElements[i] as HTMLElement;
-            const elementRect = element.getBoundingClientRect();
-
-            if (elementRect.top < containerRect.bottom && elementRect.bottom > containerTop) {
-              const messageId = element.getAttribute('data-message-id');
-              if (messageId) {
-                const message = messages.find(m => String(m.id) === messageId);
-                if (message && lastDateRef.current !== message.sent_at) {
-                  lastDateRef.current = message.sent_at;
-                  setFloatingDate(message.sent_at);
-                  setShowFloatingDate(true);
-                  if (opacityRef.current !== 1 && !isFadingOutRef.current) {
-                    opacityRef.current = 1;
-                    setFloatingDateOpacity(1);
-                  }
-                  break;
-                }
-              }
-            }
-          }
-        }
-      }
-
-      rafRef.current = null;
-    });
-
-    // Set timeout to hide floating date after scrolling stops
-    if (floatingDateTimeoutRef.current) {
-      clearTimeout(floatingDateTimeoutRef.current);
-    }
-
-    floatingDateTimeoutRef.current = setTimeout(() => {
-      const checkContainer: HTMLDivElement | null =
-        (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetParent) ? mobileMessagesContainerRef.current :
-          (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetParent) ? desktopMessagesContainerRef.current :
-            (messagesContainerRef.current && messagesContainerRef.current.offsetParent) ? messagesContainerRef.current : null;
-
-      const checkScrollPosition = checkContainer ? checkContainer.scrollTop : 0;
-      const positionStillSame = Math.abs(checkScrollPosition - lastScrollPositionRef.current) <= 1;
-
-      if (positionStillSame && !isFadingOutRef.current) {
-        isScrollingForDateRef.current = false;
-        isFadingOutRef.current = true;
-
-        if (rafRef.current !== null) {
-          cancelAnimationFrame(rafRef.current);
-          rafRef.current = null;
-        }
-
-        opacityRef.current = 0;
-        setFloatingDateOpacity(0);
-
-        if (hideTimeoutRef.current) {
-          clearTimeout(hideTimeoutRef.current);
-        }
-        hideTimeoutRef.current = setTimeout(() => {
-          if (!isScrollingForDateRef.current) {
-            setShowFloatingDate(false);
-            setFloatingDate(null);
-            lastDateRef.current = null;
-            opacityRef.current = 0;
-            isFadingOutRef.current = true;
-            setTimeout(() => {
-              isFadingOutRef.current = false;
-            }, 300);
-          } else {
-            isFadingOutRef.current = false;
-          }
-          hideTimeoutRef.current = null;
-        }, 200);
-      }
-      floatingDateTimeoutRef.current = null;
-    }, 400);
   }, [messages, isNearBottom]);
 
   // Track previous message count to detect new messages
@@ -4985,10 +4787,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     // Checking strictly if user wanted to stay at bottom OR if it is a self-sent message
     const userIsNearBottom = isNearBottom();
     const isNewMessageFromMe = messages.length > 0 && messages[messages.length - 1].sender_id === currentUser?.id;
+    const hasNewMessages = messages.length > prevMessageCountRef.current;
 
-    // For subsequent message updates, scroll if user is near bottom OR if the new message is from current user
-    // Also check that user is not actively scrolling to prevent interference
-    const shouldScroll = (shouldAutoScroll && userIsNearBottom && !isUserScrolling) || isNewMessageFromMe;
+    // For subsequent message updates, scroll only when NEW messages arrived and (user is near bottom OR new message is from current user)
+    // Do NOT scroll when user just scrolled to bottom (no new messages) - that caused a "pull up" animation on mobile
+    const shouldScroll = ((shouldAutoScroll && userIsNearBottom && !isUserScrolling) || isNewMessageFromMe) && hasNewMessages;
 
     if (shouldScroll && messages.length > 0 && selectedConversation && !isScrollingRef.current) {
       // #region agent log
@@ -5009,7 +4812,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         }
       });
 
-    } else if (shouldAutoScroll && !userIsNearBottom && messages.length > prevMessageCountRef.current && selectedConversation) {
+    } else if (shouldAutoScroll && !userIsNearBottom && hasNewMessages && selectedConversation) {
       // #region agent log
       fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'RMQMessagesPage.tsx:4606', message: 'Auto-scroll prevented - user not near bottom', data: { shouldAutoScroll, userIsNearBottom, messagesLength: messages.length, prevMessageCount: prevMessageCountRef.current }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
       // #endregion
@@ -5062,39 +4865,31 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       const initialLoadTime = isInitialLoad ? Date.now() : 0;
       const INITIAL_LOAD_GRACE_PERIOD = 2000; // 2 seconds grace period after initial load
 
-      // Create observer to watch for height changes
+      // Create observer to watch for height changes - skip scroll right after user scrolled to bottom to prevent "pull up" animation
       resizeObserver = new ResizeObserver(() => {
-        // Don't trigger scroll during initial load grace period
         if (isInitialLoad && Date.now() - initialLoadTime < INITIAL_LOAD_GRACE_PERIOD) {
           return;
         }
+        if (userJustScrolledToBottomRef.current) return;
 
-        // Clear any pending scroll
         if (resizeScrollTimeout) {
           clearTimeout(resizeScrollTimeout);
           resizeScrollTimeout = null;
         }
 
-        // Only force scroll if we should auto-scroll AND user is not actively scrolling
-        // Check both shouldAutoScroll and isUserScrolling to prevent interference
         if (shouldAutoScroll && !isUserScrolling) {
           const now = Date.now();
-          // Throttle scrolls to prevent jumping
-          if (now - lastScrollTime < SCROLL_THROTTLE_MS) {
-            return;
-          }
+          if (now - lastScrollTime < SCROLL_THROTTLE_MS) return;
 
-          // Add a debounced delay to allow content to settle
           resizeScrollTimeout = setTimeout(() => {
-            // Double-check user hasn't started scrolling in the meantime
-            if (shouldAutoScroll && !isUserScrolling && !isLoadingMessages && !isPreloadingImages) {
+            if (shouldAutoScroll && !isUserScrolling && !isLoadingMessages && !isPreloadingImages && !userJustScrolledToBottomRef.current) {
               lastScrollTime = Date.now();
               requestAnimationFrame(() => {
                 scrollToBottom('instant');
               });
             }
             resizeScrollTimeout = null;
-          }, 150); // Increased delay to let images settle
+          }, 150);
         }
       });
 
@@ -6098,7 +5893,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               ? 'text-white shadow-md'
               : 'text-base-content/80 hover:text-base-content hover:bg-base-200/50'
               }`}
-            style={activeTab === 'chats' ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' } : {}}
+            style={activeTab === 'chats' ? { background: 'linear-gradient(to bottom right, #047857, #0f766e)' } : {}}
           >
             Chats
             <span className={`ml-2 text-xs ${activeTab === 'chats' ? 'text-white/80' : 'text-base-content/60'
@@ -6112,7 +5907,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               ? 'text-white shadow-md'
               : 'text-base-content/80 hover:text-base-content hover:bg-base-200/50'
               }`}
-            style={activeTab === 'groups' ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' } : {}}
+            style={activeTab === 'groups' ? { background: 'linear-gradient(to bottom right, #047857, #0f766e)' } : {}}
           >
             Groups
             {filteredGroupConversations.length > 0 && (
@@ -6359,7 +6154,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               ? 'text-white shadow-md'
               : 'text-base-content/80 hover:text-base-content hover:bg-base-200/50'
               }`}
-            style={activeTab === 'chats' ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' } : {}}
+            style={activeTab === 'chats' ? { background: 'linear-gradient(to bottom right, #047857, #0f766e)' } : {}}
           >
             Chats
             <span className={`ml-2 text-xs ${activeTab === 'chats' ? 'text-white/80' : 'text-base-content/60'
@@ -6373,7 +6168,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               ? 'text-white shadow-md'
               : 'text-base-content/80 hover:text-base-content hover:bg-base-200/50'
               }`}
-            style={activeTab === 'groups' ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' } : {}}
+            style={activeTab === 'groups' ? { background: 'linear-gradient(to bottom right, #047857, #0f766e)' } : {}}
           >
             Groups
             {filteredGroupConversations.length > 0 && (
@@ -6577,8 +6372,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         </div>
       </div>
 
-      {/* Chat Area - Desktop Only */}
-      <div className="hidden lg:flex flex-1 flex-col relative">
+      {/* Chat Area - Desktop Only - min-h-0 so messages area can shrink and scroll above input */}
+      <div className="hidden lg:flex flex-1 flex-col relative min-h-0">
         {selectedConversation ? (
           <>
             {/* Chat Header */}
@@ -6825,11 +6620,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               )}
             </div>
 
-            {/* Messages Area */}
+            {/* Wrapper so messages scroll above input (input is flex sibling, not absolute) */}
+            <div className="flex-1 flex flex-col min-h-0">
+            {/* Messages Area - min-h-0 so it scrolls and last message stays above input */}
             <div
               ref={desktopMessagesContainerRef}
               onScroll={handleScroll}
-              className="flex-1 overflow-y-auto p-4 pb-24 space-y-4 relative rmq-messages-area"
+              className="flex-1 min-h-0 overflow-y-auto p-2 sm:p-4 pb-4 space-y-4 relative rmq-messages-area"
               style={{
                 paddingTop: selectedConversation?.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 ? '180px' : '120px',
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
@@ -6840,22 +6637,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 backgroundAttachment: chatBackgroundImageUrl ? 'fixed' : 'scroll'
               }}
             >
-              {/* Floating Date Indicator - Desktop */}
-              <div
-                className="fixed top-20 left-1/2 -translate-x-1/2 z-50 pointer-events-none"
-                style={{
-                  opacity: showFloatingDate && floatingDate ? floatingDateOpacity : 0,
-                  visibility: showFloatingDate && floatingDate ? 'visible' : 'hidden',
-                  transition: 'opacity 200ms cubic-bezier(0.4, 0, 0.2, 1)',
-                  willChange: 'opacity'
-                }}
-              >
-                {floatingDate && (
-                  <div className="text-white px-3 py-1 rounded-full text-sm font-medium shadow-lg" style={{ backgroundColor: '#3E17C3' }}>
-                    {formatDateSeparator(floatingDate)}
-                  </div>
-                )}
-              </div>
               {isLoadingMessages ? (
                 <div className="text-center py-12">
                   <div className="loading loading-spinner loading-lg mx-auto mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.9)' : '#3E28CD' }}></div>
@@ -6878,8 +6659,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       'Unknown User';
                     const senderPhoto = message.sender?.tenants_employee?.photo_url;
 
-                    // Check if we need to show a date separator (removed - using floating indicator instead)
-                    const showDateSeparator = false; // Disabled inline separators
+                    const showDateSeparator = index === 0 ||
+                      new Date(message.sent_at).toDateString() !== new Date(messages[index - 1].sent_at).toDateString();
 
                     return (
                       <motion.div
@@ -6894,6 +6675,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         className="relative"
                         data-message-id={message.id}
                       >
+                        {showDateSeparator && (
+                          <div className="flex justify-center my-4">
+                            <div className="text-sm font-medium px-3 py-1.5 rounded-full border bg-base-200 border-base-300 text-base-content shadow-sm">
+                              {formatDateSeparator(message.sent_at)}
+                            </div>
+                          </div>
+                        )}
                         {/* Unread messages indicator - Desktop */}
                         {firstUnreadMessageIdRef.current === message.id && (
                           <div className="flex items-center gap-3 my-4 px-2">
@@ -6905,11 +6693,25 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
                           </div>
                         )}
-                        {/* Date Separator - Removed inline separators */}
 
                         {/* Image, video and emoji messages - render outside bubble */}
                         {isImageMessage(message) ? (
-                          <div className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
+                          <div className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-[94%] sm:max-w-md`}>
+                            {/* Sender avatar + display name for media - same size as regular messages */}
+                            <div className={`flex items-center gap-2 mb-1 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
+                              {renderUserAvatar({
+                                userId: isOwn ? currentUser?.id : message.sender_id,
+                                name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
+                                photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
+                                sizeClass: 'w-8 h-8',
+                                borderClass: 'border border-base-300',
+                                textClass: 'text-xs',
+                                loading: 'lazy',
+                              })}
+                              <span className="text-sm sm:text-xs font-medium text-base-content/80" style={{ textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none' }}>
+                                {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
+                              </span>
+                            </div>
                             <div
                               className="relative cursor-pointer group w-full"
                               onClick={() => openMediaModal(message)}
@@ -6942,7 +6744,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </div>
                             {/* Timestamp and read receipts at bottom of image */}
                             <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                              <span className="text-xs text-base-content/70" style={{
+                              <span className="text-sm sm:text-xs text-base-content/70" style={{
                                 textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
                               }}>
                                 {formatMessageTime(message.sent_at)}
@@ -6951,7 +6753,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </div>
                           </div>
                         ) : isVideoMessage(message) ? (
-                          <div className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
+                          <div className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-[94%] sm:max-w-md`}>
+                            {/* Sender avatar + display name for media - same size as regular messages */}
+                            <div className={`flex items-center gap-2 mb-1 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
+                              {renderUserAvatar({
+                                userId: isOwn ? currentUser?.id : message.sender_id,
+                                name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
+                                photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
+                                sizeClass: 'w-8 h-8',
+                                borderClass: 'border border-base-300',
+                                textClass: 'text-xs',
+                                loading: 'lazy',
+                              })}
+                              <span className="text-sm sm:text-xs font-medium text-base-content/80" style={{ textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none' }}>
+                                {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
+                              </span>
+                            </div>
                             <div
                               className="relative cursor-pointer group"
                               onClick={(e) => {
@@ -7075,7 +6892,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </div>
                             {/* Timestamp and read receipts at bottom of video */}
                             <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                              <span className="text-xs text-base-content/70" style={{
+                              <span className="text-sm sm:text-xs text-base-content/70" style={{
                                 textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
                               }}>
                                 {formatMessageTime(message.sent_at)}
@@ -7085,7 +6902,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           </div>
                         ) : isEmojiOnly(message.content || '') ? (
                           <div
-                            className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}
+                            className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-[94%] sm:max-w-md`}
                             dir={getTextDirection(message.content || '')}
                           >
                             <div className="text-6xl">
@@ -7093,7 +6910,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </div>
                             {/* Timestamp and read receipts at bottom of emoji */}
                             <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                              <span className="text-xs text-base-content/70" style={{
+                              <span className="text-sm sm:text-xs text-base-content/70" style={{
                                 textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
                               }}>
                                 {formatMessageTime(message.sent_at)}
@@ -7121,10 +6938,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               </div>
                             )}
 
-                            <div className={`max-w-xs sm:max-w-md ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
+                            <div className={`max-w-[94%] sm:max-w-md ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
                               {!isOwn && selectedConversation.type !== 'direct' && (
                                 <span
-                                  className="text-xs font-medium mb-1 px-2 py-0.5 rounded-full inline-block"
+                                  className="text-sm sm:text-xs font-medium mb-1 px-2 py-0.5 rounded-full inline-block"
                                   style={{
                                     backgroundColor: 'rgba(255, 255, 255, 0.7)',
                                     backdropFilter: 'blur(10px)',
@@ -7236,14 +7053,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     setShowReactionPicker(showReactionPicker === message.id ? null : message.id);
                                     setReactingMessageId(message.id);
                                   }}
-                                  className={`px-4 py-3 rounded-2xl shadow-sm cursor-pointer hover:shadow-md transition-shadow relative ${isOwn
+                                  className={`px-2 sm:px-2.5 py-2 rounded-2xl shadow-sm cursor-pointer hover:shadow-md transition-shadow relative ${isOwn
                                     ? isEmojiOnly(message.content)
                                       ? 'bg-base-100 text-base-content rounded-br-md'
                                       : 'text-white rounded-br-md'
                                     : 'border rounded-bl-md bg-white border-gray-200 text-base-content shadow-sm'
                                     }`}
                                   style={isOwn && !isEmojiOnly(message.content)
-                                    ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' }
+                                    ? { background: 'linear-gradient(to bottom right, #047857, #0f766e)' }
                                     : {}
                                   }
                                 >
@@ -7279,20 +7096,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     return hasReplyId && hasValidReplyData && replyMessage ? (
                                       <div className={`mb-2 p-2 rounded-lg border-l-4 ${isOwn ? 'bg-white/20 border-white/40' : 'bg-green-50 border-green-300'
                                         }`}>
-                                        <div className="text-xs font-semibold opacity-80 mb-1">
+                                        <div className="text-sm sm:text-xs font-semibold opacity-80 mb-1">
                                           {replyMessage.sender?.tenants_employee?.display_name ||
                                             replyMessage.sender?.full_name ||
                                             'Unknown'}
                                         </div>
                                         {/* Only show content if it exists, don't show "Media" placeholder */}
                                         {replyMessage.content && (
-                                          <div className="text-xs opacity-70 line-clamp-2">
+                                          <div className="text-sm sm:text-xs opacity-70 line-clamp-2">
                                             {replyMessage.content}
                                           </div>
                                         )}
                                         {/* Show attachment indicator if no content but has attachment */}
                                         {!replyMessage.content && replyMessage.attachment_url && (
-                                          <div className="text-xs opacity-70 italic">
+                                          <div className="text-sm sm:text-xs opacity-70 italic">
                                             {replyMessage.message_type === 'image' ? '📷 Image' :
                                               replyMessage.message_type === 'voice' ? '🎤 Voice message' :
                                                 replyMessage.message_type === 'file' ? '📎 File' : '📎 Attachment'}
@@ -7306,13 +7123,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   {message.content && (
                                     <div className="flex items-end gap-2">
                                       <div
-                                        className="break-words text-base whitespace-pre-wrap flex-1"
+                                        className="break-words text-lg sm:text-base whitespace-pre-wrap flex-1"
                                         dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
                                         style={{
                                           textAlign: getTextDirection(message.content) === 'rtl' ? 'right' :
                                             getTextDirection(message.content) === 'auto' ? 'start' : 'left',
                                           ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
-                                          fontSize: '1rem',
                                           lineHeight: '1.5',
                                           wordBreak: 'break-word',
                                           overflowWrap: 'break-word',
@@ -7323,7 +7139,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                         {renderMessageContent(message.content, isOwn)}
                                       </div>
                                       {message.edited_at && (
-                                        <span className="text-xs opacity-60 italic" style={{ fontSize: '0.75rem' }}>
+                                        <span className="text-sm sm:text-xs opacity-60 italic">
                                           (edited)
                                         </span>
                                       )}
@@ -7452,7 +7268,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
                                   {/* Timestamp inside message bubble */}
                                   <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                                    <span className={`text-xs ${isOwn
+                                    <span className={`text-sm sm:text-xs ${isOwn
                                       ? ''
                                       : 'text-base-content/60'
                                       }`}
@@ -7560,9 +7376,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Message Input - Desktop Only */}
-            <div className="hidden lg:block absolute bottom-0 left-0 right-0 p-4 z-30 pointer-events-none">
-              <div className="flex items-center gap-3 relative pointer-events-auto">
+            {/* Message Input - Desktop Only (flex sibling so messages area height = remaining space) */}
+            <div className="hidden lg:flex flex-shrink-0 p-4 z-10">
+              <div className="flex items-center gap-3 relative w-full">
                 {/* Consolidated Tools Button */}
                 <div className="relative flex-shrink-0" ref={desktopToolsRef}>
                   {!isRecording ? (
@@ -7570,7 +7386,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       onClick={() => setShowDesktopTools(prev => !prev)}
                       disabled={isSending}
                       className="btn btn-circle w-12 h-12 text-white disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow flex-shrink-0"
-                      style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
+                      style={{ background: 'linear-gradient(to bottom right, #047857, #0f766e)', borderColor: 'transparent' }}
                       title="Message tools"
                     >
                       <Squares2X2Icon className="w-6 h-6" />
@@ -7739,24 +7555,24 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <div className="flex-1 flex flex-col gap-2">
                   {/* Reply preview - Desktop */}
                   {(messageToReply || messageToEdit) && (
-                    <div className="flex items-start gap-2 p-2 bg-gray-100 rounded-lg border-l-4 border-blue-500">
+                    <div className="flex items-start gap-2 p-2.5 bg-gray-100 rounded-lg border-l-4 border-blue-500">
                       <div className="flex-1 min-w-0">
                         {messageToReply && (
                           <>
-                            <div className="text-xs font-semibold text-gray-600 mb-1">
+                            <div className="text-sm font-semibold text-gray-600 mb-1">
                               Replying to {messageToReply.sender?.tenants_employee?.display_name || messageToReply.sender?.full_name || 'Unknown'}
                             </div>
-                            <div className="text-sm text-gray-700 truncate">
+                            <div className="text-base text-gray-700 truncate">
                               {messageToReply.content || 'Media'}
                             </div>
                           </>
                         )}
                         {messageToEdit && (
                           <>
-                            <div className="text-xs font-semibold text-gray-600 mb-1">
+                            <div className="text-sm font-semibold text-gray-600 mb-1">
                               Editing message
                             </div>
-                            <div className="text-sm text-gray-700 truncate">
+                            <div className="text-base text-gray-700 truncate">
                               {messageToEdit.content}
                             </div>
                           </>
@@ -7788,12 +7604,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     onKeyDown={handleMessageKeyDown}
                     onPaste={handlePaste}
                     placeholder={messageToEdit ? "Edit message..." : "Type a message..."}
-                    className="textarea w-full resize-none max-h-32 border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
+                    dir={containsHebrew(messageToEdit ? editingMessageText : newMessage) ? 'rtl' : 'ltr'}
+                    className="textarea w-full resize-none max-h-32 border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none text-base"
                     rows={1}
                     disabled={isSending}
                     style={{
                       height: '48px',
                       minHeight: '48px',
+                      fontSize: '1.125rem',
                       backgroundColor: 'rgba(255, 255, 255, 0.8)',
                       backdropFilter: 'blur(10px)',
                       boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
@@ -7827,6 +7645,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   )}
                 </button>
               </div>
+            </div>
             </div>
           </>
         ) : (
@@ -7968,7 +7787,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               is_active: otherParticipant.user.is_active,
                               user: otherParticipant.user
                             });
-                            setShowEmployeeInfoModal(true);
+                            setShowBusinessCardModal(true);
                           }
                         };
                         return (
@@ -8012,28 +7831,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     })()}
                   </div>
 
-                  {/* Right: Image Button and Exit Button - Separate Floating Boxes */}
+                  {/* Right: Exit Button - Separate Floating Box (image change button removed on mobile) */}
                   <div className="flex-shrink-0 flex items-center gap-2 pointer-events-auto">
-                    {/* Background Image Upload Button - Separate Floating Box */}
-                    <button
-                      onClick={() => backgroundImageInputRef.current?.click()}
-                      disabled={isUploadingBackground}
-                      className="btn btn-circle w-12 h-12 text-gray-600 shadow-lg hover:shadow-xl transition-shadow"
-                      style={{
-                        backgroundColor: 'rgba(255, 255, 255, 0.8)',
-                        backdropFilter: 'blur(10px)',
-                        WebkitBackdropFilter: 'blur(10px)',
-                        borderColor: 'rgba(255, 255, 255, 0.3)',
-                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
-                      }}
-                      title="Upload chat background image"
-                    >
-                      {isUploadingBackground ? (
-                        <div className="loading loading-spinner loading-sm"></div>
-                      ) : (
-                        <PhotoIcon className="w-5 h-5" />
-                      )}
-                    </button>
                     {/* Exit Button - Separate Floating Box */}
                     <button
                       onClick={onClose}
@@ -8209,34 +8008,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               )}
             </div>
 
-            {/* Top Blur Overlay - Mobile - At top edge of screen */}
-            <div
-              className="fixed left-0 right-0 top-0 pointer-events-none"
-              style={{
-                height: '40px',
-                zIndex: 5,
-                background: 'linear-gradient(to bottom, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.85) 50%, rgba(255, 255, 255, 0) 100%)',
-                backdropFilter: 'blur(8px) saturate(150%)',
-                WebkitBackdropFilter: 'blur(8px) saturate(150%)'
-              }}
-            />
-            {/* Bottom Blur Overlay - Mobile - At bottom edge of screen */}
-            <div
-              className="fixed left-0 right-0 bottom-0 pointer-events-none"
-              style={{
-                height: '25px',
-                zIndex: 15,
-                background: 'linear-gradient(to top, rgba(255, 255, 255, 0.75) 0%, rgba(255, 255, 255, 0.6) 50%, rgba(255, 255, 255, 0) 100%)',
-                backdropFilter: 'blur(4px) saturate(150%)',
-                WebkitBackdropFilter: 'blur(4px) saturate(150%)'
-              }}
-            />
-
             {/* Mobile Messages */}
             <div
               ref={mobileMessagesContainerRef}
               onScroll={handleScroll}
-              className="flex-1 overflow-y-auto p-4 pb-24 space-y-4 min-h-0 overscroll-contain relative rmq-messages-area"
+              className="flex-1 overflow-y-auto p-2 sm:p-4 pb-24 space-y-4 min-h-0 overscroll-contain relative rmq-messages-area"
               style={{
                 paddingTop: selectedConversation?.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 ? '180px' : '120px',
                 WebkitOverflowScrolling: 'touch',
@@ -8248,22 +8024,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 backgroundAttachment: chatBackgroundImageUrl ? 'fixed' : 'scroll'
               }}
             >
-              {/* Floating Date Indicator - Mobile */}
-              <div
-                className="fixed top-32 left-1/2 -translate-x-1/2 z-[60] pointer-events-none"
-                style={{
-                  opacity: showFloatingDate && floatingDate ? floatingDateOpacity : 0,
-                  visibility: showFloatingDate && floatingDate ? 'visible' : 'hidden',
-                  transition: 'opacity 200ms cubic-bezier(0.4, 0, 0.2, 1)',
-                  willChange: 'opacity'
-                }}
-              >
-                {floatingDate && (
-                  <div className="text-white px-3 py-1 rounded-full text-sm font-medium shadow-lg" style={{ backgroundColor: '#3E17C3' }}>
-                    {formatDateSeparator(floatingDate)}
-                  </div>
-                )}
-              </div>
               {isLoadingMessages ? (
                 <div className="text-center py-12">
                   <div className="loading loading-spinner loading-lg mx-auto mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.9)' : '#3E28CD' }}></div>
@@ -8286,7 +8046,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       'Unknown User';
                     const senderPhoto = message.sender?.tenants_employee?.photo_url;
 
-                    // Date separators removed - using floating indicator instead
+                    const showDateSeparator = index === 0 ||
+                      new Date(message.sent_at).toDateString() !== new Date(messages[index - 1].sent_at).toDateString();
 
                     return (
                       <motion.div
@@ -8300,6 +8061,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         }}
                         data-message-id={message.id}
                       >
+                        {showDateSeparator && (
+                          <div className="flex justify-center my-4">
+                            <div className="text-sm font-medium px-3 py-1.5 rounded-full border bg-base-200 border-base-300 text-base-content shadow-sm">
+                              {formatDateSeparator(message.sent_at)}
+                            </div>
+                          </div>
+                        )}
                         {/* Unread messages indicator - Mobile */}
                         {firstUnreadMessageIdRef.current === message.id && (
                           <div className="flex items-center gap-3 my-4 px-2">
@@ -8311,11 +8079,25 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
                           </div>
                         )}
-                        {/* Date Separator - Removed inline separators */}
 
                         {/* Image, video and emoji messages - render outside bubble - Mobile */}
                         {isImageMessage(message) ? (
                           <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}>
+                            {/* Sender avatar + display name for media - same size as regular messages */}
+                            <div className={`flex items-center gap-2 mb-1 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
+                              {renderUserAvatar({
+                                userId: isOwn ? currentUser?.id : message.sender_id,
+                                name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
+                                photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
+                                sizeClass: 'w-8 h-8',
+                                borderClass: 'border border-base-300',
+                                textClass: 'text-xs',
+                                loading: 'lazy',
+                              })}
+                              <span className="text-sm sm:text-xs font-medium text-base-content/80" style={{ textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none' }}>
+                                {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
+                              </span>
+                            </div>
                             <div
                               className="relative cursor-pointer group w-full"
                               onClick={() => openMediaModal(message)}
@@ -8358,6 +8140,21 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           </div>
                         ) : isVideoMessage(message) ? (
                           <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}>
+                            {/* Sender avatar + display name for media - same size as regular messages */}
+                            <div className={`flex items-center gap-2 mb-1 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
+                              {renderUserAvatar({
+                                userId: isOwn ? currentUser?.id : message.sender_id,
+                                name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
+                                photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
+                                sizeClass: 'w-8 h-8',
+                                borderClass: 'border border-base-300',
+                                textClass: 'text-xs',
+                                loading: 'lazy',
+                              })}
+                              <span className="text-sm sm:text-xs font-medium text-base-content/80" style={{ textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none' }}>
+                                {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
+                              </span>
+                            </div>
                             <div
                               className="relative cursor-pointer group"
                               onClick={(e) => {
@@ -8543,105 +8340,82 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 </span>
                               )}
                               <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative group`}>
-                                {/* Message actions dropdown - Mobile - positioned directly next to message box */}
-                                {/* For sent messages (isOwn): left side, for received messages: right side */}
-                                <div className={`absolute ${isOwn ? '-left-8 top-1/2 -translate-y-1/2' : '-right-8 top-1/2 -translate-y-1/2'} opacity-0 group-hover:opacity-100 transition-opacity z-10`}>
-                                  <div className="relative message-action-menu">
-                                    <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        setMessageActionMenu(messageActionMenu === message.id ? null : message.id);
-                                      }}
-                                      className="p-1.5 rounded-full bg-white/90 hover:bg-white shadow-md border border-gray-200 transition-colors"
-                                      title="Message options"
-                                    >
-                                      <EllipsisVerticalIcon className="w-4 h-4 text-gray-700" />
-                                    </button>
-
-                                    {/* Dropdown menu */}
-                                    {messageActionMenu === message.id && (
-                                      <div className={`absolute ${isOwn ? 'left-0' : 'right-0'} bottom-full mb-1 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[140px] z-50`}>
-                                        <button
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setMessageToForward(message);
-                                            setShowForwardModal(true);
-                                            setMessageActionMenu(null);
-                                          }}
-                                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
-                                        >
-                                          <ArrowRightIcon className="w-4 h-4" />
-                                          Forward
-                                        </button>
-                                        <button
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setMessageToReply(message);
-                                            setMessageActionMenu(null);
-                                            // Focus input field
-                                            setTimeout(() => {
-                                              if (mobileMessageInputRef.current) {
-                                                mobileMessageInputRef.current.focus();
-                                              }
-                                            }, 100);
-                                          }}
-                                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
-                                        >
-                                          <ChatBubbleBottomCenterTextIcon className="w-4 h-4" />
-                                          Reply
-                                        </button>
-                                        {isOwn && (
-                                          <>
-                                            <button
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                setMessageToEdit(message);
-                                                setEditingMessageText(message.content || '');
-                                                setMessageActionMenu(null);
-                                                // Focus input field
-                                                setTimeout(() => {
-                                                  if (mobileMessageInputRef.current) {
-                                                    mobileMessageInputRef.current.focus();
-                                                  }
-                                                }, 100);
-                                              }}
-                                              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
-                                            >
-                                              <PencilIcon className="w-4 h-4" />
-                                              Edit
-                                            </button>
-                                            <button
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleDeleteMessage(message.id);
-                                                setMessageActionMenu(null);
-                                              }}
-                                              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors text-left"
-                                            >
-                                              <TrashIcon className="w-4 h-4" />
-                                              Delete
-                                            </button>
-                                          </>
-                                        )}
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
+                                {/* Mobile: long-press on bubble opens action modal (no hover ellipsis) */}
 
                                 <div
                                   data-message-id={message.id}
+                                  onContextMenu={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    setMobileMessageActionMessage(message);
+                                    longPressHandledRef.current = true;
+                                  }}
+                                  onTouchStart={() => {
+                                    longPressMessageRef.current = message;
+                                    longPressTimerRef.current = setTimeout(() => {
+                                      setMobileMessageActionMessage(message);
+                                      longPressHandledRef.current = true;
+                                      if (longPressTimerRef.current) {
+                                        clearTimeout(longPressTimerRef.current);
+                                        longPressTimerRef.current = null;
+                                      }
+                                    }, 400);
+                                  }}
+                                  onTouchEnd={() => {
+                                    if (longPressTimerRef.current) {
+                                      clearTimeout(longPressTimerRef.current);
+                                      longPressTimerRef.current = null;
+                                    }
+                                    longPressMessageRef.current = null;
+                                  }}
+                                  onTouchCancel={() => {
+                                    if (longPressTimerRef.current) {
+                                      clearTimeout(longPressTimerRef.current);
+                                      longPressTimerRef.current = null;
+                                    }
+                                    longPressMessageRef.current = null;
+                                  }}
+                                  onMouseDown={() => {
+                                    longPressMessageRef.current = message;
+                                    longPressTimerRef.current = setTimeout(() => {
+                                      setMobileMessageActionMessage(message);
+                                      longPressHandledRef.current = true;
+                                      if (longPressTimerRef.current) {
+                                        clearTimeout(longPressTimerRef.current);
+                                        longPressTimerRef.current = null;
+                                      }
+                                    }, 400);
+                                  }}
+                                  onMouseUp={() => {
+                                    if (longPressTimerRef.current) {
+                                      clearTimeout(longPressTimerRef.current);
+                                      longPressTimerRef.current = null;
+                                    }
+                                    longPressMessageRef.current = null;
+                                  }}
+                                  onMouseLeave={() => {
+                                    if (longPressTimerRef.current) {
+                                      clearTimeout(longPressTimerRef.current);
+                                      longPressTimerRef.current = null;
+                                    }
+                                    longPressMessageRef.current = null;
+                                  }}
                                   onClick={() => {
+                                    if (longPressHandledRef.current) {
+                                      longPressHandledRef.current = false;
+                                      return;
+                                    }
                                     setShowReactionPicker(showReactionPicker === message.id ? null : message.id);
                                     setReactingMessageId(message.id);
                                   }}
-                                  className={`px-4 py-3 rounded-2xl text-base cursor-pointer hover:shadow-md transition-shadow relative ${isOwn
+                                  className={`px-2 py-2 rounded-2xl text-base cursor-pointer hover:shadow-md transition-shadow relative select-none ${isOwn
                                     ? isEmojiOnly(message.content)
                                       ? 'bg-base-100 text-base-content rounded-br-md'
                                       : 'text-white rounded-br-md'
                                     : 'border rounded-bl-md bg-white border-gray-200 text-base-content shadow-sm'
                                     }`}
                                   style={isOwn && !isEmojiOnly(message.content)
-                                    ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' }
+                                    ? { background: 'linear-gradient(to bottom right, #047857, #0f766e)' }
                                     : {}
                                   }
                                 >
@@ -8689,16 +8463,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     ) : null;
                                   })()}
 
-                                  {/* Message content */}
+                                  {/* Message content - Mobile: larger text */}
                                   {message.content && (
                                     <div
-                                      className="break-words text-base whitespace-pre-wrap"
+                                      className="break-words text-lg whitespace-pre-wrap"
                                       dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
                                       style={{
                                         textAlign: getTextDirection(message.content) === 'rtl' ? 'right' :
                                           getTextDirection(message.content) === 'auto' ? 'start' : 'left',
                                         ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
-                                        fontSize: '1rem',
+                                        fontSize: '1.125rem',
                                         lineHeight: '1.5',
                                         wordBreak: 'break-word',
                                         overflowWrap: 'break-word',
@@ -8946,7 +8720,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     <button
                       onClick={() => setShowMobileTools(prev => !prev)}
                       className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow flex-shrink-0"
-                      style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
+                      style={{ background: 'linear-gradient(to bottom right, #047857, #0f766e)', borderColor: 'transparent' }}
                       title="Message tools"
                     >
                       <Squares2X2Icon className="w-6 h-6" />
@@ -8992,22 +8766,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   <div className="flex-1 flex flex-col gap-2">
                     {/* Reply preview - Mobile */}
                     {(messageToReply || messageToEdit) && (
-                      <div className="flex items-start gap-2 p-2 bg-gray-100 rounded-lg border-l-4 border-blue-500">
+                      <div className="flex items-start gap-2 p-2.5 bg-gray-100 rounded-lg border-l-4 border-blue-500">
                         <div className="flex-1 min-w-0">
                           {messageToReply && (
                             <>
-                              <div className="text-xs font-semibold text-gray-600 mb-1">
+                              <div className="text-sm font-semibold text-gray-600 mb-1">
                                 Replying to {messageToReply.sender?.tenants_employee?.display_name || messageToReply.sender?.full_name || 'Unknown'}
                               </div>
-                              {/* Only show content if it exists */}
                               {messageToReply.content && (
-                                <div className="text-sm text-gray-700 truncate">
+                                <div className="text-base text-gray-700 truncate">
                                   {messageToReply.content}
                                 </div>
                               )}
-                              {/* Show attachment indicator if no content but has attachment */}
                               {!messageToReply.content && messageToReply.attachment_url && (
-                                <div className="text-sm text-gray-700 italic">
+                                <div className="text-base text-gray-700 italic">
                                   {messageToReply.message_type === 'image' ? '📷 Image' :
                                     messageToReply.message_type === 'voice' ? '🎤 Voice message' :
                                       messageToReply.message_type === 'file' ? '📎 File' : '📎 Attachment'}
@@ -9017,10 +8789,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           )}
                           {messageToEdit && (
                             <>
-                              <div className="text-xs font-semibold text-gray-600 mb-1">
+                              <div className="text-sm font-semibold text-gray-600 mb-1">
                                 Editing message
                               </div>
-                              <div className="text-sm text-gray-700 truncate">
+                              <div className="text-base text-gray-700 truncate">
                                 {messageToEdit.content}
                               </div>
                             </>
@@ -9052,12 +8824,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       onKeyDown={handleMessageKeyDown}
                       onPaste={handlePaste}
                       placeholder={messageToEdit ? "Edit message..." : "Type a message..."}
-                      className="textarea w-full resize-none text-sm max-h-40 border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
+                      dir={containsHebrew(messageToEdit ? editingMessageText : newMessage) ? 'rtl' : 'ltr'}
+                      className="textarea w-full resize-none max-h-40 border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none text-base"
                       rows={1}
                       disabled={isSending}
                       style={{
                         height: '48px',
                         minHeight: '48px',
+                        fontSize: '1.125rem',
                         lineHeight: '1.4',
                         backgroundColor: 'rgba(255, 255, 255, 0.8)',
                         backdropFilter: 'blur(10px)',
@@ -9737,7 +9511,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       )}
 
       {/* WhatsApp-style Media Modal */}
-      {isMediaModalOpen && conversationMedia.length > 0 && (
+      {isMediaModalOpen && conversationMedia.length > 0 && (() => {
+        const currentMedia = conversationMedia[selectedMediaIndex];
+        const mediaSender = currentMedia?.sender;
+        const senderDisplayName = mediaSender?.tenants_employee?.display_name || mediaSender?.full_name || 'Unknown';
+        const senderPhotoUrl = mediaSender?.tenants_employee?.photo_url;
+        return (
         <div className="fixed inset-0 z-[60] bg-black bg-opacity-95 flex flex-col">
           {/* Header */}
           <div className="flex items-center justify-between p-4 bg-black/50 text-white">
@@ -9755,6 +9534,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <p className="text-sm text-gray-300">
                   {selectedMediaIndex + 1} of {conversationMedia.length}
                 </p>
+              </div>
+              {/* Employee who sent/received this media */}
+              <div className="flex items-center gap-2 ml-2 pl-4 border-l border-white/20">
+                {renderUserAvatar({
+                  userId: mediaSender?.id,
+                  name: senderDisplayName,
+                  photoUrl: senderPhotoUrl,
+                  sizeClass: 'w-8 h-8',
+                  borderClass: 'border border-white/30',
+                  textClass: 'text-xs',
+                  loading: 'lazy',
+                })}
+                <span className="text-sm font-medium text-white/90">{senderDisplayName}</span>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -9914,35 +9706,57 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             )}
           </div>
 
-          {/* Bottom Media Thumbnails Panel */}
+          {/* Bottom Media Thumbnails Panel - with sender name and image per item */}
           <div className="bg-black/50 p-4">
-            <div className="flex gap-2 overflow-x-auto">
-              {conversationMedia.map((media, index) => (
-                <div
-                  key={media.id}
-                  onClick={() => setSelectedMediaIndex(index)}
-                  className={`flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden cursor-pointer border-2 transition-all ${index === selectedMediaIndex
-                    ? 'border-blue-500 scale-110'
-                    : 'border-transparent hover:border-white/30'
-                    }`}
-                >
-                  {media.message_type === 'image' ? (
-                    <img
-                      src={media.attachment_url}
-                      alt={media.attachment_name}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className="w-full h-full bg-white/10 flex items-center justify-center">
-                      <PaperClipIcon className="w-6 h-6 text-white" />
+            <div className="flex gap-3 overflow-x-auto">
+              {conversationMedia.map((media, index) => {
+                const itemSender = media.sender;
+                const itemSenderName = itemSender?.tenants_employee?.display_name || itemSender?.full_name || 'Unknown';
+                const itemSenderPhoto = itemSender?.tenants_employee?.photo_url;
+                return (
+                  <div
+                    key={media.id}
+                    onClick={() => setSelectedMediaIndex(index)}
+                    className={`flex-shrink-0 flex flex-col items-center gap-1 cursor-pointer group ${index === selectedMediaIndex ? 'ring-2 ring-blue-500 rounded-lg' : ''}`}
+                  >
+                    <div
+                      className={`w-16 h-16 rounded-lg overflow-hidden border-2 transition-all ${index === selectedMediaIndex
+                        ? 'border-blue-500 scale-105'
+                        : 'border-transparent group-hover:border-white/30'
+                        }`}
+                    >
+                      {media.message_type === 'image' ? (
+                        <img
+                          src={media.attachment_url}
+                          alt={media.attachment_name}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="w-full h-full bg-white/10 flex items-center justify-center">
+                          <PaperClipIcon className="w-6 h-6 text-white" />
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              ))}
+                    <div className="flex items-center gap-1.5 min-w-0 max-w-[90px]">
+                      {renderUserAvatar({
+                        userId: itemSender?.id,
+                        name: itemSenderName,
+                        photoUrl: itemSenderPhoto,
+                        sizeClass: 'w-5 h-5 flex-shrink-0',
+                        borderClass: 'border border-white/20',
+                        textClass: 'text-[10px]',
+                        loading: 'lazy',
+                      })}
+                      <span className="text-xs text-white/80 truncate" title={itemSenderName}>{itemSenderName}</span>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Employee Info Modal */}
       {showEmployeeInfoModal && selectedEmployee && (
@@ -10075,6 +9889,220 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 style={{ backgroundColor: '#3E17C3', borderColor: '#3E17C3' }}
               >
                 View Full Profile
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Business Card Modal - styled like PublicContractView */}
+      {showBusinessCardModal && selectedEmployee && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+          onClick={() => setShowBusinessCardModal(false)}
+        >
+          <div
+            className="relative w-full max-w-md overflow-hidden bg-transparent rounded-2xl shadow-2xl min-h-[320px]"
+            onClick={e => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setShowBusinessCardModal(false)}
+              className="absolute top-3 right-3 z-[60] btn btn-circle btn-sm bg-black/60 text-white border-none hover:bg-black/80 backdrop-blur-md"
+              aria-label="Close"
+            >
+              <XMarkIcon className="w-5 h-5" />
+            </button>
+
+            {/* Background image with overlay - same as PublicContractView */}
+            <div
+              className="absolute inset-0 bg-cover bg-center rounded-2xl"
+              style={{
+                backgroundImage: `url(${selectedEmployee.photo || 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?ixlib=rb-4.0.3&auto=format&fit=crop&w=2070&q=80'})`,
+              }}
+            >
+              <div className="absolute inset-0 bg-gradient-to-br from-black/60 via-black/50 to-black/60 rounded-2xl" />
+            </div>
+
+            {/* Logo - top left */}
+            <div className="absolute top-3 left-3 z-10">
+              <img src="/DPLOGO1.png" alt="DPL Logo" className="h-7 drop-shadow-2xl" />
+            </div>
+
+            {/* Centered content */}
+            <div className="relative z-10 flex flex-col items-center justify-center px-4 py-8 min-h-[320px] text-center text-white">
+              {/* Avatar */}
+              {selectedEmployee.photo_url ? (
+                <div className="w-20 h-20 rounded-full shadow-2xl overflow-hidden mb-3">
+                  <img
+                    src={selectedEmployee.photo_url}
+                    alt={selectedEmployee.official_name || selectedEmployee.display_name}
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+              ) : (
+                <div className="w-20 h-20 rounded-full shadow-2xl flex items-center justify-center text-xl font-bold bg-white/20 border border-white/30 mb-3">
+                  {getInitials(selectedEmployee.official_name || selectedEmployee.display_name)}
+                </div>
+              )}
+
+              <h1 className="text-xl font-bold mb-1 drop-shadow-2xl tracking-tight">
+                {selectedEmployee.official_name || selectedEmployee.display_name}
+              </h1>
+              {selectedEmployee.department && (
+                <p className="text-sm text-white/95 mb-1 drop-shadow-lg font-medium">
+                  {selectedEmployee.department} Department
+                </p>
+              )}
+              <p className="text-xs text-white/90 mb-4 drop-shadow-md font-semibold">
+                Decker, Pex, Levi Law Offices
+              </p>
+
+              {/* Contact pills - same style as PublicContractView */}
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-2 w-full max-w-xs">
+                {selectedEmployee.email && (
+                  <a
+                    href={`mailto:${selectedEmployee.email}`}
+                    className="flex items-center gap-2 bg-white/10 backdrop-blur-md px-3 py-2 rounded-full border border-white/20 shadow-lg hover:bg-white/20 transition-all cursor-pointer w-full sm:w-auto justify-center"
+                  >
+                    <EnvelopeIcon className="w-4 h-4 text-white flex-shrink-0" />
+                    <span className="text-xs font-medium break-all truncate max-w-[180px]">{selectedEmployee.email}</span>
+                  </a>
+                )}
+                {selectedEmployee.mobile && (
+                  <a
+                    href={`tel:${selectedEmployee.mobile}`}
+                    className="flex items-center gap-2 bg-white/10 backdrop-blur-md px-3 py-2 rounded-full border border-white/20 shadow-lg hover:bg-white/20 transition-all cursor-pointer w-full sm:w-auto justify-center"
+                  >
+                    <DevicePhoneMobileIcon className="w-4 h-4 text-white flex-shrink-0" />
+                    <span className="text-xs font-medium">{selectedEmployee.mobile}</span>
+                  </a>
+                )}
+                {selectedEmployee.phone && (
+                  <a
+                    href={`tel:${selectedEmployee.phone}`}
+                    className="flex items-center gap-2 bg-white/10 backdrop-blur-md px-3 py-2 rounded-full border border-white/20 shadow-lg hover:bg-white/20 transition-all cursor-pointer w-full sm:w-auto justify-center"
+                  >
+                    <PhoneIcon className="w-4 h-4 text-white flex-shrink-0" />
+                    <span className="text-xs font-medium">
+                      {selectedEmployee.phone}
+                      {selectedEmployee.phone_ext && <span className="ml-1 text-white/80">Ext: {selectedEmployee.phone_ext}</span>}
+                    </span>
+                  </a>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mobile message actions modal - long-press on message */}
+      {mobileMessageActionMessage && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 backdrop-blur-sm lg:hidden"
+          onClick={() => setMobileMessageActionMessage(null)}
+        >
+          <div
+            className="w-full max-w-md bg-base-100 rounded-t-2xl shadow-2xl border-t border-base-300 pb-safe"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Message box preview at top - same look as in chat */}
+            <div className="p-4 border-b border-base-300">
+              <p className="text-xs font-medium text-base-content/60 mb-2">Message</p>
+              <div
+                className={`inline-block max-w-full rounded-2xl px-3 py-2 shadow-sm ${
+                  mobileMessageActionMessage.sender_id === currentUser?.id
+                    ? 'text-white rounded-br-md'
+                    : 'border rounded-bl-md bg-base-200 border-base-300 text-base-content'
+                }`}
+                style={
+                  mobileMessageActionMessage.sender_id === currentUser?.id
+                    ? { background: 'linear-gradient(to bottom right, #047857, #0f766e)' }
+                    : {}
+                }
+              >
+                {mobileMessageActionMessage.content ? (
+                  <p className="text-base whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
+                    {mobileMessageActionMessage.content}
+                  </p>
+                ) : mobileMessageActionMessage.attachment_url ? (
+                  <div className="flex items-center gap-2">
+                    {mobileMessageActionMessage.message_type === 'image' ? (
+                      <img
+                        src={mobileMessageActionMessage.attachment_url}
+                        alt=""
+                        className="max-h-24 max-w-full rounded-lg object-cover"
+                      />
+                    ) : mobileMessageActionMessage.message_type === 'voice' ? (
+                      <span className="text-base">🎤 Voice message</span>
+                    ) : (
+                      <span className="text-base">
+                        📎 {mobileMessageActionMessage.attachment_name || 'Attachment'}
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-base opacity-70">Message</p>
+                )}
+              </div>
+            </div>
+            <div className="p-3 flex flex-col gap-1">
+              <button
+                onClick={() => {
+                  setMessageToForward(mobileMessageActionMessage);
+                  setShowForwardModal(true);
+                  setMobileMessageActionMessage(null);
+                }}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-base font-medium text-base-content hover:bg-base-200 transition-colors text-left"
+              >
+                <ArrowRightIcon className="w-5 h-5 text-base-content/70" />
+                Forward
+              </button>
+              <button
+                onClick={() => {
+                  setMessageToReply(mobileMessageActionMessage);
+                  setMobileMessageActionMessage(null);
+                  setTimeout(() => {
+                    if (mobileMessageInputRef.current) mobileMessageInputRef.current.focus();
+                  }, 100);
+                }}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-base font-medium text-base-content hover:bg-base-200 transition-colors text-left"
+              >
+                <ChatBubbleBottomCenterTextIcon className="w-5 h-5 text-base-content/70" />
+                Reply
+              </button>
+              {mobileMessageActionMessage.sender_id === currentUser?.id && (
+                <>
+                  <button
+                    onClick={() => {
+                      setMessageToEdit(mobileMessageActionMessage);
+                      setEditingMessageText(mobileMessageActionMessage.content || '');
+                      setMobileMessageActionMessage(null);
+                      setTimeout(() => {
+                        if (mobileMessageInputRef.current) mobileMessageInputRef.current.focus();
+                      }, 100);
+                    }}
+                    className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-base font-medium text-base-content hover:bg-base-200 transition-colors text-left"
+                  >
+                    <PencilIcon className="w-5 h-5 text-base-content/70" />
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => {
+                      handleDeleteMessage(mobileMessageActionMessage.id);
+                      setMobileMessageActionMessage(null);
+                    }}
+                    className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-base font-medium text-red-600 hover:bg-red-500/10 transition-colors text-left"
+                  >
+                    <TrashIcon className="w-5 h-5" />
+                    Delete
+                  </button>
+                </>
+              )}
+              <button
+                onClick={() => setMobileMessageActionMessage(null)}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-base font-medium text-base-content/70 hover:bg-base-200 transition-colors mt-2 border-t border-base-300"
+              >
+                Cancel
               </button>
             </div>
           </div>

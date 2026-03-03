@@ -897,16 +897,28 @@ const AdminPage: React.FC = () => {
         </div>
       )}
 
-      {/* Desktop Menu Button */}
-      <button
-        onClick={() => setIsSidebarOpen(true)}
-        className="hidden md:block fixed top-1/2 -translate-y-1/2 left-6 z-50 p-3 bg-primary text-white rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-105"
-        title="Open menu"
-      >
-        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-        </svg>
-      </button>
+      {/* Sidebar menu button - bottom center, shows current page */}
+      {(() => {
+        const filteredTabsForLabel = ADMIN_TABS.filter(tab => !tab.requiresAdmin || isAdmin);
+        const currentPageLabel = selected.tab !== null && selected.sub !== null && filteredTabsForLabel[selected.tab]
+          ? filteredTabsForLabel[selected.tab].subcategories[selected.sub]
+          : 'Menu';
+        return (
+          <button
+            onClick={() => {
+              if (window.innerWidth >= 768) setIsSidebarOpen(true);
+              else setIsMobileSidebarOpen(true);
+            }}
+            className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 bg-primary text-white rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-105"
+            title="Open menu"
+          >
+            <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+            <span className="font-medium whitespace-nowrap">{currentPageLabel}</span>
+          </button>
+        );
+      })()}
 
       {/* Mobile Sidebar */}
       {isMobileSidebarOpen && (
@@ -967,16 +979,6 @@ const AdminPage: React.FC = () => {
           </div>
         </div>
       )}
-
-      {/* Mobile Menu Button */}
-      <button
-        onClick={() => setIsMobileSidebarOpen(true)}
-        className="md:hidden fixed bottom-6 right-6 z-50 p-4 bg-primary text-white rounded-full shadow-lg hover:shadow-xl transition-all"
-      >
-        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-        </svg>
-      </button>
 
       {/* Main Content Area */}
       <div

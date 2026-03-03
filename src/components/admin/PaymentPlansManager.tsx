@@ -97,10 +97,14 @@ interface UnifiedPaymentPlan {
 interface Lead {
   id: string;
   lead_number: string;
+  master_id?: string | null;
   name: string;
   email: string;
   phone: string;
 }
+
+// UUID check for new leads (same as LeadSearchPage / Clients)
+const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test((s || '').trim());
 
 interface LegacyLead {
   id: number;
@@ -122,6 +126,8 @@ const PaymentPlansManager: React.FC = () => {
   const [selectedPlan, setSelectedPlan] = useState<UnifiedPaymentPlan | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editedPlan, setEditedPlan] = useState<UnifiedPaymentPlan | null>(null);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editModalPlan, setEditModalPlan] = useState<UnifiedPaymentPlan | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [activeSearchTerm, setActiveSearchTerm] = useState(''); // The search term actually used in queries
@@ -368,12 +374,25 @@ const PaymentPlansManager: React.FC = () => {
       // Get legacy leads map (for fallback names)
       const legacyLeadsMap = await fetchLegacyLeads();
 
-      // Helper function to build legacy count query with filters
+      // Resolve search term for new plans: by UUID or by lead_number (same as LeadSearchPage – master + subleads)
+      let newPlanSearchLeadIds: string[] | null = null;
+      if (activeSearchTerm && activeSearchTerm.trim() !== '') {
+        const term = activeSearchTerm.trim();
+        if (isUuid(term)) {
+          newPlanSearchLeadIds = [term];
+        } else {
+          const { data: byExact } = await supabase.from('leads').select('id').eq('lead_number', term);
+          const { data: byPrefix } = await supabase.from('leads').select('id').like('lead_number', term + '/%');
+          const ids = new Set<string>([...(byExact || []).map((r: { id: string }) => r.id), ...(byPrefix || []).map((r: { id: string }) => r.id)]);
+          newPlanSearchLeadIds = Array.from(ids);
+        }
+      }
+
+      // Helper function to build legacy count query with filters (include cancelled; grey row when cancel_date set)
       const buildLegacyCountQuery = () => {
         let query = supabase
           .from('finances_paymentplanrow')
-          .select('*', { count: 'exact', head: true })
-          .is('cancel_date', null);
+          .select('*', { count: 'exact', head: true });
 
         // Apply exact match search filter at database level for legacy plans
         if (activeSearchTerm) {
@@ -400,8 +419,7 @@ const PaymentPlansManager: React.FC = () => {
               name,
               iso_code
             )
-          `, { count: 'exact' })
-          .is('cancel_date', null);
+          `, { count: 'exact' });
 
         // Apply exact match search filter at database level for legacy plans
         if (activeSearchTerm) {
@@ -424,15 +442,12 @@ const PaymentPlansManager: React.FC = () => {
       const buildNewCountQuery = () => {
         let query = supabase
           .from('payment_plans')
-          .select('*', { count: 'exact', head: true })
-          .is('cancel_date', null);
+          .select('*', { count: 'exact', head: true });
 
-        // Apply exact match search filter at database level for new plans
-        if (activeSearchTerm) {
-          // Exact match on lead_id
-          query = query.eq('lead_id', activeSearchTerm);
+        if (newPlanSearchLeadIds !== null) {
+          if (newPlanSearchLeadIds.length === 0) query = query.eq('lead_id', '00000000-0000-0000-0000-000000000000');
+          else query = query.in('lead_id', newPlanSearchLeadIds);
         }
-        
         return query;
       };
 
@@ -440,15 +455,12 @@ const PaymentPlansManager: React.FC = () => {
       const buildNewDataQuery = (from: number, to: number) => {
         let query = supabase
           .from('payment_plans')
-          .select('*', { count: 'exact' })
-          .is('cancel_date', null);
+          .select('*', { count: 'exact' });
 
-        // Apply exact match search filter at database level for new plans
-        if (activeSearchTerm) {
-          // Exact match on lead_id
-          query = query.eq('lead_id', activeSearchTerm);
+        if (newPlanSearchLeadIds !== null) {
+          if (newPlanSearchLeadIds.length === 0) query = query.eq('lead_id', '00000000-0000-0000-0000-000000000000');
+          else query = query.in('lead_id', newPlanSearchLeadIds);
         }
-        
         return query
           .order('id', { ascending: false })
           .range(from, to);
@@ -547,8 +559,41 @@ const PaymentPlansManager: React.FC = () => {
         console.error('❌ [PaymentPlansManager] Error fetching new payment plans:', fetchedNewError);
       }
 
-      // Get leads map for new payment plans
-      const leadsMap = await fetchLeads();
+      // Get leads map for new payment plans: always fetch from leads table by lead_id so we have lead_number + master_id (sublead logic)
+      const newPlanLeadIds = [...new Set((newData || []).map((p: { lead_id: string }) => p.lead_id).filter(Boolean))] as string[];
+      const leadsMap: { [key: string]: Lead } = {};
+      if (newPlanLeadIds.length > 0) {
+        const batchSize = 200;
+        for (let i = 0; i < newPlanLeadIds.length; i += batchSize) {
+          const batch = newPlanLeadIds.slice(i, i + batchSize);
+          const { data: leadsForPlans, error: leadsErr } = await supabase
+            .from('leads')
+            .select('id, lead_number, master_id, name, email, phone')
+            .in('id', batch);
+          if (!leadsErr && leadsForPlans) {
+            leadsForPlans.forEach((lead: Lead) => {
+              leadsMap[lead.id] = lead;
+            });
+          }
+        }
+      }
+
+      // Sublead/master display logic (same as LeadSearchPage): build suffix map and master-with-subleads set
+      const leadsList = Object.values(leadsMap);
+      const newSubLeadSuffixMap = new Map<string, number>();
+      const newMasterIdsWithSubLeads = new Set<string>();
+      const newLeadsWithMaster = leadsList.filter((l) => l.master_id);
+      const newMasterIds = Array.from(new Set(newLeadsWithMaster.map((l) => (l.master_id ?? '').toString()).filter(Boolean)));
+
+      for (const masterId of newMasterIds) {
+        const sameMasterLeads = leadsList.filter((l) => (l.master_id ?? '').toString() === masterId);
+        sameMasterLeads.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+        if (sameMasterLeads.length > 0) newMasterIdsWithSubLeads.add(masterId);
+        sameMasterLeads.forEach((lead: Lead, index: number) => {
+          const leadKey = lead.id?.toString();
+          if (leadKey) newSubLeadSuffixMap.set(leadKey, index + 2);
+        });
+      }
 
       // Collect unique lead_ids that we need but don't have in the map yet
       const missingLeadIds = new Set<number>();
@@ -665,10 +710,27 @@ const PaymentPlansManager: React.FC = () => {
         }))
       });
 
-      // Transform new payment plans
+      // Transform new payment plans (with sublead/master display_lead_number like LeadSearchPage)
       console.log('🔍 [PaymentPlansManager] Transforming new payment plans...');
       const newPlans: UnifiedPaymentPlan[] = (newData || []).map((plan: any) => {
         const lead = leadsMap[plan.lead_id];
+        let displayLeadNumber: string | undefined;
+        if (lead) {
+          if (lead.master_id) {
+            if (lead.lead_number && String(lead.lead_number).includes('/')) {
+              displayLeadNumber = lead.lead_number;
+            } else {
+              const suffix = newSubLeadSuffixMap.get(lead.id);
+              const masterLead = leadsMap[lead.master_id];
+              const masterLeadNumber = masterLead?.lead_number || lead.master_id;
+              displayLeadNumber = suffix ? `${masterLeadNumber}/${suffix}` : `${masterLeadNumber}/2`;
+            }
+          } else {
+            const baseNumber = (lead.lead_number || lead.id) ?? '';
+            const hasSubLeads = newMasterIdsWithSubLeads.has(lead.id);
+            displayLeadNumber = hasSubLeads && baseNumber && !baseNumber.includes('/') ? `${baseNumber}/1` : baseNumber;
+          }
+        }
         // Handle different possible date column names
         const createdDate = plan.created_at || plan.cdate || plan.date || new Date().toISOString();
         const updatedDate = plan.updated_at || plan.udate || createdDate;
@@ -677,7 +739,7 @@ const PaymentPlansManager: React.FC = () => {
           id: plan.id,
           lead_id: plan.lead_id,
           lead_type: 'new',
-          lead_number: lead?.lead_number,
+          lead_number: displayLeadNumber ?? lead?.lead_number,
           lead_name: lead?.name,
           due_date: plan.due_date,
           value: Number(plan.value || 0),
@@ -736,13 +798,23 @@ const PaymentPlansManager: React.FC = () => {
   };
 
   const handleRowClick = (plan: UnifiedPaymentPlan) => {
-    setSelectedPlan(plan);
+    openEditModal(plan);
+  };
+
+  const openEditModal = (plan: UnifiedPaymentPlan) => {
+    setEditModalPlan(plan);
     setEditedPlan({ ...plan });
-    setIsEditing(false);
+    setEditModalOpen(true);
+  };
+
+  const closeEditModal = () => {
+    setEditModalOpen(false);
+    setEditModalPlan(null);
+    if (selectedPlan) setEditedPlan({ ...selectedPlan });
   };
 
   const handleEdit = () => {
-    setIsEditing(true);
+    if (selectedPlan) openEditModal(selectedPlan);
   };
 
   const handleSave = async () => {
@@ -777,6 +849,7 @@ const PaymentPlansManager: React.FC = () => {
             currency_id: currencyId,
             notes: editedPlan.notes,
             ready_to_pay: editedPlan.ready_to_pay,
+            cancel_date: editedPlan.cancel_date || null,
             udate: new Date().toISOString().split('T')[0],
           })
           .eq('id', editedPlan.id);
@@ -797,6 +870,7 @@ const PaymentPlansManager: React.FC = () => {
             notes: editedPlan.notes,
             client_name: editedPlan.client_name,
             ready_to_pay: editedPlan.ready_to_pay,
+            cancel_date: editedPlan.cancel_date || null,
             updated_at: new Date().toISOString(),
             updated_by: currentUser,
           })
@@ -809,14 +883,17 @@ const PaymentPlansManager: React.FC = () => {
       await fetchPaymentPlans();
       setIsEditing(false);
       setSelectedPlan(editedPlan);
+      setEditModalOpen(false);
+      setEditModalPlan(null);
     } catch (error) {
       console.error('Error saving payment plan:', error);
       toast.error('Failed to save payment plan');
     }
   };
 
-  const handleChangeStatus = async () => {
-    if (!selectedPlan || !selectedPlan.paid) return;
+  const handleChangeStatus = async (plan?: UnifiedPaymentPlan) => {
+    const target = plan ?? selectedPlan;
+    if (!target || !target.paid) return;
 
     if (!confirm('Are you sure you want to change this payment status from Paid to Pending?')) return;
 
@@ -824,7 +901,7 @@ const PaymentPlansManager: React.FC = () => {
       const { data: { user } } = await supabase.auth.getUser();
       const currentUser = user?.email || 'System';
 
-      if (selectedPlan.lead_type === 'legacy') {
+      if (target.lead_type === 'legacy') {
         // For legacy leads, clear actual_date
         const { error } = await supabase
           .from('finances_paymentplanrow')
@@ -832,7 +909,7 @@ const PaymentPlansManager: React.FC = () => {
             actual_date: null,
             udate: new Date().toISOString().split('T')[0]
           })
-          .eq('id', selectedPlan.id);
+          .eq('id', target.id);
 
         if (error) throw error;
       } else {
@@ -846,7 +923,7 @@ const PaymentPlansManager: React.FC = () => {
             updated_at: new Date().toISOString(),
             updated_by: currentUser
           })
-          .eq('id', selectedPlan.id);
+          .eq('id', target.id);
 
         if (error) throw error;
       }
@@ -858,13 +935,17 @@ const PaymentPlansManager: React.FC = () => {
       
       // Update the selected plan to reflect the change
       const updatedPlan: UnifiedPaymentPlan = {
-        ...selectedPlan,
+        ...target,
         paid: false,
         paid_at: null,
         actual_date: null,
       };
       setSelectedPlan(updatedPlan);
       setEditedPlan({ ...updatedPlan });
+      if (editModalOpen) {
+        setEditModalOpen(false);
+        setEditModalPlan(null);
+      }
     } catch (error) {
       console.error('Error changing payment status:', error);
       toast.error('Failed to change payment status');
@@ -942,13 +1023,228 @@ const PaymentPlansManager: React.FC = () => {
 
   return (
     <div className="w-full">
+      {/* Edit modal: two-column editable form */}
+      <div className={`modal ${editModalOpen ? 'modal-open' : ''}`}>
+        <div className="modal-box max-w-4xl max-h-[90vh] overflow-y-auto modal-bottom sm:modal-middle">
+          <h3 className="font-bold text-lg mb-4">Edit Payment Plan</h3>
+          {editedPlan && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Left column */}
+              <div className="space-y-4">
+                <div>
+                  <label className="label py-0">
+                    <span className="label-text font-medium">Lead #</span>
+                  </label>
+                  <div className="px-3 py-2 bg-base-200 rounded-lg text-sm font-mono">
+                    {editedPlan.lead_number || editedPlan.lead_id}
+                  </div>
+                </div>
+                <div>
+                  <label className="label py-0">
+                    <span className="label-text font-medium">Client name</span>
+                  </label>
+                  <input
+                    type="text"
+                    className="input input-bordered input-sm w-full"
+                    value={editedPlan.client_name || ''}
+                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, client_name: e.target.value } : null)}
+                    placeholder="Client name"
+                  />
+                </div>
+                <div>
+                  <label className="label py-0">
+                    <span className="label-text font-medium">Payment order</span>
+                  </label>
+                  <select
+                    className="select select-bordered select-sm w-full"
+                    value={editedPlan.payment_order || ''}
+                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, payment_order: e.target.value } : null)}
+                  >
+                    <option value="First Payment">First Payment</option>
+                    <option value="Intermediate Payment">Intermediate Payment</option>
+                    <option value="Final Payment">Final Payment</option>
+                    <option value="Single Payment">Single Payment</option>
+                    <option value="Expense (no VAT)">Expense (no VAT)</option>
+                    <option value="One-time Payment">One-time Payment</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="label py-0">
+                    <span className="label-text font-medium">Due date</span>
+                  </label>
+                  <input
+                    type="date"
+                    className="input input-bordered input-sm w-full"
+                    value={editedPlan.due_date ? String(editedPlan.due_date).slice(0, 10) : ''}
+                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, due_date: e.target.value || null } : null)}
+                  />
+                </div>
+                <div>
+                  <label className="label py-0">
+                    <span className="label-text font-medium">Currency</span>
+                  </label>
+                  <select
+                    className="select select-bordered select-sm w-full"
+                    value={editedPlan.currency || '₪'}
+                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, currency: e.target.value } : null)}
+                  >
+                    <option value="₪">₪ (NIS)</option>
+                    <option value="USD">$ (USD)</option>
+                    <option value="EUR">€ (EUR)</option>
+                    <option value="GBP">£ (GBP)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="label py-0">
+                    <span className="label-text font-medium">Due %</span>
+                  </label>
+                  <input
+                    type="text"
+                    className="input input-bordered input-sm w-full"
+                    value={String(editedPlan.due_percent ?? '')}
+                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, due_percent: e.target.value } : null)}
+                    placeholder="e.g. 25"
+                  />
+                </div>
+                <div>
+                  <label className="label py-0">
+                    <span className="label-text font-medium">Cancel date</span>
+                  </label>
+                  <input
+                    type="date"
+                    className="input input-bordered input-sm w-full"
+                    value={editedPlan.cancel_date ? String(editedPlan.cancel_date).slice(0, 10) : ''}
+                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, cancel_date: e.target.value || null } : null)}
+                  />
+                  <p className="text-xs text-base-content/60 mt-0.5">Set a date to mark as cancelled</p>
+                </div>
+              </div>
+              {/* Right column */}
+              <div className="space-y-4">
+                <div>
+                  <label className="label py-0">
+                    <span className="label-text font-medium">Value</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="input input-bordered input-sm w-full font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                    value={editedPlan.value ?? 0}
+                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, value: parseFloat(e.target.value) || 0 } : null)}
+                  />
+                </div>
+                <div>
+                  <label className="label py-0">
+                    <span className="label-text font-medium">VAT</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="input input-bordered input-sm w-full font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                    value={editedPlan.value_vat ?? 0}
+                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, value_vat: parseFloat(e.target.value) || 0 } : null)}
+                  />
+                </div>
+                <div>
+                  <label className="label py-0">
+                    <span className="label-text font-medium">Total</span>
+                  </label>
+                  <div className="px-3 py-2 bg-base-200 rounded-lg font-mono font-bold">
+                    {editedPlan.currency_symbol}{(editedPlan.value + editedPlan.value_vat).toLocaleString()}
+                  </div>
+                </div>
+                <div className="form-control">
+                  <label className="label cursor-pointer justify-start gap-3 py-0">
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-primary toggle-sm"
+                      checked={editedPlan.ready_to_pay || false}
+                      onChange={(e) => setEditedPlan(prev => prev ? { ...prev, ready_to_pay: e.target.checked } : null)}
+                    />
+                    <span className="label-text font-medium">Ready to pay</span>
+                  </label>
+                </div>
+                <div>
+                  <label className="label py-0">
+                    <span className="label-text font-medium">Status</span>
+                  </label>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`badge ${editedPlan.paid ? 'badge-success' : 'badge-warning'}`}>
+                      {editedPlan.paid ? 'Paid' : 'Pending'}
+                    </span>
+                    {editedPlan.paid && editModalPlan && (
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-outline btn-warning"
+                        onClick={async () => {
+                          if (!confirm('Change status from Paid to Pending?')) return;
+                          await handleChangeStatus(editModalPlan);
+                        }}
+                      >
+                        Mark as Pending
+                      </button>
+                    )}
+                  </div>
+                  {editedPlan.paid && (editedPlan.actual_date || editedPlan.paid_at) && (
+                    <p className="text-xs text-base-content/60 mt-1">
+                      Paid on: {formatDate(editedPlan.actual_date || editedPlan.paid_at)}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className="label py-0">
+                    <span className="label-text font-medium">Notes</span>
+                  </label>
+                  <textarea
+                    className="textarea textarea-bordered textarea-sm w-full min-h-24"
+                    value={editedPlan.notes || ''}
+                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, notes: e.target.value } : null)}
+                    placeholder="Notes"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+          {/* Audit: created at/by, updated by, paid by */}
+          {editedPlan && (
+            <div className="mt-6 pt-4 border-t border-base-300 grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm text-base-content/70">
+              <div>
+                <span className="font-medium text-base-content/80">Created</span>
+                <p>{formatDateTime(editedPlan.created_at)}</p>
+                {editedPlan.created_by && <p className="text-xs">by {editedPlan.created_by}</p>}
+              </div>
+              <div>
+                <span className="font-medium text-base-content/80">Updated</span>
+                <p>{formatDateTime(editedPlan.updated_at)}</p>
+                {editedPlan.updated_by && <p className="text-xs">by {editedPlan.updated_by}</p>}
+              </div>
+              {editedPlan.paid_by && (
+                <div className="sm:col-span-2">
+                  <span className="font-medium text-base-content/80">Paid by</span>
+                  <p>{editedPlan.paid_by}</p>
+                </div>
+              )}
+            </div>
+          )}
+          <div className="modal-action mt-6">
+            <button type="button" className="btn btn-ghost" onClick={closeEditModal}>
+              Cancel
+            </button>
+            <button type="button" className="btn btn-primary" onClick={handleSave}>
+              Save
+            </button>
+          </div>
+        </div>
+        <div className="modal-backdrop bg-black/50" onClick={closeEditModal} aria-hidden />
+      </div>
+
       {!selectedPlan ? (
         // Table View
         <>
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-2xl font-bold">Payment Plans</h2>
             <div className="text-sm text-gray-500">
-              Total: {totalCount} payment plans
+              Total: {totalCount} payment rows
             </div>
           </div>
 
@@ -960,7 +1256,7 @@ const PaymentPlansManager: React.FC = () => {
               </span>
               <input
                 type="text"
-                placeholder="Search by lead ID (exact match)..."
+                placeholder="Search by lead # or ID (e.g. L211609 or UUID)..."
                 className="input input-sm border-0 focus:outline-none w-48 bg-transparent"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
@@ -1005,17 +1301,18 @@ const PaymentPlansManager: React.FC = () => {
                   <th className="text-right">VAT</th>
                   <th className="text-right">Total</th>
                   <th className="text-left">Due Date</th>
+                  <th className="text-left">Cancel date</th>
                   <th className="text-left">Status</th>
                 </tr>
               </thead>
               <tbody>
                 {paginatedPlans.map((plan) => {
                   const total = plan.value + plan.value_vat;
-                  
+                  const isCancelled = !!plan.cancel_date;
                   return (
                     <tr 
                       key={`${plan.lead_type}-${plan.id}`}
-                      className="cursor-pointer"
+                      className={`cursor-pointer ${isCancelled ? 'bg-gray-300 text-gray-700' : ''}`}
                       onClick={() => handleRowClick(plan)}
                     >
                       <td className="font-bold">
@@ -1042,6 +1339,9 @@ const PaymentPlansManager: React.FC = () => {
                       <td className="font-mono text-sm">
                         {formatDate(plan.due_date)}
                       </td>
+                      <td className="text-sm">
+                        {plan.cancel_date ? formatDate(plan.cancel_date) : '—'}
+                      </td>
                       <td>
                         <span className={`px-2 py-1 rounded font-semibold ${plan.paid ? 'bg-green-500 text-white' : 'bg-yellow-500 text-white'}`}>
                           {plan.paid ? 'Paid' : 'Pending'}
@@ -1058,11 +1358,11 @@ const PaymentPlansManager: React.FC = () => {
           <div className="md:hidden space-y-4">
             {paginatedPlans.map((plan) => {
               const total = plan.value + plan.value_vat;
-              
+              const isCancelled = !!plan.cancel_date;
               return (
                 <div 
                   key={`${plan.lead_type}-${plan.id}`}
-                  className="card bg-base-100 shadow-lg cursor-pointer group"
+                  className={`card shadow-lg cursor-pointer group ${isCancelled ? 'bg-gray-300' : 'bg-base-100'}`}
                   onClick={() => handleRowClick(plan)}
                 >
                   <div className="card-body p-5">
@@ -1085,6 +1385,10 @@ const PaymentPlansManager: React.FC = () => {
                       <div>
                         <div className="text-xs text-base-content/60 mb-1">Due Date</div>
                         <div className="font-medium">{formatDate(plan.due_date)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-base-content/60 mb-1">Cancel date</div>
+                        <div className="font-medium">{plan.cancel_date ? formatDate(plan.cancel_date) : '—'}</div>
                       </div>
                       <div>
                         <div className="text-xs text-base-content/60 mb-1">Status</div>
@@ -1119,7 +1423,7 @@ const PaymentPlansManager: React.FC = () => {
 
           {/* Pagination */}
           {totalPages > 1 && (
-            <div className="flex justify-center items-center gap-2 mt-6">
+            <div className="flex justify-end items-center gap-2 mt-6">
               <button
                 className="btn btn-sm btn-outline"
                 onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
@@ -1161,33 +1465,13 @@ const PaymentPlansManager: React.FC = () => {
               </span>
             </div>
             <div className="flex gap-2">
-              {!isEditing ? (
-                <button 
-                  className="btn btn-primary btn-sm"
-                  onClick={handleEdit}
-                >
-                  <PencilIcon className="w-4 h-4 mr-1" />
-                  Edit
-                </button>
-              ) : (
-                <>
-                  <button 
-                    className="btn btn-success btn-sm"
-                    onClick={handleSave}
-                  >
-                    Save
-                  </button>
-                  <button 
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => {
-                      setIsEditing(false);
-                      setEditedPlan({ ...selectedPlan });
-                    }}
-                  >
-                    Cancel
-                  </button>
-                </>
-              )}
+              <button 
+                className="btn btn-primary btn-sm"
+                onClick={handleEdit}
+              >
+                <PencilIcon className="w-4 h-4 mr-1" />
+                Edit
+              </button>
               <button 
                 className="btn btn-error btn-sm"
                 onClick={handleDelete}
@@ -1198,242 +1482,77 @@ const PaymentPlansManager: React.FC = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
-            {/* Column 1 */}
-            <div className="space-y-4">
-              <div>
-                <label className="label">
-                  <span className="label-text font-semibold">Lead Number</span>
-                </label>
-                <div className="p-3">
-                  {selectedPlan.lead_number || selectedPlan.lead_id}
-                </div>
-              </div>
-
-              <div>
-                <label className="label">
-                  <span className="label-text font-semibold">Client Name</span>
-                </label>
-                {isEditing ? (
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    value={editedPlan?.client_name || ''}
-                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, client_name: e.target.value } : null)}
-                  />
-                ) : (
-                  <div className="p-3">
-                    {selectedPlan.client_name}
-                  </div>
-                )}
-              </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="space-y-1">
+              <span className="text-xs font-medium text-base-content/60">Lead #</span>
+              <div className="font-mono font-semibold">{selectedPlan.lead_number || selectedPlan.lead_id}</div>
             </div>
-
-            {/* Column 2 */}
-            <div className="space-y-4">
-              <div>
-                <label className="label">
-                  <span className="label-text font-semibold">Payment Order</span>
-                </label>
-                {isEditing ? (
-                  <select
-                    className="select select-bordered w-full"
-                    value={editedPlan?.payment_order || ''}
-                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, payment_order: e.target.value } : null)}
+            <div className="space-y-1">
+              <span className="text-xs font-medium text-base-content/60">Client name</span>
+              <div>{selectedPlan.client_name}</div>
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs font-medium text-base-content/60">Payment order</span>
+              <div>{selectedPlan.payment_order}</div>
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs font-medium text-base-content/60">Due date</span>
+              <div>{formatDate(selectedPlan.due_date)}</div>
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs font-medium text-base-content/60">Currency</span>
+              <div>{selectedPlan.currency_symbol} ({selectedPlan.currency})</div>
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs font-medium text-base-content/60">Due %</span>
+              <div>{selectedPlan.due_percent}</div>
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs font-medium text-base-content/60">Value</span>
+              <div className="font-mono">{selectedPlan.currency_symbol}{selectedPlan.value.toLocaleString()}</div>
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs font-medium text-base-content/60">VAT</span>
+              <div className="font-mono">{selectedPlan.currency_symbol}{selectedPlan.value_vat.toLocaleString()}</div>
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs font-medium text-base-content/60">Total</span>
+              <div className="font-mono font-bold">{selectedPlan.currency_symbol}{(selectedPlan.value + selectedPlan.value_vat).toLocaleString()}</div>
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs font-medium text-base-content/60">Cancel date</span>
+              <div>{selectedPlan.cancel_date ? formatDate(selectedPlan.cancel_date) : '—'}</div>
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs font-medium text-base-content/60">Ready to pay</span>
+              <div>{selectedPlan.ready_to_pay ? 'Yes' : 'No'}</div>
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs font-medium text-base-content/60">Status</span>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className={`badge ${selectedPlan.paid ? 'badge-success' : 'badge-warning'}`}>
+                  {selectedPlan.paid ? 'Paid' : 'Pending'}
+                </span>
+                {selectedPlan.paid && (
+                  <button
+                    type="button"
+                    className="btn btn-xs btn-outline btn-warning"
+                    onClick={() => handleChangeStatus()}
+                    title="Change status from Paid to Pending"
                   >
-                    <option value="First Payment">First Payment</option>
-                    <option value="Intermediate Payment">Intermediate Payment</option>
-                    <option value="Final Payment">Final Payment</option>
-                    <option value="Single Payment">Single Payment</option>
-                    <option value="Expense (no VAT)">Expense (no VAT)</option>
-                    <option value="One-time Payment">One-time Payment</option>
-                  </select>
-                ) : (
-                  <div className="p-3">
-                    {selectedPlan.payment_order}
-                  </div>
+                    Mark as Pending
+                  </button>
                 )}
               </div>
-
-              <div>
-                <label className="label">
-                  <span className="label-text font-semibold">Due Date</span>
-                </label>
-                {isEditing ? (
-                  <input
-                    type="date"
-                    className="input input-bordered w-full"
-                    value={editedPlan?.due_date || ''}
-                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, due_date: e.target.value || null } : null)}
-                  />
-                ) : (
-                  <div className="p-3">
-                    {formatDate(selectedPlan.due_date)}
-                  </div>
-                )}
-              </div>
+              {selectedPlan.paid && (selectedPlan.actual_date || selectedPlan.paid_at) && (
+                <p className="text-xs text-base-content/60 mt-1">
+                  Paid on: {formatDate(selectedPlan.actual_date || selectedPlan.paid_at)}
+                </p>
+              )}
             </div>
-
-            {/* Column 3 */}
-            <div className="space-y-4">
-              <div>
-                <label className="label">
-                  <span className="label-text font-semibold">Currency</span>
-                </label>
-                {isEditing ? (
-                  <select
-                    className="select select-bordered w-full"
-                    value={editedPlan?.currency || '₪'}
-                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, currency: e.target.value } : null)}
-                  >
-                    <option value="₪">₪ (NIS)</option>
-                    <option value="USD">$ (USD)</option>
-                    <option value="EUR">€ (EUR)</option>
-                    <option value="GBP">£ (GBP)</option>
-                  </select>
-                ) : (
-                  <div className="p-3">
-                    {selectedPlan.currency_symbol} ({selectedPlan.currency})
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <label className="label">
-                  <span className="label-text font-semibold">Due Percent</span>
-                </label>
-                {isEditing ? (
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    value={editedPlan?.due_percent || ''}
-                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, due_percent: e.target.value } : null)}
-                    placeholder="e.g., 25% or 25"
-                  />
-                ) : (
-                  <div className="p-3">
-                    {selectedPlan.due_percent}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Column 4 */}
-            <div className="space-y-4">
-              <div>
-                <label className="label">
-                  <span className="label-text font-semibold">Value</span>
-                </label>
-                {isEditing ? (
-                  <input
-                    type="number"
-                    step="0.01"
-                    className="input input-bordered w-full"
-                    value={editedPlan?.value || 0}
-                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, value: parseFloat(e.target.value) || 0 } : null)}
-                  />
-                ) : (
-                  <div className="p-3 font-mono">
-                    {selectedPlan.currency_symbol}{selectedPlan.value.toLocaleString()}
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <label className="label">
-                  <span className="label-text font-semibold">VAT</span>
-                </label>
-                {isEditing ? (
-                  <input
-                    type="number"
-                    step="0.01"
-                    className="input input-bordered w-full"
-                    value={editedPlan?.value_vat || 0}
-                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, value_vat: parseFloat(e.target.value) || 0 } : null)}
-                  />
-                ) : (
-                  <div className="p-3 font-mono">
-                    {selectedPlan.currency_symbol}{selectedPlan.value_vat.toLocaleString()}
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <label className="label">
-                  <span className="label-text font-semibold">Total</span>
-                </label>
-                <div className="p-3 font-mono font-bold text-lg">
-                  {selectedPlan.currency_symbol}{(selectedPlan.value + selectedPlan.value_vat).toLocaleString()}
-                </div>
-              </div>
-            </div>
-
-            {/* Column 5 */}
-            <div className="space-y-4">
-              <div>
-                <label className="label">
-                  <span className="label-text font-semibold">Ready to Pay</span>
-                </label>
-                {isEditing ? (
-                  <input
-                    type="checkbox"
-                    className="toggle toggle-primary"
-                    checked={editedPlan?.ready_to_pay || false}
-                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, ready_to_pay: e.target.checked } : null)}
-                  />
-                ) : (
-                  <div className="p-3">
-                    {selectedPlan.ready_to_pay ? 'Yes (sent to finance)' : 'No'}
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <label className="label">
-                  <span className="label-text font-semibold">Status</span>
-                </label>
-                <div className="p-3">
-                  <div className="flex items-center gap-2">
-                    <span>{selectedPlan.paid ? 'Paid' : 'Pending'}</span>
-                    {selectedPlan.paid && !isEditing && (
-                      <button
-                        className="btn btn-xs btn-outline btn-warning"
-                        onClick={handleChangeStatus}
-                        title="Change status from Paid to Pending"
-                      >
-                        Mark as Pending
-                      </button>
-                    )}
-                  </div>
-                  {selectedPlan.paid && (
-                    <div className="text-xs text-gray-500 mt-1">
-                      {selectedPlan.lead_type === 'legacy' && selectedPlan.actual_date ? (
-                        <>Paid on: {formatDate(selectedPlan.actual_date)}</>
-                      ) : selectedPlan.lead_type === 'new' && selectedPlan.paid_at ? (
-                        <>Paid on: {formatDate(selectedPlan.paid_at)}</>
-                      ) : null}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div>
-                <label className="label">
-                  <span className="label-text font-semibold">Notes</span>
-                </label>
-                {isEditing ? (
-                  <textarea
-                    className="textarea textarea-bordered w-full"
-                    rows={3}
-                    value={editedPlan?.notes || ''}
-                    onChange={(e) => setEditedPlan(prev => prev ? { ...prev, notes: e.target.value } : null)}
-                  />
-                ) : (
-                  <div className="p-3 min-h-[4rem]">
-                    {selectedPlan.notes || 'No notes'}
-                  </div>
-                )}
-              </div>
+            <div className="space-y-1 md:col-span-2 lg:col-span-3">
+              <span className="text-xs font-medium text-base-content/60">Notes</span>
+              <div className="p-3 bg-base-200/50 rounded-lg min-h-12">{selectedPlan.notes || '—'}</div>
             </div>
           </div>
 
