@@ -5679,9 +5679,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   useEffect(() => {
     if (isSearchActive && searchContainerRef.current) {
       const rect = searchContainerRef.current.getBoundingClientRect();
-      setSearchDropdownStyle({ top: rect.bottom + window.scrollY, left: rect.left + window.scrollX, width: rect.width });
+      if (isMobile) {
+        const margin = 12;
+        setSearchDropdownStyle({ top: rect.bottom + window.scrollY, left: margin + window.scrollX, width: window.innerWidth - margin * 2 });
+      } else {
+        setSearchDropdownStyle({ top: rect.bottom + window.scrollY, left: rect.left + window.scrollX, width: rect.width });
+      }
     }
-  }, [isSearchActive, showFilterDropdown, searchResults.length, searchValue]);
+  }, [isSearchActive, showFilterDropdown, searchResults.length, searchValue, isMobile]);
 
   // Animation effect for searchbar open/close
   useEffect(() => {
@@ -5693,6 +5698,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
     return () => clearTimeout(timeout);
   }, [isSearchActive]);
+
+  // On mobile: when search bar opens, focus the input so the user can type immediately without tapping again
+  useEffect(() => {
+    if (!isSearchActive || !isMobile) return;
+    const t = setTimeout(() => {
+      searchInputRef.current?.focus();
+    }, 350);
+    return () => clearTimeout(t);
+  }, [isSearchActive, isMobile]);
 
   const handleSearchFocus = () => {
     setIsSearchActive(true);
@@ -6664,7 +6678,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             )}
           </div>
 
-          {/* Quick Actions Dropdown - Mobile */}
+          {/* Quick Actions Dropdown - Mobile: icon + arrow only, black, no coloured box */}
           <div className="md:hidden relative ml-2" data-quick-actions-dropdown>
             <button
               ref={mobileButtonRef}
@@ -6674,10 +6688,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 setShowMobileQuickActionsDropdown(!showMobileQuickActionsDropdown);
                 setShowQuickActionsDropdown(false);
               }}
-              className="flex items-center gap-1 px-3 py-2.5 rounded-lg font-medium transition-all duration-300 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
+              className="flex items-center gap-1 p-2 rounded-lg font-medium transition-all duration-300 bg-transparent text-black hover:bg-base-200/50"
             >
-              <BoltIcon className="w-4 h-4 text-white" />
-              <ChevronDownIcon className={`w-3 h-3 text-white transition-transform duration-200 ${showMobileQuickActionsDropdown ? 'rotate-180' : ''}`} />
+              <BoltIcon className="w-5 h-5 text-black" />
+              <ChevronDownIcon className={`w-4 h-4 text-black transition-transform duration-200 ${showMobileQuickActionsDropdown ? 'rotate-180' : ''}`} />
             </button>
 
             {/* Dropdown Menu */}
@@ -6732,7 +6746,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             )}
           </button>
 
-          {/* Quick Actions Dropdown - Mobile only */}
+          {/* Quick Actions Dropdown - Mobile only: icon + arrow only, black, no coloured box */}
           <div className="md:hidden relative ml-2" data-quick-actions-dropdown>
             <button
               ref={mobileButtonRef}
@@ -6742,10 +6756,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 setShowMobileQuickActionsDropdown(!showMobileQuickActionsDropdown);
                 setShowQuickActionsDropdown(false); // Close desktop dropdown if open
               }}
-              className="flex items-center gap-1 px-3 py-2.5 rounded-lg font-medium transition-all duration-300 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
+              className="flex items-center gap-1 p-2 rounded-lg font-medium transition-all duration-300 bg-transparent text-black hover:bg-base-200/50"
             >
-              <BoltIcon className="w-4 h-4 text-white" />
-              <ChevronDownIcon className={`w-3 h-3 text-white transition-transform duration-200 ${showMobileQuickActionsDropdown ? 'rotate-180' : ''}`} />
+              <BoltIcon className="w-5 h-5 text-black" />
+              <ChevronDownIcon className={`w-4 h-4 text-black transition-transform duration-200 ${showMobileQuickActionsDropdown ? 'rotate-180' : ''}`} />
             </button>
 
             {/* Dropdown Menu */}
@@ -7146,7 +7160,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             {(searchValue.trim() || isAdvancedSearching || hasAppliedFilters) && (
               <div
                 ref={searchDropdownRef}
-                className="bg-base-100 rounded-xl shadow-xl border border-base-300 max-h-96 overflow-y-auto search-dropdown"
+                className="bg-base-100 rounded-xl shadow-xl border border-base-300 max-h-96 overflow-y-auto search-dropdown min-w-[92vw] md:min-w-0"
                 style={{
                   width: searchDropdownStyle.width,
                   zIndex: 10000,
@@ -7164,7 +7178,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     <span className="ml-2">Searching...</span>
                   </div>
                 ) : searchResults.length > 0 ? (
-                  <div className="space-y-2">
+                  <div className="space-y-2 md:space-y-2 p-2 md:p-0">
                     {/* Separate exact matches from fuzzy matches */}
                     {(() => {
                       const { exactMatches, fuzzyMatches } = processedSearchResults;
@@ -7186,10 +7200,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                                   <button
                                     key={uniqueKey}
                                     onClick={() => handleSearchResultClick(result)}
-                                    className={`w-full px-2 py-2 md:px-4 md:py-3 text-left transition-colors rounded-lg border relative ${inactive ? 'bg-gray-100 hover:bg-gray-200 border-gray-200 text-black' : 'hover:bg-base-200 border-base-300'}`}
+                                    className={`w-full px-4 py-3.5 md:px-4 md:py-3 text-left transition-colors rounded-lg border relative ${inactive ? 'bg-gray-100 hover:bg-gray-200 border-gray-200 text-black' : 'hover:bg-base-200 border-base-300'}`}
                                   >
                                     {inactive && (
-                                      <div className="absolute top-1 left-1/2 -translate-x-1/2 text-[10px] md:text-xs text-black font-medium z-10">Inactive</div>
+                                      <div className="absolute top-1 left-1/2 -translate-x-1/2 text-xs md:text-xs text-black font-medium z-10">Inactive</div>
                                     )}
                                     <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10 flex flex-row items-center gap-1.5 justify-end">
                                       {getStageBadge(result.stage, result.stage_colour, inactive)}
@@ -7197,21 +7211,21 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                                     <div className={`flex items-start gap-2 md:gap-3 pr-20 md:pr-20 ${inactive ? 'text-black' : ''}`}>
                                       <div className="flex-1 min-w-0">
                                         <div className="mb-0.5 md:mb-1">
-                                          <p className={`text-sm md:text-base font-semibold break-words line-clamp-2 leading-tight ${inactive ? 'text-black' : 'text-base-content'}`} style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                          <p className={`text-base md:text-base font-semibold break-words line-clamp-2 leading-tight ${inactive ? 'text-black' : 'text-base-content'}`} style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
                                             {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
                                           </p>
                                         </div>
                                         <div className="mb-0.5 md:mb-1">
-                                          <span className={`text-xs md:text-sm font-mono ${inactive ? 'text-black' : 'text-base-content/70'}`}>{result.lead_number ? `#${result.lead_number}` : ''}</span>
+                                          <span className={`text-sm md:text-sm font-mono ${inactive ? 'text-black' : 'text-base-content/70'}`}>{result.lead_number ? `#${result.lead_number}` : ''}</span>
                                         </div>
                                         {result.category && (
-                                          <p className={`text-xs md:text-sm truncate ${inactive ? 'text-black' : 'text-base-content/80'}`}>
+                                          <p className={`text-sm md:text-sm truncate ${inactive ? 'text-black' : 'text-base-content/80'}`}>
                                             <span className="font-medium">Category:</span> {result.category}
                                           </p>
                                         )}
                                         {result.topic && (
-                                          <p className={`text-xs md:text-sm truncate flex items-center gap-1 ${inactive ? 'text-black' : 'text-base-content/80'}`}>
-                                            <ChatBubbleLeftRightIcon className="w-3.5 h-3.5 flex-shrink-0 opacity-70" aria-hidden />
+                                          <p className={`text-sm md:text-sm truncate flex items-center gap-1 ${inactive ? 'text-black' : 'text-base-content/80'}`}>
+                                            <ChatBubbleLeftRightIcon className="w-4 h-4 flex-shrink-0 opacity-70" aria-hidden />
                                             {result.topic}
                                           </p>
                                         )}
@@ -7230,15 +7244,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                           4. We're not currently searching (all queries completed)
                           5. Not in advanced search mode */}
                           {showNoExactMatch && exactMatches.length === 0 && fuzzyMatches.length > 0 && !isSearching && !isAdvancedSearching && (
-                            <div className="px-2 py-1.5 md:px-4 md:py-2 border-b border-base-300">
-                              <p className="text-xs md:text-sm text-base-content/70 font-medium">No exact matches found</p>
+                            <div className="px-4 py-2 md:px-4 md:py-2 border-b border-base-300">
+                              <p className="text-sm md:text-sm text-base-content/70 font-medium">No exact matches found</p>
                             </div>
                           )}
 
                           {/* Divider between exact and fuzzy matches */}
                           {exactMatches.length > 0 && fuzzyMatches.length > 0 && (
-                            <div className="px-2 py-1.5 md:px-4 md:py-2 border-t border-base-300">
-                              <p className="text-xs md:text-sm text-base-content/60 font-medium">Similar matches</p>
+                            <div className="px-4 py-2 md:px-4 md:py-2 border-t border-base-300">
+                              <p className="text-sm md:text-sm text-base-content/60 font-medium">Similar matches</p>
                             </div>
                           )}
 
@@ -7257,10 +7271,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                                   <button
                                     key={uniqueKey}
                                     onClick={() => handleSearchResultClick(result)}
-                                    className={`w-full px-2 py-2 md:px-4 md:py-3 text-left transition-colors rounded-lg border relative ${inactive ? 'bg-gray-100 hover:bg-gray-200 border-gray-200 text-black opacity-90' : 'hover:bg-base-200 border-base-300 opacity-90'}`}
+                                    className={`w-full px-4 py-3.5 md:px-4 md:py-3 text-left transition-colors rounded-lg border relative ${inactive ? 'bg-gray-100 hover:bg-gray-200 border-gray-200 text-black opacity-90' : 'hover:bg-base-200 border-base-300 opacity-90'}`}
                                   >
                                     {inactive && (
-                                      <div className="absolute top-1 left-1/2 -translate-x-1/2 text-[10px] md:text-xs text-black font-medium z-10">Inactive</div>
+                                      <div className="absolute top-1 left-1/2 -translate-x-1/2 text-xs md:text-xs text-black font-medium z-10">Inactive</div>
                                     )}
                                     <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10 flex flex-row items-center gap-1.5 justify-end">
                                       {getStageBadge(result.stage, result.stage_colour, inactive)}
@@ -7268,21 +7282,21 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                                     <div className={`flex items-start gap-2 md:gap-3 pr-20 md:pr-20 ${inactive ? 'text-black' : ''}`}>
                                       <div className="flex-1 min-w-0">
                                         <div className="mb-0.5 md:mb-1">
-                                          <p className={`text-sm md:text-base font-semibold break-words line-clamp-2 leading-tight ${inactive ? 'text-black' : 'text-base-content'}`} style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                          <p className={`text-base md:text-base font-semibold break-words line-clamp-2 leading-tight ${inactive ? 'text-black' : 'text-base-content'}`} style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
                                             {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
                                           </p>
                                         </div>
                                         <div className="mb-0.5 md:mb-1">
-                                          <span className={`text-xs md:text-sm font-mono ${inactive ? 'text-black' : 'text-base-content/70'}`}>{result.lead_number ? `#${result.lead_number}` : ''}</span>
+                                          <span className={`text-sm md:text-sm font-mono ${inactive ? 'text-black' : 'text-base-content/70'}`}>{result.lead_number ? `#${result.lead_number}` : ''}</span>
                                         </div>
                                         {result.category && (
-                                          <p className={`text-xs md:text-sm truncate ${inactive ? 'text-black' : 'text-base-content/80'}`}>
+                                          <p className={`text-sm md:text-sm truncate ${inactive ? 'text-black' : 'text-base-content/80'}`}>
                                             <span className="font-medium">Category:</span> {result.category}
                                           </p>
                                         )}
                                         {result.topic && (
-                                          <p className={`text-xs md:text-sm truncate flex items-center gap-1 ${inactive ? 'text-black' : 'text-base-content/80'}`}>
-                                            <ChatBubbleLeftRightIcon className="w-3.5 h-3.5 flex-shrink-0 opacity-70" aria-hidden />
+                                          <p className={`text-sm md:text-sm truncate flex items-center gap-1 ${inactive ? 'text-black' : 'text-base-content/80'}`}>
+                                            <ChatBubbleLeftRightIcon className="w-4 h-4 flex-shrink-0 opacity-70" aria-hidden />
                                             {result.topic}
                                           </p>
                                         )}
@@ -7299,8 +7313,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   </div>
                 ) : searchValue.trim() ? (
                   <div className="text-center py-8 text-base-content/70">
-                    <p className="text-sm">No contacts found</p>
-                    <p className="text-xs mt-1">Try a different search term</p>
+                    <p className="text-base md:text-sm">No contacts found</p>
+                    <p className="text-sm mt-1 md:text-xs">Try a different search term</p>
                   </div>
                 ) : null}
               </div>

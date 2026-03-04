@@ -9,9 +9,11 @@ import { useMsal } from '@azure/msal-react';
 
 const EXPORT_COLUMNS = [
   'Lead',
+  'create_date',
   'name',
   'email',
   'phone',
+  'mobile',
   'language',
   'stage',
   'category',
@@ -23,11 +25,33 @@ const EXPORT_COLUMNS = [
   'status',
   'unactivation_reason',
   'deactivate_notes',
+  'facts',
+  'description',
 ] as const;
 
 type ExportRow = Record<(typeof EXPORT_COLUMNS)[number], string>;
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+const formatExportDate = (val: string | null | undefined): string => {
+  if (val == null) return '';
+  try {
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 19).replace('T', ' ');
+  } catch {
+    return String(val ?? '');
+  }
+};
+
+/** Strip all HTML tags (e.g. <br>, <br/>, <p>, </div>) from text for export. */
+const stripHtml = (val: string | null | undefined): string => {
+  if (val == null || typeof val !== 'string') return '';
+  return val
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
 
 const defaultFilters = {
   fromDate: today(),
@@ -96,8 +120,8 @@ function MultiSelectSearch({
   };
 
   return (
-    <div ref={containerRef} className="form-control relative">
-      <label className="label">
+    <div ref={containerRef} className="form-control relative flex flex-col items-stretch">
+      <label className="label justify-start py-1">
         <span className="label-text">{label}</span>
         {values.length > 0 && (
           <span className="label-text-alt text-base-content/60">{values.length} selected</span>
@@ -223,9 +247,11 @@ export default function LeadsReportPage() {
     const categoryName = lead.category_id != null ? categoryMap.get(Number(lead.category_id)) : (lead.category ?? '');
     return {
       Lead: lead.lead_number ?? lead.manual_id ?? lead.id ?? '',
+      create_date: formatExportDate(lead.created_at),
       name: lead.name ?? '',
       email: lead.email ?? '',
       phone: lead.phone ?? '',
+      mobile: lead.mobile ?? '',
       language: lead.language ?? '',
       stage: String(stageName),
       category: String(categoryName ?? ''),
@@ -237,6 +263,8 @@ export default function LeadsReportPage() {
       status,
       unactivation_reason: lead.unactivation_reason ?? '',
       deactivate_notes: lead.deactivate_notes ?? '',
+      facts: stripHtml(lead.facts),
+      description: '',
     };
   };
 
@@ -249,9 +277,11 @@ export default function LeadsReportPage() {
     const eligibility = lead.expert_eligibility_assessed === true || lead.expert_eligibility_assessed === 'true' ? 'TRUE' : 'FALSE';
     return {
       Lead: lead.manual_id?.toString() ?? lead.id?.toString() ?? '',
+      create_date: formatExportDate(lead.cdate),
       name: lead.name ?? '',
       email: lead.email ?? '',
       phone: lead.phone ?? '',
+      mobile: lead.mobile ?? '',
       language: langName ?? '',
       stage: String(stageName ?? ''),
       category: catName ?? '',
@@ -263,6 +293,8 @@ export default function LeadsReportPage() {
       status: statusVal,
       unactivation_reason: lead.unactivation_reason ?? lead.deactivate_notes ?? '',
       deactivate_notes: lead.deactivate_notes ?? '',
+      facts: '',
+      description: stripHtml(lead.description),
     };
   };
 
@@ -314,7 +346,7 @@ export default function LeadsReportPage() {
 
       let newQuery = supabase
         .from('leads')
-        .select('id, lead_number, manual_id, name, email, phone, topic, tags, file_id, unactivated_at, unactivation_reason, deactivate_notes, expert_eligibility_assessed, stage, category_id, category, source, language')
+        .select('id, lead_number, manual_id, name, email, phone, mobile, topic, tags, file_id, unactivated_at, unactivation_reason, deactivate_notes, expert_eligibility_assessed, stage, category_id, category, source, language, created_at, facts')
         .order('created_at', { ascending: false });
 
       if (fromDate) newQuery = newQuery.gte('created_at', fromDate);
@@ -345,7 +377,7 @@ export default function LeadsReportPage() {
 
       let legacyQuery = supabase
         .from('leads_lead')
-        .select('id, manual_id, name, email, phone, topic, tags, file_id, status, stage_id, category_id, language_id, source_id, unactivation_reason, deactivate_notes, expert_eligibility_assessed, cdate')
+        .select('id, manual_id, name, email, phone, mobile, topic, tags, file_id, status, stage_id, category_id, language_id, source_id, unactivation_reason, deactivate_notes, expert_eligibility_assessed, cdate, description')
         .order('cdate', { ascending: false });
 
       if (fromDate) legacyQuery = legacyQuery.gte('cdate', fromDate);
@@ -516,92 +548,105 @@ export default function LeadsReportPage() {
             Export leads to Excel
           </h2>
          
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              <div className="form-control">
-                <label className="label"><span className="label-text">From date</span></label>
+          <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {/* From date + To date on same row (mobile and up) */}
+              <div className="form-control flex flex-col items-stretch">
+                <label className="label justify-start py-1"><span className="label-text">From date</span></label>
                 <input type="date" className="input input-bordered" value={filters.fromDate} onChange={(e) => handleFilterChange('fromDate', e.target.value)} />
               </div>
-              <div className="form-control">
-                <label className="label"><span className="label-text">To date</span></label>
+              <div className="form-control flex flex-col items-stretch">
+                <label className="label justify-start py-1"><span className="label-text">To date</span></label>
                 <input type="date" className="input input-bordered" value={filters.toDate} onChange={(e) => handleFilterChange('toDate', e.target.value)} />
               </div>
-              <MultiSelectSearch
-                label="Stage"
-                field="stage"
-                values={filters.stage}
-                options={stageOptions}
-                placeholder="Type and select stages…"
-                onChange={handleFilterChange}
-                onOpenChange={setOpenDropdown}
-                isOpen={openDropdown === 'stage'}
-                searchTerm={getDropdownSearch('stage')}
-                onSearchChange={setDropdownSearchFor}
-              />
-              <MultiSelectSearch
-                label="Category"
-                field="category"
-                values={filters.category}
-                options={categoryOptions}
-                placeholder="Type and select categories…"
-                onChange={handleFilterChange}
-                onOpenChange={setOpenDropdown}
-                isOpen={openDropdown === 'category'}
-                searchTerm={getDropdownSearch('category')}
-                onSearchChange={setDropdownSearchFor}
-              />
-              <MultiSelectSearch
-                label="Source"
-                field="source"
-                values={filters.source}
-                options={sourceOptions}
-                placeholder="Type and select sources…"
-                onChange={handleFilterChange}
-                onOpenChange={setOpenDropdown}
-                isOpen={openDropdown === 'source'}
-                searchTerm={getDropdownSearch('source')}
-                onSearchChange={setDropdownSearchFor}
-              />
-              <MultiSelectSearch
-                label="Language"
-                field="language"
-                values={filters.language}
-                options={languageOptions}
-                placeholder="Type and select languages…"
-                onChange={handleFilterChange}
-                onOpenChange={setOpenDropdown}
-                isOpen={openDropdown === 'language'}
-                searchTerm={getDropdownSearch('language')}
-                onSearchChange={setDropdownSearchFor}
-              />
-              <div className="form-control">
-                <label className="label"><span className="label-text">Topic (contains)</span></label>
+              <div className="col-span-2">
+                <MultiSelectSearch
+                  label="Stage"
+                  field="stage"
+                  values={filters.stage}
+                  options={stageOptions}
+                  placeholder="Type and select stages…"
+                  onChange={handleFilterChange}
+                  onOpenChange={setOpenDropdown}
+                  isOpen={openDropdown === 'stage'}
+                  searchTerm={getDropdownSearch('stage')}
+                  onSearchChange={setDropdownSearchFor}
+                />
+              </div>
+              <div className="col-span-2 md:col-span-1">
+                <MultiSelectSearch
+                  label="Category"
+                  field="category"
+                  values={filters.category}
+                  options={categoryOptions}
+                  placeholder="Type and select categories…"
+                  onChange={handleFilterChange}
+                  onOpenChange={setOpenDropdown}
+                  isOpen={openDropdown === 'category'}
+                  searchTerm={getDropdownSearch('category')}
+                  onSearchChange={setDropdownSearchFor}
+                />
+              </div>
+              <div className="col-span-2 md:col-span-1">
+                <MultiSelectSearch
+                  label="Source"
+                  field="source"
+                  values={filters.source}
+                  options={sourceOptions}
+                  placeholder="Type and select sources…"
+                  onChange={handleFilterChange}
+                  onOpenChange={setOpenDropdown}
+                  isOpen={openDropdown === 'source'}
+                  searchTerm={getDropdownSearch('source')}
+                  onSearchChange={setDropdownSearchFor}
+                />
+              </div>
+              {/* Language + Topic on same row */}
+              <div>
+                <MultiSelectSearch
+                  label="Language"
+                  field="language"
+                  values={filters.language}
+                  options={languageOptions}
+                  placeholder="Type and select languages…"
+                  onChange={handleFilterChange}
+                  onOpenChange={setOpenDropdown}
+                  isOpen={openDropdown === 'language'}
+                  searchTerm={getDropdownSearch('language')}
+                  onSearchChange={setDropdownSearchFor}
+                />
+              </div>
+              <div className="form-control flex flex-col items-stretch">
+                <label className="label justify-start py-1"><span className="label-text">Topic (contains)</span></label>
                 <input type="text" className="input input-bordered" placeholder="Filter by topic" value={filters.topic} onChange={(e) => handleFilterChange('topic', e.target.value)} />
               </div>
-              <MultiSelectSearch
-                label="Tags"
-                field="tags"
-                values={filters.tags}
-                options={tagOptions}
-                placeholder="Type and select tags…"
-                onChange={handleFilterChange}
-                onOpenChange={setOpenDropdown}
-                isOpen={openDropdown === 'tags'}
-                searchTerm={getDropdownSearch('tags')}
-                onSearchChange={setDropdownSearchFor}
-              />
-              <div className="form-control">
-                <label className="label"><span className="label-text">File ID (contains)</span></label>
+              {/* Tags + File ID on same row */}
+              <div>
+                <MultiSelectSearch
+                  label="Tags"
+                  field="tags"
+                  values={filters.tags}
+                  options={tagOptions}
+                  placeholder="Type and select tags…"
+                  onChange={handleFilterChange}
+                  onOpenChange={setOpenDropdown}
+                  isOpen={openDropdown === 'tags'}
+                  searchTerm={getDropdownSearch('tags')}
+                  onSearchChange={setDropdownSearchFor}
+                />
+              </div>
+              <div className="form-control flex flex-col items-stretch">
+                <label className="label justify-start py-1"><span className="label-text">File ID (contains)</span></label>
                 <input type="text" className="input input-bordered" placeholder="Filter by file_id" value={filters.fileId} onChange={(e) => handleFilterChange('fileId', e.target.value)} />
               </div>
-              <div className="form-control">
-                <label className="label"><span className="label-text">Status</span></label>
+              <div className="form-control flex flex-col items-stretch col-span-2 md:col-span-1">
+                <label className="label justify-start py-1"><span className="label-text">Status</span></label>
                 <select className="select select-bordered" value={filters.status} onChange={(e) => handleFilterChange('status', e.target.value)}>
                   <option value="">All</option>
                   <option value="active">Active</option>
                   <option value="inactive">Inactive</option>
                 </select>
               </div>
-              <div className="form-control flex flex-row items-center gap-2 pt-8">
+              <div className="form-control flex flex-row items-center gap-2 pt-8 col-span-2">
                 <input type="checkbox" className="checkbox" checked={filters.eligibilityDeterminedOnly} onChange={(e) => handleFilterChange('eligibilityDeterminedOnly', e.target.checked)} />
                 <label className="label cursor-pointer"><span className="label-text">Eligibility determined only</span></label>
               </div>
