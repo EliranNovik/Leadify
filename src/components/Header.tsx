@@ -7746,15 +7746,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             {showNotifications && (
               <div
                 className={`notification-dropdown shadow-xl rounded-xl overflow-hidden z-50 border border-gray-200 dark:border-gray-600 ${isMobile
-                  ? 'notification-dropdown-mobile fixed right-3 top-14 left-auto w-72 max-w-[calc(100vw-24px)] text-[11px]'
+                  ? 'notification-dropdown-mobile fixed right-3 top-14 left-auto w-72 max-w-[calc(100vw-24px)] text-[13px]'
                   : 'absolute right-0 mt-2 w-80 text-sm'
                   }`}
               >
                 <div className={`border-b border-gray-200 ${isMobile ? 'p-3' : 'p-4'}`}>
                   <div className="flex justify-between items-center">
-                    <h3 className={`font-semibold text-gray-900 ${isMobile ? 'text-xs' : ''}`}>Messages</h3>
+                    <h3 className={`font-semibold text-gray-900 ${isMobile ? 'text-sm' : ''}`}>Messages</h3>
                     <button
-                      className={`btn btn-ghost whitespace-nowrap text-gray-700 hover:text-gray-900 ${isMobile ? 'btn-xs text-[11px]' : 'btn-xs'}`}
+                      className={`btn btn-ghost whitespace-nowrap text-gray-700 hover:text-gray-900 ${isMobile ? 'btn-xs text-[13px]' : 'btn-xs'}`}
                       onClick={markAllAsRead}
                     >
                       Read
@@ -7945,7 +7945,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                                 </div>
                               </div>
                             </div>
-                            <div className={`px-4 pb-3 border-t flex items-center justify-between text-[11px] text-gray-500 ${isAltTheme ? 'border-green-100' : 'border-purple-100'}`}>
+                            <div className={`px-4 pb-3 border-t flex items-center justify-between text-xs md:text-[11px] text-gray-500 ${isAltTheme ? 'border-green-100' : 'border-purple-100'}`}>
                               <span>{formatMessageTime(message.sent_at)}</span>
                               <button
                                 onClick={(e) => {
@@ -8115,8 +8115,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           background-color: #ffffff !important;
           opacity: 1 !important;
         }
-        .notification-dropdown-mobile .text-sm { font-size: 0.6875rem !important; }
-        .notification-dropdown-mobile .text-xs { font-size: 0.625rem !important; }
+        .notification-dropdown-mobile .text-sm { font-size: 0.8125rem !important; }
+        .notification-dropdown-mobile .text-xs { font-size: 0.75rem !important; }
         /* Frosted glass effect in dark mode */
         .dark .notification-dropdown {
           background: rgba(15, 23, 42, 0.7) !important;

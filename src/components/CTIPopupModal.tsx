@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { XMarkIcon, PhoneIcon, UserIcon, BuildingOfficeIcon, LinkIcon, ArrowDownIcon, ArrowUpIcon, ClockIcon } from '@heroicons/react/24/outline';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
 
@@ -76,6 +76,7 @@ interface CTILookupResponse {
 
 const CTIPopupModal: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const phone = searchParams.get('phone');
   
@@ -140,13 +141,15 @@ const CTIPopupModal: React.FC = () => {
   };
 
   useEffect(() => {
-    if (phone) {
+    const pathname = location.pathname;
+    const isPageThatUsesPhoneParam = pathname === '/whatsapp-leads' || pathname === '/email-leads';
+    if (phone && !isPageThatUsesPhoneParam) {
       fetchLeadData(phone);
     } else {
       setLoading(false);
       setData(null);
     }
-  }, [phone]);
+  }, [phone, location.pathname]);
 
   const handleClose = () => {
     // Remove phone parameter and close modal
@@ -167,12 +170,16 @@ const CTIPopupModal: React.FC = () => {
     fetchLeadData(testPhone.trim());
   };
 
-  // Show modal if there's a phone parameter OR if we have data (for testing)
-  // Always render the modal if we're on the /cti/pop route OR if there's a phone parameter
-  const isOnCTIPopRoute = typeof window !== 'undefined' && window.location.pathname === '/cti/pop';
-  
-  if (!phone && !data && !isOnCTIPopRoute) {
-    return null; // Don't show on other pages without phone parameter
+  // Show modal only for CTI incoming calls, not when phone param is used by other pages (e.g. WhatsApp Leads, Email Leads)
+  const isOnCTIPopRoute = location.pathname === '/cti/pop';
+  const isPageThatUsesPhoneParam = location.pathname === '/whatsapp-leads' || location.pathname === '/email-leads';
+  const shouldShowForPhone = phone && !isPageThatUsesPhoneParam;
+
+  if (isPageThatUsesPhoneParam) {
+    return null; // Never show Incoming Call modal on these pages
+  }
+  if (!shouldShowForPhone && !data && !isOnCTIPopRoute) {
+    return null;
   }
 
   // Get leads array (support both new format with leads array and old format with single lead)
