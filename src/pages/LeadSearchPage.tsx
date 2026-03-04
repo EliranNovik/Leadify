@@ -917,10 +917,8 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
 
 const LeadSearchPage: React.FC = () => {
   const { isAltTheme } = useTheme();
-  // State for sticky search button on mobile (circle only when scrolled down; full bar when scrolled up or near top)
+  // State for sticky search bar on mobile: full bar by default; circle only after clicking Search (click circle to open full bar again)
   const [showStickySearchButton, setShowStickySearchButton] = useState(false);
-  const scrollThreshold = 100; // Show circle button after scrolling down past this
-  const lastScrollYRef = useRef(0);
 
   // Ref for results section to scroll to after search
   const resultsRef = useRef<HTMLDivElement>(null);
@@ -1078,46 +1076,6 @@ const LeadSearchPage: React.FC = () => {
     fetchStageNames().catch(error => {
       console.error('Error initializing stage names:', error);
     });
-  }, []);
-
-  // Handle scroll for mobile: full bar when near top or when user scrolls up; circle only when scrolled down and scrolling down
-  useEffect(() => {
-    const handleScroll = () => {
-      const windowScrollY = window.scrollY || window.pageYOffset || 0;
-      const mainElement = document.querySelector('main');
-      const mainScrollTop = mainElement ? mainElement.scrollTop : 0;
-      const scrollY = Math.max(windowScrollY, mainScrollTop);
-
-      const last = lastScrollYRef.current;
-      const scrollingUp = scrollY < last;
-      lastScrollYRef.current = scrollY;
-
-      // Full bar when: near top (scrollY <= threshold) OR user just scrolled up. Circle only when scrolled down past threshold and not scrolling up.
-      const showCircleOnly = scrollY > scrollThreshold && !scrollingUp;
-      setShowStickySearchButton(showCircleOnly);
-    };
-
-    const timeoutId = setTimeout(() => {
-      const windowScrollY = window.scrollY || window.pageYOffset || 0;
-      const mainElement = document.querySelector('main');
-      const mainScrollTop = mainElement ? mainElement.scrollTop : 0;
-      lastScrollYRef.current = Math.max(windowScrollY, mainScrollTop);
-      handleScroll();
-    }, 100);
-
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    const mainElement = document.querySelector('main');
-    if (mainElement) {
-      mainElement.addEventListener('scroll', handleScroll, { passive: true });
-    }
-
-    return () => {
-      clearTimeout(timeoutId);
-      window.removeEventListener('scroll', handleScroll);
-      if (mainElement) {
-        mainElement.removeEventListener('scroll', handleScroll);
-      }
-    };
   }, []);
 
   // Fetch stage options from lead_stages table, ordered by ID (lowest to highest)
@@ -4364,7 +4322,10 @@ const LeadSearchPage: React.FC = () => {
               className={`btn btn-circle min-w-[44px] min-h-[44px] w-11 h-11 transition-all duration-300 ${
                 isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary'
               }`}
-              onClick={handleSearch}
+              onClick={() => {
+                handleSearch();
+                setShowStickySearchButton(true);
+              }}
               disabled={isSearching}
               title="Search"
             >
@@ -4380,274 +4341,312 @@ const LeadSearchPage: React.FC = () => {
 
       <h1 className="text-3xl font-bold mb-6">Leads Search</h1>
 
-      {/* Search Form */}
+      {/* Search Form - on mobile: 2 columns; Main Category and Category full width; rest in two columns */}
       <div className="mb-8">
         <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
-          {/* Date Range Row - Removed (now in fixed bar) */}
-          <MainCategoryInput
-            label="Main Category"
-            field="mainCategory"
-            values={[]} // Main categories don't get stored in filters, they auto-select subcategories
-            placeholder="Select main category to auto-select all subcategories..."
-            options={filteredMainCategoryOptions}
-            showDropdown={showMainCategoryDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-            onMainCategorySelect={handleMainCategorySelect}
-          />
-          <MultiSelectInput
-            label="Category"
-            field="category"
-            values={filters.category}
-            placeholder="Type category or choose from suggestions..."
-            options={filteredCategoryOptions}
-            showDropdown={showCategoryDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Reason"
-            field="reason"
-            values={filters.reason}
-            placeholder="Type reason or choose from suggestions..."
-            options={filteredReasonOptions}
-            showDropdown={showReasonDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <div className="form-control flex flex-col col-span-2 sm:col-span-1">
-            <label className="label mb-2"><span className="label-text">File id</span></label>
-            <input type="text" className="input" onChange={e => handleFilterChange('fileId', e.target.value)} />
+          {/* Main Category and Category: full width on mobile */}
+          <div className="col-span-2 lg:col-span-1">
+            <MainCategoryInput
+              label="Main Category"
+              field="mainCategory"
+              values={[]} // Main categories don't get stored in filters, they auto-select subcategories
+              placeholder="Select main category to auto-select all subcategories..."
+              options={filteredMainCategoryOptions}
+              showDropdown={showMainCategoryDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+              onMainCategorySelect={handleMainCategorySelect}
+            />
           </div>
-
-          {/* Column 2 */}
-          <MultiSelectInput
-            label="Language"
-            field="language"
-            values={filters.language}
-            placeholder="Type language or choose from suggestions..."
-            options={filteredLanguageOptions}
-            showDropdown={showLanguageDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Tags"
-            field="tags"
-            values={filters.tags}
-            placeholder="Type tag or choose from suggestions..."
-            options={filteredTagOptions}
-            showDropdown={showTagDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-
-          {/* Column 3 */}
-          <MultiSelectInput
-            label="Status"
-            field="status"
-            values={filters.status}
-            placeholder="Select status..."
-            options={filteredStatusOptions}
-            showDropdown={showStatusDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Expert examination"
-            field="expert_examination"
-            values={filters.expert_examination}
-            placeholder="Select expert examination result..."
-            options={filteredExpertExaminationOptions}
-            showDropdown={showExpertExaminationDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Source"
-            field="source"
-            values={filters.source}
-            placeholder="Type source or choose from suggestions..."
-            options={filteredSourceOptions}
-            showDropdown={showSourceDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <div className="form-control flex flex-col col-span-2 sm:col-span-1">
-            <label className="label mb-2">
-              <span className="label-text">Eligible</span>
-            </label>
-            <div className="flex items-center gap-3">
-              <input
-                type="checkbox"
-                className="toggle toggle-primary"
-                checked={filters.eligibilityDeterminedOnly}
-                onChange={e => handleFilterChange('eligibilityDeterminedOnly', e.target.checked)}
-              />
-              <span className="text-xs text-gray-500">
-                Show only leads where eligibility is determined
-              </span>
+          <div className="col-span-2 lg:col-span-1">
+            <MultiSelectInput
+              label="Category"
+              field="category"
+              values={filters.category}
+              placeholder="Type category or choose from suggestions..."
+              options={filteredCategoryOptions}
+              showDropdown={showCategoryDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+            />
+          </div>
+          {/* Rest: two columns on mobile */}
+          <div className="col-span-1 [&>div]:!col-span-1">
+            <MultiSelectInput
+              label="Reason"
+              field="reason"
+              values={filters.reason}
+              placeholder="Type reason or choose from suggestions..."
+              options={filteredReasonOptions}
+              showDropdown={showReasonDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+            />
+          </div>
+          <div className="col-span-1">
+            <div className="form-control flex flex-col relative">
+              <label className="label mb-2"><span className="label-text">File id</span></label>
+              <input type="text" className="input" value={filters.fileId} onChange={e => handleFilterChange('fileId', e.target.value)} />
             </div>
           </div>
 
-          {/* Column 4 */}
-          <MultiSelectInput
-            label="Stage"
-            field="stage"
-            values={filters.stage}
-            placeholder="Type stage or choose from suggestions..."
-            options={filteredStageOptions}
-            showDropdown={showStageDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Topic"
-            field="topic"
-            values={filters.topic}
-            placeholder="Type topic or choose from suggestions..."
-            options={filteredTopicOptions}
-            showDropdown={showTopicDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Scheduler"
-            field="scheduler"
-            values={filters.scheduler}
-            placeholder="Type scheduler name or choose from suggestions..."
-            options={filteredRoleOptions}
-            showDropdown={showSchedulerDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Manager"
-            field="manager"
-            values={filters.manager}
-            placeholder="Type manager name or choose from suggestions..."
-            options={filteredRoleOptions}
-            showDropdown={showManagerDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Lawyer"
-            field="lawyer"
-            values={filters.lawyer}
-            placeholder="Type lawyer name or choose from suggestions..."
-            options={filteredRoleOptions}
-            showDropdown={showLawyerDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Expert"
-            field="expert"
-            values={filters.expert}
-            placeholder="Type expert name or choose from suggestions..."
-            options={filteredRoleOptions}
-            showDropdown={showExpertDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Closer"
-            field="closer"
-            values={filters.closer}
-            placeholder="Type closer name or choose from suggestions..."
-            options={filteredRoleOptions}
-            showDropdown={showCloserDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Case Handler"
-            field="case_handler"
-            values={filters.case_handler}
-            placeholder="Type case handler name or choose from suggestions..."
-            options={filteredRoleOptions}
-            showDropdown={showCaseHandlerDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <MultiSelectInput
-            label="Country"
-            field="country"
-            values={filters.country}
-            placeholder="Type country name or choose from suggestions..."
-            options={filteredCountryOptions}
-            showDropdown={showCountryDropdown}
-            onSelect={handleMultiSelect}
-            onRemove={handleMultiRemove}
-            onFilterChange={handleFilterChange}
-            onShowDropdown={handleShowDropdown}
-            onHideDropdown={handleHideDropdown}
-          />
-          <div className="form-control flex flex-col col-span-2 sm:col-span-1">
-            <label className="label mb-2"><span className="label-text">Content</span></label>
-            <input type="text" className="input" onChange={e => handleFilterChange('content', e.target.value)} />
+          <div className="col-span-1 [&>div]:!col-span-1">
+            <MultiSelectInput
+              label="Language"
+              field="language"
+              values={filters.language}
+              placeholder="Type language or choose from suggestions..."
+              options={filteredLanguageOptions}
+              showDropdown={showLanguageDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+            />
+          </div>
+          <div className="col-span-1 [&>div]:!col-span-1">
+            <MultiSelectInput
+              label="Tags"
+              field="tags"
+              values={filters.tags}
+              placeholder="Type tag or choose from suggestions..."
+              options={filteredTagOptions}
+              showDropdown={showTagDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+            />
           </div>
 
-          {/* View Mode Toggle - Removed (now in fixed bar) */}
+          <div className="col-span-1 [&>div]:!col-span-1">
+            <MultiSelectInput
+              label="Status"
+              field="status"
+              values={filters.status}
+              placeholder="Select status..."
+              options={filteredStatusOptions}
+              showDropdown={showStatusDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+            />
+          </div>
+          <div className="col-span-1 [&>div]:!col-span-1">
+            <MultiSelectInput
+              label="Expert examination"
+              field="expert_examination"
+              values={filters.expert_examination}
+              placeholder="Select expert examination result..."
+              options={filteredExpertExaminationOptions}
+              showDropdown={showExpertExaminationDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+            />
+          </div>
+          <div className="col-span-1 [&>div]:!col-span-1">
+            <MultiSelectInput
+              label="Source"
+              field="source"
+              values={filters.source}
+              placeholder="Type source or choose from suggestions..."
+              options={filteredSourceOptions}
+              showDropdown={showSourceDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+            />
+          </div>
+          <div className="col-span-1">
+            <div className="form-control flex flex-col">
+              <label className="label mb-2">
+                <span className="label-text">Eligible</span>
+              </label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  className="toggle toggle-primary"
+                  checked={filters.eligibilityDeterminedOnly}
+                  onChange={e => handleFilterChange('eligibilityDeterminedOnly', e.target.checked)}
+                />
+                <span className="text-xs text-gray-500">
+                  Show only leads where eligibility is determined
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="col-span-1 [&>div]:!col-span-1">
+            <MultiSelectInput
+              label="Stage"
+              field="stage"
+              values={filters.stage}
+              placeholder="Type stage or choose from suggestions..."
+              options={filteredStageOptions}
+              showDropdown={showStageDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+            />
+          </div>
+          <div className="col-span-1 [&>div]:!col-span-1">
+            <MultiSelectInput
+              label="Topic"
+              field="topic"
+              values={filters.topic}
+              placeholder="Type topic or choose from suggestions..."
+              options={filteredTopicOptions}
+              showDropdown={showTopicDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+            />
+          </div>
+          <div className="col-span-1 [&>div]:!col-span-1">
+            <MultiSelectInput
+              label="Scheduler"
+              field="scheduler"
+              values={filters.scheduler}
+              placeholder="Type scheduler name or choose from suggestions..."
+              options={filteredRoleOptions}
+              showDropdown={showSchedulerDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+            />
+          </div>
+          <div className="col-span-1 [&>div]:!col-span-1">
+            <MultiSelectInput
+              label="Manager"
+              field="manager"
+              values={filters.manager}
+              placeholder="Type manager name or choose from suggestions..."
+              options={filteredRoleOptions}
+              showDropdown={showManagerDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+            />
+          </div>
+          <div className="col-span-1 [&>div]:!col-span-1">
+            <MultiSelectInput
+              label="Lawyer"
+              field="lawyer"
+              values={filters.lawyer}
+              placeholder="Type lawyer name or choose from suggestions..."
+              options={filteredRoleOptions}
+              showDropdown={showLawyerDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+            />
+          </div>
+          <div className="col-span-1 [&>div]:!col-span-1">
+            <MultiSelectInput
+              label="Expert"
+              field="expert"
+              values={filters.expert}
+              placeholder="Type expert name or choose from suggestions..."
+              options={filteredRoleOptions}
+              showDropdown={showExpertDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+            />
+          </div>
+          <div className="col-span-1 [&>div]:!col-span-1">
+            <MultiSelectInput
+              label="Closer"
+              field="closer"
+              values={filters.closer}
+              placeholder="Type closer name or choose from suggestions..."
+              options={filteredRoleOptions}
+              showDropdown={showCloserDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+            />
+          </div>
+          <div className="col-span-1 [&>div]:!col-span-1">
+            <MultiSelectInput
+              label="Case Handler"
+              field="case_handler"
+              values={filters.case_handler}
+              placeholder="Type case handler name or choose from suggestions..."
+              options={filteredRoleOptions}
+              showDropdown={showCaseHandlerDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+            />
+          </div>
+          <div className="col-span-1 [&>div]:!col-span-1">
+            <MultiSelectInput
+              label="Country"
+              field="country"
+              values={filters.country}
+              placeholder="Type country name or choose from suggestions..."
+              options={filteredCountryOptions}
+              showDropdown={showCountryDropdown}
+              onSelect={handleMultiSelect}
+              onRemove={handleMultiRemove}
+              onFilterChange={handleFilterChange}
+              onShowDropdown={handleShowDropdown}
+              onHideDropdown={handleHideDropdown}
+            />
+          </div>
+          <div className="col-span-1">
+            <div className="form-control flex flex-col">
+              <label className="label mb-2"><span className="label-text">Content</span></label>
+              <input type="text" className="input" value={filters.content} onChange={e => handleFilterChange('content', e.target.value)} />
+            </div>
+          </div>
 
           {/* Column Selector for Table View */}
           {viewMode === 'table' && (
-            <ColumnSelector
-              selectedColumns={selectedColumns}
-              onColumnsChange={setSelectedColumns}
-              showDropdown={showColumnSelector}
-              onShowDropdown={() => handleShowDropdown('columns')}
-              onHideDropdown={() => handleHideDropdown('columns')}
-            />
+            <div className="col-span-1 [&>div]:!col-span-1">
+              <ColumnSelector
+                selectedColumns={selectedColumns}
+                onColumnsChange={setSelectedColumns}
+                showDropdown={showColumnSelector}
+                onShowDropdown={() => handleShowDropdown('columns')}
+                onHideDropdown={() => handleHideDropdown('columns')}
+              />
+            </div>
           )}
 
           {/* Search Buttons: Removed (now in fixed bar) */}

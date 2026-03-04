@@ -161,6 +161,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const HEADER_SEARCH_INPUT_ID = 'header-search-input';
   const notificationsRef = useRef<HTMLDivElement>(null);
   const searchDropdownRef = useRef<HTMLDivElement>(null);
   const filterDropdownRef = useRef<HTMLDivElement>(null);
@@ -5699,13 +5700,19 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     return () => clearTimeout(timeout);
   }, [isSearchActive]);
 
-  // On mobile: when search bar opens, focus the input so the user can type immediately without tapping again
+  // On mobile: when search bar opens, focus the input so the keyboard opens without tapping again (delayed until bar has expanded)
   useEffect(() => {
     if (!isSearchActive || !isMobile) return;
-    const t = setTimeout(() => {
+    const t1 = setTimeout(() => {
       searchInputRef.current?.focus();
-    }, 350);
-    return () => clearTimeout(t);
+    }, 450);
+    const t2 = setTimeout(() => {
+      searchInputRef.current?.focus();
+    }, 750);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
   }, [isSearchActive, isMobile]);
 
   const handleSearchFocus = () => {
@@ -6610,10 +6617,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   if (isExternalUser && !isLoadingExternal) {
     return (
       <>
-        <div className="navbar bg-base-100 px-2 md:px-0 h-16 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
+        <div className="navbar bg-base-100 px-2 md:px-0 h-14 md:h-16 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
           {/* Logo and Logout Button */}
           <div className="flex-1 justify-start flex items-center gap-4">
-            <div className="h-16 flex items-center gap-3">
+            <div className="h-14 md:h-16 flex items-center gap-3">
               <Link to="/" className="flex items-center gap-2">
                 <span className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
               </Link>
@@ -6700,7 +6707,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 className="fixed w-48 bg-white rounded-xl shadow-2xl border border-gray-200 z-[9999] overflow-hidden"
                 data-dropdown-menu
                 style={{
-                  top: '64px',
+                  top: '56px',
                   left: '8px',
                   right: '8px'
                 }}
@@ -6735,7 +6742,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   return (
     <>
-      <div className="navbar bg-base-100 px-2 md:px-0 h-16 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
+      <div className="navbar bg-base-100 px-2 md:px-0 h-14 md:h-16 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
         {/* Left section with menu and logo */}
         <div className={`flex-1 justify-start flex items-center gap-4 overflow-hidden transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
           <button className="md:hidden btn btn-ghost btn-square" onClick={onMenuClick} aria-label={isMenuOpen ? "Close menu" : "Open menu"}>
@@ -6768,7 +6775,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 className="fixed w-48 bg-white rounded-xl shadow-2xl border border-gray-200 z-[9999] overflow-hidden"
                 data-dropdown-menu
                 style={{
-                  top: '64px',
+                  top: '56px',
                   left: '8px',
                   right: '8px'
                 }}
@@ -6894,7 +6901,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             )}
           </div>
 
-          <div className="h-16 flex items-center">
+          <div className="h-14 md:h-16 flex items-center">
             <Link to="/" className="hidden md:flex items-center gap-2">
 
               <span className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
@@ -7033,7 +7040,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         <div className={`relative transition-all duration-300 ${isSearchActive && isMobile ? 'flex-1' : 'flex-1'}`}>
           <div
             ref={searchContainerRef}
-            className={`min-w-12 min-h-[56px] transition-all duration-[700ms] ease-in-out cursor-pointer px-2 md:px-0 ${isSearchActive
+            className={`min-w-12 min-h-12 md:min-h-[56px] transition-all duration-[700ms] ease-in-out cursor-pointer px-2 md:px-0 ${isSearchActive
               ? isMobile
                 ? 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100vw-120px)]'
                 : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-xl md:max-w-xl'
@@ -7060,38 +7067,59 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               }
             } : undefined}
           >
-            <div className={`relative flex items-center rounded-full transition-all duration-[700ms] ease-in-out ${isSearchActive ? 'w-full overflow-hidden bg-gray-50 dark:bg-gray-700 border border-gray-100 dark:border-gray-600 shadow-inner' : 'w-12 min-w-12 overflow-visible bg-transparent border-0'}`}>
-              {/* Search icon - always visible when opened or collapsed */}
-              <button
-                className="absolute left-2 flex items-center justify-center z-10 transition-opacity duration-300 opacity-100 w-9 h-9 flex-shrink-0"
-                style={{ minWidth: 36, minHeight: 36 }}
-                onClick={() => {
-                  if (isMobile && !isSearchActive) {
-                    setIsSearchActive(true);
-                    setTimeout(() => {
-                      searchInputRef.current?.focus();
-                    }, 100);
-                  }
-                }}
-              >
-                <div className="w-9 h-9 rounded-full flex items-center justify-center shadow-sm overflow-hidden flex-shrink-0 ring-2 ring-[#4218cc]/40" style={{ backgroundColor: '#4218cc' }}>
-                  <div className="w-7 h-7 overflow-hidden rounded-full flex items-center justify-center [&>div]:!flex [&>div]:!items-center [&>div]:!justify-center [&_canvas]:!block">
-                    <Siriwave
-                      theme="ios"
-                      width={32}
-                      height={32}
-                      amplitude={0.9}
-                      speed={0.08}
-                      frequency={4}
-                      color="#ffffff"
-                      cover={false}
-                      autostart
-                      pixelDepth={0.03}
-                    />
+            <div className={`relative flex items-center rounded-full transition-all duration-[700ms] ease-in-out ${isSearchActive ? 'w-full overflow-hidden bg-gray-50 dark:bg-gray-700 border border-gray-100 dark:border-gray-600 shadow-inner' : `w-12 min-w-12 overflow-visible bg-transparent border-0 ${isMobile ? 'min-h-[48px]' : ''}`}`}>
+              {/* Search icon - on iOS/mobile when collapsed use native label so tap focuses input and keyboard opens */}
+              {isMobile && !isSearchActive ? (
+                <label
+                  htmlFor={HEADER_SEARCH_INPUT_ID}
+                  className="absolute left-2 top-1/2 -translate-y-1/2 flex items-center justify-center z-10 transition-opacity duration-300 opacity-100 w-9 h-9 flex-shrink-0 cursor-pointer"
+                  style={{ minWidth: 36, minHeight: 36 }}
+                  aria-label="Open search"
+                >
+                  <div className="w-9 h-9 rounded-full flex items-center justify-center shadow-sm overflow-hidden flex-shrink-0 ring-2 ring-[#4218cc]/40" style={{ backgroundColor: '#4218cc' }}>
+                    <div className="w-7 h-7 overflow-hidden rounded-full flex items-center justify-center [&>div]:!flex [&>div]:!items-center [&>div]:!justify-center [&_canvas]:!block">
+                      <Siriwave
+                        theme="ios"
+                        width={32}
+                        height={32}
+                        amplitude={0.9}
+                        speed={0.08}
+                        frequency={4}
+                        color="#ffffff"
+                        cover={false}
+                        autostart
+                        pixelDepth={0.03}
+                      />
+                    </div>
                   </div>
-                </div>
-              </button>
+                </label>
+              ) : (
+                <button
+                  type="button"
+                  className="absolute left-2 top-1/2 -translate-y-1/2 flex items-center justify-center z-10 transition-opacity duration-300 opacity-100 w-9 h-9 flex-shrink-0"
+                  style={{ minWidth: 36, minHeight: 36 }}
+                  aria-label="Search"
+                >
+                  <div className="w-9 h-9 rounded-full flex items-center justify-center shadow-sm overflow-hidden flex-shrink-0 ring-2 ring-[#4218cc]/40" style={{ backgroundColor: '#4218cc' }}>
+                    <div className="w-7 h-7 overflow-hidden rounded-full flex items-center justify-center [&>div]:!flex [&>div]:!items-center [&>div]:!justify-center [&_canvas]:!block">
+                      <Siriwave
+                        theme="ios"
+                        width={32}
+                        height={32}
+                        amplitude={0.9}
+                        speed={0.08}
+                        frequency={4}
+                        color="#ffffff"
+                        cover={false}
+                        autostart
+                        pixelDepth={0.03}
+                      />
+                    </div>
+                  </div>
+                </button>
+              )}
               <input
+                id={HEADER_SEARCH_INPUT_ID}
                 ref={searchInputRef}
                 type="text"
                 placeholder="Search for leads..."
@@ -7106,7 +7134,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 } : undefined}
                 className={`
                   w-full bg-transparent border-0 rounded-full text-gray-800 dark:text-gray-200 placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-0 transition-all duration-300 search-input-placeholder
-                  ${isSearchActive ? 'opacity-100 visible pl-12' : 'opacity-0 invisible pl-14'}
+                  ${isSearchActive ? 'opacity-100 visible pl-12' : isMobile ? 'opacity-0 w-px h-px absolute left-0 top-0 overflow-hidden pl-0' : 'opacity-0 invisible pl-14'}
                   ${searchValue.trim() || searchResults.length > 0 ? 'pr-12' : 'pr-4'}
                 `}
                 style={{
@@ -7689,14 +7717,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             })() : (isMsalLoading ? 'Signing in...' : 'Sign in')}
           </button>
 
-          {/* Microsoft sign in/out - mobile only */}
+          {/* Microsoft sign in/out - mobile only, no square */}
           <button
-            className={`btn btn-sm btn-square md:hidden ${userAccount ? 'btn-primary' : 'btn-outline'}`}
+            className={`btn btn-ghost btn-sm btn-circle md:hidden min-h-8 h-8 w-8 p-0 ${userAccount ? 'text-primary' : 'text-base-content/70'}`}
             onClick={handleMicrosoftSignIn}
             disabled={isMsalLoading || !isMsalInitialized}
             title={userAccount ? 'Sign out' : 'Sign in with Microsoft'}
           >
-            <svg className="w-5 h-5" viewBox="0 0 24 24">
+            <svg className="w-4 h-4" viewBox="0 0 24 24">
               <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
             </svg>
           </button>
@@ -7710,7 +7738,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               <div className="indicator">
                 <BellIcon className="w-6 h-6" />
                 {unreadCount > 0 && (
-                  <span className="indicator-item badge badge-primary badge-sm">{unreadCount}</span>
+                  <span className="indicator-item badge badge-primary min-w-[1rem] h-4 md:min-w-[1.375rem] md:h-5.5 text-[11px] md:text-xs flex items-center justify-center px-1">{unreadCount}</span>
                 )}
               </div>
             </button>
@@ -7718,15 +7746,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             {showNotifications && (
               <div
                 className={`notification-dropdown shadow-xl rounded-xl overflow-hidden z-50 border border-gray-200 dark:border-gray-600 ${isMobile
-                  ? 'fixed inset-x-0 top-[72px] w-[calc(100vw-16px)] mx-auto text-[11px]'
+                  ? 'notification-dropdown-mobile fixed right-3 top-14 left-auto w-72 max-w-[calc(100vw-24px)] text-[11px]'
                   : 'absolute right-0 mt-2 w-80 text-sm'
                   }`}
               >
-                <div className="p-4 border-b border-gray-200">
+                <div className={`border-b border-gray-200 ${isMobile ? 'p-3' : 'p-4'}`}>
                   <div className="flex justify-between items-center">
-                    <h3 className="font-semibold text-gray-900">Messages</h3>
+                    <h3 className={`font-semibold text-gray-900 ${isMobile ? 'text-xs' : ''}`}>Messages</h3>
                     <button
-                      className="btn btn-ghost btn-xs whitespace-nowrap text-gray-700 hover:text-gray-900"
+                      className={`btn btn-ghost whitespace-nowrap text-gray-700 hover:text-gray-900 ${isMobile ? 'btn-xs text-[11px]' : 'btn-xs'}`}
                       onClick={markAllAsRead}
                     >
                       Read
@@ -8054,7 +8082,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       )}
 
       {/* Spacer to prevent content from being hidden behind the fixed header */}
-      <div className="h-16 w-full" />
+      <div className="h-14 md:h-16 w-full" />
 
       {/* Employee Modal for My Profile */}
       <EmployeeModal
@@ -8087,6 +8115,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           background-color: #ffffff !important;
           opacity: 1 !important;
         }
+        .notification-dropdown-mobile .text-sm { font-size: 0.6875rem !important; }
+        .notification-dropdown-mobile .text-xs { font-size: 0.625rem !important; }
         /* Frosted glass effect in dark mode */
         .dark .notification-dropdown {
           background: rgba(15, 23, 42, 0.7) !important;

@@ -839,8 +839,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         {/* Actions Dropdown - Right side */}
                         {!hideActionsDropdown && (
                             <div className="dropdown dropdown-end">
-                                <label tabIndex={0} className="btn btn-ghost btn-square">
-                                    <Cog6ToothIcon className="w-6 h-6" />
+                                <label tabIndex={0} className="btn btn-ghost btn-square min-h-10 min-w-10">
+                                    <Cog6ToothIcon className="w-7 h-7" />
                                 </label>
                                 <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2">
                                     {/* Stage Specific Actions */}
