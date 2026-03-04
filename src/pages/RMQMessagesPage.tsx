@@ -319,6 +319,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const lastResizeMessageCountRef = useRef<number>(0);
   const shouldAutoScrollRef = useRef<boolean>(true);
   const isUserScrollingRef = useRef<boolean>(false);
+  // After opening a chat, ignore layout-driven scroll for a while so media loading doesn't cause jump
+  const scrollStabilizationUntilRef = useRef<number>(0);
+  const initialScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Loading state for messages
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
@@ -516,6 +519,39 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     return hasEmoji && isShort && !hasHebrew;
   };
 
+  // Helper: turn plain text into nodes, with raw URLs (https://...) made into clickable links
+  const linkifyRawUrls = (text: string, isOwn: boolean, lineIndex: number, keyPrefix: string): React.ReactNode[] => {
+    if (!text) return [];
+    const rawUrlRegex = /https?:\/\/[^\s<>"\']+/g;
+    const nodes: React.ReactNode[] = [];
+    let lastIndex = 0;
+    let match;
+    let key = 0;
+    while ((match = rawUrlRegex.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        nodes.push(text.slice(lastIndex, match.index));
+      }
+      const url = match[0].replace(/[.,;:!?)]+$/, ''); // trim trailing punctuation from href
+      nodes.push(
+        <a
+          key={`${keyPrefix}-${lineIndex}-${key++}`}
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={isOwn ? "underline font-semibold" : "text-green-700 dark:text-green-600 hover:text-green-800 dark:hover:text-green-500 underline"}
+          style={isOwn ? { color: '#a7f3d0' } : undefined}
+        >
+          {match[0]}
+        </a>
+      );
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < text.length) {
+      nodes.push(text.slice(lastIndex));
+    }
+    return nodes.length > 0 ? nodes : [text];
+  };
+
   // Helper function to render clickable links and line breaks in messages
   const renderMessageContent = (content: string, isOwn: boolean = false) => {
     if (!content) return '';
@@ -533,7 +569,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         result.push(<br key={`br-${lineIndex}`} />);
       }
 
-      // Process each line for markdown-style links
+      // Process each line: markdown-style links [text](url) and raw URLs (https://...)
       const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
       const parts: React.ReactNode[] = [];
       let lastIndex = 0;
@@ -541,19 +577,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       let linkKey = 0;
 
       while ((match = linkRegex.exec(line)) !== null) {
-        // Add text before the link
+        // Text before this markdown link may contain raw URLs
         if (match.index > lastIndex) {
-          parts.push(line.slice(lastIndex, match.index));
+          const segment = line.slice(lastIndex, match.index);
+          parts.push(...linkifyRawUrls(segment, isOwn, lineIndex, `raw`));
         }
 
-        // Add the clickable link - darker green for sent messages (readable on bubble), blue for received
+        // Add the clickable markdown link
         parts.push(
           <a
             key={`link-${lineIndex}-${linkKey++}`}
             href={match[2]}
             target="_blank"
             rel="noopener noreferrer"
-            className={isOwn ? "underline font-semibold" : "text-blue-600 hover:text-blue-800 underline"}
+            className={isOwn ? "underline font-semibold" : "text-green-700 dark:text-green-600 hover:text-green-800 dark:hover:text-green-500 underline"}
             style={isOwn ? { color: '#a7f3d0' } : undefined}
           >
             {match[1]}
@@ -563,14 +600,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         lastIndex = match.index + match[0].length;
       }
 
-      // Add remaining text after the last link in this line
+      // Remaining text after the last markdown link may contain raw URLs
       if (lastIndex < line.length) {
-        parts.push(line.slice(lastIndex));
+        const segment = line.slice(lastIndex);
+        parts.push(...linkifyRawUrls(segment, isOwn, lineIndex, `raw`));
       }
 
-      // If no links found in this line, just add the line text
+      // If no links found in this line, still run linkify on the whole line (for raw URLs only)
       if (parts.length === 0) {
-        parts.push(line);
+        parts.push(...linkifyRawUrls(line, isOwn, lineIndex, `raw`));
       }
 
       // Add all parts for this line to the result
@@ -4030,6 +4068,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       );
 
       if (existingConv) {
+        setMessages([]);
+        setIsLoadingMessages(true);
         selectConversation(existingConv);
         fetchMessages(existingConv.id, false);
         setShowMobileConversations(false);
@@ -4059,6 +4099,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         const newConv = updatedConversations.find(c => c.id === conversationId);
 
         if (newConv) {
+          setMessages([]);
+          setIsLoadingMessages(true);
           selectConversation(newConv);
           fetchMessages(newConv.id, false);
           setShowMobileConversations(false);
@@ -4070,6 +4112,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             const retryConversations = await getUpdatedConversations();
             const retryConv = retryConversations.find(c => c.id === conversationId);
             if (retryConv) {
+              setMessages([]);
+              setIsLoadingMessages(true);
               selectConversation(retryConv);
               fetchMessages(retryConv.id, false);
               setShowMobileConversations(false);
@@ -4689,12 +4733,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Force immediate scroll to bottom
       container.scrollTop = container.scrollHeight;
 
-      // Re-apply in next frame only if user still wants to be at bottom (avoids jumping when user scrolled up)
-      requestAnimationFrame(() => {
-        if (container && !isLoadingMessages && !isPreloadingImages && shouldAutoScrollRef.current && !isUserScrollingRef.current) {
-          container.scrollTop = container.scrollHeight;
-        }
-      });
+      // Skip the follow-up rAF during stabilization (opening a chat with lots of media) to prevent jump
+      const inStabilization = Date.now() < scrollStabilizationUntilRef.current;
+      if (!inStabilization) {
+        requestAnimationFrame(() => {
+          if (container && !isLoadingMessages && !isPreloadingImages && shouldAutoScrollRef.current && !isUserScrollingRef.current) {
+            container.scrollTop = container.scrollHeight;
+          }
+        });
+      }
     } else {
       // Smooth scroll
       container.scrollTo({
@@ -4871,6 +4918,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       resizeObserver = new ResizeObserver(() => {
         if (isInitialLoad && Date.now() - initialLoadTime < INITIAL_LOAD_GRACE_PERIOD) return;
         if (userJustScrolledToBottomRef.current) return;
+        // During stabilization (e.g. media still loading), don't scroll on resize to prevent jump
+        if (Date.now() < scrollStabilizationUntilRef.current) return;
 
         // Only scroll when message count increased (new messages). Do NOT scroll when only images/videos load (same count).
         const currentCount = messages.length;
@@ -4922,32 +4971,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       setIsUserScrolling(false);
       setNewMessagesCount(0);
 
-      // FORCE INSTANT SCROLL TO BOTTOM after a short delay to let content render
-      // We use requestAnimationFrame to wait for paint, then force scroll (only if not loading)
+      // Single scroll to bottom after one delay; stabilization period prevents further programmatic scroll when media loads
       if (!isLoadingMessages && !isPreloadingImages) {
-        // Use a small delay to let content render (important for mobile where container may layout after mount)
-        setTimeout(() => {
-          requestAnimationFrame(() => {
-            scrollToBottom('instant');
-            // After initial scroll, re-enable auto-scroll (ref already true from above)
-            setTimeout(() => {
-              shouldAutoScrollRef.current = true;
-              setShouldAutoScroll(true);
-            }, 500); // Re-enable after 500ms
-          });
-        }, 100);
-        // On mobile, container often layouts after first paint; run a second scroll so we end at bottom
-        const isMobileViewport = typeof window !== 'undefined' && window.innerWidth < 1024;
-        if (isMobileViewport) {
-          setTimeout(() => {
-            requestAnimationFrame(() => scrollToBottom('instant'));
-          }, 350);
-        }
+        const STABILIZATION_MS = 5000;
+        scrollStabilizationUntilRef.current = Date.now() + STABILIZATION_MS;
+        initialScrollTimeoutRef.current = window.setTimeout(() => {
+          scrollToBottom('instant');
+          initialScrollTimeoutRef.current = null;
+        }, 250);
       }
     }
 
-    // Cleanup observer on effect re-run or unmount
+    // Cleanup observer and any pending initial scroll on effect re-run or unmount
     return () => {
+      if (initialScrollTimeoutRef.current) {
+        clearTimeout(initialScrollTimeoutRef.current);
+        initialScrollTimeoutRef.current = null;
+      }
       if (resizeObserver) {
         resizeObserver.disconnect();
       }
@@ -5776,12 +5816,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     window.dispatchEvent(new CustomEvent('rmq:unread-count', { detail: { count: totalUnread } }));
   }, [conversations]);
 
-  // Show contact/group list boxes only after main content and images are loaded
-  const isSidebarReady = useMemo(() => {
-    const initialDone = !isLoading && !isFetchingConversations;
-    const mainReady = !selectedConversation || (!isLoadingMessages && !isPreloadingImages);
-    return initialDone && mainReady;
-  }, [isLoading, isFetchingConversations, selectedConversation, isLoadingMessages, isPreloadingImages]);
+  // Show contact/group list boxes only during initial page load (conversations loading).
+  // Once the list has been shown once, keep it visible — do not show loading again on background refetch or when switching chats.
+  const isSidebarReady = useMemo(
+    () => !isLoading && !isFetchingConversations,
+    [isLoading, isFetchingConversations]
+  );
+  const [hasSidebarBeenReady, setHasSidebarBeenReady] = useState(false);
+  useEffect(() => {
+    if (isSidebarReady) setHasSidebarBeenReady(true);
+  }, [isSidebarReady]);
+  useEffect(() => {
+    if (!isOpen) setHasSidebarBeenReady(false);
+  }, [isOpen]);
+  const showSidebarList = hasSidebarBeenReady || isSidebarReady;
 
   // Global styles for glassy white video controls
   useEffect(() => {
@@ -5952,7 +6000,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
         {/* Content Area - boxes show only when ready */}
         <div className="flex-1 overflow-y-auto bg-base-100">
-          {!isSidebarReady ? (
+          {!showSidebarList ? (
             <div className="p-6 flex flex-col items-center justify-center text-base-content/60 gap-3 min-h-[200px]">
               <span className="loading loading-spinner loading-md" />
               <p className="text-sm">Loading...</p>
@@ -5979,12 +6027,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
                 const isUnavailable = contactAvailabilityMap[user.tenants_employee?.display_name || ''] || false;
                 const isOnline = onlineUsers.has(String(user.id));
+                const isSelectedContact = selectedConversation?.type === 'direct' && selectedConversation.participants?.some(p => p.user_id === user.id);
 
                 return (
                   <div
                     key={user.id}
                     onClick={() => startDirectConversation(user.id)}
-                    className="p-4 border-b border-base-300 cursor-pointer hover:bg-base-200 transition-colors bg-base-100"
+                    className={`p-4 border-b border-base-300 cursor-pointer hover:bg-base-200 transition-colors ${isSelectedContact ? 'bg-green-50 dark:bg-green-900/20 border-l-4 border-l-green-500' : 'bg-base-100'}`}
                   >
                     <div className="flex items-center gap-3">
                       <div className="relative">
@@ -5997,10 +6046,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           textClass: 'text-base',
                         })}
                         {isUnavailable && (
-                          <div className="absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center border-2 border-base-100">
-                            <ClockIcon className="w-3 h-3 text-white" />
-                          </div>
-                        )}
+                            <div className="absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center border-2 border-base-100">
+                              <ClockIcon className="w-3 h-3 text-white" />
+                            </div>
+                          )}
                         {!isUnavailable && isOnline && (
                           <div className="absolute bottom-0 right-0 w-4 h-4 bg-green-500 rounded-full border-2 border-base-100 flex items-center justify-center">
                             <span className="w-2 h-2 bg-base-100 rounded-full"></span>
@@ -6090,17 +6139,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <p className="text-sm">Use the button above to create one</p>
               </div>
             ) : (
-              filteredGroupConversations.map((conversation) => (
+              filteredGroupConversations.map((conversation) => {
+                const isSelectedGroup = selectedConversation?.id === conversation.id;
+                return (
                 <div
                   key={conversation.id}
                   onClick={() => {
+                    setMessages([]);
+                    setIsLoadingMessages(true);
                     selectConversation(conversation);
                     fetchMessages(conversation.id, false);
                     setShowMobileConversations(false);
                   }}
-                  className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors bg-white ${selectedConversation?.id === conversation.id ? 'border-l-4' : ''
-                    }`}
-                  style={selectedConversation?.id === conversation.id ? { backgroundColor: 'rgba(62, 40, 205, 0.05)', borderLeftColor: '#3E28CD' } : {}}
+                  className={`p-4 border-b border-base-300 cursor-pointer hover:bg-base-200 transition-colors ${isSelectedGroup ? 'bg-green-50 dark:bg-green-900/20 border-l-4 border-l-green-500' : 'bg-base-100'}`}
                 >
                   <div className="flex items-center gap-3">
                     {getConversationAvatar(conversation, 'large')}
@@ -6129,7 +6180,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     </div>
                   </div>
                 </div>
-              ))
+              ); })
             )
           )}
           </>
@@ -6222,7 +6273,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
         {/* Mobile Content - boxes show only when ready */}
         <div className="flex-1 overflow-y-auto bg-base-100">
-          {!isSidebarReady ? (
+          {!showSidebarList ? (
             <div className="p-6 flex flex-col items-center justify-center text-base-content/60 gap-3 min-h-[200px]">
               <span className="loading loading-spinner loading-md" />
               <p className="text-sm">Loading...</p>
@@ -6249,12 +6300,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
                 const isUnavailable = contactAvailabilityMap[user.tenants_employee?.display_name || ''] || false;
                 const isOnline = onlineUsers.has(String(user.id));
+                const isSelectedContact = selectedConversation?.type === 'direct' && selectedConversation.participants?.some(p => p.user_id === user.id);
 
                 return (
                   <div
                     key={user.id}
                     onClick={() => startDirectConversation(user.id)}
-                    className="p-4 border-b border-base-300 cursor-pointer hover:bg-base-200 active:bg-base-200 bg-base-100"
+                    className={`p-4 border-b border-base-300 cursor-pointer hover:bg-base-200 active:bg-base-200 transition-colors ${isSelectedContact ? 'bg-green-50 dark:bg-green-900/20 border-l-4 border-l-green-500' : 'bg-base-100'}`}
                   >
                     <div className="flex items-center gap-3">
                       <div className="relative">
@@ -6360,15 +6412,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <p className="text-sm">Use the button above to create one</p>
               </div>
             ) : (
-              filteredGroupConversations.map((conversation) => (
+              filteredGroupConversations.map((conversation) => {
+                const isSelectedGroup = selectedConversation?.id === conversation.id;
+                return (
                 <div
                   key={conversation.id}
                   onClick={() => {
+                    setMessages([]);
+                    setIsLoadingMessages(true);
                     selectConversation(conversation);
                     fetchMessages(conversation.id, false);
                     setShowMobileConversations(false);
                   }}
-                  className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 active:bg-gray-100 bg-white"
+                  className={`p-4 border-b border-base-300 cursor-pointer hover:bg-base-200 active:bg-base-200 transition-colors ${isSelectedGroup ? 'bg-green-50 dark:bg-green-900/20 border-l-4 border-l-green-500' : 'bg-base-100'}`}
                 >
                   <div className="flex items-center gap-3">
                     {getConversationAvatar(conversation, 'large')}
@@ -6397,7 +6453,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     </div>
                   </div>
                 </div>
-              ))
+              ); })
             )
           )}
           </>
@@ -6410,14 +6466,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         {selectedConversation ? (
           <>
             {/* Chat Header */}
+            {(() => {
+              const otherParticipant = selectedConversation.type === 'direct' ? selectedConversation.participants?.find(p => p.user_id !== currentUser?.id) : null;
+              const directRole = otherParticipant?.user?.tenants_employee ? getRoleDisplayName(otherParticipant.user.tenants_employee.bonuses_role || '') : '';
+              const directDepartment = otherParticipant?.user?.tenants_employee?.tenant_departement?.name || '';
+              const hasDirectRoleOrDept = selectedConversation.type === 'direct' && (directRole || directDepartment);
+              return (
             <div
               className="py-2 px-3 border-b border-base-300 bg-base-100 absolute top-0 left-0 right-0 z-20"
               style={{
                 boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
               }}
             >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
+              <div className="relative flex items-center justify-between">
+                <div className="flex items-center gap-3 min-w-0 flex-1">
                   <button
                     onClick={() => setShowMobileConversations(true)}
                     className="lg:hidden btn btn-ghost btn-sm btn-circle"
@@ -6425,38 +6487,26 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     <ArrowLeftIcon className="w-5 h-5" />
                   </button>
                   {getConversationAvatar(selectedConversation, 'xlarge')}
-                  <div className="flex-1">
+                  <div className="flex-1 min-w-0">
                     {selectedConversation.type === 'direct' ? (
                       (() => {
-                        const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
-                        if (otherParticipant?.user) {
-                          const employee = otherParticipant.user.tenants_employee;
+                        const op = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
+                        if (op?.user) {
+                          const employee = op.user.tenants_employee;
                           const role = employee ? getRoleDisplayName(employee.bonuses_role || '') : '';
                           const department = employee?.tenant_departement?.name || '';
 
-                          const otherUserId = otherParticipant.user.id ? String(otherParticipant.user.id) : null;
+                          const otherUserId = op.user.id ? String(op.user.id) : null;
                           const isOnline = otherUserId ? onlineUsers.has(otherUserId) : false;
                           if (otherUserId && process.env.NODE_ENV === 'development') {
                           }
 
                           return (
                             <>
-                              <div className="flex flex-wrap items-center gap-3 text-base-content">
+                              <div className="flex flex-wrap items-center gap-2 text-base-content">
                                 <h2 className="font-semibold">
                                   {getConversationTitle(selectedConversation)}
                                 </h2>
-                                {role && (
-                                  <div className="inline-flex items-center gap-1.5 text-base font-medium text-base-content/90">
-                                    <BriefcaseIcon className="w-4 h-4" style={{ color: '#059669' }} />
-                                    <span>{role}</span>
-                                  </div>
-                                )}
-                                {department && (
-                                  <div className="inline-flex items-center gap-1.5 text-base font-medium text-base-content/90">
-                                    <BuildingOfficeIcon className="w-4 h-4" style={{ color: '#059669' }} />
-                                    <span>{department}</span>
-                                  </div>
-                                )}
                               </div>
                               {isOnline ? (
                                 <div className="flex items-center gap-1.5 mt-1">
@@ -6524,7 +6574,24 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     )}
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                {/* Role and department centered in header - desktop only */}
+                {hasDirectRoleOrDept && (
+                  <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 hidden lg:flex items-center gap-3 text-base-content/90 pointer-events-none">
+                    {directRole && (
+                      <div className="inline-flex items-center gap-1.5 text-sm font-medium">
+                        <BriefcaseIcon className="w-4 h-4 shrink-0" style={{ color: '#059669' }} />
+                        <span>{directRole}</span>
+                      </div>
+                    )}
+                    {directDepartment && (
+                      <div className="inline-flex items-center gap-1.5 text-sm font-medium">
+                        <BuildingOfficeIcon className="w-4 h-4 shrink-0" style={{ color: '#059669' }} />
+                        <span>{directDepartment}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className="flex items-center gap-2 flex-shrink-0">
                   {/* Background Image Upload Button */}
                   <button
                     onClick={() => backgroundImageInputRef.current?.click()}
@@ -6653,6 +6720,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </div>
               )}
             </div>
+            ); })()}
 
             {/* Wrapper so messages scroll above input (input is flex sibling, not absolute) */}
             <div className="flex-1 flex flex-col min-h-0">
@@ -6672,11 +6740,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               }}
             >
               {isLoadingMessages ? (
-                <div className="text-center py-12">
-                  <div className="loading loading-spinner loading-lg mx-auto mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.9)' : '#3E28CD' }}></div>
-                  <p className="font-medium" style={{ color: chatBackgroundImageUrl ? 'white' : '#6b7280' }}>
-                    Loading messages...
-                  </p>
+                <div className="absolute inset-0 flex flex-col items-center justify-center min-h-[200px] bg-base-100/80 dark:bg-base-300/50 z-10">
+                  <div className="loading loading-spinner loading-lg mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.9)' : '#3E28CD' }} />
+                  <p className="font-medium text-base-content/90">Loading messages...</p>
                 </div>
               ) : messages.length === 0 ? (
                 <div className="text-center py-12">
@@ -6754,7 +6820,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     </span>
                                   </div>
                                 )}
-                                <div className="relative cursor-pointer group w-full" onClick={() => openMediaModal(message)}>
+                                <div className="relative cursor-pointer group w-full min-h-[120px] md:min-h-[200px]" onClick={() => openMediaModal(message)}>
                                   <img
                                     src={message.attachment_url}
                                     alt={message.attachment_name}
@@ -8042,11 +8108,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               }}
             >
               {isLoadingMessages ? (
-                <div className="text-center py-12">
-                  <div className="loading loading-spinner loading-lg mx-auto mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.9)' : '#3E28CD' }}></div>
-                  <p className="font-medium" style={{ color: chatBackgroundImageUrl ? 'white' : '#6b7280' }}>
-                    Loading messages...
-                  </p>
+                <div className="absolute inset-0 flex flex-col items-center justify-center min-h-[200px] bg-base-100/80 dark:bg-base-300/50 z-10">
+                  <div className="loading loading-spinner loading-lg mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.9)' : '#3E28CD' }} />
+                  <p className="font-medium text-base-content/90">Loading messages...</p>
                 </div>
               ) : messages.length === 0 ? (
                 <div className="text-center py-12">
@@ -8123,7 +8187,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   </div>
                                 )}
                                 <div
-                              className="relative cursor-pointer group w-full"
+                              className="relative cursor-pointer group w-full min-h-[120px] md:min-h-[200px]"
                               onClick={() => openMediaModal(message)}
                             >
                               <img

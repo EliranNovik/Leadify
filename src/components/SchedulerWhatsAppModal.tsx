@@ -1998,7 +1998,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       </div>
                     ) : (
                       <div
-                        className={`group ${message.direction === 'out' ? 'max-w-[85%] md:max-w-[35%] lg:max-w-[30%]' : 'max-w-[85%] md:max-w-[70%]'} rounded-2xl px-4 py-2 shadow-sm ${message.direction === 'out'
+                        className={`group ${message.direction === 'out' ? 'max-w-[85%] md:max-w-[35%] lg:max-w-[30%]' : 'max-w-[85%] md:max-w-[70%]'} rounded-2xl px-3 py-2 shadow-sm ${message.direction === 'out'
                           ? 'text-white border border-transparent'
                           : 'bg-white text-gray-900 border border-gray-200'
                           }`}
@@ -2017,7 +2017,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       >
                         {message.message_type === 'text' && (
                           <p
-                            className="break-words whitespace-pre-wrap text-base"
+                            className="break-words whitespace-pre-wrap text-[17px] leading-snug"
                             dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
                             style={{
                               textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
