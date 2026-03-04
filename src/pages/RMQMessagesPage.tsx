@@ -317,6 +317,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const scrollPositionCheckRef = useRef<NodeJS.Timeout | null>(null);
   const userJustScrolledToBottomRef = useRef<boolean>(false);
   const lastResizeMessageCountRef = useRef<number>(0);
+  const shouldAutoScrollRef = useRef<boolean>(true);
+  const isUserScrollingRef = useRef<boolean>(false);
 
   // Loading state for messages
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
@@ -413,6 +415,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
   const handleAvatarError = useCallback((userIdKey: string) => {
     setFailedPhotoIds(prev => (prev[userIdKey] ? prev : { ...prev, [userIdKey]: true }));
+  }, []);
+
+  // Distinct colors for group chat sender names (stable per sender_id)
+  const SENDER_NAME_COLORS = ['#059669', '#2563eb', '#7c3aed', '#c026d3', '#dc2626', '#ea580c', '#ca8a04', '#16a34a', '#0891b2', '#4f46e5'];
+  const getSenderColor = useCallback((senderId: string | number | undefined) => {
+    if (senderId == null) return SENDER_NAME_COLORS[0];
+    const s = String(senderId);
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = ((h << 5) - h) + s.charCodeAt(i) | 0;
+    return SENDER_NAME_COLORS[Math.abs(h) % SENDER_NAME_COLORS.length];
   }, []);
 
   const renderUserAvatar = ({
@@ -1474,17 +1486,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
   const formatMessageTime = (timestamp: string): string => {
     const date = new Date(timestamp);
-    const now = new Date();
-
-    if (isToday(date)) {
-      return format(date, 'HH:mm');
-    } else if (isYesterday(date)) {
-      // Show actual time instead of "Yesterday"
-      return format(date, 'HH:mm');
-    } else {
-      // Always show day of week and time for older messages
-      return format(date, 'EEE HH:mm'); // Day of week + time (e.g., "Mon 14:30")
-    }
+    return format(date, 'HH:mm');
   };
 
   // Helper function to check if two dates are on the same day
@@ -2884,6 +2886,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
 
       // Ensure auto-scroll is enabled
+      shouldAutoScrollRef.current = true;
+      isUserScrollingRef.current = false;
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
       setNewMessagesCount(0);
@@ -4660,14 +4664,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       return;
     }
 
-    // Try to find the active container
+    // Prefer the container that is visible: on mobile viewport use mobile first, on desktop use desktop first
+    const isMobileViewport = typeof window !== 'undefined' && window.innerWidth < 1024;
     let container: HTMLDivElement | null = null;
 
-    if (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetParent) {
-      container = desktopMessagesContainerRef.current;
-    } else if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetParent) {
+    if (isMobileViewport && mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetParent) {
       container = mobileMessagesContainerRef.current;
-    } else if (messagesContainerRef.current && messagesContainerRef.current.offsetParent) {
+    } else if (!isMobileViewport && desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetParent) {
+      container = desktopMessagesContainerRef.current;
+    }
+    if (!container && desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetParent) {
+      container = desktopMessagesContainerRef.current;
+    }
+    if (!container && mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetParent) {
+      container = mobileMessagesContainerRef.current;
+    }
+    if (!container && messagesContainerRef.current && messagesContainerRef.current.offsetParent) {
       container = messagesContainerRef.current;
     }
 
@@ -4677,9 +4689,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Force immediate scroll to bottom
       container.scrollTop = container.scrollHeight;
 
-      // Double check in next frame to ensure it stuck (sometimes content layout shifts)
+      // Re-apply in next frame only if user still wants to be at bottom (avoids jumping when user scrolled up)
       requestAnimationFrame(() => {
-        if (container && !isLoadingMessages && !isPreloadingImages) {
+        if (container && !isLoadingMessages && !isPreloadingImages && shouldAutoScrollRef.current && !isUserScrollingRef.current) {
           container.scrollTop = container.scrollHeight;
         }
       });
@@ -4734,6 +4746,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
     // If user scrolls to bottom, enable auto-scroll and reset count (and skip ResizeObserver scroll for a short time to prevent "pull up" animation)
     if (nearBottom) {
+      shouldAutoScrollRef.current = true;
+      isUserScrollingRef.current = false;
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
       setNewMessagesCount(0);
@@ -4748,7 +4762,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       return;
     }
 
-    // If user scrolls up, disable auto-scroll
+    // If user scrolls up, disable auto-scroll (refs updated first so ResizeObserver/callbacks see it immediately)
+    shouldAutoScrollRef.current = false;
+    isUserScrollingRef.current = true;
     setShouldAutoScroll(false);
     setIsUserScrolling(true);
 
@@ -4779,14 +4795,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       return;
     }
 
-    // Checking strictly if user wanted to stay at bottom OR if it is a self-sent message
+    // Use refs so we don't scroll when user has scrolled up (state may not have updated yet)
     const userIsNearBottom = isNearBottom();
     const isNewMessageFromMe = messages.length > 0 && messages[messages.length - 1].sender_id === currentUser?.id;
     const hasNewMessages = messages.length > prevMessageCountRef.current;
 
     // For subsequent message updates, scroll only when NEW messages arrived and (user is near bottom OR new message is from current user)
-    // Do NOT scroll when user just scrolled to bottom (no new messages) - that caused a "pull up" animation on mobile
-    const shouldScroll = ((shouldAutoScroll && userIsNearBottom && !isUserScrolling) || isNewMessageFromMe) && hasNewMessages;
+    const shouldScroll = ((shouldAutoScrollRef.current && userIsNearBottom && !isUserScrollingRef.current) || isNewMessageFromMe) && hasNewMessages;
 
     if (shouldScroll && messages.length > 0 && selectedConversation && !isScrollingRef.current) {
       // Reset new messages count when auto-scrolling
@@ -4805,6 +4820,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
     } else if (shouldAutoScroll && !userIsNearBottom && hasNewMessages && selectedConversation) {
       // User is scrolled up and new messages arrived - disable auto-scroll and increment count
+      shouldAutoScrollRef.current = false;
       setShouldAutoScroll(false);
       const newCount = messages.length - prevMessageCountRef.current;
       setNewMessagesCount(prev => prev + newCount);
@@ -4860,26 +4876,30 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         const currentCount = messages.length;
         if (currentCount <= lastResizeMessageCountRef.current) return;
 
+        // Use refs so we never scroll when user has scrolled up (state may not have updated yet)
+        if (!shouldAutoScrollRef.current || isUserScrollingRef.current) return;
+
         if (resizeScrollTimeout) {
           clearTimeout(resizeScrollTimeout);
           resizeScrollTimeout = null;
         }
 
-        if (shouldAutoScroll && !isUserScrolling) {
-          const now = Date.now();
-          if (now - lastScrollTime < SCROLL_THROTTLE_MS) return;
+        const now = Date.now();
+        if (now - lastScrollTime < SCROLL_THROTTLE_MS) return;
 
-          resizeScrollTimeout = setTimeout(() => {
-            if (shouldAutoScroll && !isUserScrolling && !isLoadingMessages && !isPreloadingImages && !userJustScrolledToBottomRef.current) {
-              lastScrollTime = Date.now();
-              lastResizeMessageCountRef.current = currentCount;
-              requestAnimationFrame(() => {
-                scrollToBottom('instant');
-              });
-            }
+        resizeScrollTimeout = setTimeout(() => {
+          if (!shouldAutoScrollRef.current || isUserScrollingRef.current || isLoadingMessages || isPreloadingImages || userJustScrolledToBottomRef.current) {
             resizeScrollTimeout = null;
-          }, 150);
-        }
+            return;
+          }
+          lastScrollTime = Date.now();
+          lastResizeMessageCountRef.current = currentCount;
+          requestAnimationFrame(() => {
+            if (!shouldAutoScrollRef.current || isUserScrollingRef.current) return;
+            scrollToBottom('instant');
+          });
+          resizeScrollTimeout = null;
+        }, 150);
       });
 
       resizeObserver.observe(container);
@@ -4895,7 +4915,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       initialLoadRef.current = selectedConversation.id;
       hasScrolledForConversationRef.current = selectedConversation.id;
 
-      // Set state first to prevent ResizeObserver from interfering
+      // Set refs first so ResizeObserver/callbacks never override user scroll; then state
+      shouldAutoScrollRef.current = true;
+      isUserScrollingRef.current = false;
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
       setNewMessagesCount(0);
@@ -4903,16 +4925,24 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // FORCE INSTANT SCROLL TO BOTTOM after a short delay to let content render
       // We use requestAnimationFrame to wait for paint, then force scroll (only if not loading)
       if (!isLoadingMessages && !isPreloadingImages) {
-        // Use a small delay to let images start loading before scrolling
+        // Use a small delay to let content render (important for mobile where container may layout after mount)
         setTimeout(() => {
           requestAnimationFrame(() => {
             scrollToBottom('instant');
-            // After initial scroll, disable auto-scroll temporarily to prevent jumping
+            // After initial scroll, re-enable auto-scroll (ref already true from above)
             setTimeout(() => {
+              shouldAutoScrollRef.current = true;
               setShouldAutoScroll(true);
             }, 500); // Re-enable after 500ms
           });
         }, 100);
+        // On mobile, container often layouts after first paint; run a second scroll so we end at bottom
+        const isMobileViewport = typeof window !== 'undefined' && window.innerWidth < 1024;
+        if (isMobileViewport) {
+          setTimeout(() => {
+            requestAnimationFrame(() => scrollToBottom('instant'));
+          }, 350);
+        }
       }
     }
 
@@ -4922,7 +4952,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         resizeObserver.disconnect();
       }
     };
-  }, [messages.length, selectedConversation?.id, scrollToBottom, shouldAutoScroll]);
+  }, [messages.length, selectedConversation?.id, scrollToBottom]);
 
   // Reset scroll tracking and fetch messages when conversation changes
   useEffect(() => {
@@ -5073,7 +5103,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         // This is the initial load - use instant scroll only
         initialLoadRef.current = selectedConversation.id;
 
-        // Reset scroll state
+        // Reset scroll state (refs first so async code sees intent immediately)
+        shouldAutoScrollRef.current = true;
+        isUserScrollingRef.current = false;
         setShouldAutoScroll(true);
         setIsUserScrolling(false);
         setNewMessagesCount(0);
@@ -5534,6 +5566,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         // Scroll to bottom when new message arrives (only if not loading)
         if (!isLoadingMessages && !isPreloadingImages) {
           setTimeout(() => {
+            shouldAutoScrollRef.current = true;
             setShouldAutoScroll(true);
             scrollToBottom('smooth');
           }, 100);
@@ -5743,6 +5776,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     window.dispatchEvent(new CustomEvent('rmq:unread-count', { detail: { count: totalUnread } }));
   }, [conversations]);
 
+  // Show contact/group list boxes only after main content and images are loaded
+  const isSidebarReady = useMemo(() => {
+    const initialDone = !isLoading && !isFetchingConversations;
+    const mainReady = !selectedConversation || (!isLoadingMessages && !isPreloadingImages);
+    return initialDone && mainReady;
+  }, [isLoading, isFetchingConversations, selectedConversation, isLoadingMessages, isPreloadingImages]);
 
   // Global styles for glassy white video controls
   useEffect(() => {
@@ -5911,8 +5950,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           </div>
         </div>
 
-        {/* Content Area */}
+        {/* Content Area - boxes show only when ready */}
         <div className="flex-1 overflow-y-auto bg-base-100">
+          {!isSidebarReady ? (
+            <div className="p-6 flex flex-col items-center justify-center text-base-content/60 gap-3 min-h-[200px]">
+              <span className="loading loading-spinner loading-md" />
+              <p className="text-sm">Loading...</p>
+            </div>
+          ) : (
+          <>
           {activeTab === 'chats' ? (
             contactsWithLastMessage.length === 0 ? (
               <div className="p-6 text-center text-base-content/70">
@@ -6086,6 +6132,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               ))
             )
           )}
+          </>
+          )}
         </div>
       </div>
 
@@ -6172,8 +6220,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           </div>
         </div>
 
-        {/* Mobile Content */}
+        {/* Mobile Content - boxes show only when ready */}
         <div className="flex-1 overflow-y-auto bg-base-100">
+          {!isSidebarReady ? (
+            <div className="p-6 flex flex-col items-center justify-center text-base-content/60 gap-3 min-h-[200px]">
+              <span className="loading loading-spinner loading-md" />
+              <p className="text-sm">Loading...</p>
+            </div>
+          ) : (
+          <>
           {activeTab === 'chats' ? (
             contactsWithLastMessage.length === 0 ? (
               <div className="p-6 text-center text-base-content/70">
@@ -6344,6 +6399,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </div>
               ))
             )
+          )}
+          </>
           )}
         </div>
       </div>
@@ -6673,94 +6730,92 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
                         {/* Image, video and emoji messages - render outside bubble */}
                         {isImageMessage(message) ? (
-                          <div className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-[94%] sm:max-w-md`}>
-                            {/* Sender avatar + display name for media - same size as regular messages */}
-                            <div className={`flex items-center gap-2 mb-1 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
-                              {renderUserAvatar({
-                                userId: isOwn ? currentUser?.id : message.sender_id,
-                                name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
-                                photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
-                                sizeClass: 'w-8 h-8',
-                                borderClass: 'border border-base-300',
-                                textClass: 'text-xs',
-                                loading: 'lazy',
-                              })}
-                              <span className="text-sm sm:text-xs font-medium text-base-content/80" style={{ textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none' }}>
-                                {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
-                              </span>
-                            </div>
-                            <div
-                              className="relative cursor-pointer group w-full"
-                              onClick={() => openMediaModal(message)}
-                            >
-                              <img
-                                src={message.attachment_url}
-                                alt={message.attachment_name}
-                                className="w-full max-w-full max-h-80 md:max-h-[600px] rounded-lg object-contain bg-gray-100 dark:bg-gray-800"
-                                loading={index >= messages.length - 10 ? "eager" : "lazy"}
-                                decoding="async"
-                                onLoad={(e) => {
-                                  // Image loaded successfully - ensure it's visible
-                                  const img = e.target as HTMLImageElement;
-                                  img.style.opacity = '1';
-                                  img.style.display = 'block';
-                                  img.style.width = 'auto';
-                                  img.style.height = 'auto';
-                                  img.style.maxWidth = '100%';
-                                  img.style.maxHeight = '320px';
-                                }}
-                                onError={(e) => {
-                                  // Handle image load errors gracefully - show placeholder instead of hiding
-                                  const img = e.target as HTMLImageElement;
-                                  console.error('Image load error:', message.attachment_url);
-                                  // Set a placeholder or show error state
-                                  img.style.opacity = '0.5';
-                                }}
-                                style={{ opacity: 1, transition: 'opacity 0.2s ease-in-out', display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '320px' }}
-                              />
-                            </div>
-                            {/* Timestamp and read receipts at bottom of image */}
-                            <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                              <span className="text-sm sm:text-xs text-base-content/70" style={{
-                                textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
-                              }}>
-                                {formatMessageTime(message.sent_at)}
-                              </span>
-                              {isOwn && renderReadReceipts(message)}
+                          <div className={`flex ${isOwn ? 'flex-col items-end ml-auto' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} max-w-[94%] sm:max-w-md`}>
+                            {/* Group received: avatar below on left; name on top of media */}
+                            {!isOwn && selectedConversation.type !== 'direct' && (
+                              <div className="flex-shrink-0 self-end">
+                                {renderUserAvatar({
+                                  userId: message.sender_id,
+                                  name: senderName,
+                                  photoUrl: senderPhoto,
+                                  sizeClass: 'w-8 h-8',
+                                  borderClass: 'border border-base-300',
+                                  textClass: 'text-xs',
+                                  loading: 'lazy',
+                                })}
+                              </div>
+                            )}
+                            <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
+                              <div className="rounded-lg border border-base-300 overflow-hidden bg-white dark:bg-base-100">
+                                {selectedConversation.type !== 'direct' && (
+                                  <div className={`px-2 py-1 border-b border-base-300 ${isOwn ? 'text-right' : ''}`}>
+                                    <span className="text-sm font-medium" style={{ color: isOwn ? undefined : getSenderColor(message.sender_id) }}>
+                                      {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
+                                    </span>
+                                  </div>
+                                )}
+                                <div className="relative cursor-pointer group w-full" onClick={() => openMediaModal(message)}>
+                                  <img
+                                    src={message.attachment_url}
+                                    alt={message.attachment_name}
+                                    className="w-full max-w-full max-h-80 md:max-h-[600px] object-contain block"
+                                    loading={index >= messages.length - 10 ? "eager" : "lazy"}
+                                    decoding="async"
+                                    onLoad={(e) => {
+                                      const img = e.target as HTMLImageElement;
+                                      img.style.opacity = '1';
+                                      img.style.display = 'block';
+                                    }}
+                                    onError={(e) => {
+                                      const img = e.target as HTMLImageElement;
+                                      img.style.opacity = '0.5';
+                                    }}
+                                    style={{ opacity: 1, transition: 'opacity 0.2s ease-in-out', display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '320px' }}
+                                  />
+                                  <span className="absolute bottom-2 right-2 text-xs font-medium text-gray-500 drop-shadow-md">
+                                    {formatMessageTime(message.sent_at)}
+                                  </span>
+                                </div>
+                              </div>
+                              {isOwn && (
+                                <div className="flex items-center gap-1 mt-1 justify-end">
+                                  {renderReadReceipts(message)}
+                                </div>
+                              )}
                             </div>
                           </div>
                         ) : isVideoMessage(message) ? (
-                          <div className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-[94%] sm:max-w-md`}>
-                            {/* Sender avatar + display name for media - same size as regular messages */}
-                            <div className={`flex items-center gap-2 mb-1 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
-                              {renderUserAvatar({
-                                userId: isOwn ? currentUser?.id : message.sender_id,
-                                name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
-                                photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
-                                sizeClass: 'w-8 h-8',
-                                borderClass: 'border border-base-300',
-                                textClass: 'text-xs',
-                                loading: 'lazy',
-                              })}
-                              <span className="text-sm sm:text-xs font-medium text-base-content/80" style={{ textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none' }}>
-                                {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
-                              </span>
-                            </div>
+                          <div className={`flex ${isOwn ? 'flex-col items-end ml-auto' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} max-w-[94%] sm:max-w-md`}>
+                            {/* Group received: avatar below on left; name on top of media */}
+                            {!isOwn && selectedConversation.type !== 'direct' && (
+                              <div className="flex-shrink-0 self-end">
+                                {renderUserAvatar({
+                                  userId: message.sender_id,
+                                  name: senderName,
+                                  photoUrl: senderPhoto,
+                                  sizeClass: 'w-8 h-8',
+                                  borderClass: 'border border-base-300',
+                                  textClass: 'text-xs',
+                                  loading: 'lazy',
+                                })}
+                              </div>
+                            )}
+                            <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
+                              <div className="rounded-lg border border-base-300 overflow-hidden bg-white dark:bg-base-100">
+                                {selectedConversation.type !== 'direct' && (
+                                  <div className={`px-2 py-1 border-b border-base-300 ${isOwn ? 'text-right' : ''}`}>
+                                    <span className="text-sm font-medium" style={{ color: isOwn ? undefined : getSenderColor(message.sender_id) }}>
+                                      {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
+                                    </span>
+                                  </div>
+                                )}
                             <div
-                              className="relative cursor-pointer group"
+                              className="relative cursor-pointer group w-full"
                               onClick={(e) => {
-                                // Only open modal if clicking outside video controls
                                 const target = e.target as HTMLElement;
-                                // Check if click was on video element or video controls
                                 const isVideoElement = target.tagName === 'VIDEO';
                                 const isVideoControl = target.closest('video') !== null;
-
-                                // If click was on video or its controls, don't open modal
-                                // The video's onClick handler will stop propagation
-                                if (isVideoElement || isVideoControl) {
-                                  return; // Let video controls handle it
-                                }
-                                // Otherwise open modal
+                                if (isVideoElement || isVideoControl) return;
                                 openMediaModal(message);
                               }}
                             >
@@ -6768,7 +6823,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 data-message-id={message.id}
                                 src={message.attachment_url}
                                 crossOrigin="anonymous"
-                                className="max-w-full max-h-80 md:max-h-[600px] min-h-[200px] md:min-h-[300px] rounded-lg object-cover bg-gray-100 dark:bg-gray-800 relative z-10"
+                                className="max-w-full max-h-80 md:max-h-[600px] min-h-[200px] md:min-h-[300px] object-cover bg-gray-100 dark:bg-gray-800 relative z-10"
                                 controls
                                 preload="metadata"
                                 playsInline
@@ -6867,15 +6922,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   <div className="loading loading-spinner loading-lg" style={{ color: '#3E28CD' }}></div>
                                 </div>
                               )}
-                            </div>
-                            {/* Timestamp and read receipts at bottom of video */}
-                            <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                              <span className="text-sm sm:text-xs text-base-content/70" style={{
-                                textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
-                              }}>
+                              <span className="absolute bottom-2 right-2 text-xs font-medium text-gray-500 drop-shadow-md z-10">
                                 {formatMessageTime(message.sent_at)}
                               </span>
-                              {isOwn && renderReadReceipts(message)}
+                            </div>
+                              </div>
+                              {isOwn && (
+                                <div className="flex items-center gap-1 mt-1 justify-end">
+                                  {renderReadReceipts(message)}
+                                </div>
+                              )}
                             </div>
                           </div>
                         ) : isEmojiOnly(message.content || '') ? (
@@ -6888,7 +6944,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </div>
                             {/* Timestamp and read receipts at bottom of emoji */}
                             <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                              <span className="text-sm sm:text-xs text-base-content/70" style={{
+                              <span className="text-sm sm:text-xs text-gray-500" style={{
                                 textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
                               }}>
                                 {formatMessageTime(message.sent_at)}
@@ -6898,12 +6954,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           </div>
                         ) : (
                           <div
-                            className={`flex gap-3 group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
+                            className={`flex gap-3 group ${isOwn ? 'flex-row-reverse' : 'flex-row'} ${!isOwn && selectedConversation.type !== 'direct' ? 'items-end' : ''}`}
                           >
 
-                            {/* Avatar for group chats */}
+                            {/* Avatar below message box on left (group chats, received only) */}
                             {!isOwn && selectedConversation.type !== 'direct' && (
-                              <div className="flex-shrink-0">
+                              <div className="flex-shrink-0 self-end">
                                 {renderUserAvatar({
                                   userId: message.sender_id,
                                   name: senderName,
@@ -6917,22 +6973,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             )}
 
                             <div className={`max-w-[94%] sm:max-w-md ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
-                              {!isOwn && selectedConversation.type !== 'direct' && (
-                                <span
-                                  className="text-sm sm:text-xs font-medium mb-1 px-2 py-0.5 rounded-full inline-block"
-                                  style={{
-                                    backgroundColor: 'rgba(255, 255, 255, 0.7)',
-                                    backdropFilter: 'blur(10px)',
-                                    WebkitBackdropFilter: 'blur(10px)',
-                                    color: '#374151',
-                                    border: '1px solid rgba(255, 255, 255, 0.3)',
-                                    textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)'
-                                  }}
-                                >
-                                  {senderName}
-                                </span>
-                              )}
-
                               <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative`}>
                                 {/* Message actions dropdown - positioned directly next to message box */}
                                 {/* For sent messages (isOwn): left side, for received messages: right side */}
@@ -7042,6 +7082,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     : {}
                                   }
                                 >
+                                  {/* Display name inside bubble (group chats, received only); (edited) next to name */}
+                                  {!isOwn && selectedConversation.type !== 'direct' && (
+                                    <div className="text-sm font-semibold mb-1 flex items-baseline gap-1.5 flex-wrap" style={{ color: getSenderColor(message.sender_id) }}>
+                                      <span>{senderName}</span>
+                                      {message.edited_at && (
+                                        <span className="text-xs font-normal opacity-70 italic">(edited)</span>
+                                      )}
+                                    </div>
+                                  )}
+                                  {isOwn && message.edited_at && (
+                                    <div className="text-xs opacity-70 italic mb-1">(edited)</div>
+                                  )}
                                   {/* Reply preview - only show if message actually has a reply with valid data */}
                                   {(() => {
                                     const hasReplyId = !!message.reply_to_message_id;
@@ -7116,11 +7168,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                       >
                                         {renderMessageContent(message.content, isOwn)}
                                       </div>
-                                      {message.edited_at && (
-                                        <span className="text-sm sm:text-xs opacity-60 italic">
-                                          (edited)
-                                        </span>
-                                      )}
                                     </div>
                                   )}
 
@@ -7248,7 +7295,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
                                     <span className={`text-sm sm:text-xs ${isOwn
                                       ? ''
-                                      : 'text-base-content/60'
+                                      : 'text-gray-500'
                                       }`}
                                       style={isOwn ? { color: 'rgba(255, 255, 255, 0.7)' } : {}}
                                     >
@@ -7330,6 +7377,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <div className="fixed bottom-20 right-4 z-10">
                   <button
                     onClick={() => {
+                      shouldAutoScrollRef.current = true;
                       setShouldAutoScroll(true);
                       setNewMessagesCount(0);
                       scrollToBottom('smooth');
@@ -8051,30 +8099,37 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
                         {/* Image, video and emoji messages - render outside bubble - Mobile */}
                         {isImageMessage(message) ? (
-                          <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}>
-                            {/* Sender avatar + display name for media - same size as regular messages */}
-                            <div className={`flex items-center gap-2 mb-1 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
-                              {renderUserAvatar({
-                                userId: isOwn ? currentUser?.id : message.sender_id,
-                                name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
-                                photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
-                                sizeClass: 'w-8 h-8',
-                                borderClass: 'border border-base-300',
-                                textClass: 'text-xs',
-                                loading: 'lazy',
-                              })}
-                              <span className="text-sm sm:text-xs font-medium text-base-content/80" style={{ textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none' }}>
-                                {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
-                              </span>
-                            </div>
-                            <div
+                          <div className={`flex ${isOwn ? 'flex-col items-end' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} max-w-[75%]`}>
+                            {!isOwn && selectedConversation.type !== 'direct' && (
+                              <div className="flex-shrink-0 self-end">
+                                {renderUserAvatar({
+                                  userId: message.sender_id,
+                                  name: senderName,
+                                  photoUrl: senderPhoto,
+                                  sizeClass: 'w-8 h-8',
+                                  borderClass: 'border border-base-300',
+                                  textClass: 'text-xs',
+                                  loading: 'lazy',
+                                })}
+                              </div>
+                            )}
+                            <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
+                              <div className="rounded-lg border border-base-300 overflow-hidden bg-white dark:bg-base-100">
+                                {selectedConversation.type !== 'direct' && (
+                                  <div className={`px-2 py-1 border-b border-base-300 ${isOwn ? 'text-right' : ''}`}>
+                                    <span className="text-sm font-medium" style={{ color: isOwn ? undefined : getSenderColor(message.sender_id) }}>
+                                      {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
+                                    </span>
+                                  </div>
+                                )}
+                                <div
                               className="relative cursor-pointer group w-full"
                               onClick={() => openMediaModal(message)}
                             >
                               <img
                                 src={message.attachment_url}
                                 alt={message.attachment_name}
-                                className="w-full max-w-full max-h-80 md:max-h-[600px] rounded-lg object-contain bg-gray-100 dark:bg-gray-800"
+                                className="w-full max-w-full max-h-80 object-contain block bg-gray-100 dark:bg-gray-800"
                                 loading={index >= messages.length - 10 ? "eager" : "lazy"}
                                 decoding="async"
                                 onLoad={(e) => {
@@ -8096,52 +8151,47 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 }}
                                 style={{ opacity: 1, transition: 'opacity 0.2s ease-in-out', display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '320px' }}
                               />
-                            </div>
-                            {/* Timestamp and read receipts at bottom of image - Mobile */}
-                            <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                              <span className="text-xs text-gray-500" style={{
-                                textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
-                              }}>
+                              <span className="absolute bottom-2 right-2 text-xs font-medium text-gray-500 drop-shadow-md">
                                 {formatMessageTime(message.sent_at)}
                               </span>
-                              {isOwn && renderReadReceipts(message)}
+                            </div>
+                              </div>
+                              {isOwn && (
+                                <div className="flex items-center gap-1 mt-1 justify-end">
+                                  {renderReadReceipts(message)}
+                                </div>
+                              )}
                             </div>
                           </div>
                         ) : isVideoMessage(message) ? (
-                          <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}>
-                            {/* Sender avatar + display name for media - same size as regular messages */}
-                            <div className={`flex items-center gap-2 mb-1 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
-                              {renderUserAvatar({
-                                userId: isOwn ? currentUser?.id : message.sender_id,
-                                name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
-                                photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
-                                sizeClass: 'w-8 h-8',
-                                borderClass: 'border border-base-300',
-                                textClass: 'text-xs',
-                                loading: 'lazy',
-                              })}
-                              <span className="text-sm sm:text-xs font-medium text-base-content/80" style={{ textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none' }}>
-                                {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
-                              </span>
-                            </div>
-                            <div
-                              className="relative cursor-pointer group"
-                              onClick={(e) => {
-                                // Only open modal if clicking outside video controls
-                                const target = e.target as HTMLElement;
-                                // Check if click was on video element or video controls
-                                const isVideoElement = target.tagName === 'VIDEO';
-                                const isVideoControl = target.closest('video') !== null;
-
-                                // If click was on video or its controls, don't open modal
-                                // The video's onClick handler will stop propagation
-                                if (isVideoElement || isVideoControl) {
-                                  return; // Let video controls handle it
-                                }
-                                // Otherwise open modal
-                                openMediaModal(message);
-                              }}
-                            >
+                          <div className={`flex ${isOwn ? 'flex-col items-end' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} max-w-[75%]`}>
+                            {!isOwn && selectedConversation.type !== 'direct' && (
+                              <div className="flex-shrink-0 self-end">
+                                {renderUserAvatar({
+                                  userId: message.sender_id,
+                                  name: senderName,
+                                  photoUrl: senderPhoto,
+                                  sizeClass: 'w-8 h-8',
+                                  borderClass: 'border border-base-300',
+                                  textClass: 'text-xs',
+                                  loading: 'lazy',
+                                })}
+                              </div>
+                            )}
+                            <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
+                              <div className="rounded-lg border border-base-300 overflow-hidden bg-white dark:bg-base-100">
+                                {selectedConversation.type !== 'direct' && (
+                                  <div className={`px-2 py-1 border-b border-base-300 ${isOwn ? 'text-right' : ''}`}>
+                                    <span className="text-sm font-medium" style={{ color: isOwn ? undefined : getSenderColor(message.sender_id) }}>
+                                      {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
+                                    </span>
+                                  </div>
+                                )}
+                                <div className="relative cursor-pointer group w-full" onClick={(e) => {
+                                  const target = e.target as HTMLElement;
+                                  if (target.tagName === 'VIDEO' || target.closest('video')) return;
+                                  openMediaModal(message);
+                                }}>
                               <video
                                 data-message-id={message.id}
                                 src={message.attachment_url}
@@ -8244,15 +8294,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   <div className="loading loading-spinner loading-lg" style={{ color: '#3E28CD' }}></div>
                                 </div>
                               )}
-                            </div>
-                            {/* Timestamp and read receipts at bottom of video - Mobile */}
-                            <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                              <span className="text-xs text-gray-500" style={{
-                                textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
-                              }}>
+                              <span className="absolute bottom-2 right-2 text-xs font-medium text-gray-500 drop-shadow-md z-10">
                                 {formatMessageTime(message.sent_at)}
                               </span>
-                              {isOwn && renderReadReceipts(message)}
+                            </div>
+                              </div>
+                              {isOwn && (
+                                <div className="flex items-center gap-1 mt-1 justify-end">
+                                  {renderReadReceipts(message)}
+                                </div>
+                              )}
                             </div>
                           </div>
                         ) : isEmojiOnly(message.content || '') ? (
@@ -8275,12 +8326,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           </div>
                         ) : (
                           <div
-                            className={`flex gap-2 group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
+                            className={`flex gap-2 group ${isOwn ? 'flex-row-reverse' : 'flex-row'} ${!isOwn && selectedConversation.type !== 'direct' ? 'items-end' : ''}`}
                           >
 
-                            {/* Avatar for group chats - Mobile */}
+                            {/* Avatar below message box on left - Mobile group chats */}
                             {!isOwn && selectedConversation.type !== 'direct' && (
-                              <div className="flex-shrink-0">
+                              <div className="flex-shrink-0 self-end">
                                 {renderUserAvatar({
                                   userId: message.sender_id,
                                   name: senderName,
@@ -8294,21 +8345,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             )}
 
                             <div className={`max-w-[75%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
-                              {!isOwn && selectedConversation.type !== 'direct' && (
-                                <span
-                                  className="text-xs font-medium mb-1 px-2 py-0.5 rounded-full inline-block"
-                                  style={{
-                                    backgroundColor: 'rgba(255, 255, 255, 0.7)',
-                                    backdropFilter: 'blur(10px)',
-                                    WebkitBackdropFilter: 'blur(10px)',
-                                    color: '#374151',
-                                    border: '1px solid rgba(255, 255, 255, 0.3)',
-                                    textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)'
-                                  }}
-                                >
-                                  {senderName}
-                                </span>
-                              )}
                               <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative group`}>
                                 {/* Mobile: long-press on bubble opens action modal (no hover ellipsis) */}
 
@@ -8389,6 +8425,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     : {}
                                   }
                                 >
+                                  {/* Display name inside bubble (group chats, received only); (edited) next to name - Mobile */}
+                                  {!isOwn && selectedConversation.type !== 'direct' && (
+                                    <div className="text-sm font-semibold mb-1 flex items-baseline gap-1.5 flex-wrap" style={{ color: getSenderColor(message.sender_id) }}>
+                                      <span>{senderName}</span>
+                                      {message.edited_at && (
+                                        <span className="text-xs font-normal opacity-70 italic">(edited)</span>
+                                      )}
+                                    </div>
+                                  )}
+                                  {isOwn && message.edited_at && (
+                                    <div className="text-xs opacity-70 italic mb-1">(edited)</div>
+                                  )}
                                   {/* Reply preview - Mobile - only show if message actually has a reply with valid data */}
                                   {(() => {
                                     const hasReplyId = !!message.reply_to_message_id;
@@ -8643,6 +8691,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <div className="fixed bottom-20 right-4 z-50">
                   <button
                     onClick={() => {
+                      shouldAutoScrollRef.current = true;
                       setShouldAutoScroll(true);
                       setNewMessagesCount(0);
                       scrollToBottom('smooth');

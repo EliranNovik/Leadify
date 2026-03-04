@@ -8297,6 +8297,7 @@ const reports: ReportSection[] = [
       { label: 'Re-assign leads', icon: ArrowPathIcon, route: '/reports/reassign-leads' },
       { label: 'Employee Unavailabilities', icon: CalendarIcon, route: '/reports/employee-unavailabilities' },
       { label: 'Employee Salaries', icon: CurrencyDollarIconOutline, route: '/reports/employee-salaries' },
+      { label: 'Leads Report', icon: ClipboardDocumentListIcon, route: '/reports/leads-report' },
     ],
   },
   {
