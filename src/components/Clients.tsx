@@ -1299,12 +1299,16 @@ const Clients: React.FC<ClientsProps> = ({
       if (keyToUse) {
         const persistedKey = `clientsPage_clientData_${keyToUse}`;
         sessionStorage.setItem(persistedKey, JSON.stringify(client));
+        const route = buildClientRoute((client as any)?.manual_id, client?.lead_number);
+        if (route && route !== '/clients') {
+          sessionStorage.setItem('clientsPage_lastLeadRoute', route);
+        }
         console.log('💾 Clients: Persisted client data with key:', persistedKey);
       }
     } catch (error) {
       console.error('Error persisting client data:', error);
     }
-  }, []);
+  }, [buildClientRoute]);
 
   // Persist UI state so it's restored when navigating back (same as LeadSearchPage.tsx)
   const [activeTab, setActiveTab] = usePersistedState('clientsPage_activeTab', 'info', {
@@ -1496,9 +1500,36 @@ const Clients: React.FC<ClientsProps> = ({
   // Remove tabScales and wave zoom effect
   // ---
 
-  // Local loading state for client data
-  const [localLoading, setLocalLoading] = useState(true);
+  // Local loading state for client data.
+  // Start false when we can show content immediately (cached client or redirect to last-opened) to avoid overlay flash.
+  const [localLoading, setLocalLoading] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    const path = window.location.pathname;
+    if (path === '/clients' || path === '/clients/') {
+      const last = sessionStorage.getItem('clientsPage_lastLeadRoute');
+      if (last && last !== '/clients' && last.startsWith('/clients/')) return false;
+      return true;
+    }
+    const match = path.match(/^\/clients\/([^/?#]+)/);
+    if (match) {
+      try {
+        const id = decodeURIComponent(match[1]);
+        if (sessionStorage.getItem(`clientsPage_clientData_${id}`)) return false;
+      } catch (_) { /* ignore */ }
+    }
+    return true;
+  });
   const [backgroundLoading, setBackgroundLoading] = useState(false);
+  // Delay showing the overlay so fast loads (cache/redirect) never flash it
+  const [showLoadingOverlay, setShowLoadingOverlay] = useState(false);
+  useEffect(() => {
+    if (!localLoading) {
+      setShowLoadingOverlay(false);
+      return;
+    }
+    const t = window.setTimeout(() => setShowLoadingOverlay(true), 120);
+    return () => clearTimeout(t);
+  }, [localLoading]);
 
   // Update client data when allEmployees is loaded to fix role mappings
   useEffect(() => {
@@ -3279,8 +3310,11 @@ const Clients: React.FC<ClientsProps> = ({
     }
   }, [selectedClient?.id]);
 
-  // Essential data loading for initial page display
-  // Defer to next tick to allow Sidebar/Header to render first on refresh
+  // Essential data loading for initial page display.
+  // Fast paths: (1) From Header search we navigate to /clients/:id so we have lead_number and fetch that lead.
+  // (2) On refresh with lead in URL we use persisted cache (initial mount). (3) On open /clients with no lead
+  // we redirect to last-opened lead from sessionStorage (clientsPage_lastLeadRoute), then load from cache or fetch.
+  // Only when there is no last-opened route do we call fetchLatestLead() and show loading until it completes.
   useEffect(() => {
     let isMounted = true;
 
@@ -3298,11 +3332,12 @@ const Clients: React.FC<ClientsProps> = ({
       const routeChanged = lastRouteRef.current !== currentRoute;
 
       // Check persisted client data before fetching (same pattern as MasterLeadPage)
-      // Only use persisted data if route has NOT changed (e.g., page refresh)
-      // If route changed, always fetch fresh data to avoid showing wrong client
-      // Also skip if we're currently fetching to prevent race conditions
+      // Use persisted data when: route unchanged OR initial mount (e.g. refresh with lead in URL).
+      // On refresh, lastRouteRef is undefined so we still want to show cached client immediately.
+      // When navigating from another page (routeChanged and lastRouteRef set), we fetch fresh.
       const effectiveLeadNumber = lead_number || fullLeadNumber || requestedLeadNumber;
-      if (effectiveLeadNumber && !routeChanged && !isFetchingRef.current && !isSettingUpClientRef.current) {
+      const isInitialMount = lastRouteRef.current == null || lastRouteRef.current === '';
+      if (effectiveLeadNumber && (!routeChanged || isInitialMount) && !isFetchingRef.current && !isSettingUpClientRef.current) {
         try {
           const persistedKey = `clientsPage_clientData_${effectiveLeadNumber}`;
           const persistedData = sessionStorage.getItem(persistedKey);
@@ -3368,9 +3403,15 @@ const Clients: React.FC<ClientsProps> = ({
               // Update fetching refs to prevent any subsequent fetches
               isFetchingRef.current = false;
               fetchingRouteRef.current = null;
-              // Set loading to false and client data
+              // Set loading to false and client data; refresh in background so data stays current
               setLocalLoading(false);
               setSelectedClient(normalizedPersistedData);
+              if (isInitialMount) {
+                const id = normalizedPersistedData?.id ?? (normalizedPersistedData as any)?.lead_number;
+                if (id != null) {
+                  refreshClientData(id).catch(() => {});
+                }
+              }
               return; // Skip fetch - use persisted data
             } else {
               console.log('🔍 Clients: Persisted data found but does not match', {
@@ -3452,6 +3493,16 @@ const Clients: React.FC<ClientsProps> = ({
         // POP navigation but client doesn't match - update route ref and continue
         // DO NOT update lastRouteRef here either - wait until client is loaded
       } else {
+      }
+
+      // When opening /clients with no lead (e.g. sidebar click), redirect to last opened lead so we skip fetchLatestLead
+      if (!effectiveLeadNumber) {
+        const lastRoute = sessionStorage.getItem('clientsPage_lastLeadRoute');
+        if (lastRoute && lastRoute !== '/clients' && lastRoute.startsWith('/clients/')) {
+          setLocalLoading(false);
+          navigate(lastRoute);
+          return;
+        }
       }
 
       // Only skip fetch if route hasn't changed AND we have the correct client already loaded
@@ -13844,17 +13895,30 @@ const Clients: React.FC<ClientsProps> = ({
     );
   }
 
+  // When we have a lead in URL we show inline loading instead of full overlay so UI feels quick (e.g. from sidebar or slow network)
+  const hasLeadInUrl = Boolean(lead_number || fullLeadNumber || requestedLeadNumber);
+  // Full-screen overlay only when loading and no lead in URL (e.g. fetching latest lead on /clients)
+  const showFullOverlay = localLoading && showLoadingOverlay && !hasLeadInUrl;
+
   // Render full layout structure immediately, show loading overlay instead of blocking render
   // This prevents sidebar/header from loading first, then content appearing later
   return (
     <div className="min-h-screen bg-base-100">
-      {/* Loading overlay - shows on top of content for smooth transition */}
-      {localLoading && (
+      {/* Full overlay only when we have no lead in URL (fetching latest); with lead we show inline loading below */}
+      {showFullOverlay && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 backdrop-blur-sm">
           <div className="text-center">
             <div className="loading loading-spinner loading-lg text-primary"></div>
             <p className="mt-4 text-gray-600">Loading client data...</p>
           </div>
+        </div>
+      )}
+
+      {/* Inline loading when we have lead in URL but data not ready yet - keeps UI responsive on slow networks */}
+      {hasLeadInUrl && localLoading && !selectedClient && (
+        <div className="flex flex-col items-center justify-center min-h-[50vh] gap-3 p-6">
+          <span className="loading loading-spinner loading-lg text-primary"></span>
+          <p className="text-base-content/70 text-lg font-medium">Loading client...</p>
         </div>
       )}
 
@@ -15997,8 +16061,8 @@ const Clients: React.FC<ClientsProps> = ({
             loginRequest={loginRequest}
             onOfferSent={onClientUpdate}
           />
-          {/* Loading overlay spinner */}
-          {localLoading && (
+          {/* Loading overlay - same rule: only when no lead in URL so UI stays quick */}
+          {localLoading && showLoadingOverlay && !hasLeadInUrl && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/60">
               <span className="loading loading-spinner loading-lg text-primary"></span>
             </div>

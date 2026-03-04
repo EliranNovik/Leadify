@@ -21,6 +21,8 @@ const EXPORT_COLUMNS = [
   'eligibility determined',
   'file_id',
   'status',
+  'unactivation_reason',
+  'deactivate_notes',
 ] as const;
 
 type ExportRow = Record<(typeof EXPORT_COLUMNS)[number], string>;
@@ -233,6 +235,8 @@ export default function LeadsReportPage() {
       'eligibility determined': eligibility,
       file_id: lead.file_id ?? '',
       status,
+      unactivation_reason: lead.unactivation_reason ?? '',
+      deactivate_notes: lead.deactivate_notes ?? '',
     };
   };
 
@@ -257,6 +261,8 @@ export default function LeadsReportPage() {
       'eligibility determined': eligibility,
       file_id: lead.file_id ?? '',
       status: statusVal,
+      unactivation_reason: lead.unactivation_reason ?? lead.deactivate_notes ?? '',
+      deactivate_notes: lead.deactivate_notes ?? '',
     };
   };
 
@@ -308,7 +314,7 @@ export default function LeadsReportPage() {
 
       let newQuery = supabase
         .from('leads')
-        .select('id, lead_number, manual_id, name, email, phone, topic, tags, file_id, unactivated_at, expert_eligibility_assessed, stage, category_id, category, source, language')
+        .select('id, lead_number, manual_id, name, email, phone, topic, tags, file_id, unactivated_at, unactivation_reason, deactivate_notes, expert_eligibility_assessed, stage, category_id, category, source, language')
         .order('created_at', { ascending: false });
 
       if (fromDate) newQuery = newQuery.gte('created_at', fromDate);
@@ -339,7 +345,7 @@ export default function LeadsReportPage() {
 
       let legacyQuery = supabase
         .from('leads_lead')
-        .select('id, manual_id, name, email, phone, topic, tags, file_id, status, stage_id, category_id, language_id, source_id, expert_eligibility_assessed, cdate')
+        .select('id, manual_id, name, email, phone, topic, tags, file_id, status, stage_id, category_id, language_id, source_id, unactivation_reason, deactivate_notes, expert_eligibility_assessed, cdate')
         .order('cdate', { ascending: false });
 
       if (fromDate) legacyQuery = legacyQuery.gte('cdate', fromDate);

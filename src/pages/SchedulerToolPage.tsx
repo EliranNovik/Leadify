@@ -983,7 +983,7 @@ const SchedulerToolPage: React.FC = () => {
         return;
       }
 
-      // Build and execute new leads query
+      // Build and execute new leads query (with joins for stage, category, source - no client-side mapping)
       let newLeadsQueryBuilder = supabase
         .from('leads')
         .select(`
@@ -1023,6 +1023,24 @@ const SchedulerToolPage: React.FC = () => {
           master_id,
           manual_id,
           misc_country!country_id (
+            id,
+            name
+          ),
+          lead_stages!fk_leads_stage (
+            id,
+            name,
+            colour
+          ),
+          misc_category!fk_leads_category_id (
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id (
+              id,
+              name
+            )
+          ),
+          misc_leadsource!fk_leads_source_id (
             id,
             name
           )
@@ -1093,7 +1111,7 @@ const SchedulerToolPage: React.FC = () => {
         return suffixMap;
       })();
 
-      // Fetch legacy leads and calculate new sublead suffixes in parallel
+      // Fetch legacy leads with joins for stage, category, source, language (no client-side mapping)
       let legacyLeadsQuery = supabase
         .from('leads_lead')
         .select(`
@@ -1124,7 +1142,29 @@ const SchedulerToolPage: React.FC = () => {
           probability,
           eligibile,
           master_id,
-          manual_id
+          manual_id,
+          lead_stages!fk_leads_lead_stage (
+            id,
+            name,
+            colour
+          ),
+          misc_category!leads_lead_category_id_fkey (
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id (
+              id,
+              name
+            )
+          ),
+          misc_leadsource!leads_lead_source_id_fkey (
+            id,
+            name
+          ),
+          misc_language!leads_lead_language_id_fkey (
+            id,
+            name
+          )
         `)
         .eq('meeting_scheduler_id', Number(userData.employee_id))
         .in('stage', [0, 10, 11, 15])
@@ -1238,7 +1278,29 @@ const SchedulerToolPage: React.FC = () => {
                     probability,
                     eligibile,
                     master_id,
-                    manual_id
+                    manual_id,
+                    lead_stages!fk_leads_lead_stage (
+                      id,
+                      name,
+                      colour
+                    ),
+                    misc_category!leads_lead_category_id_fkey (
+                      id,
+                      name,
+                      parent_id,
+                      misc_maincategory!parent_id (
+                        id,
+                        name
+                      )
+                    ),
+                    misc_leadsource!leads_lead_source_id_fkey (
+                      id,
+                      name
+                    ),
+                    misc_language!leads_lead_language_id_fkey (
+                      id,
+                      name
+                    )
                   `)
                   .in('id', subLeadIds)
                   .in('stage', [0, 10, 11, 15]) // Only show leads with stages 0, 10, 11, 15
@@ -1473,7 +1535,27 @@ const SchedulerToolPage: React.FC = () => {
 
 
 
-      // Transform new leads - already filtered by user's employee ID
+      // Helpers to read names from joined relations (join code - no client-side mapping when present)
+      const stageNameFromJoin = (row: any) => {
+        const join = Array.isArray(row?.lead_stages) ? row.lead_stages[0] : row?.lead_stages;
+        return join?.name ?? null;
+      };
+      const categoryNameFromJoin = (row: any) => {
+        const cat = Array.isArray(row?.misc_category) ? row.misc_category[0] : row?.misc_category;
+        if (!cat?.name) return null;
+        const main = Array.isArray(cat?.misc_maincategory) ? cat.misc_maincategory[0] : cat?.misc_maincategory;
+        return main?.name ? `${cat.name} (${main.name})` : cat.name;
+      };
+      const sourceNameFromJoin = (row: any) => {
+        const join = Array.isArray(row?.misc_leadsource) ? row.misc_leadsource[0] : row?.misc_leadsource;
+        return join?.name ?? null;
+      };
+      const languageNameFromJoin = (row: any) => {
+        const join = Array.isArray(row?.misc_language) ? row.misc_language[0] : row?.misc_language;
+        return join?.name ?? null;
+      };
+
+      // Transform new leads - use joined names first (fast), fallback to getters only when join missing
       const transformedNewLeads: SchedulerLead[] = (newLeads || [])
         .filter(lead => {
           // Show only leads that are NOT eligible (false, null, undefined)
@@ -1481,9 +1563,9 @@ const SchedulerToolPage: React.FC = () => {
           return lead.eligible !== true;
         })
         .map(lead => {
-          const stageName = getStageName(lead.stage, stagesData);
-          const sourceName = getSourceName(lead.source_id, lead.source, sourcesData);
-          const categoryName = getCategoryName(lead.category_id, lead.category, categoriesData);
+          const stageName = stageNameFromJoin(lead) ?? getStageName(lead.stage, stagesData);
+          const sourceName = sourceNameFromJoin(lead) ?? getSourceName(lead.source_id, lead.source, sourcesData);
+          const categoryName = categoryNameFromJoin(lead) ?? getCategoryName(lead.category_id, lead.category, categoriesData);
           
           // Format lead_number with sublead suffix if applicable (for display only)
           // For navigation, always use the actual lead_number from database
@@ -1574,8 +1656,7 @@ const SchedulerToolPage: React.FC = () => {
         });
 
 
-      // Transform legacy leads - already filtered by user's employee ID
-      // Use allLegacyLeads which includes both master leads and their subleads
+      // Transform legacy leads - use joined names first (join code), fallback to getters/languageMap
       const transformedLegacyLeads: SchedulerLead[] = (allLegacyLeads || [])
         .filter(lead => {
           // For legacy leads, eligible is text field - show only leads that are NOT eligible
@@ -1586,9 +1667,10 @@ const SchedulerToolPage: React.FC = () => {
           return eligibleValue !== 'yes' && eligibleValue !== 'true';
         })
         .map(lead => {
-          const stageName = getStageName(lead.stage, stagesData);
-          const sourceName = getSourceName(lead.source_id, undefined, sourcesData);
-          const categoryName = getCategoryName(lead.category_id, lead.category, categoriesData);
+          const stageName = stageNameFromJoin(lead) ?? getStageName(lead.stage, stagesData);
+          const sourceName = sourceNameFromJoin(lead) ?? getSourceName(lead.source_id, undefined, sourcesData);
+          const categoryName = categoryNameFromJoin(lead) ?? getCategoryName(lead.category_id, lead.category, categoriesData);
+          const languageName = languageNameFromJoin(lead) ?? languageMap.get(lead.language_id) ?? '';
           
           // Format lead_number with sublead suffix if applicable
           let leadNumber: string;
@@ -1608,7 +1690,7 @@ const SchedulerToolPage: React.FC = () => {
             created_at: lead.cdate || '',
             latest_interaction: lead.latest_interaction || '',
             stage: stageName || '',
-            language: languageMap.get(lead.language_id) || '',
+            language: languageName || '',
             source: sourceName || '',
             category: categoryName || '',
             topic: lead.topic || '',
@@ -3094,9 +3176,10 @@ const SchedulerToolPage: React.FC = () => {
   return (
     <div className="p-6">
       <div className="mb-6">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <h1 className="text-3xl font-bold text-gray-900">Hot Leads</h1>
+        {/* Mobile: title + view toggle on first row, search bar full width on second row. Desktop: title | search | view toggle in one row. */}
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-3 order-1">
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">Hot Leads</h1>
             <div className="badge badge-primary badge-lg">
               {filteredLeads.length === leads.length && !searchTerm ? 
                 leads.length : 
@@ -3104,35 +3187,11 @@ const SchedulerToolPage: React.FC = () => {
               }
             </div>
           </div>
-          
-          {/* Search Bar - Center */}
-          <div className="relative flex-1 max-w-md mx-4">
-            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-              <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-            </div>
-            <input
-              type="text"
-              placeholder="Search by lead number, name, phone, or email..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="input input-bordered w-full pl-10 pr-4"
-            />
-            {searchTerm && (
-              <button
-                onClick={() => setSearchTerm('')}
-                className="absolute inset-y-0 right-0 pr-3 flex items-center"
-              >
-                <XMarkIcon className="h-5 w-5 text-gray-400 hover:text-gray-600" />
-              </button>
-            )}
-          </div>
-          
-          {/* View Toggle */}
+
+          {/* View Toggle - on mobile same row as title, on desktop after search */}
           <button
             onClick={toggleViewMode}
-            className="btn btn-sm btn-primary gap-2"
+            className="btn btn-sm btn-primary gap-2 order-2 md:order-3 ml-auto md:ml-0"
             title={viewMode === 'box' ? 'Switch to Table View' : 'Switch to Box View'}
           >
             {viewMode === 'box' ? (
@@ -3147,6 +3206,30 @@ const SchedulerToolPage: React.FC = () => {
               </>
             )}
           </button>
+          
+          {/* Search Bar - on mobile full width below title (order-3); desktop center (order-2) */}
+          <div className="relative w-full min-w-0 order-3 md:order-2 md:flex-1 md:max-w-md md:mx-4 flex items-center rounded-full bg-gray-200 dark:bg-gray-600 border border-gray-300 dark:border-gray-500 shadow-inner">
+            <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+              <svg className="h-5 w-5 text-gray-500 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            </div>
+            <input
+              type="text"
+              placeholder="Search by lead number, name, phone, or email..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="input w-full pl-10 pr-10 py-2.5 rounded-full bg-transparent border-0 focus:outline-none focus:ring-0 text-base-content placeholder-gray-500 dark:placeholder-gray-400"
+            />
+            {searchTerm && (
+              <button
+                onClick={() => setSearchTerm('')}
+                className="absolute inset-y-0 right-0 pr-4 flex items-center"
+              >
+                <XMarkIcon className="h-5 w-5 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
 

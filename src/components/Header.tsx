@@ -8,6 +8,7 @@ import type { CombinedLead } from '../lib/legacyLeadsApi';
 import { generateSearchVariants, buildMultilingualSearchConditions, transliterateHebrew, transliterateArabic, containsHebrew, containsArabic } from '../lib/transliteration';
 import { toast } from 'react-hot-toast';
 import { usePushNotifications } from '../hooks/usePushNotifications';
+import Siriwave from 'react-siriwave';
 import {
   Bars3Icon,
   MagnifyingGlassIcon,
@@ -7045,10 +7046,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               }
             } : undefined}
           >
-            <div className={`relative flex items-center ${isSearchActive ? 'w-full' : 'w-10'} transition-all duration-[700ms] ease-in-out`}>
-              {/* Large search icon (always visible) */}
+            <div className={`relative flex items-center rounded-full transition-all duration-[700ms] ease-in-out ${isSearchActive ? 'w-full overflow-hidden bg-gray-50 dark:bg-gray-700 border border-gray-100 dark:border-gray-600 shadow-inner' : 'w-12 min-w-12 overflow-visible bg-transparent border-0'}`}>
+              {/* Search icon - always visible when opened or collapsed */}
               <button
-                className={`absolute left-3 flex items-center h-full z-10 transition-opacity duration-300 ${isSearchActive ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
+                className="absolute left-2 flex items-center justify-center z-10 transition-opacity duration-300 opacity-100 w-9 h-9 flex-shrink-0"
+                style={{ minWidth: 36, minHeight: 36 }}
                 onClick={() => {
                   if (isMobile && !isSearchActive) {
                     setIsSearchActive(true);
@@ -7058,7 +7060,22 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   }
                 }}
               >
-                <MagnifyingGlassIcon className={`${isMobile ? 'w-9 h-9' : 'w-8 h-8'} text-cyan-900 drop-shadow-md`} />
+                <div className="w-9 h-9 rounded-full flex items-center justify-center shadow-sm overflow-hidden flex-shrink-0 ring-2 ring-[#4218cc]/40" style={{ backgroundColor: '#4218cc' }}>
+                  <div className="w-7 h-7 overflow-hidden rounded-full flex items-center justify-center [&>div]:!flex [&>div]:!items-center [&>div]:!justify-center [&_canvas]:!block">
+                    <Siriwave
+                      theme="ios"
+                      width={32}
+                      height={32}
+                      amplitude={0.9}
+                      speed={0.08}
+                      frequency={4}
+                      color="#ffffff"
+                      cover={false}
+                      autostart
+                      pixelDepth={0.03}
+                    />
+                  </div>
+                </div>
               </button>
               <input
                 ref={searchInputRef}
@@ -7074,26 +7091,24 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   }
                 } : undefined}
                 className={`
-                  w-full bg-white/10 border border-white/20 shadow-lg text-cyan-800 placeholder-cyan-900 rounded-xl focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-300/40 transition-all duration-300 search-input-placeholder
-                  ${isSearchActive ? 'opacity-100 visible pl-4' : 'opacity-0 invisible pl-14'}
+                  w-full bg-transparent border-0 rounded-full text-gray-800 dark:text-gray-200 placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-0 transition-all duration-300 search-input-placeholder
+                  ${isSearchActive ? 'opacity-100 visible pl-12' : 'opacity-0 invisible pl-14'}
                   ${searchValue.trim() || searchResults.length > 0 ? 'pr-12' : 'pr-4'}
                 `}
                 style={{
                   height: isMobile ? 48 : 44,
                   fontSize: isMobile ? 16 : 14,
                   fontWeight: 500,
-                  letterSpacing: '-0.01em',
-                  boxShadow: isSearchActive ? '0 4px 24px 0 rgba(0,0,0,0.10)' : undefined
+                  letterSpacing: '-0.01em'
                 }}
               />
-              {/* Clear search button - visible on mobile when search is active */}
+              {/* Clear search button - visible when search is active */}
               {(searchValue.trim() || searchResults.length > 0) && (
                 <button
                   onClick={handleClearSearch}
-                  className={`absolute right-1 top-1/2 -translate-y-1/2 btn btn-ghost btn-sm btn-circle transition-all duration-300 ease-out text-white/80 hover:text-cyan-400 ${isMobile && isSearchActive ? 'flex' : 'hidden md:flex'
+                  className={`absolute right-1 top-1/2 -translate-y-1/2 btn btn-ghost btn-sm btn-circle transition-all duration-300 ease-out text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 ${isMobile && isSearchActive ? 'flex' : 'hidden md:flex'
                     }`}
                   title="Clear search"
-                  style={{ background: 'rgba(255,255,255,0.10)' }}
                 >
                   <XMarkIcon className="w-3 h-3" />
                 </button>
@@ -7102,7 +7117,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               {isSearchActive && isSearchAnimationDone && (
                 <button
                   type="button"
-                  className="absolute right-8 top-1/2 -translate-y-1/2 btn btn-ghost btn-circle btn-sm hidden md:block"
+                  className="absolute right-8 top-1/2 -translate-y-1/2 btn btn-ghost btn-circle btn-sm hidden md:block text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
                   onClick={() => {
                     setShowFilterDropdown(v => !v);
                     // Ensure search stays active when opening filter
@@ -7113,7 +7128,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   tabIndex={0}
                   title="Advanced Filters"
                 >
-                  <FunnelIcon className="w-5 h-5 text-cyan-900" />
+                  <FunnelIcon className="w-5 h-5" />
                 </button>
               )}
             </div>

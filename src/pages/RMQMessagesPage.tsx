@@ -321,7 +321,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const isUserScrollingRef = useRef<boolean>(false);
   // After opening a chat, ignore layout-driven scroll for a while so media loading doesn't cause jump
   const scrollStabilizationUntilRef = useRef<number>(0);
-  const initialScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const initialScrollTimeoutRef = useRef<number | null>(null);
 
   // Loading state for messages
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
@@ -4733,9 +4733,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Force immediate scroll to bottom
       container.scrollTop = container.scrollHeight;
 
-      // Skip the follow-up rAF during stabilization (opening a chat with lots of media) to prevent jump
+      // On mobile skip the follow-up rAF always (layout shifts cause jump). On desktop skip only during stabilization.
       const inStabilization = Date.now() < scrollStabilizationUntilRef.current;
-      if (!inStabilization) {
+      const skipFollowUp = isMobileViewport || inStabilization;
+      if (!skipFollowUp) {
         requestAnimationFrame(() => {
           if (container && !isLoadingMessages && !isPreloadingImages && shouldAutoScrollRef.current && !isUserScrollingRef.current) {
             container.scrollTop = container.scrollHeight;
@@ -4913,7 +4914,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       let lastScrollTime = 0;
       const SCROLL_THROTTLE_MS = 200;
       const initialLoadTime = isInitialLoad ? Date.now() : 0;
-      const INITIAL_LOAD_GRACE_PERIOD = 2000;
+      const isMobileViewport = typeof window !== 'undefined' && window.innerWidth < 1024;
+      const INITIAL_LOAD_GRACE_PERIOD = isMobileViewport ? 6000 : 2000;
 
       resizeObserver = new ResizeObserver(() => {
         if (isInitialLoad && Date.now() - initialLoadTime < INITIAL_LOAD_GRACE_PERIOD) return;
@@ -4973,12 +4975,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       // Single scroll to bottom after one delay; stabilization period prevents further programmatic scroll when media loads
       if (!isLoadingMessages && !isPreloadingImages) {
-        const STABILIZATION_MS = 5000;
+        const isMobileViewport = typeof window !== 'undefined' && window.innerWidth < 1024;
+        const STABILIZATION_MS = isMobileViewport ? 9000 : 5000;
+        const INITIAL_SCROLL_DELAY_MS = isMobileViewport ? 500 : 250;
         scrollStabilizationUntilRef.current = Date.now() + STABILIZATION_MS;
-        initialScrollTimeoutRef.current = window.setTimeout(() => {
+        const tid = window.setTimeout(() => {
           scrollToBottom('instant');
           initialScrollTimeoutRef.current = null;
-        }, 250);
+        }, INITIAL_SCROLL_DELAY_MS);
+        initialScrollTimeoutRef.current = tid as number;
       }
     }
 
