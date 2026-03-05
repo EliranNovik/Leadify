@@ -771,7 +771,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             searchPromises.push(
               supabase
                 .from('leads')
-                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id, lead_stages(name, colour), misc_category!category_id(name)')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id, lead_stages!leads_stage_fkey(name, colour), misc_category!category_id(name)')
                 .or(nameConditions)
                 .limit(15)
             );
@@ -788,14 +788,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               searchPromises.push(
                 supabase
                   .from('leads')
-                  .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id, lead_stages(name, colour), misc_category!category_id(name)')
+                  .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id, lead_stages!leads_stage_fkey(name, colour), misc_category!category_id(name)')
                   .eq('email', exactEmail) // Exact match (case-sensitive)
                   .limit(1)
               );
               searchPromises.push(
                 supabase
                   .from('leads')
-                  .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id, lead_stages(name, colour), misc_category!category_id(name)')
+                  .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id, lead_stages!leads_stage_fkey(name, colour), misc_category!category_id(name)')
                   .ilike('email', exactEmail) // Case-insensitive exact match
                   .limit(1)
               );
@@ -806,7 +806,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             searchPromises.push(
               supabase
                 .from('leads')
-                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id, lead_stages(name, colour), misc_category!category_id(name)')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id, lead_stages!leads_stage_fkey(name, colour), misc_category!category_id(name)')
                 .or(emailPrefixConditions.join(','))
                 .limit(5) // Limit similar matches to 5
             );
@@ -1042,7 +1042,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             legacySearchPromises.push(
               supabase
                 .from('leads_lead')
-                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!leads_lead_language_id_fkey(id, name)')
                 .or(nameConditions)
                 .limit(15)
             );
@@ -1059,14 +1059,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               legacySearchPromises.push(
                 supabase
                   .from('leads_lead')
-                  .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
+                  .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!leads_lead_language_id_fkey(id, name)')
                   .eq('email', exactEmail) // Exact match (case-sensitive)
                   .limit(1)
               );
               legacySearchPromises.push(
                 supabase
                   .from('leads_lead')
-                  .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
+                  .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!leads_lead_language_id_fkey(id, name)')
                   .ilike('email', exactEmail) // Case-insensitive exact match
                   .limit(1)
               );
@@ -1080,7 +1080,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             legacySearchPromises.push(
               supabase
                 .from('leads_lead')
-                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!leads_lead_language_id_fkey(id, name)')
                 .or(prefixOrCondition)
                 .limit(5) // Limit similar matches to 5
             );
@@ -1684,12 +1684,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             const [contactLeads, contactLegacyLeads] = await Promise.all([
               uniqueLeadIds.size > 0 ? supabase
                 .from('leads')
-                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, lead_stages(name, colour), misc_category!category_id(name)')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, lead_stages!leads_stage_fkey(name, colour), misc_category!category_id(name)')
                 .in('id', Array.from(uniqueLeadIds))
                 .limit(50) : Promise.resolve({ data: [] }),
               uniqueLegacyIds.size > 0 ? supabase
                 .from('leads_lead')
-                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!leads_lead_language_id_fkey(id, name)')
                 .in('id', Array.from(uniqueLegacyIds))
                 .limit(50) : Promise.resolve({ data: [] })
             ]);
@@ -2183,7 +2183,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           const newLeadsQueryStartTime = performance.now();
           const { data: newLeads, error: newLeadsError } = await supabase
             .from('leads')
-            .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, lead_stages(name, colour), misc_category!category_id(name)')
+            .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, lead_stages!leads_stage_fkey(name, colour), misc_category!category_id(name)')
             .or(combinedConditions)
             .limit(50);
           const newLeadsQueryTime = performance.now() - newLeadsQueryStartTime;
@@ -2265,7 +2265,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           const legacyLeadsQueryStartTime = performance.now();
           const { data: legacyLeads, error: legacyLeadsError } = await supabase
             .from('leads_lead')
-            .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
+            .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!leads_lead_language_id_fkey(id, name)')
             .or(combinedConditions)
             .limit(50);
           const legacyLeadsQueryTime = performance.now() - legacyLeadsQueryStartTime;
@@ -2901,7 +2901,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             if (uniqueLeadIds.size > 0) {
               const { data: contactLeads, error: contactLeadsError } = await supabase
                 .from('leads')
-                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, lead_stages(name, colour), misc_category!category_id(name)')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, lead_stages!leads_stage_fkey(name, colour), misc_category!category_id(name)')
                 .in('id', Array.from(uniqueLeadIds))
                 .limit(50);
 
@@ -2963,7 +2963,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             if (uniqueLegacyIds.size > 0) {
               const { data: contactLegacyLeads, error: contactLegacyLeadsError } = await supabase
                 .from('leads_lead')
-                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!leads_lead_language_id_fkey(id, name)')
                 .in('id', Array.from(uniqueLegacyIds))
                 .limit(50);
 
@@ -3092,7 +3092,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         // Search new leads by name
         const { data: newLeads } = await supabase
           .from('leads')
-          .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, lead_stages(name, colour), misc_category!category_id(name)')
+          .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, lead_stages!leads_stage_fkey(name, colour), misc_category!category_id(name)')
           .or(nameConditions)
           .limit(20);
 
@@ -3138,7 +3138,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         // Search legacy leads by name
         const { data: legacyLeads } = await supabase
           .from('leads_lead')
-          .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
+          .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!leads_lead_language_id_fkey(id, name)')
           .or(nameConditions)
           .limit(20);
 
@@ -7101,7 +7101,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             } : undefined}
           >
             <div
-              className={`relative flex items-center rounded-full transition-all duration-[700ms] ease-in-out ${isSearchActive ? 'w-full overflow-hidden bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-inner' : `w-12 min-w-12 md:w-48 md:min-w-48 overflow-visible ${isMobile ? 'min-h-[48px] bg-transparent border-0' : 'md:bg-gray-100 dark:md:bg-gray-800 md:border md:border-gray-200 dark:md:border-gray-700 md:shadow-inner'}`}`}
+              className={`relative flex items-center rounded-full transition-all duration-[700ms] ease-in-out ${isSearchActive ? 'w-full overflow-hidden bg-white dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-600 shadow-md' : `w-12 min-w-12 md:w-48 md:min-w-48 overflow-visible ${isMobile ? 'min-h-[48px] bg-transparent border-0' : 'md:bg-white dark:md:bg-gray-800 md:border-2 md:border-gray-200 dark:md:border-gray-600 md:shadow-md'}`}`}
               style={isSearchActive && isDarkMode ? { borderColor: 'rgba(96, 165, 250, 0.75)' } : undefined}
             >
               {/* Search icon - on iOS/mobile when collapsed use native label so tap focuses input and keyboard opens */}
@@ -7206,7 +7206,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     }`}
                   title="Clear search"
                 >
-                  <XMarkIcon className="w-3 h-3" />
+                  <XMarkIcon className="w-5 h-5" />
                 </button>
               )}
               {/* Filter button inside input */}
@@ -7512,7 +7512,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                         (async () => {
                           let legacyQuery = supabase
                             .from('leads_lead')
-                            .select('id, name, email, phone, mobile, topic, stage, cdate, lead_number, deactivate_notes, language_id, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!language_id(id, name)')
+                            .select('id, name, email, phone, mobile, topic, stage, cdate, lead_number, deactivate_notes, language_id, lead_stages!fk_leads_lead_stage(id, name, colour), misc_language!leads_lead_language_id_fkey(id, name)')
                             .limit(50);
 
 
@@ -7550,7 +7550,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                         (async () => {
                           let newQuery = supabase
                             .from('leads')
-                            .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, lead_stages(name, colour), misc_category!category_id(name)')
+                            .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, lead_stages!leads_stage_fkey(name, colour), misc_category!category_id(name)')
                             .limit(50);
 
 
