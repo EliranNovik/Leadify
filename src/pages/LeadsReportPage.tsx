@@ -119,26 +119,29 @@ function MultiSelectSearch({
     onChange(field as FilterField, values.filter((v) => v !== opt));
   };
 
+  const clearAll = () => {
+    onChange(field as FilterField, []);
+  };
+
   return (
     <div ref={containerRef} className="form-control relative flex flex-col items-stretch">
-      <label className="label justify-start py-1">
-        <span className="label-text">{label}</span>
+      <div className="label justify-between py-1">
+        <label className="cursor-default">
+          <span className="label-text">{label}</span>
+          {values.length > 0 && (
+            <span className="label-text-alt text-base-content/60 ml-1">{values.length} selected</span>
+          )}
+        </label>
         {values.length > 0 && (
-          <span className="label-text-alt text-base-content/60">{values.length} selected</span>
+          <button
+            type="button"
+            className="btn btn-ghost btn-xs text-base-content/70 hover:text-base-content"
+            onClick={clearAll}
+          >
+            Clear
+          </button>
         )}
-      </label>
-      {values.length > 0 && (
-        <div className="flex flex-wrap gap-2 mb-2">
-          {values.map((v) => (
-            <span key={v} className="badge badge-primary badge-sm gap-1.5 pr-1">
-              {v}
-              <button type="button" className="btn btn-ghost btn-sm p-0.5 min-h-0 h-6 w-6 rounded-full hover:bg-base-content/20" onClick={() => remove(v)} aria-label="Remove">
-                <span className="text-base leading-none font-bold">×</span>
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
+      </div>
       <input
         ref={inputRef}
         type="text"
@@ -149,24 +152,43 @@ function MultiSelectSearch({
         onFocus={() => onOpenChange(field)}
       />
       {isOpen && (
-        <div className="absolute z-10 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-          {filtered.length === 0 ? (
+        <div className="w-full -mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-80 overflow-y-auto z-10 relative">
+          {values.length > 0 && (
+            <div className="p-2 border-b border-base-300 bg-primary/15 flex flex-col gap-1.5 rounded-t-lg">
+              {values.map((v) => (
+                <span key={v} className="flex items-center justify-between gap-2 w-full text-sm text-base-content">
+                  <span>{v}</span>
+                  <button
+                    type="button"
+                    className="btn btn-ghost p-0 min-h-0 h-8 w-8 rounded-full hover:bg-primary/20 shrink-0 flex items-center justify-center"
+                    onClick={() => remove(v)}
+                    aria-label={`Remove ${v}`}
+                  >
+                    <span className="text-xl leading-none font-bold">×</span>
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          {filtered.length === 0 && values.length === 0 ? (
             <div className="px-3 py-2 text-sm text-base-content/60">No options</div>
-          ) : (
-            filtered.map((opt) => (
-              <button
-                key={opt}
-                type="button"
-                className="w-full text-left px-3 py-2 text-sm hover:bg-base-200"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  add(opt);
-                }}
-              >
-                {opt}
-              </button>
-            ))
+          ) : filtered.length === 0 ? null : (
+            <div className="py-1">
+              {filtered.map((opt) => (
+                <button
+                  key={opt}
+                  type="button"
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-base-200"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    add(opt);
+                  }}
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
           )}
         </div>
       )}
@@ -347,6 +369,11 @@ export default function LeadsReportPage() {
         .map((c) => categoryNameToId.get(c) ?? categoryNameToId.get(c.split(' (')[0]))
         .filter((id): id is number => id != null);
 
+      // Stage filter: both leads and leads_lead use numeric stage IDs (bigint), not names
+      const stageIds = filters.stage
+        .map((s) => stageNameToId.get(s))
+        .filter((id): id is number => id != null);
+
       // Tag filter via junction table leads_lead_tags + misc_leadtag (for both new and legacy)
       let newLeadIdsWithTags: number[] | null = null;
       let legacyLeadIdsWithTags: number[] | null = null;
@@ -375,7 +402,7 @@ export default function LeadsReportPage() {
 
       if (fromDate) newQuery = newQuery.gte('created_at', fromDate);
       if (toDate) newQuery = newQuery.lte('created_at', toDate);
-      if (filters.stage.length > 0) newQuery = newQuery.in('stage', filters.stage);
+      if (stageIds.length > 0) newQuery = newQuery.in('stage', stageIds);
       if (categoryIds.length > 0) newQuery = newQuery.in('category_id', categoryIds);
       if (filters.source.length > 0) newQuery = newQuery.in('source', filters.source);
       if (filters.language.length > 0) {
@@ -408,7 +435,6 @@ export default function LeadsReportPage() {
       if (toDate) legacyQuery = legacyQuery.lte('cdate', toDate);
       if (filters.status === 'active') legacyQuery = legacyQuery.neq('status', 10);
       if (filters.status === 'inactive') legacyQuery = legacyQuery.eq('status', 10);
-      const stageIds = filters.stage.map((s) => stageNameToId.get(s)).filter((id): id is number => id != null);
       if (stageIds.length > 0) legacyQuery = legacyQuery.in('stage', stageIds);
       if (categoryIds.length > 0) legacyQuery = legacyQuery.in('category_id', categoryIds);
       const hasNALang = filters.language.includes('N/A');
@@ -611,7 +637,7 @@ export default function LeadsReportPage() {
                 <label className="label justify-start py-1"><span className="label-text">To date</span></label>
                 <input type="date" className="input input-bordered" value={filters.toDate} onChange={(e) => handleFilterChange('toDate', e.target.value)} />
               </div>
-              <div className="col-span-2">
+              <div className="col-span-2 lg:col-span-1">
                 <MultiSelectSearch
                   label="Stage"
                   field="stage"
@@ -638,6 +664,10 @@ export default function LeadsReportPage() {
                   searchTerm={getDropdownSearch('category')}
                   onSearchChange={setDropdownSearchFor}
                 />
+              </div>
+              <div className="form-control flex flex-row items-center gap-2 col-span-2 lg:col-span-1 pt-2 lg:pt-0 lg:justify-start">
+                <input type="checkbox" className="checkbox checkbox-sm" checked={filters.eligibilityDeterminedOnly} onChange={(e) => handleFilterChange('eligibilityDeterminedOnly', e.target.checked)} />
+                <label className="label cursor-pointer py-0 min-h-0"><span className="label-text">Eligibility determined only</span></label>
               </div>
               <div className="col-span-2 md:col-span-1">
                 <MultiSelectSearch
@@ -698,10 +728,6 @@ export default function LeadsReportPage() {
                   <option value="active">Active</option>
                   <option value="inactive">Inactive</option>
                 </select>
-              </div>
-              <div className="form-control flex flex-row items-center gap-2 pt-8 col-span-2">
-                <input type="checkbox" className="checkbox" checked={filters.eligibilityDeterminedOnly} onChange={(e) => handleFilterChange('eligibilityDeterminedOnly', e.target.checked)} />
-                <label className="label cursor-pointer"><span className="label-text">Eligibility determined only</span></label>
               </div>
             </div>
           <div className="flex justify-end mt-4">
