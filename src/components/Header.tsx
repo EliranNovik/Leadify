@@ -27,6 +27,7 @@ import {
   BoltIcon,
   ChatBubbleLeftRightIcon,
   StarIcon,
+  Cog6ToothIcon,
 } from '@heroicons/react/24/outline';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
@@ -203,6 +204,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [hasAppliedFilters, setHasAppliedFilters] = useState(false);
   const [currentUserEmployee, setCurrentUserEmployee] = useState<any>(null);
   const [isEmployeeModalOpen, setIsEmployeeModalOpen] = useState(false);
+  const [authUserId, setAuthUserId] = useState<string | null>(null);
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [assignmentNotifications, setAssignmentNotifications] = useState<AssignmentNotification[]>([]);
   const [seenAssignmentKeys, setSeenAssignmentKeys] = useState<Set<string>>(new Set());
@@ -230,6 +232,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [isHighlightsPanelOpen, setIsHighlightsPanelOpen] = useState(false);
   const [newLeadsCount, setNewLeadsCount] = useState<number>(0);
+  const [showProfileDropdown, setShowProfileDropdown] = useState(false);
+  const profileDropdownRef = useRef<HTMLDivElement>(null);
   const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
   const createdStageIdsRef = useRef<number[]>([0, 11]);
   const schedulerStageIdsRef = useRef<number[]>([10]);
@@ -549,6 +553,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         setShowNotifications(false);
       }
 
+      // Close profile dropdown when clicking outside
+      if (
+        profileDropdownRef.current &&
+        !profileDropdownRef.current.contains(target as Node)
+      ) {
+        setShowProfileDropdown(false);
+      }
+
       // Close quick actions dropdown when clicking outside
       const quickActionsDropdown = document.querySelector('[data-quick-actions-dropdown]');
       const dropdownMenu = document.querySelector('[data-dropdown-menu]');
@@ -582,12 +594,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       document.removeEventListener('click', handleDropdownClickOutside);
       document.removeEventListener('scroll', handleScroll, true);
     };
-  }, [showFilterDropdown, showQuickActionsDropdown, showMobileQuickActionsDropdown]);
+  }, [showFilterDropdown, showQuickActionsDropdown, showMobileQuickActionsDropdown, showProfileDropdown]);
 
-  // Close quick actions dropdown when route changes
+  // Close quick actions and profile dropdown when route changes
   useEffect(() => {
     setShowQuickActionsDropdown(false);
     setShowMobileQuickActionsDropdown(false);
+    setShowProfileDropdown(false);
   }, [location.pathname]);
 
   // Handle escape key to close dropdowns
@@ -598,6 +611,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         setShowMobileQuickActionsDropdown(false);
         setShowNotifications(false);
         setShowFilterDropdown(false);
+        setShowProfileDropdown(false);
       }
     };
 
@@ -612,6 +626,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       setShowMobileQuickActionsDropdown(false);
       setShowNotifications(false);
       setShowFilterDropdown(false);
+      setShowProfileDropdown(false);
     };
   }, []);
 
@@ -4346,12 +4361,33 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     initializeMsal();
   }, [instance]);
 
+  // Listen for auth changes so we refetch user/employee data when a different user signs in
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      setAuthUserId(user?.id ?? null);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthUserId(session?.user?.id ?? null);
+    });
+    return () => subscription?.unsubscribe();
+  }, []);
+
   useEffect(() => {
     // Fetch the current user's name and employee data from Supabase
     const fetchUserData = async () => {
-      // Check cache first
-      const cacheKey = 'header_userData';
-      const cacheTimestampKey = 'header_userData_timestamp';
+      const { data: { user } } = await supabase.auth.getUser();
+
+      if (!user) {
+        setCurrentUser(null);
+        setCurrentUserEmployee(null);
+        setUserFullName('');
+        setAllEmployees([]);
+        return;
+      }
+
+      // Per-user cache so switching employees shows the correct profile
+      const cacheKey = `header_userData_${user.id}`;
+      const cacheTimestampKey = `header_userData_${user.id}_timestamp`;
       const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
 
       try {
@@ -4361,7 +4397,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         if (cachedData && cachedTimestamp) {
           const age = Date.now() - parseInt(cachedTimestamp, 10);
           if (age < CACHE_DURATION) {
-            // Use cached data
             const data = JSON.parse(cachedData);
             setUserFullName(data.userFullName || '');
             setIsSuperUser(data.isSuperUser || false);
@@ -4369,15 +4404,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             if (data.currentUserEmployee) setCurrentUserEmployee(data.currentUserEmployee);
             if (data.allEmployees) setAllEmployees(data.allEmployees);
             console.log('✅ Header: User data loaded from cache');
-            return; // Skip fetch - use cache
+            return;
           }
         }
       } catch (error) {
         console.error('Error reading header user data cache:', error);
       }
 
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user && user.email) {
+      if (user.email) {
         // Declare variables at function scope for caching
         let fullNameValue = '';
         let isSuperUserValue = false;
@@ -4569,8 +4603,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       currentUserEmployee: finalCurrentUserEmployee,
                       allEmployees: uniqueEmployees,
                     };
-                    sessionStorage.setItem('header_userData', JSON.stringify(dataToCache));
-                    sessionStorage.setItem('header_userData_timestamp', Date.now().toString());
+                    sessionStorage.setItem(cacheKey, JSON.stringify(dataToCache));
+                    sessionStorage.setItem(cacheTimestampKey, Date.now().toString());
                     console.log('✅ Header: User data cached');
                   } catch (cacheError) {
                     console.error('Error caching header user data:', cacheError);
@@ -4593,8 +4627,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     currentUserEmployee: null,
                     allEmployees: [],
                   };
-                  sessionStorage.setItem('header_userData', JSON.stringify(dataToCache));
-                  sessionStorage.setItem('header_userData_timestamp', Date.now().toString());
+                  sessionStorage.setItem(cacheKey, JSON.stringify(dataToCache));
+                  sessionStorage.setItem(cacheTimestampKey, Date.now().toString());
                 } catch (cacheError) {
                   console.error('Error caching header user data:', cacheError);
                 }
@@ -4622,8 +4656,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     currentUserEmployee: null,
                     allEmployees: [],
                   };
-                  sessionStorage.setItem('header_userData', JSON.stringify(dataToCache));
-                  sessionStorage.setItem('header_userData_timestamp', Date.now().toString());
+                  sessionStorage.setItem(cacheKey, JSON.stringify(dataToCache));
+                  sessionStorage.setItem(cacheTimestampKey, Date.now().toString());
                 } catch (cacheError) {
                   console.error('Error caching header user data:', cacheError);
                 }
@@ -4636,7 +4670,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
     };
     fetchUserData();
-  }, []);
+  }, [authUserId]);
 
   // Fetch RMQ messages for notifications
   const fetchRmqMessages = async () => {
@@ -5909,6 +5943,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   const handleMicrosoftSignIn = async () => {
     if (!instance || !isMsalInitialized) {
+      toast.error('Sign-in is not ready yet. Please try again in a moment.');
       return;
     }
 
@@ -6683,12 +6718,23 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     </span>
                   )}
                 </button>
+                {/* RMQ AI Option */}
+                <button
+                  onClick={() => {
+                    setShowQuickActionsDropdown(false);
+                    handleAIClick();
+                  }}
+                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left hover:bg-gray-50 relative"
+                >
+                  <FaRobot className={`w-5 h-5 ${isAltTheme ? 'text-green-600' : 'text-purple-500'}`} />
+                  <span className="text-sm font-medium">RMQ AI</span>
+                </button>
               </div>,
               document.body
             )}
           </div>
 
-          {/* Quick Actions Dropdown - Mobile: icon + arrow only, black, no coloured box */}
+          {/* Quick Actions Dropdown - Mobile: icon only with coloured badge */}
           <div className="md:hidden relative ml-2" data-quick-actions-dropdown>
             <button
               ref={mobileButtonRef}
@@ -6698,10 +6744,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 setShowMobileQuickActionsDropdown(!showMobileQuickActionsDropdown);
                 setShowQuickActionsDropdown(false);
               }}
-              className="flex items-center gap-1 p-2 rounded-lg font-medium transition-all duration-300 bg-transparent text-black hover:bg-base-200/50"
+              className="flex items-center justify-center w-10 h-10 rounded-full bg-purple-500 text-white font-medium transition-all duration-300 hover:bg-purple-600 active:scale-95"
+              title="Quick Actions"
             >
-              <BoltIcon className="w-5 h-5 text-black" />
-              <ChevronDownIcon className={`w-4 h-4 text-black transition-transform duration-200 ${showMobileQuickActionsDropdown ? 'rotate-180' : ''}`} />
+              <BoltIcon className="w-6 h-6" />
             </button>
 
             {/* Dropdown Menu */}
@@ -6734,6 +6780,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     </span>
                   )}
                 </button>
+                {/* RMQ AI Option */}
+                <button
+                  onClick={() => {
+                    setShowMobileQuickActionsDropdown(false);
+                    handleAIClick();
+                  }}
+                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left hover:bg-gray-50 relative"
+                >
+                  <FaRobot className={`w-5 h-5 ${isAltTheme ? 'text-green-600' : 'text-purple-500'}`} />
+                  <span className="text-sm font-medium">RMQ AI</span>
+                </button>
               </div>,
               document.body
             )}
@@ -6756,7 +6813,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             )}
           </button>
 
-          {/* Quick Actions Dropdown - Mobile only: icon + arrow only, black, no coloured box */}
+          {/* Quick Actions Dropdown - Mobile only: icon only with coloured badge */}
           <div className="md:hidden relative ml-2" data-quick-actions-dropdown>
             <button
               ref={mobileButtonRef}
@@ -6766,10 +6823,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 setShowMobileQuickActionsDropdown(!showMobileQuickActionsDropdown);
                 setShowQuickActionsDropdown(false); // Close desktop dropdown if open
               }}
-              className="flex items-center gap-1 p-2 rounded-lg font-medium transition-all duration-300 bg-transparent text-black hover:bg-base-200/50"
+              className="flex items-center justify-center w-10 h-10 rounded-full bg-purple-500 text-white font-medium transition-all duration-300 hover:bg-purple-600 active:scale-95"
+              title="Quick Actions"
             >
-              <BoltIcon className="w-5 h-5 text-black" />
-              <ChevronDownIcon className={`w-4 h-4 text-black transition-transform duration-200 ${showMobileQuickActionsDropdown ? 'rotate-180' : ''}`} />
+              <BoltIcon className="w-6 h-6" />
             </button>
 
             {/* Dropdown Menu */}
@@ -6839,33 +6896,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       {emailUnreadCount > 9 ? '9+' : emailUnreadCount}
                     </span>
                   )}
-                </button>
-
-                {/* Highlights Option */}
-                <button
-                  onClick={() => {
-                    setShowMobileQuickActionsDropdown(false);
-                    setIsHighlightsPanelOpen(true);
-                  }}
-                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50 relative"
-                >
-                  <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                  <span className="text-sm font-medium">My Highlights</span>
-                </button>
-
-                {/* My Profile Option */}
-                <button
-                  onClick={() => {
-                    setShowMobileQuickActionsDropdown(false);
-                    setShowQuickActionsDropdown(false);
-                    navigate('/my-profile');
-                    setShowMobileQuickActionsDropdown(false);
-                    setShowQuickActionsDropdown(false);
-                  }}
-                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100"
-                >
-                  <UserIcon className="w-5 h-5 text-gray-500" />
-                  <span className="text-sm font-medium">My Profile</span>
                 </button>
 
                 {navTabs
@@ -7047,7 +7077,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               ? isMobile
                 ? 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100vw-120px)]'
                 : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-xl md:max-w-xl'
-              : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1'
+              : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1 md:w-48'
               }`}
             style={{
               background: 'transparent'
@@ -7071,7 +7101,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             } : undefined}
           >
             <div
-              className={`relative flex items-center rounded-full transition-all duration-[700ms] ease-in-out ${isSearchActive ? 'w-full overflow-hidden bg-gray-50 dark:bg-gray-700 border border-gray-100 shadow-inner' : `w-12 min-w-12 overflow-visible bg-transparent border-0 ${isMobile ? 'min-h-[48px]' : ''}`}`}
+              className={`relative flex items-center rounded-full transition-all duration-[700ms] ease-in-out ${isSearchActive ? 'w-full overflow-hidden bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-inner' : `w-12 min-w-12 md:w-48 md:min-w-48 overflow-visible ${isMobile ? 'min-h-[48px] bg-transparent border-0' : 'md:bg-gray-100 dark:md:bg-gray-800 md:border md:border-gray-200 dark:md:border-gray-700 md:shadow-inner'}`}`}
               style={isSearchActive && isDarkMode ? { borderColor: 'rgba(96, 165, 250, 0.75)' } : undefined}
             >
               {/* Search icon - on iOS/mobile when collapsed use native label so tap focuses input and keyboard opens */}
@@ -7140,7 +7170,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 id={HEADER_SEARCH_INPUT_ID}
                 ref={searchInputRef}
                 type="text"
-                placeholder="Search for leads..."
+                placeholder="Search..."
                 value={searchValue}
                 onChange={handleSearchChange}
                 onFocus={handleSearchFocus}
@@ -7152,7 +7182,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 } : undefined}
                 className={`
                   w-full bg-transparent border-0 rounded-full text-gray-800 dark:text-gray-200 placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-0 transition-all duration-300 search-input-placeholder
-                  ${isSearchActive ? 'opacity-100 visible pl-12' : isMobile ? 'opacity-0 w-px h-px absolute left-0 top-0 overflow-hidden pl-0' : 'opacity-0 invisible pl-14'}
+                  ${isSearchActive ? 'opacity-100 visible pl-12' : isMobile ? 'opacity-0 w-px h-px absolute left-0 top-0 overflow-hidden pl-0' : 'opacity-100 visible pl-12'}
                   ${searchValue.trim() || searchResults.length > 0 ? 'pr-12' : 'pr-4'}
                 `}
                 style={{
@@ -7162,6 +7192,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   letterSpacing: '-0.01em'
                 }}
               />
+              {/* Search icon on right - preview only in closed/collapsed default mode (desktop) */}
+              {!isSearchActive && !isMobile && (
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400 dark:text-gray-500" aria-hidden>
+                  <MagnifyingGlassIcon className="w-5 h-5" />
+                </span>
+              )}
               {/* Clear search button - visible when search is active */}
               {(searchValue.trim() || searchResults.length > 0) && (
                 <button
@@ -7651,15 +7687,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             Welcome, <span className="font-semibold">{userFullName || 'User'}</span>
           </span> */}
 
-          {/* AI Assistant Button */}
-          <button
-            className="btn btn-ghost btn-circle hidden md:flex items-center justify-center"
-            title="Open AI Assistant"
-            onClick={handleAIClick}
-          >
-            <FaRobot className={`w-7 h-7 ${isAltTheme ? 'text-green-600' : 'text-primary'}`} />
-          </button>
-
           {/* WhatsApp Button */}
           <div className="relative hidden md:block">
             <button
@@ -7707,45 +7734,133 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             )}
           </div>
 
-          {/* Highlights Button */}
-          <div className="relative hidden md:block">
-            <button
-              className="btn btn-ghost btn-circle flex items-center justify-center"
-              title="My Highlights"
-              onClick={() => setIsHighlightsPanelOpen(true)}
-            >
-              <StarIcon className="w-7 h-7" style={{ color: '#3E28CD' }} />
-            </button>
-          </div>
-
-          {/* Microsoft sign in/out button */}
+          {/* Microsoft sign in/out button - icon only, desktop */}
           <button
-            className={`btn btn-sm gap-2 hidden md:flex ${userAccount ? 'btn-primary' : 'btn-outline'}`}
-            onClick={handleMicrosoftSignIn}
-            disabled={isMsalLoading || !isMsalInitialized}
-          >
-            <svg className="w-5 h-5" viewBox="0 0 24 24">
-              <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
-            </svg>
-            {userAccount ? (() => {
-              const fullName = userAccount.name || userAccount.username || 'Signed in';
-              // Extract only the English name before the dash
-              const englishName = fullName.split(' - ')[0].split(' – ')[0];
-              return englishName;
-            })() : (isMsalLoading ? 'Signing in...' : 'Sign in')}
-          </button>
-
-          {/* Microsoft sign in/out - mobile only, no square */}
-          <button
-            className={`btn btn-ghost btn-sm btn-circle md:hidden min-h-8 h-8 w-8 p-0 ${userAccount ? 'text-primary' : 'text-base-content/70'}`}
+            type="button"
+            className={`btn btn-ghost btn-sm btn-circle hidden md:flex items-center justify-center min-h-9 h-9 w-9 p-0 ${userAccount ? 'text-primary' : 'text-base-content/70'}`}
             onClick={handleMicrosoftSignIn}
             disabled={isMsalLoading || !isMsalInitialized}
             title={userAccount ? 'Sign out' : 'Sign in with Microsoft'}
           >
-            <svg className="w-4 h-4" viewBox="0 0 24 24">
+            <svg className="w-5 h-5" viewBox="0 0 24 24">
               <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
             </svg>
           </button>
+
+          {/* Microsoft sign in - mobile only, show only when NOT logged in */}
+          {!userAccount && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm btn-circle md:hidden min-h-8 h-8 w-8 p-0 text-base-content/70"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                handleMicrosoftSignIn();
+              }}
+              disabled={isMsalLoading || !isMsalInitialized}
+              title="Sign in with Microsoft"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24">
+                <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
+              </svg>
+            </button>
+          )}
+
+          {/* Profile + dropdown: desktop (with name), mobile (avatar + arrow only) */}
+          <div className="relative mr-2 flex items-center flex-shrink-0" ref={profileDropdownRef}>
+            <button
+              type="button"
+              className="btn btn-ghost gap-2 md:gap-2.5 min-h-0 h-10 md:h-10 w-auto min-w-[2.5rem] pl-2 pr-2.5 md:px-2.5 rounded-full flex items-center justify-center md:justify-start flex-shrink-0"
+              onClick={() => setShowProfileDropdown((v) => !v)}
+              aria-expanded={showProfileDropdown}
+              aria-haspopup="true"
+            >
+              {(currentUserEmployee?.photo_url || currentUserEmployee?.photo) ? (
+                <>
+                  <span
+                    className="w-10 h-10 min-w-[2.5rem] min-h-[2.5rem] flex-shrink-0 rounded-full bg-base-300 block bg-no-repeat bg-center"
+                    style={{
+                      backgroundImage: `url(${currentUserEmployee.photo_url || currentUserEmployee.photo})`,
+                      backgroundSize: 'contain',
+                    }}
+                  />
+                  <img
+                    src={currentUserEmployee.photo_url || currentUserEmployee.photo}
+                    alt=""
+                    className="hidden"
+                    onError={(e) => {
+                      const target = e.target as HTMLImageElement;
+                      target.previousElementSibling?.classList.add('hidden');
+                      target.nextElementSibling?.classList.remove('hidden');
+                    }}
+                  />
+                </>
+              ) : null}
+              <span className={`w-10 h-10 min-w-[2.5rem] min-h-[2.5rem] flex-shrink-0 rounded-full overflow-hidden aspect-square bg-base-300 flex items-center justify-center ${(currentUserEmployee?.photo_url || currentUserEmployee?.photo) ? 'hidden' : ''}`}>
+                <UserIcon className="w-5 h-5 md:w-6 md:h-6 text-base-content/70" />
+              </span>
+              <span className="hidden md:inline font-medium text-base-content max-w-[140px] truncate text-sm">
+                {currentUserEmployee?.display_name || userFullName || 'User'}
+              </span>
+              <ChevronDownIcon className={`w-4 h-4 flex-shrink-0 transition-transform ${showProfileDropdown ? 'rotate-180' : ''}`} />
+            </button>
+            {showProfileDropdown && (
+              <div
+                className="absolute right-0 top-full mt-2 w-52 py-1 rounded-xl shadow-xl border border-base-300 bg-base-100 z-50"
+                role="menu"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
+                  onClick={() => {
+                    setShowProfileDropdown(false);
+                    navigate('/my-profile');
+                  }}
+                >
+                  <UserIcon className="w-5 h-5 text-base-content/70" />
+                  View profile
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
+                  onClick={() => {
+                    setShowProfileDropdown(false);
+                    setIsHighlightsPanelOpen(true);
+                  }}
+                >
+                  <StarIcon className="w-5 h-5 text-base-content/70" style={{ color: '#3E28CD' }} />
+                  Highlights
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
+                  onClick={() => {
+                    setShowProfileDropdown(false);
+                    navigate('/settings');
+                  }}
+                >
+                  <Cog6ToothIcon className="w-5 h-5 text-base-content/70" />
+                  Settings
+                </button>
+                <div className="border-t border-base-300 my-1" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors text-error"
+                  onClick={() => {
+                    setShowProfileDropdown(false);
+                    handleSignOut();
+                  }}
+                >
+                  <ArrowRightOnRectangleIcon className="w-5 h-5" />
+                  Log out
+                </button>
+              </div>
+            )}
+          </div>
 
           {/* Notifications */}
           <div className="relative" ref={notificationsRef}>
@@ -7754,7 +7869,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               onClick={handleNotificationClick}
             >
               <div className="indicator">
-                <BellIcon className="w-6 h-6" />
+                <BellIcon className="w-6 h-6 md:w-7 md:h-7" />
                 {unreadCount > 0 && (
                   <span className="indicator-item badge badge-primary min-w-[1rem] h-4 md:min-w-[1.375rem] md:h-5.5 text-[11px] md:text-xs flex items-center justify-center px-1">{unreadCount}</span>
                 )}
