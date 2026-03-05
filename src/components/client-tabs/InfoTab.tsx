@@ -143,9 +143,11 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
   };
 
   const getTags = () => {
-    // For legacy leads, use 'category' field instead of 'tags'
-    const tags = isLegacy ? getFieldValue(client, 'category') : getFieldValue(client, 'tags');
-    return tags || '';
+    // Prefer tags from join (client.tags set by parent when lead fetched with leads_lead_tags + misc_leadtag join)
+    const fromJoin = getFieldValue(client, 'tags');
+    if (fromJoin && String(fromJoin).trim()) return String(fromJoin).trim();
+    // Legacy fallback: category when tags not from join
+    return isLegacy ? (getFieldValue(client, 'category') || '') : '';
   };
 
   const getAnchor = () => {
@@ -492,14 +494,19 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
     }
   };
 
-  // Update tags when client changes
+  // Update tags when client changes: use tags from join (client.tags) when present, else fetch
   useEffect(() => {
+    const fromJoin = getTags();
+    if (fromJoin) {
+      setTags(fromJoin);
+      setEditedTags(fromJoin);
+      return;
+    }
     const loadTags = async () => {
       const tagsString = await fetchCurrentLeadTags(client.id);
       setTags(tagsString);
       setEditedTags(tagsString);
     };
-
     if (client?.id) {
       loadTags();
     }

@@ -239,7 +239,7 @@ export default function LeadsReportPage() {
     setFilters((prev) => ({ ...prev, [field]: value }));
   };
 
-  const mapNewLeadToRow = (lead: any, stageMap: Map<number, string>, categoryMap: Map<number, string>): ExportRow => {
+  const mapNewLeadToRow = (lead: any, stageMap: Map<number, string>, categoryMap: Map<number, string>, tagsFromJunction?: string): ExportRow => {
     const isInactive = lead.unactivated_at != null;
     const status = isInactive ? 'inactive' : 'active';
     const eligibility = lead.expert_eligibility_assessed === true || lead.expert_eligibility_assessed === 'true' ? 'TRUE' : 'FALSE';
@@ -257,7 +257,7 @@ export default function LeadsReportPage() {
       category: String(categoryName ?? ''),
       source: lead.source ?? '',
       topic: lead.topic ?? '',
-      tags: typeof lead.tags === 'string' ? lead.tags : Array.isArray(lead.tags) ? lead.tags.join(', ') : '',
+      tags: tagsFromJunction ?? (typeof lead.tags === 'string' ? lead.tags : Array.isArray(lead.tags) ? lead.tags.join(', ') : ''),
       'eligibility determined': eligibility,
       file_id: lead.file_id ?? '',
       status,
@@ -268,9 +268,9 @@ export default function LeadsReportPage() {
     };
   };
 
-  const mapLegacyLeadToRow = (lead: any, stageMap: Map<number, string>, categoryMap: Map<number, string>, languageMap: Map<number, string>, sourceMap: Map<number, string>): ExportRow => {
+  const mapLegacyLeadToRow = (lead: any, stageMap: Map<number, string>, categoryMap: Map<number, string>, languageMap: Map<number, string>, sourceMap: Map<number, string>, tagsFromJunction?: string): ExportRow => {
     const statusVal = lead.status != null && (Number(lead.status) === 10 || lead.status === '10') ? 'inactive' : 'active';
-    const stageName = lead.stage_id != null ? (stageMap.get(lead.stage_id) ?? stageMap.get(Number(lead.stage_id))) : (lead.stage ?? '');
+    const stageName = lead.stage != null ? (stageMap.get(Number(lead.stage)) ?? stageMap.get(lead.stage) ?? String(lead.stage)) : '';
     const catName = lead.category_id != null ? categoryMap.get(lead.category_id) : (lead.category ?? '');
     const langName = lead.language_id != null ? languageMap.get(lead.language_id) : (lead.language ?? '');
     const srcName = lead.source_id != null ? sourceMap.get(lead.source_id) : (lead.source ?? '');
@@ -287,7 +287,7 @@ export default function LeadsReportPage() {
       category: catName ?? '',
       source: srcName ?? '',
       topic: lead.topic ?? '',
-      tags: typeof lead.tags === 'string' ? lead.tags : Array.isArray(lead.tags) ? lead.tags.join(', ') : '',
+      tags: tagsFromJunction ?? '',
       'eligibility determined': eligibility,
       file_id: lead.file_id ?? '',
       status: statusVal,
@@ -313,12 +313,15 @@ export default function LeadsReportPage() {
       const languageNameToId = new Map<string, number>();
       const sourceNameToId = new Map<string, number>();
 
-      const [stagesRes, categoriesRes, languagesRes, sourcesRes] = await Promise.all([
+      const [stagesRes, categoriesRes, languagesRes, sourcesRes, tagsRes] = await Promise.all([
         supabase.from('lead_stages').select('id, name'),
         supabase.from('misc_category').select('id, name, parent_id, misc_maincategory!parent_id(id, name)'),
         supabase.from('misc_language').select('id, name'),
         supabase.from('misc_leadsource').select('id, name'),
+        supabase.from('misc_leadtag').select('id, name').eq('active', true),
       ]);
+      const tagNameToId = new Map<string, number>();
+      (tagsRes.data as { id: number; name: string }[])?.forEach((t) => tagNameToId.set(t.name, t.id));
 
       stagesRes.data?.forEach((s: any) => {
         stageMap.set(s.id, s.name);
@@ -344,9 +347,30 @@ export default function LeadsReportPage() {
         .map((c) => categoryNameToId.get(c) ?? categoryNameToId.get(c.split(' (')[0]))
         .filter((id): id is number => id != null);
 
+      // Tag filter via junction table leads_lead_tags + misc_leadtag (for both new and legacy)
+      let newLeadIdsWithTags: number[] | null = null;
+      let legacyLeadIdsWithTags: number[] | null = null;
+      if (filters.tags.length > 0) {
+        const tagIds = filters.tags.map((t) => tagNameToId.get(t)).filter((id): id is number => id != null);
+        if (tagIds.length > 0) {
+          const { data: newTagRows } = await supabase
+            .from('leads_lead_tags')
+            .select('newlead_id')
+            .in('leadtag_id', tagIds)
+            .not('newlead_id', 'is', null);
+          newLeadIdsWithTags = [...new Set((newTagRows || []).map((r: any) => r.newlead_id).filter(Boolean))];
+          const { data: legacyTagRows } = await supabase
+            .from('leads_lead_tags')
+            .select('lead_id')
+            .in('leadtag_id', tagIds)
+            .not('lead_id', 'is', null);
+          legacyLeadIdsWithTags = [...new Set((legacyTagRows || []).map((r: any) => r.lead_id).filter(Boolean))];
+        }
+      }
+
       let newQuery = supabase
         .from('leads')
-        .select('id, lead_number, manual_id, name, email, phone, mobile, topic, tags, file_id, unactivated_at, unactivation_reason, deactivate_notes, expert_eligibility_assessed, stage, category_id, category, source, language, created_at, facts')
+        .select('id, lead_number, manual_id, name, email, phone, mobile, topic, file_id, unactivated_at, unactivation_reason, deactivate_notes, expert_eligibility_assessed, stage, category_id, category, source, language, created_at, facts')
         .order('created_at', { ascending: false });
 
       if (fromDate) newQuery = newQuery.gte('created_at', fromDate);
@@ -362,9 +386,9 @@ export default function LeadsReportPage() {
         else newQuery = newQuery.in('language', rest);
       }
       if (filters.topic) newQuery = newQuery.ilike('topic', `%${filters.topic}%`);
-      if (filters.tags.length > 0) {
-        const orTags = filters.tags.map((t) => `tags.ilike.%${t}%`).join(',');
-        newQuery = newQuery.or(orTags);
+      if (newLeadIdsWithTags !== null) {
+        if (newLeadIdsWithTags.length === 0) newQuery = newQuery.in('id', [-1]);
+        else newQuery = newQuery.in('id', newLeadIdsWithTags);
       }
       if (filters.fileId) newQuery = newQuery.ilike('file_id', `%${filters.fileId}%`);
       if (filters.eligibilityDeterminedOnly) newQuery = newQuery.eq('expert_eligibility_assessed', true);
@@ -377,7 +401,7 @@ export default function LeadsReportPage() {
 
       let legacyQuery = supabase
         .from('leads_lead')
-        .select('id, manual_id, name, email, phone, mobile, topic, tags, file_id, status, stage_id, category_id, language_id, source_id, unactivation_reason, deactivate_notes, expert_eligibility_assessed, cdate, description')
+        .select('id, manual_id, name, email, phone, mobile, topic, file_id, status, stage, category_id, language_id, source_id, unactivation_reason, deactivate_notes, expert_eligibility_assessed, cdate, description')
         .order('cdate', { ascending: false });
 
       if (fromDate) legacyQuery = legacyQuery.gte('cdate', fromDate);
@@ -385,7 +409,7 @@ export default function LeadsReportPage() {
       if (filters.status === 'active') legacyQuery = legacyQuery.neq('status', 10);
       if (filters.status === 'inactive') legacyQuery = legacyQuery.eq('status', 10);
       const stageIds = filters.stage.map((s) => stageNameToId.get(s)).filter((id): id is number => id != null);
-      if (stageIds.length > 0) legacyQuery = legacyQuery.in('stage_id', stageIds);
+      if (stageIds.length > 0) legacyQuery = legacyQuery.in('stage', stageIds);
       if (categoryIds.length > 0) legacyQuery = legacyQuery.in('category_id', categoryIds);
       const hasNALang = filters.language.includes('N/A');
       const languageIds = filters.language.filter((l) => l !== 'N/A').map((l) => languageNameToId.get(l)).filter((id): id is number => id != null);
@@ -395,9 +419,9 @@ export default function LeadsReportPage() {
       const sourceIds = filters.source.map((s) => sourceNameToId.get(s)).filter((id): id is number => id != null);
       if (sourceIds.length > 0) legacyQuery = legacyQuery.in('source_id', sourceIds);
       if (filters.topic) legacyQuery = legacyQuery.ilike('topic', `%${filters.topic}%`);
-      if (filters.tags.length > 0) {
-        const orTags = filters.tags.map((t) => `tags.ilike.%${t}%`).join(',');
-        legacyQuery = legacyQuery.or(orTags);
+      if (legacyLeadIdsWithTags !== null) {
+        if (legacyLeadIdsWithTags.length === 0) legacyQuery = legacyQuery.in('id', [-1]);
+        else legacyQuery = legacyQuery.in('id', legacyLeadIdsWithTags);
       }
       if (filters.fileId) legacyQuery = legacyQuery.ilike('file_id', `%${filters.fileId}%`);
       if (filters.eligibilityDeterminedOnly) legacyQuery = legacyQuery.eq('expert_eligibility_assessed', true);
@@ -408,9 +432,38 @@ export default function LeadsReportPage() {
         console.warn('Legacy leads fetch failed (may not have access):', legacyError);
       }
 
+      const newLeadIds = (newLeads || []).map((l: any) => l.id).filter(Boolean);
+      const legacyLeadIds = (legacyLeads || []).map((l: any) => l.id).filter(Boolean);
+
+      const tagMapNew: Record<string, string> = {};
+      const tagMapLegacy: Record<string, string> = {};
+
+      if (newLeadIds.length > 0) {
+        const { data: newTagRows } = await supabase
+          .from('leads_lead_tags')
+          .select('newlead_id, misc_leadtag(name)')
+          .in('newlead_id', newLeadIds);
+        (newTagRows || []).forEach((r: any) => {
+          const id = String(r.newlead_id);
+          const name = r.misc_leadtag?.name ?? (Array.isArray(r.misc_leadtag) ? r.misc_leadtag[0]?.name : null);
+          if (name) tagMapNew[id] = (tagMapNew[id] ? `${tagMapNew[id]}, ${name}` : name);
+        });
+      }
+      if (legacyLeadIds.length > 0) {
+        const { data: legacyTagRows } = await supabase
+          .from('leads_lead_tags')
+          .select('lead_id, misc_leadtag(name)')
+          .in('lead_id', legacyLeadIds);
+        (legacyTagRows || []).forEach((r: any) => {
+          const id = String(r.lead_id);
+          const name = r.misc_leadtag?.name ?? (Array.isArray(r.misc_leadtag) ? r.misc_leadtag[0]?.name : null);
+          if (name) tagMapLegacy[id] = (tagMapLegacy[id] ? `${tagMapLegacy[id]}, ${name}` : name);
+        });
+      }
+
       const rows: ExportRow[] = [];
-      (newLeads || []).forEach((lead) => rows.push(mapNewLeadToRow(lead, stageMap, categoryMap)));
-      (legacyLeads || []).forEach((lead) => rows.push(mapLegacyLeadToRow(lead, stageMap, categoryMap, languageMap, sourceMap)));
+      (newLeads || []).forEach((lead) => rows.push(mapNewLeadToRow(lead, stageMap, categoryMap, tagMapNew[String(lead.id)])));
+      (legacyLeads || []).forEach((lead) => rows.push(mapLegacyLeadToRow(lead, stageMap, categoryMap, languageMap, sourceMap, tagMapLegacy[String(lead.id)])));
 
       if (rows.length === 0) {
         toast('No leads match the current filters.', { icon: '⚠️' });

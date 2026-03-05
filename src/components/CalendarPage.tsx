@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate, useNavigationType, useLocation } from 'react-router-dom';
 import { useCachedFetch } from '../hooks/useCachedFetch';
 import { usePersistedState } from '../hooks/usePersistedState';
-import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon, PlusIcon } from '@heroicons/react/24/outline';
+import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon, PlusIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import DocumentModal from './DocumentModal';
 import { FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
@@ -312,7 +312,6 @@ const CalendarPage: React.FC = () => {
   const [selectedRowId, setSelectedRowId] = useState<string | number | null>(null);
   const [showActionMenu, setShowActionMenu] = useState(false);
   const [selectedLeadForActions, setSelectedLeadForActions] = useState<any>(null);
-  const [currencyMap, setCurrencyMap] = useState<Record<number, { name?: string; iso_code?: string }>>({});
 
   // WhatsApp functionality
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
@@ -446,6 +445,7 @@ const CalendarPage: React.FC = () => {
   const [isGuestSelectionModalOpen, setIsGuestSelectionModalOpen] = useState(false);
   const [selectedMeetingForGuest, setSelectedMeetingForGuest] = useState<any>(null);
   const [guestSelectionType, setGuestSelectionType] = useState<'extern1' | 'extern2' | null>(null);
+  const [guestSearchTerm, setGuestSearchTerm] = useState('');
 
   // Notes Modal State
   const [isNotesModalOpen, setIsNotesModalOpen] = useState(false);
@@ -507,6 +507,7 @@ const CalendarPage: React.FC = () => {
 
   // Action menu dropdown state
   const [showActionMenuDropdown, setShowActionMenuDropdown] = useState(false);
+  const [actionDropdownPosition, setActionDropdownPosition] = useState<{ top: number; right: number } | null>(null);
 
   // Mobile filters modal (date, staff, meeting type)
   const [showMobileFiltersModal, setShowMobileFiltersModal] = useState(false);
@@ -514,21 +515,32 @@ const CalendarPage: React.FC = () => {
   // Unavailable staff section collapse state
   const [isUnavailableStaffExpanded, setIsUnavailableStaffExpanded] = useState(false);
 
-  // Handle clicking outside action menu dropdown
+  // Handle clicking outside action menu dropdown (trigger or portaled menu)
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (
-        actionMenuDropdownRef.current &&
-        !actionMenuDropdownRef.current.contains(event.target as Node)
-      ) {
-        setShowActionMenuDropdown(false);
-      }
+      const target = event.target as Node;
+      if (actionMenuDropdownRef.current?.contains(target)) return;
+      if ((target as Element).closest?.('[data-action-dropdown]')) return;
+      setShowActionMenuDropdown(false);
     };
 
     if (showActionMenuDropdown) {
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
+  }, [showActionMenuDropdown]);
+
+  // Position the action dropdown when it opens (for portal) - useLayoutEffect so position is set before paint
+  useLayoutEffect(() => {
+    if (!showActionMenuDropdown || !actionMenuDropdownRef.current) {
+      setActionDropdownPosition(null);
+      return;
+    }
+    const rect = actionMenuDropdownRef.current.getBoundingClientRect();
+    setActionDropdownPosition({
+      top: rect.bottom + 8,
+      right: window.innerWidth - rect.right,
+    });
   }, [showActionMenuDropdown]);
 
   // Helper function to get employee display name from ID
@@ -921,6 +933,7 @@ const CalendarPage: React.FC = () => {
       setIsGuestSelectionModalOpen(false);
       setSelectedMeetingForGuest(null);
       setGuestSelectionType(null);
+      setGuestSearchTerm('');
     } catch (error) {
       console.error('Error saving guest:', error);
       toast.error('Failed to save guest');
@@ -1319,51 +1332,15 @@ const CalendarPage: React.FC = () => {
         return [];
       }
 
-      // Process legacy data and convert currency to symbols
+      // Process legacy data: currency from join only (same as Clients.tsx total value badge)
       activeLegacyData.forEach((legacyLead: any) => {
-        // Extract currency data from joined table and convert to symbol
         const currencyRecord = legacyLead.accounting_currencies
           ? (Array.isArray(legacyLead.accounting_currencies) ? legacyLead.accounting_currencies[0] : legacyLead.accounting_currencies)
           : null;
-
         if (currencyRecord) {
-          // Convert iso_code to symbol
-          const currencySymbol = (() => {
-            if (currencyRecord.iso_code) {
-              const isoCode = currencyRecord.iso_code.toUpperCase();
-              if (isoCode === 'ILS' || isoCode === 'NIS') return '₪';
-              if (isoCode === 'USD') return '$';
-              if (isoCode === 'EUR') return '€';
-              if (isoCode === 'GBP') return '£';
-              if (isoCode === 'CAD') return 'C$';
-              if (isoCode === 'AUD') return 'A$';
-              if (isoCode === 'JPY') return '¥';
-              return currencyRecord.name || isoCode || '₪';
-            }
-            if (legacyLead.currency_id) {
-              const currencyId = Number(legacyLead.currency_id);
-              switch (currencyId) {
-                case 1: return '₪'; break;
-                case 2: return '€'; break;
-                case 3: return '$'; break;
-                case 4: return '£'; break;
-                default: return '₪';
-              }
-            }
-            return '₪';
-          })();
-          legacyLead.balance_currency = currencySymbol;
-        } else if (legacyLead.currency_id) {
-          const currencyId = Number(legacyLead.currency_id);
-          switch (currencyId) {
-            case 1: legacyLead.balance_currency = '₪'; break;
-            case 2: legacyLead.balance_currency = '€'; break;
-            case 3: legacyLead.balance_currency = '$'; break;
-            case 4: legacyLead.balance_currency = '£'; break;
-            default: legacyLead.balance_currency = '₪';
-          }
+          legacyLead.balance_currency = (currencyRecord.name || currencyRecord.iso_code || '₪').trim() || '₪';
         } else {
-          legacyLead.balance_currency = '₪';
+          legacyLead.balance_currency = legacyLead.balance_currency || '₪';
         }
       });
 
@@ -1821,354 +1798,145 @@ const CalendarPage: React.FC = () => {
   }, [employeesAndCategoriesData]);
 
   useEffect(() => {
-    console.log('🔍 CalendarPage useEffect: useEffect triggered', { navType, hasCachedMeetings: meetings.length > 0 });
-
     // If this is a back/forward navigation (POP) and we have cached meetings, skip the fetch
     if (navType === 'POP' && meetings.length > 0) {
-      console.log('🔍 CalendarPage: POP navigation with cached meetings, skipping fetch');
       setIsLoading(false);
       return;
     }
 
     const fetchMeetingsAndStaff = async () => {
-      console.log('🔍 CalendarPage useEffect: fetchMeetingsAndStaff started');
       setIsLoading(true);
 
       try {
-        // Employees and categories are now loaded via useCachedFetch hook above
-        // They are automatically cached and won't refetch when navigating back
+        const today = new Date().toISOString().split('T')[0];
+        const dateRangeFrom = appliedFromDate || today;
+        const dateRangeTo = appliedToDate || today;
 
-
-        // Initialize stage names cache
-        const stageNames = await fetchStageNames();
-        console.log('🔍 Calendar - Stage names fetched:', stageNames);
-
-        // If no stage names were fetched, try to refresh the cache
-        if (!stageNames || Object.keys(stageNames).length === 0) {
-          console.log('🔍 Calendar - No stage names found, refreshing cache...');
-          const refreshedStageNames = await refreshStageNames();
-          console.log('🔍 Calendar - Refreshed stage names:', refreshedStageNames);
-        }
-
-        // Mark stage names as loaded
-        setStageNamesLoaded(true);
-
-        // Create a helper function to get category name using the loaded data
+        // Helper to get category name from allCategories (from useCachedFetch)
         const getCategoryNameFromData = (categoryId: string | number | null | undefined) => {
           if (!categoryId || categoryId === '---') return '';
-
-          // Use the categories from state (populated by useCachedFetch)
           const categoryById = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
           if (categoryById) return categoryById.name;
-
           const categoryByName = allCategories.find((cat: any) => cat.name === categoryId);
           if (categoryByName) return categoryByName.name;
-
           return String(categoryId);
         };
 
-        // Fetch ALL meetings in parallel - don't separate today's from background
-        const today = new Date().toISOString().split('T')[0];
-        console.log('🔍 CalendarPage: Starting fetchMeetingsAndStaff for date:', today);
+        // Process a single lead's currency/category/language from joins only (no client-side currency_id mapping)
+        const processLeadFromJoin = (lead: any) => {
+          if (!lead) return;
+          const currencyRecord = lead.accounting_currencies
+            ? (Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies)
+            : null;
+          if (currencyRecord) {
+            lead.balance_currency = (currencyRecord.name || currencyRecord.iso_code || '₪').trim() || '₪';
+          } else {
+            lead.balance_currency = lead.balance_currency || '₪';
+          }
+          lead.category = getCategoryDisplayFromJoin(lead) ?? getCategoryName(lead.category_id) ?? lead.category;
+          lead.language = getLanguageDisplayFromJoin(lead) ?? lead.language;
+        };
 
-        // Fetch past stages data helper (needed before displaying)
+        // Fetch past stages (small query)
         const fetchPastStagesData = async () => {
           try {
-            // Query for legacy leads (using lead_id)
-            const { data: legacyStageData, error: legacyError } = await supabase
-              .from('leads_leadstage')
-              .select('lead_id')
-              .in('stage', [35, 40])
-              .not('lead_id', 'is', null);
-
-            // Query for new leads (using newlead_id)
-            const { data: newStageData, error: newError } = await supabase
-              .from('leads_leadstage')
-              .select('newlead_id')
-              .in('stage', [35, 40])
-              .not('newlead_id', 'is', null);
-
+            const [legacyRes, newRes] = await Promise.all([
+              supabase.from('leads_leadstage').select('lead_id').in('stage', [35, 40]).not('lead_id', 'is', null),
+              supabase.from('leads_leadstage').select('newlead_id').in('stage', [35, 40]).not('newlead_id', 'is', null)
+            ]);
             const leadIds = new Set<string>();
-
-            // Add legacy lead IDs
-            if (!legacyError && legacyStageData) {
-              legacyStageData.forEach((entry: any) => {
-                if (entry.lead_id) {
-                  leadIds.add(`legacy_${entry.lead_id}`);
-                }
-              });
-            }
-
-            // Add new lead IDs
-            if (!newError && newStageData) {
-              newStageData.forEach((entry: any) => {
-                if (entry.newlead_id) {
-                  leadIds.add(entry.newlead_id);
-                }
-              });
-            }
-
+            (legacyRes.data || []).forEach((e: any) => { if (e.lead_id) leadIds.add(`legacy_${e.lead_id}`); });
+            (newRes.data || []).forEach((e: any) => { if (e.newlead_id) leadIds.add(e.newlead_id); });
             return leadIds;
-          } catch (error) {
-            console.error('Error fetching leads with past stages:', error);
+          } catch {
             return new Set<string>();
           }
         };
 
-        // Determine date range for legacy meetings
-        // Always use appliedFromDate/appliedToDate (they persist the current view), fallback to today if not set
-        const dateRangeFrom = appliedFromDate || today;
-        const dateRangeTo = appliedToDate || today;
+        // Build meetings query WITH joins so one round-trip gets meetings + leads (no separate lead fetches)
+        const meetingsSelect = `
+          id, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url,
+          meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
+          attendance_probability, complexity, car_number, calendar_type, extern1, extern2,
+          leads!meetings_client_id_fkey (
+            id, name, lead_number, manual_id, master_id, onedrive_folder_link, stage, manager, helper, scheduler, category, category_id,
+            balance, balance_currency, currency_id, expert_notes, expert, probability, phone, email, language, language_id,
+            meeting_confirmation, meeting_confirmation_by, eligibility_status, unactivated_at,
+            manual_interactions, number_of_applicants_meeting, meeting_collection_id,
+            meeting_manager_id, meeting_lawyer_id, handler, case_handler_id,
+            accounting_currencies!leads_currency_id_fkey (id, name, iso_code),
+            misc_category!fk_leads_category_id (id, name, parent_id, misc_maincategory!parent_id (id, name, department_id, tenant_departement!department_id (id, name))),
+            misc_leadsource!fk_leads_source_id (id, name),
+            misc_language!fk_leads_language_id (id, name)
+          ),
+          leads_lead!meetings_legacy_lead_id_fkey (
+            id, name, lead_number, master_id, stage, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, category, category_id,
+            total, total_base, currency_id, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
+            meeting_location_id, meeting_collection_id, meeting_confirmation, meeting_confirmation_by, case_handler_id, status,
+            accounting_currencies!leads_lead_currency_id_fkey (id, name, iso_code),
+            misc_category!leads_lead_category_id_fkey (id, name, parent_id, misc_maincategory!parent_id (id, name, department_id, tenant_departement!department_id (id, name))),
+            misc_leadsource!leads_lead_source_id_fkey (id, name),
+            misc_language!leads_lead_language_id_fkey (id, name)
+          )
+        `;
 
-        // Fetch only regular meetings + past stages first so the calendar shows immediately.
-        // Legacy leads_lead meetings are loaded in the background and merged when ready.
-        console.log('🔍 Fetching meetings (legacy deferred for fast load)...', { dateRangeFrom, dateRangeTo, datesManuallySet });
-
-        // Build regular meetings query with date filtering if dates are manually set
         let regularMeetingsQuery = supabase
           .from('meetings')
-          .select(`
-            id, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url,
-            meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
-            attendance_probability, complexity, car_number, calendar_type, extern1, extern2
-          `)
+          .select(meetingsSelect)
           .or('status.is.null,status.neq.canceled');
 
-        // Apply date filtering if dates are manually set
         if (datesManuallySet && dateRangeFrom && dateRangeTo) {
           regularMeetingsQuery = regularMeetingsQuery
             .gte('meeting_date', dateRangeFrom)
             .lte('meeting_date', dateRangeTo);
         }
 
-        const [
-          { data: allMeetingsData, error: allMeetingsError },
-          pastStagesData
-        ] = await Promise.all([
-          // Fetch regular meetings (filtered by date range if dates are manually set)
+        // Run stage names, past stages, and meetings (with joins) in parallel so nothing blocks "today's meetings"
+        const [, { data: allMeetingsData, error: allMeetingsError }, pastStagesData] = await Promise.all([
+          (async () => {
+            const stageNames = await fetchStageNames();
+            if (!stageNames || Object.keys(stageNames).length === 0) await refreshStageNames();
+            setStageNamesLoaded(true);
+          })(),
           regularMeetingsQuery.order('meeting_date', { ascending: false }),
-          // Fetch past stages data (small query)
           fetchPastStagesData()
         ]);
 
-        // Set past stages data immediately
         setLeadsWithPastStages(pastStagesData);
 
-        // Now process all regular meetings (combining today's and background into one processing step)
         let allProcessedMeetings: any[] = [];
-        let allMeetingsCurrencyMap: Record<number, { name?: string; iso_code?: string }> = {};
 
         if (!allMeetingsError && allMeetingsData && allMeetingsData.length > 0) {
-          // Collect unique client_ids and legacy_lead_ids from ALL meetings
-          const clientIds = [...new Set(allMeetingsData.map(m => m.client_id).filter(Boolean))];
-          const legacyLeadIds = [...new Set(allMeetingsData.map(m => m.legacy_lead_id).filter(Boolean))];
+          const newLeadsMap = new Map<string | number, any>();
+          const legacyLeadsMap = new Map<string | number, any>();
 
-          // Fetch new leads data
-          let newLeadsMap = new Map();
-          if (clientIds.length > 0) {
-            const { data: newLeadsData } = await supabase
-              .from('leads')
-              .select(`
-                id, name, lead_number, manual_id, master_id, onedrive_folder_link, stage, manager, helper, scheduler, category, category_id,
-                balance, balance_currency, currency_id, expert_notes, expert, probability, phone, email, language, language_id,
-                meeting_confirmation, meeting_confirmation_by, eligibility_status,
-                manual_interactions, number_of_applicants_meeting, meeting_collection_id,
-                meeting_manager_id, meeting_lawyer_id, handler, case_handler_id,
-                accounting_currencies!leads_currency_id_fkey (
-                  id,
-                  name,
-                  iso_code
-                ),
-                misc_category!fk_leads_category_id (
-                  id, name, parent_id,
-                  misc_maincategory!parent_id (
-                    id, name, department_id,
-                    tenant_departement!department_id ( id, name )
-                  )
-                ),
-                misc_leadsource!fk_leads_source_id ( id, name ),
-                misc_language!fk_leads_language_id ( id, name )
-              `)
-              .in('id', clientIds)
-              .is('unactivated_at', null) // Filter out inactive leads
-              .neq('stage', 91); // Filter out stage 91 (inactive/dropped leads)
-
-            if (newLeadsData) {
-              // Process each lead and extract currency data from the join
-              newLeadsData.forEach((lead: any) => {
-                // Extract currency data from joined table (same as Clients.tsx)
-                const currencyRecord = lead.accounting_currencies
-                  ? (Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies)
-                  : null;
-
-                // Convert currency_id to symbol (same logic as Clients.tsx)
-                if (currencyRecord) {
-                  // Store in currency map for later use
-                  allMeetingsCurrencyMap[currencyRecord.id] = {
-                    name: currencyRecord.name,
-                    iso_code: currencyRecord.iso_code
-                  };
-
-                  // Convert iso_code to symbol (same as Clients.tsx lines 2865-2889)
-                  const currencySymbol = (() => {
-                    if (currencyRecord.iso_code) {
-                      const isoCode = currencyRecord.iso_code.toUpperCase();
-                      if (isoCode === 'ILS' || isoCode === 'NIS') return '₪';
-                      if (isoCode === 'USD') return '$';
-                      if (isoCode === 'EUR') return '€';
-                      if (isoCode === 'GBP') return '£';
-                      if (isoCode === 'CAD') return 'C$';
-                      if (isoCode === 'AUD') return 'A$';
-                      if (isoCode === 'JPY') return '¥';
-                      return currencyRecord.name || isoCode || '₪';
-                    }
-                    // Fallback: if we have currency_id but no joined data, use simple mapping
-                    if (lead.currency_id) {
-                      const currencyId = Number(lead.currency_id);
-                      switch (currencyId) {
-                        case 1: return '₪'; break; // ILS
-                        case 2: return '€'; break; // EUR
-                        case 3: return '$'; break; // USD
-                        case 4: return '£'; break; // GBP
-                        default: return '₪';
-                      }
-                    }
-                    return '₪'; // Default fallback
-                  })();
-
-                  // Set balance_currency to the symbol (same as Clients.tsx line 2919)
-                  lead.balance_currency = currencySymbol;
-                } else if (lead.currency_id) {
-                  // If no joined currency data but we have currency_id, use fallback mapping
-                  const currencyId = Number(lead.currency_id);
-                  switch (currencyId) {
-                    case 1: lead.balance_currency = '₪'; break;
-                    case 2: lead.balance_currency = '€'; break;
-                    case 3: lead.balance_currency = '$'; break;
-                    case 4: lead.balance_currency = '£'; break;
-                    default: lead.balance_currency = '₪';
-                  }
-                } else {
-                  // Default to NIS if no currency_id
-                  lead.balance_currency = lead.balance_currency || '₪';
-                }
-
-                lead.category = getCategoryDisplayFromJoin(lead) ?? getCategoryName(lead.category_id) ?? lead.category;
-                lead.language = getLanguageDisplayFromJoin(lead) ?? lead.language;
+          // Build lead maps from joined data (no extra fetches); currency from accounting_currencies join only
+          allMeetingsData.forEach((row: any) => {
+            const lead = Array.isArray(row.leads) ? row.leads[0] : row.leads;
+            const legacyLead = Array.isArray(row.leads_lead) ? row.leads_lead[0] : row.leads_lead;
+            if (lead && lead.id != null) {
+              if (!newLeadsMap.has(lead.id)) {
+                processLeadFromJoin(lead);
                 newLeadsMap.set(lead.id, lead);
-              });
+              }
             }
-          }
-
-          // Fetch legacy leads data
-          let legacyLeadsMap = new Map();
-          if (legacyLeadIds.length > 0) {
-            const numericLegacyLeadIds = legacyLeadIds.map(id => typeof id === 'string' ? parseInt(id, 10) : id).filter(id => !isNaN(id));
-
-            const { data: legacyLeadsData } = await supabase
-              .from('leads_lead')
-              .select(`
-                id, name, lead_number, master_id, stage, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, category, category_id,
-                total, total_base, currency_id, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
-                meeting_location_id, meeting_collection_id, meeting_confirmation, meeting_confirmation_by, case_handler_id,
-                accounting_currencies!leads_lead_currency_id_fkey (
-                  id,
-                  name,
-                  iso_code
-                ),
-                misc_category!leads_lead_category_id_fkey (
-                  id, name, parent_id,
-                  misc_maincategory!parent_id (
-                    id, name, department_id,
-                    tenant_departement!department_id ( id, name )
-                  )
-                ),
-                misc_leadsource!leads_lead_source_id_fkey ( id, name ),
-                misc_language!leads_lead_language_id_fkey ( id, name )
-              `)
-              .in('id', numericLegacyLeadIds)
-              .or('status.eq.0,status.is.null') // Filter out inactive leads
-              .neq('stage', 91); // Filter out stage 91 (inactive/dropped leads)
-
-            if (legacyLeadsData && legacyLeadsData.length > 0) {
-              // Process each legacy lead and extract currency data from the join
-              legacyLeadsData.forEach((lead: any) => {
-                // Extract currency data from joined table (same as Clients.tsx)
-                const currencyRecord = lead.accounting_currencies
-                  ? (Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies)
-                  : null;
-
-                // Convert currency_id to symbol (same logic as new leads and Clients.tsx)
-                if (currencyRecord) {
-                  // Store in currency map for later use
-                  allMeetingsCurrencyMap[currencyRecord.id] = {
-                    name: currencyRecord.name,
-                    iso_code: currencyRecord.iso_code
-                  };
-
-                  // Convert iso_code to symbol (same as Clients.tsx lines 2865-2889 and new leads above)
-                  const currencySymbol = (() => {
-                    if (currencyRecord.iso_code) {
-                      const isoCode = currencyRecord.iso_code.toUpperCase();
-                      if (isoCode === 'ILS' || isoCode === 'NIS') return '₪';
-                      if (isoCode === 'USD') return '$';
-                      if (isoCode === 'EUR') return '€';
-                      if (isoCode === 'GBP') return '£';
-                      if (isoCode === 'CAD') return 'C$';
-                      if (isoCode === 'AUD') return 'A$';
-                      if (isoCode === 'JPY') return '¥';
-                      return currencyRecord.name || isoCode || '₪';
-                    }
-                    // Fallback: if we have currency_id but no joined data, use simple mapping
-                    if (lead.currency_id) {
-                      const currencyId = Number(lead.currency_id);
-                      switch (currencyId) {
-                        case 1: return '₪'; break; // ILS
-                        case 2: return '€'; break; // EUR
-                        case 3: return '$'; break; // USD
-                        case 4: return '£'; break; // GBP
-                        default: return '₪';
-                      }
-                    }
-                    return '₪'; // Default fallback
-                  })();
-
-                  // Set balance_currency to the symbol (same as new leads and Clients.tsx)
-                  lead.balance_currency = currencySymbol;
-                } else if (lead.currency_id) {
-                  // If no joined currency data but we have currency_id, use fallback mapping
-                  const currencyId = Number(lead.currency_id);
-                  switch (currencyId) {
-                    case 1: lead.balance_currency = '₪'; break;
-                    case 2: lead.balance_currency = '€'; break;
-                    case 3: lead.balance_currency = '$'; break;
-                    case 4: lead.balance_currency = '£'; break;
-                    default: lead.balance_currency = '₪';
-                  }
-                } else {
-                  // Default to NIS if no currency_id
-                  lead.balance_currency = '₪';
-                }
-
-                lead.category = getCategoryDisplayFromJoin(lead) ?? getCategoryName(lead.category_id) ?? lead.category;
-                lead.language = getLanguageDisplayFromJoin(lead) ?? lead.language;
-                legacyLeadsMap.set(lead.id, lead);
-                legacyLeadsMap.set(String(lead.id), lead);
-              });
+            if (legacyLead && legacyLead.id != null) {
+              const key = legacyLead.id;
+              if (!legacyLeadsMap.has(key)) {
+                processLeadFromJoin(legacyLead);
+                legacyLeadsMap.set(key, legacyLead);
+                legacyLeadsMap.set(String(key), legacyLead);
+              }
             }
-          }
+          });
 
-          // Combine ALL meetings with their lead data
-          const allMeetingsWithLeads = allMeetingsData.map(meeting => {
-            const legacyLead = meeting.legacy_lead_id
-              ? (legacyLeadsMap.get(meeting.legacy_lead_id) || legacyLeadsMap.get(String(meeting.legacy_lead_id)) || legacyLeadsMap.get(Number(meeting.legacy_lead_id)) || null)
+          // Combine meetings with their lead data from joins (no separate lead fetches)
+          const allMeetingsWithLeads = allMeetingsData.map((row: any) => {
+            const lead = row.client_id ? (newLeadsMap.get(row.client_id) ?? (Array.isArray(row.leads) ? row.leads[0] : row.leads)) : null;
+            const legacyLead = row.legacy_lead_id
+              ? ((legacyLeadsMap.get(row.legacy_lead_id) || legacyLeadsMap.get(String(row.legacy_lead_id)) || legacyLeadsMap.get(Number(row.legacy_lead_id))) ?? (Array.isArray(row.leads_lead) ? row.leads_lead[0] : row.leads_lead))
               : null;
-
-            return {
-              ...meeting,
-              lead: meeting.client_id ? newLeadsMap.get(meeting.client_id) : null,
-              legacy_lead: legacyLead
-            };
+            return { ...row, lead, legacy_lead: legacyLead };
           });
 
           // Process ALL meetings at once
@@ -3079,47 +2847,11 @@ const CalendarPage: React.FC = () => {
           console.error('Error fetching leads:', leadsError);
         } else if (leadsData) {
           leadsData.forEach((lead: any) => {
-            // Extract currency data from joined table and convert to symbol
             const currencyRecord = lead.accounting_currencies
               ? (Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies)
               : null;
-
             if (currencyRecord) {
-              // Convert iso_code to symbol
-              const currencySymbol = (() => {
-                if (currencyRecord.iso_code) {
-                  const isoCode = currencyRecord.iso_code.toUpperCase();
-                  if (isoCode === 'ILS' || isoCode === 'NIS') return '₪';
-                  if (isoCode === 'USD') return '$';
-                  if (isoCode === 'EUR') return '€';
-                  if (isoCode === 'GBP') return '£';
-                  if (isoCode === 'CAD') return 'C$';
-                  if (isoCode === 'AUD') return 'A$';
-                  if (isoCode === 'JPY') return '¥';
-                  return currencyRecord.name || isoCode || '₪';
-                }
-                if (lead.currency_id) {
-                  const currencyId = Number(lead.currency_id);
-                  switch (currencyId) {
-                    case 1: return '₪'; break;
-                    case 2: return '€'; break;
-                    case 3: return '$'; break;
-                    case 4: return '£'; break;
-                    default: return '₪';
-                  }
-                }
-                return '₪';
-              })();
-              lead.balance_currency = currencySymbol;
-            } else if (lead.currency_id) {
-              const currencyId = Number(lead.currency_id);
-              switch (currencyId) {
-                case 1: lead.balance_currency = '₪'; break;
-                case 2: lead.balance_currency = '€'; break;
-                case 3: lead.balance_currency = '$'; break;
-                case 4: lead.balance_currency = '£'; break;
-                default: lead.balance_currency = '₪';
-              }
+              lead.balance_currency = (currencyRecord.name || currencyRecord.iso_code || '₪').trim() || '₪';
             } else {
               lead.balance_currency = lead.balance_currency || '₪';
             }
@@ -4544,15 +4276,23 @@ const CalendarPage: React.FC = () => {
       return false;
     })();
 
-    // Same dark green as meeting time badge for "meeting ended" left outline
+    // Same dark green as meeting time badge for "meeting ended" – bottom-right corner indicator
     const meetingScheduledColor = resolveStageColour('20') || getStageColour('20') || '#10b981';
 
     return (
       <div
         key={meeting.id}
-        className={`rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 md:text-lg md:leading-relaxed bg-white ${selectedRowId === meeting.id ? 'ring-2 ring-primary ring-offset-2' : ''} ${hasPassedStage ? 'border-l-4' : ''}`}
-        style={hasPassedStage ? { borderLeftColor: meetingScheduledColor } : undefined}
+        className={`rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 md:text-lg md:leading-relaxed bg-white overflow-hidden ${selectedRowId === meeting.id ? 'ring-2 ring-primary ring-offset-2' : ''}`}
       >
+        {/* Bottom-right green corner with white check when meeting ended */}
+        {hasPassedStage && (
+          <div
+            className="absolute right-0 bottom-0 w-14 h-14 z-10 flex items-center justify-center"
+            style={{ background: `linear-gradient(135deg, transparent 50%, ${meetingScheduledColor} 50%)` }}
+          >
+            <CheckCircleIcon className="w-7 h-7 text-white drop-shadow-sm absolute right-1 bottom-1" strokeWidth={2.5} />
+          </div>
+        )}
         <div
           onClick={(e) => {
             if (meeting.calendar_type !== 'staff' && meeting.lead) {
@@ -4564,12 +4304,6 @@ const CalendarPage: React.FC = () => {
           }}
           className="flex-1 cursor-pointer flex flex-col relative"
         >
-          {/* Small green hook top-left when meeting ended (tucked into corner away from lead number) */}
-          {hasPassedStage && (
-            <div className="absolute left-0 top-0 -ml-3 -mt-3 z-10" style={{ color: meetingScheduledColor }}>
-              <CheckCircleIcon className="w-5 h-5" />
-            </div>
-          )}
           {/* Header with Name, Badge */}
           <div className="mb-3 flex items-start justify-between gap-2 relative">
             <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -4736,27 +4470,8 @@ const CalendarPage: React.FC = () => {
                     balanceValue = lead.balance || (lead as any).proposal_total;
                   }
 
-                  // Get currency symbol - for both legacy and new leads, use currency_id if available
-                  let balanceCurrency = lead.balance_currency;
-                  if (!balanceCurrency) {
-                    const currencyId = (lead as any).currency_id;
-                    if (currencyId) {
-                      const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                      // First try to get from currency map (most accurate)
-                      if (currencyMap[numericCurrencyId]) {
-                        balanceCurrency = currencyMap[numericCurrencyId].iso_code || currencyMap[numericCurrencyId].name || 'NIS';
-                      } else {
-                        // Fallback to hardcoded mapping if currency not found in map
-                        balanceCurrency = numericCurrencyId === 1 ? 'NIS' :
-                          numericCurrencyId === 2 ? 'USD' :
-                            numericCurrencyId === 3 ? 'EUR' :
-                              numericCurrencyId === 4 ? 'GBP' : 'NIS';
-                      }
-                    } else {
-                      // If no currency_id, try meeting currency or default to NIS
-                      balanceCurrency = meeting.meeting_currency || 'NIS';
-                    }
-                  }
+                  // Currency from join (accounting_currencies) only, same as Clients.tsx total value badge
+                  let balanceCurrency = lead.balance_currency || meeting.meeting_currency || 'NIS';
 
                   // Fallback to meeting amount if no balance
                   if (!balanceValue && meeting.meeting_amount) {
@@ -4925,6 +4640,40 @@ const CalendarPage: React.FC = () => {
               <VideoCameraIcon className="w-4 h-4" />
             </button>
           )}
+          {/* Add guest plus button - active_client and potential_client only */}
+          {(meeting.calendar_type === 'active_client' || meeting.calendar_type === 'potential_client') && (
+            <button
+              className="btn btn-outline btn-primary btn-sm"
+              title="Add Guest"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedMeetingForGuest(meeting);
+                const hasGuest1 = meeting.extern1 && meeting.extern1 !== '--' && meeting.extern1 !== '';
+                const hasGuest2 = meeting.extern2 && meeting.extern2 !== '--' && meeting.extern2 !== '';
+                if (!hasGuest1) {
+                  setGuestSelectionType('extern1');
+                } else if (!hasGuest2) {
+                  setGuestSelectionType('extern2');
+                } else {
+                  setGuestSelectionType('extern1');
+                }
+                setIsGuestSelectionModalOpen(true);
+              }}
+            >
+              <PlusIcon className="w-4 h-4" />
+            </button>
+          )}
+          <button
+            className="btn btn-ghost btn-circle btn-sm text-primary"
+            title={isExpanded ? 'Hide Details' : 'Show More'}
+            aria-label={isExpanded ? 'Hide Details' : 'Show More'}
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id);
+            }}
+          >
+            <ChevronDownIcon className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+          </button>
         </div>
 
         {/* Show edit button for staff meetings (at bottom) */}
@@ -5117,7 +4866,7 @@ const CalendarPage: React.FC = () => {
     return (
       <React.Fragment key={meeting.id}>
         <tr
-          className={`hover:bg-base-200/50 ${selectedRowId === meeting.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''} ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}
+          className={`relative z-10 bg-white hover:bg-base-200/50 ${selectedRowId === meeting.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''} ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}
           onClick={() => {
             if (meeting.calendar_type !== 'staff' && meeting.lead) {
               handleRowSelect(meeting.id);
@@ -5125,12 +4874,12 @@ const CalendarPage: React.FC = () => {
           }}
           style={{ cursor: meeting.calendar_type !== 'staff' && meeting.lead ? 'pointer' : 'default' }}
         >
-          {/* TYPE Column - First (New) */}
+          {/* TYPE Column - fixed-width icon slot so badge is always aligned */}
           <td className="w-10">
             <div className="flex items-center gap-1 sm:gap-2">
-              {hasPassedStage && (
-                <CheckCircleIcon className="w-4 h-4 sm:w-5 sm:h-5 text-green-500 flex-shrink-0" />
-              )}
+              <span className="w-5 h-5 flex-shrink-0 flex items-center justify-center">
+                {hasPassedStage ? <CheckCircleIcon className="w-4 h-4 sm:w-5 sm:h-5 text-green-500" /> : null}
+              </span>
               <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-bold border whitespace-nowrap" style={{
                 backgroundColor: getCalendarTypeBadgeStyles(meeting.calendar_type)?.backgroundColor,
                 color: getCalendarTypeBadgeStyles(meeting.calendar_type)?.textColor,
@@ -5204,27 +4953,8 @@ const CalendarPage: React.FC = () => {
                 balanceValue = lead.balance || (lead as any).proposal_total;
               }
 
-              // Get currency symbol - for both legacy and new leads, use currency_id if available
-              let balanceCurrency = lead.balance_currency;
-              if (!balanceCurrency) {
-                const currencyId = (lead as any).currency_id;
-                if (currencyId) {
-                  const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                  // First try to get from currency map (most accurate)
-                  if (currencyMap[numericCurrencyId]) {
-                    balanceCurrency = currencyMap[numericCurrencyId].iso_code || currencyMap[numericCurrencyId].name || 'NIS';
-                  } else {
-                    // Fallback to hardcoded mapping if currency not found in map
-                    balanceCurrency = numericCurrencyId === 1 ? 'NIS' :
-                      numericCurrencyId === 2 ? 'USD' :
-                        numericCurrencyId === 3 ? 'EUR' :
-                          numericCurrencyId === 4 ? 'GBP' : 'NIS';
-                  }
-                } else {
-                  // If no currency_id, try meeting currency or default to NIS
-                  balanceCurrency = meeting.meeting_currency || 'NIS';
-                }
-              }
+              // Currency from join (accounting_currencies) only, same as Clients.tsx total value badge
+              let balanceCurrency = lead.balance_currency || meeting.meeting_currency || 'NIS';
 
               // Fallback to meeting amount if no balance
               if (!balanceValue && meeting.meeting_amount) {
@@ -5451,6 +5181,17 @@ const CalendarPage: React.FC = () => {
                   <PlusIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                 </button>
               )}
+              <button
+                className="btn btn-ghost btn-circle btn-xs sm:btn-sm text-primary"
+                title={isExpanded ? 'Hide Details' : 'Show More'}
+                aria-label={isExpanded ? 'Hide Details' : 'Show More'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id);
+                }}
+              >
+                <ChevronDownIcon className={`w-4 h-4 sm:w-5 sm:h-5 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+              </button>
             </div>
           </td>
         </tr>
@@ -5718,19 +5459,6 @@ const CalendarPage: React.FC = () => {
           )
         }
 
-        {/* Toggle Row */}
-        <tr>
-          <td colSpan={8} className="p-0">
-            <button
-              className="bg-white hover:bg-gray-50 cursor-pointer transition-colors p-2 text-center w-full block text-primary font-medium flex items-center justify-center gap-2 shadow-sm"
-              style={{ border: 'none', outline: 'none' }}
-              onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)}
-            >
-              <ChevronDownIcon className={`w-3 h-3 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-              <span className="text-xs">{isExpanded ? 'Hide Details' : 'Show More'}</span>
-            </button>
-          </td>
-        </tr>
       </React.Fragment >
     );
   };
@@ -5759,63 +5487,164 @@ const CalendarPage: React.FC = () => {
           }
         `}
       </style>
-      {/* Date Navigation - on mobile: fixed oval below header, bigger + glassy blurred; on desktop: normal flow */}
+      {/* Date Navigation - count left, arrows center, actions dropdown right (no z-index so it doesn't overlay filters) */}
       <div
-        className="flex items-center justify-center gap-4 md:gap-4 mb-6 md:mb-6 rounded-full bg-white/60 dark:bg-base-300/50 backdrop-blur-xl border border-white/30 dark:border-base-content/10 shadow-xl px-6 py-3.5 md:px-0 md:py-0 md:rounded-none md:bg-transparent md:backdrop-blur-none md:border-0 md:shadow-none fixed left-1/2 -translate-x-1/2 z-40 md:static md:left-auto md:translate-x-0 md:top-auto"
+        className="flex items-center justify-between gap-2 md:gap-4 mb-6 md:mb-6 rounded-full bg-white/60 dark:bg-base-300/50 backdrop-blur-xl border border-white/30 dark:border-base-content/10 shadow-xl px-4 py-3 md:px-6 md:py-3.5 md:rounded-none md:bg-transparent md:backdrop-blur-none md:border-0 md:shadow-none fixed left-1/2 -translate-x-1/2 z-40 md:static md:left-auto md:translate-x-0 md:top-auto w-[calc(100%-2rem)] md:w-full max-w-4xl md:max-w-none mx-auto"
         style={{
           top: 'max(4.75rem, calc(76px + env(safe-area-inset-top, 0px)))',
           paddingTop: 'max(0.25rem, env(safe-area-inset-top, 0px))'
         }}
       >
-        <button
-          onClick={goToPreviousDay}
-          className="btn btn-circle btn-outline btn-primary btn-md md:btn-md"
-          title="Previous Day"
-        >
-          <ChevronLeftIcon className="w-6 h-6 md:w-6 md:h-6" />
-        </button>
-
-        <div className="flex items-center gap-2 md:gap-3 min-w-0 flex-1 justify-center md:flex-initial">
-          <span className="text-sm font-semibold text-center sm:text-base md:text-lg md:text-left truncate max-w-[55vw] md:max-w-none">
-            {appliedFromDate === appliedToDate ? (
-              (() => {
-                const d = new Date(appliedFromDate);
-                const weekday = d.toLocaleDateString('en-US', { weekday: 'long' });
-                const day = String(d.getDate()).padStart(2, '0');
-                const month = d.toLocaleDateString('en-US', { month: 'long' });
-                const year = String(d.getFullYear()).slice(-2);
-                return `${weekday}, ${day}. ${month} ${year}`;
-              })()
-            ) : (
-              (() => {
-                const fmt = (dateStr: string) => {
-                  const d = new Date(dateStr);
-                  const day = String(d.getDate()).padStart(2, '0');
-                  const month = d.toLocaleDateString('en-US', { month: 'long' });
-                  const year = String(d.getFullYear()).slice(-2);
-                  return `${day}. ${month} ${year}`;
-                };
-                return `${fmt(appliedFromDate)} - ${fmt(appliedToDate)}`;
-              })()
-            )}
+        <div className="flex-shrink-0 flex items-center">
+          <span className="md:hidden inline-flex items-center justify-center min-w-[1.75rem] h-7 px-2 rounded-full text-sm font-bold text-white" style={{ backgroundColor: '#3b28c7' }}>
+            {filteredMeetings.length}
           </span>
+          <span className="hidden md:inline text-sm md:text-base font-bold" style={{ color: '#3b28c7' }}>
+            {filteredMeetings.length} meetings
+          </span>
+        </div>
+
+        <div className="flex items-center justify-center gap-2 md:gap-4 flex-1 min-w-0">
           <button
-            onClick={goToToday}
-            className="hidden md:inline-flex btn btn-sm btn-primary flex-shrink-0"
-            title="Go to Today"
+            onClick={goToPreviousDay}
+            className="btn btn-circle btn-outline btn-primary btn-md md:btn-md flex-shrink-0"
+            title="Previous Day"
           >
-            Today
+            <ChevronLeftIcon className="w-6 h-6 md:w-6 md:h-6" />
+          </button>
+          <div className="flex items-center gap-2 md:gap-3 min-w-0 flex-1 justify-center md:flex-initial">
+            <span className="text-sm font-semibold text-center sm:text-base md:text-lg md:text-left truncate max-w-[45vw] md:max-w-none">
+              {appliedFromDate === appliedToDate ? (
+                (() => {
+                  const d = new Date(appliedFromDate);
+                  const day = String(d.getDate()).padStart(2, '0');
+                  const monthNum = String(d.getMonth() + 1).padStart(2, '0');
+                  const weekdayLong = d.toLocaleDateString('en-US', { weekday: 'long' });
+                  const weekdayShort = d.toLocaleDateString('en-US', { weekday: 'short' });
+                  const monthLong = d.toLocaleDateString('en-US', { month: 'long' });
+                  const year = String(d.getFullYear()).slice(-2);
+                  return (
+                    <>
+                      <span className="md:hidden">{weekdayShort}, {day}.{monthNum}.{year}</span>
+                      <span className="hidden md:inline">{weekdayLong}, {day}. {monthLong} {year}</span>
+                    </>
+                  );
+                })()
+              ) : (
+                (() => {
+                  const fmt = (dateStr: string, short: boolean) => {
+                    const d = new Date(dateStr);
+                    const day = String(d.getDate()).padStart(2, '0');
+                    const monthNum = String(d.getMonth() + 1).padStart(2, '0');
+                    const year = String(d.getFullYear()).slice(-2);
+                    if (short) return `${day}/${monthNum}/${year}`;
+                    const month = d.toLocaleDateString('en-US', { month: 'long' });
+                    return `${day}. ${month} ${year}`;
+                  };
+                  return (
+                    <>
+                      <span className="md:hidden">{fmt(appliedFromDate, true)} – {fmt(appliedToDate, true)}</span>
+                      <span className="hidden md:inline">{fmt(appliedFromDate, false)} - {fmt(appliedToDate, false)}</span>
+                    </>
+                  );
+                })()
+              )}
+            </span>
+            <button
+              onClick={goToToday}
+              className="hidden md:inline-flex btn btn-sm btn-primary flex-shrink-0"
+              title="Go to Today"
+            >
+              Today
+            </button>
+          </div>
+          <button
+            onClick={goToNextDay}
+            className="btn btn-circle btn-outline btn-primary btn-md md:btn-md flex-shrink-0"
+            title="Next Day"
+          >
+            <ChevronRightIcon className="w-6 h-6 md:w-6 md:h-6" />
           </button>
         </div>
 
-        <button
-          onClick={goToNextDay}
-          className="btn btn-circle btn-outline btn-primary btn-md md:btn-md"
-          title="Next Day"
-        >
-          <ChevronRightIcon className="w-6 h-6 md:w-6 md:h-6" />
-        </button>
+        <div className="flex-shrink-0" ref={actionMenuDropdownRef}>
+          <button
+            className="btn btn-circle btn-md md:btn-lg bg-white border-2 hover:bg-gray-50 shadow-md hover:shadow-lg transition-all duration-200"
+            style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
+            title="Actions"
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowActionMenuDropdown(!showActionMenuDropdown);
+            }}
+          >
+            <EllipsisVerticalIcon className="w-5 h-5 md:w-6 md:h-6" />
+          </button>
+        </div>
       </div>
+
+      {/* Action dropdown portal - overlays filters/table without date bar covering filters */}
+      {showActionMenuDropdown && actionDropdownPosition && createPortal(
+        <div
+          data-action-dropdown
+          className="w-56 bg-white border border-gray-200 rounded-xl shadow-2xl overflow-hidden"
+          style={{
+            position: 'fixed',
+            top: actionDropdownPosition.top,
+            right: actionDropdownPosition.right,
+            zIndex: 9999,
+          }}
+        >
+          <div className="py-2">
+            <button
+              className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+              onClick={() => {
+                openAssignStaffModal();
+                setShowActionMenuDropdown(false);
+              }}
+            >
+              <UserGroupIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              <span className="text-sm font-semibold text-gray-700">Assign Staff</span>
+            </button>
+            <button
+              className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+              onClick={() => {
+                setSelectedDateForMeeting(new Date());
+                setSelectedTimeForMeeting('09:00');
+                setIsTeamsMeetingModalOpen(true);
+                setShowActionMenuDropdown(false);
+              }}
+            >
+              <VideoCameraIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              <span className="text-sm font-semibold text-gray-700">Create Teams Meeting</span>
+            </button>
+            <button
+              className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+              onClick={() => {
+                setViewMode(viewMode === 'cards' ? 'list' : 'cards');
+                setShowActionMenuDropdown(false);
+              }}
+            >
+              {viewMode === 'cards' ? (
+                <Bars3Icon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              ) : (
+                <Squares2X2Icon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              )}
+              <span className="text-sm font-semibold text-gray-700">{viewMode === 'cards' ? 'Switch to List View' : 'Switch to Card View'}</span>
+            </button>
+            <button
+              className="md:hidden w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+              onClick={() => {
+                setShowMobileFiltersModal(true);
+                setShowActionMenuDropdown(false);
+              }}
+            >
+              <FunnelIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              <span className="text-sm font-semibold text-gray-700">Filters</span>
+            </button>
+          </div>
+        </div>,
+        document.body
+      )}
       {/* Spacer on mobile so content starts below the fixed date bar (under header) */}
       <div className="h-32 flex-shrink-0 md:hidden" aria-hidden="true" />
 
@@ -6048,93 +5877,6 @@ const CalendarPage: React.FC = () => {
       )}
 
 
-      {/* Action Buttons Row */}
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3 w-full">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-2">
-            <span className="hidden md:inline text-sm md:text-base font-medium text-gray-700">Total Meetings:</span>
-            <span className="text-base md:text-lg font-bold" style={{ color: '#3b28c7' }}>{filteredMeetings.length} meetings</span>
-          </div>
-        </div>
-
-        {/* Click Dropdown Menu - desktop: in flow top right; mobile: fixed bottom right, stacked ON TOP of filter button (z-50) */}
-        <div
-          className="calendar-action-fixed-mobile fixed md:relative right-6 md:right-auto z-50 md:z-auto"
-          ref={actionMenuDropdownRef}
-        >
-          <button
-            className="btn btn-circle btn-lg bg-white border-2 hover:bg-gray-50 shadow-lg hover:shadow-xl transition-all duration-200"
-            style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
-            title="Actions"
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowActionMenuDropdown(!showActionMenuDropdown);
-            }}
-          >
-            <EllipsisVerticalIcon className="w-6 h-6" />
-          </button>
-
-          {/* Dropdown Menu - opens upward on mobile (bottom-full), downward on desktop (top-full) */}
-          {showActionMenuDropdown && (
-            <div className="absolute right-0 bottom-full mb-2 md:bottom-auto md:mb-0 md:top-full md:mt-2 w-56 bg-white border border-gray-200 rounded-xl shadow-2xl z-50 overflow-hidden">
-              <div className="py-2">
-                <button
-                  className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
-                  onClick={() => {
-                    openAssignStaffModal();
-                    setShowActionMenuDropdown(false);
-                  }}
-                >
-                  <UserGroupIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
-                  <span className="text-sm font-semibold text-gray-700">Assign Staff</span>
-                </button>
-                <button
-                  className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
-                  onClick={() => {
-                    setSelectedDateForMeeting(new Date());
-                    setSelectedTimeForMeeting('09:00');
-                    setIsTeamsMeetingModalOpen(true);
-                    setShowActionMenuDropdown(false);
-                  }}
-                >
-                  <VideoCameraIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
-                  <span className="text-sm font-semibold text-gray-700">Create Teams Meeting</span>
-                </button>
-                <button
-                  className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
-                  onClick={() => {
-                    setViewMode(viewMode === 'cards' ? 'list' : 'cards');
-                    setShowActionMenuDropdown(false);
-                  }}
-                >
-                  {viewMode === 'cards' ? (
-                    <Bars3Icon className="w-5 h-5" style={{ color: '#3b28c7' }} />
-                  ) : (
-                    <Squares2X2Icon className="w-5 h-5" style={{ color: '#3b28c7' }} />
-                  )}
-                  <span className="text-sm font-semibold text-gray-700">
-                    {viewMode === 'cards' ? 'Switch to List View' : 'Switch to Card View'}
-                  </span>
-                </button>
-                <button
-                  className="md:hidden w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
-                  onClick={() => {
-                    setShowMobileFiltersModal(true);
-                    setShowActionMenuDropdown(false);
-                  }}
-                >
-                  <FunnelIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
-                  <span className="text-sm font-semibold text-gray-700">Filters</span>
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-
-
-
       {/* Meetings List */}
       <div className="mt-6 bg-base-100 rounded-lg shadow-lg overflow-x-auto">
         {/* Desktop Table - Show when viewMode is 'list' */}
@@ -6157,7 +5899,37 @@ const CalendarPage: React.FC = () => {
               {isLoading ? (
                 <tr><td colSpan={8} className="text-center p-8 text-lg">Loading meetings...</td></tr>
               ) : filteredMeetings.length > 0 ? (
-                filteredMeetings.map(renderMeetingRow)
+                (() => {
+                  const todayStr = new Date().toISOString().split('T')[0];
+                  const now = new Date();
+                  const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+                  const showNowLine = appliedFromDate && appliedToDate && appliedFromDate <= todayStr && todayStr <= appliedToDate;
+                  const CurrentTimeRow = () => (
+                    <tr className="relative z-0 bg-transparent hover:bg-transparent border-0">
+                      <td colSpan={8} className="p-0 align-middle border-0 relative">
+                        <div className="relative flex items-center gap-3 py-1.5">
+                          <span className="relative z-10 bg-white px-1.5 py-0.5 text-xs font-semibold text-red-600 whitespace-nowrap tabular-nums rounded" style={{ minWidth: '3.5rem' }}>
+                            {currentTime}
+                          </span>
+                          <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-0.5 bg-red-500 rounded-full z-0 pointer-events-none" style={{ boxShadow: '0 0 6px rgba(239,68,68,0.4)' }} />
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                  if (!showNowLine) return filteredMeetings.map(renderMeetingRow);
+                  const result: React.ReactNode[] = [];
+                  let nowInserted = false;
+                  filteredMeetings.forEach((meeting) => {
+                    const time = (meeting.meeting_time || '').slice(0, 5);
+                    if (!nowInserted && time > currentTime) {
+                      result.push(<CurrentTimeRow key="current-time" />);
+                      nowInserted = true;
+                    }
+                    result.push(renderMeetingRow(meeting));
+                  });
+                  if (!nowInserted) result.push(<CurrentTimeRow key="current-time" />);
+                  return result;
+                })()
               ) : isLegacyLoading ? (
                 <tr><td colSpan={8} className="text-center p-8 text-lg">
                   <div className="flex items-center justify-center gap-2">
@@ -6297,10 +6069,34 @@ const CalendarPage: React.FC = () => {
               </button>
             </div>
 
+            {/* Search employees */}
+            <div className="px-6 pt-2 pb-2 border-b border-gray-100">
+              <label className="sr-only" htmlFor="guest-employee-search">Search employees</label>
+              <div className="relative">
+                <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                <input
+                  id="guest-employee-search"
+                  type="text"
+                  placeholder="Search by name or department..."
+                  value={guestSearchTerm}
+                  onChange={(e) => setGuestSearchTerm(e.target.value)}
+                  className="input input-bordered w-full pl-10 pr-4"
+                />
+              </div>
+            </div>
+
             {/* Employee List */}
             <div className="flex-1 overflow-y-auto p-6">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {allEmployees.map((employee: any) => {
+                {allEmployees
+                  .filter((employee: any) => {
+                    if (!guestSearchTerm.trim()) return true;
+                    const q = guestSearchTerm.trim().toLowerCase();
+                    const name = (employee.display_name || '').toLowerCase();
+                    const dept = (employee.tenant_departement?.name || '').toLowerCase();
+                    return name.includes(q) || dept.includes(q);
+                  })
+                  .map((employee: any) => {
                   const isSelected = selectedMeetingForGuest[guestSelectionType] === employee.id.toString();
                   return (
                     <button
@@ -6312,22 +6108,22 @@ const CalendarPage: React.FC = () => {
                           handleSaveGuest(selectedMeetingForGuest.id, guestSelectionType, employee.id);
                         }
                       }}
-                      className={`flex flex-col items-center gap-1 p-4 rounded-lg border-2 transition-all ${isSelected
+                      className={`flex flex-row items-center gap-4 p-4 rounded-lg border-2 transition-all text-left ${isSelected
                         ? 'border-primary bg-primary/10'
                         : 'border-gray-200 hover:border-primary hover:bg-gray-50'
                         }`}
                     >
                       <div className="flex-shrink-0">
-                        {renderEmployeeAvatar(employee.id, 'sm', false)}
+                        {renderEmployeeAvatar(employee.id, 'lg', false)}
                       </div>
-                      <div className="text-center">
-                        <div className="font-semibold text-gray-900 text-sm">{employee.display_name}</div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-gray-900 text-base">{employee.display_name}</div>
                         {employee.tenant_departement?.name && (
-                          <div className="text-xs text-gray-500">{employee.tenant_departement.name}</div>
+                          <div className="text-xs text-gray-500 mt-0.5">{employee.tenant_departement.name}</div>
                         )}
                       </div>
                       {isSelected && (
-                        <CheckIcon className="w-5 h-5 text-primary" />
+                        <CheckIcon className="w-5 h-5 text-primary flex-shrink-0" />
                       )}
                     </button>
                   );
@@ -7044,39 +6840,8 @@ const CalendarPage: React.FC = () => {
                                           balanceValue = lead.balance || (lead as any).proposal_total;
                                         }
 
-                                        // Get currency symbol - for both legacy and new leads, use balance_currency if available
-                                        // balance_currency is already set as a symbol (₪, $, €, etc.) from fetchAssignStaffData
-                                        let balanceCurrency = lead.balance_currency;
-
-                                        // If balance_currency is already a symbol, use it directly with getCurrencySymbol
-                                        // Otherwise, convert currency_id to currency code first
-                                        if (!balanceCurrency) {
-                                          const currencyId = (lead as any).currency_id;
-                                          if (currencyId) {
-                                            const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                                            // First try to get from currency map (most accurate)
-                                            if (currencyMap && currencyMap[numericCurrencyId]) {
-                                              balanceCurrency = currencyMap[numericCurrencyId].iso_code || currencyMap[numericCurrencyId].name || 'NIS';
-                                            } else {
-                                              // Fallback to hardcoded mapping if currency not found in map
-                                              balanceCurrency = numericCurrencyId === 1 ? 'NIS' :
-                                                numericCurrencyId === 2 ? 'USD' :
-                                                  numericCurrencyId === 3 ? 'EUR' :
-                                                    numericCurrencyId === 4 ? 'GBP' : 'NIS';
-                                            }
-                                          } else {
-                                            // If no currency_id, try meeting currency or default to NIS
-                                            balanceCurrency = meeting.meeting_currency || 'NIS';
-                                          }
-                                        } else {
-                                          // balance_currency is already a symbol, but getCurrencySymbol expects a code
-                                          // Convert symbol back to code for getCurrencySymbol
-                                          if (balanceCurrency === '₪') balanceCurrency = 'NIS';
-                                          else if (balanceCurrency === '$') balanceCurrency = 'USD';
-                                          else if (balanceCurrency === '€') balanceCurrency = 'EUR';
-                                          else if (balanceCurrency === '£') balanceCurrency = 'GBP';
-                                          // If it's already a code, keep it as is
-                                        }
+                                        // Currency from join (accounting_currencies) only, same as Clients.tsx total value badge
+                                        let balanceCurrency = lead.balance_currency || meeting.meeting_currency || 'NIS';
 
                                         // Fallback to meeting amount if no balance
                                         if (!balanceValue && meeting.meeting_amount) {

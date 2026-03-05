@@ -1154,6 +1154,16 @@ const Clients: React.FC<ClientsProps> = ({
     return record?.name && typeof record.name === 'string' ? record.name.trim() || null : null;
   }, []);
 
+  // Tags from joined leads_lead_tags + misc_leadtag (used when lead is fetched with tags join)
+  const getTagsFromJoin = useCallback((lead: any): string => {
+    const arr = lead?.leads_lead_tags;
+    if (!arr || !Array.isArray(arr)) return '';
+    return arr
+      .map((r: any) => (r.misc_leadtag?.name ?? (Array.isArray(r.misc_leadtag) ? r.misc_leadtag[0]?.name : null)))
+      .filter(Boolean)
+      .join(', ');
+  }, []);
+
   // Helper function to get category name from ID with main category (memoized with cache)
   const getCategoryName = useCallback((categoryId: string | number | null | undefined, fallbackCategory?: string) => {
     // Create cache key
@@ -3581,7 +3591,8 @@ const Clients: React.FC<ClientsProps> = ({
                     misc_maincategory!parent_id ( id, name )
                   ),
                   misc_leadsource!fk_leads_source_id ( id, name ),
-                  misc_language!fk_leads_language_id ( id, name )
+                  misc_language!fk_leads_language_id ( id, name ),
+                  leads_lead_tags ( misc_leadtag ( name ) )
                 `)
                 .eq('manual_id', effectiveLeadNumber)
                 .then(({ data, error }) => ({ type: 'manual', data, error }))
@@ -3616,7 +3627,8 @@ const Clients: React.FC<ClientsProps> = ({
                 closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name),
                 expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
                 handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name),
-                stage_info:lead_stages!fk_leads_lead_stage(id, name, colour)
+                stage_info:lead_stages!fk_leads_lead_stage(id, name, colour),
+                leads_lead_tags ( misc_leadtag ( name ) )
               `)
                 .eq('id', parseInt(effectiveLeadNumber))
                 .single()
@@ -3650,7 +3662,8 @@ const Clients: React.FC<ClientsProps> = ({
                     closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name),
                     expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
                     handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name),
-                    stage_info:lead_stages!fk_leads_lead_stage(id, name, colour)
+                    stage_info:lead_stages!fk_leads_lead_stage(id, name, colour),
+                    leads_lead_tags ( misc_leadtag ( name ) )
                   `)
                   .eq('master_id', masterId)
                   .not('master_id', 'is', null)
@@ -3686,7 +3699,8 @@ const Clients: React.FC<ClientsProps> = ({
                     misc_maincategory!parent_id ( id, name )
                   ),
                   misc_leadsource!fk_leads_source_id ( id, name ),
-                  misc_language!fk_leads_language_id ( id, name )
+                  misc_language!fk_leads_language_id ( id, name ),
+                  leads_lead_tags ( misc_leadtag ( name ) )
                 `)
                 .eq('lead_number', effectiveLeadNumber)
                 .single()
@@ -3710,7 +3724,8 @@ const Clients: React.FC<ClientsProps> = ({
                     misc_maincategory!parent_id ( id, name )
                   ),
                   misc_leadsource!fk_leads_source_id ( id, name ),
-                  misc_language!fk_leads_language_id ( id, name )
+                  misc_language!fk_leads_language_id ( id, name ),
+                  leads_lead_tags ( misc_leadtag ( name ) )
                 `)
                 .eq('lead_number', effectiveLeadNumber)
                 .single()
@@ -3935,7 +3950,8 @@ const Clients: React.FC<ClientsProps> = ({
                     misc_maincategory!parent_id ( id, name )
                   ),
                   misc_leadsource!fk_leads_source_id ( id, name ),
-                  misc_language!fk_leads_language_id ( id, name )
+                  misc_language!fk_leads_language_id ( id, name ),
+                  leads_lead_tags ( misc_leadtag ( name ) )
                 `)
                 .eq('manual_id', numericLeadCandidate)
                 .order('created_at', { ascending: false })
@@ -4000,6 +4016,11 @@ const Clients: React.FC<ClientsProps> = ({
 
             // Set flag to prevent useEffect from interfering
             isSettingUpClientRef.current = true;
+
+            // Tags from joined leads_lead_tags (when present on clientData)
+            if (clientData && !clientData.tags && (clientData as any).leads_lead_tags) {
+              (clientData as any).tags = getTagsFromJoin(clientData);
+            }
 
             // Normalize and set the client immediately for faster rendering
             const normalizedClient = normalizeClientStage(clientData);

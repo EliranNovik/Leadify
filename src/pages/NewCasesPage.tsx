@@ -570,17 +570,24 @@ const NewCasesPage: React.FC = () => {
           </div>
           <div className="flex items-center gap-2 min-w-0" title="Language">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" /></svg>
-            <span className="truncate">{lead.language || 'N/A'}</span>
+            <span className="truncate">{lead._languageName ?? lead.language ?? 'N/A'}</span>
           </div>
           <div className="flex items-center gap-2 min-w-0" title="Source">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-            <span className="truncate">{lead.source || 'N/A'}</span>
+            <span className="truncate">{lead._sourceName ?? lead.source ?? 'N/A'}</span>
           </div>
         </div>
 
         <div className="mt-3 flex items-center gap-2 text-sm" title="Category">
           <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
-          <span className="truncate">{formatCategoryDisplay(lead.category_id, lead.category || lead.topic)}</span>
+          <span className="truncate">{(() => {
+            const cat = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
+            if (cat?.name) {
+              const main = Array.isArray(cat.misc_maincategory) ? cat.misc_maincategory[0] : cat.misc_maincategory;
+              return main?.name ? `${cat.name} (${main.name})` : cat.name;
+            }
+            return formatCategoryDisplay(lead.category_id, lead.category || lead.topic);
+          })()}</span>
         </div>
 
         <div className="mt-3 pt-3 border-t border-base-200/50 flex items-center justify-between gap-2 flex-shrink-0">
@@ -622,6 +629,11 @@ const NewCasesPage: React.FC = () => {
 
         const baseSelect = `
           *,
+          lead_stages!fk_leads_stage(
+            id,
+            name,
+            colour
+          ),
           misc_category!category_id(
             id,
             name,
@@ -630,6 +642,14 @@ const NewCasesPage: React.FC = () => {
               id,
               name
             )
+          ),
+          misc_leadsource!fk_leads_source_id(
+            id,
+            name
+          ),
+          misc_language!fk_leads_language_id(
+            id,
+            name
           )
         `;
 
@@ -694,22 +714,37 @@ const NewCasesPage: React.FC = () => {
           index === self.findIndex(l => l.id === lead.id)
         );
 
+        // Use joined data for stage/source/language (no client-side mapping)
+        const stageNameFromJoin = (l: any) => {
+          const j = Array.isArray(l?.lead_stages) ? l.lead_stages[0] : l?.lead_stages;
+          return j?.name ?? null;
+        };
+        const sourceNameFromJoin = (l: any) => {
+          const j = Array.isArray(l?.misc_leadsource) ? l.misc_leadsource[0] : l?.misc_leadsource;
+          return j?.name ?? null;
+        };
+        const languageNameFromJoin = (l: any) => {
+          const j = Array.isArray(l?.misc_language) ? l.misc_language[0] : l?.misc_language;
+          return j?.name ?? null;
+        };
+
         const mappedLeads = uniqueLeads.map(lead => {
           const stageValue = lead.stage;
           const numericStage =
-            typeof stageValue === 'number' ? stageValue : parseInt(stageValue, 10);
-
-          // Keep original stage ID for colour lookups, but retain mapped name if needed elsewhere
-          const mappedStageName =
+            typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
+          const stageName =
+            stageNameFromJoin(lead) ||
             stageMapping.get(stageValue) ||
             stageMapping.get(stageValue?.toString?.()) ||
-            stageMapping.get(numericStage) ||
-            stageValue;
+            (!Number.isNaN(numericStage) ? stageMapping.get(numericStage) : null) ||
+            (typeof stageValue === 'string' ? stageValue : null);
 
           return {
             ...lead,
-            stage_id: numericStage,
-            stage: mappedStageName,
+            stage_id: Number.isNaN(numericStage) ? undefined : numericStage,
+            stage: stageName ?? stageValue ?? 'No Stage',
+            _sourceName: sourceNameFromJoin(lead) ?? lead.source ?? null,
+            _languageName: languageNameFromJoin(lead) ?? lead.language ?? null,
           };
         });
 
@@ -717,23 +752,20 @@ const NewCasesPage: React.FC = () => {
 
         if (uniqueLeads && uniqueLeads.length > 0) {
           const mainCategoryIds = new Set<number>();
-
           uniqueLeads.forEach(lead => {
-            if (lead.misc_category?.misc_maincategory?.id) {
-              mainCategoryIds.add(lead.misc_category.misc_maincategory.id);
-            } else if (lead.category_id) {
-              const category = allCategories.find(cat => cat.id.toString() === lead.category_id.toString());
-              if (category?.misc_maincategory?.id) {
-                mainCategoryIds.add(category.misc_maincategory.id);
-              }
-            } else if (lead.category) {
-              const category = allCategories.find(cat => cat.name === lead.category);
-              if (category?.misc_maincategory?.id) {
-                mainCategoryIds.add(category.misc_maincategory.id);
+            const cat = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
+            const mainId = cat?.misc_maincategory && (Array.isArray(cat.misc_maincategory) ? cat.misc_maincategory[0]?.id : cat.misc_maincategory?.id);
+            if (mainId) mainCategoryIds.add(mainId);
+            else if (allCategories.length > 0) {
+              if (lead.category_id) {
+                const c = allCategories.find(c => c.id.toString() === lead.category_id.toString());
+                if (c?.misc_maincategory?.id) mainCategoryIds.add(c.misc_maincategory.id);
+              } else if (lead.category) {
+                const c = allCategories.find(cat => cat.name === lead.category);
+                if (c?.misc_maincategory?.id) mainCategoryIds.add(c.misc_maincategory.id);
               }
             }
           });
-
           setDisplayedMainCategoryIds(Array.from(mainCategoryIds));
         }
       } finally {
@@ -741,7 +773,27 @@ const NewCasesPage: React.FC = () => {
       }
     };
     fetchLeads();
-  }, [allCategories, createdStageIds, schedulerStageIds, stageIdsResolved, stageMapping, employees]);
+    // Run as soon as stages are ready; don't wait for employees or categories
+  }, [createdStageIds, schedulerStageIds, stageIdsResolved, stageMapping]);
+
+  // When categories load after leads, update displayedMainCategoryIds so employee filtering is correct
+  useEffect(() => {
+    if (leads.length === 0 || allCategories.length === 0) return;
+    const mainCategoryIds = new Set<number>();
+    leads.forEach(lead => {
+      const cat = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
+      const mainId = cat?.misc_maincategory && (Array.isArray(cat.misc_maincategory) ? cat.misc_maincategory[0]?.id : cat.misc_maincategory?.id);
+      if (mainId) mainCategoryIds.add(mainId);
+      else if (lead.category_id) {
+        const c = allCategories.find(c => c.id.toString() === lead.category_id.toString());
+        if (c?.misc_maincategory?.id) mainCategoryIds.add(c.misc_maincategory.id);
+      } else if (lead.category) {
+        const c = allCategories.find(cat => cat.name === lead.category);
+        if (c?.misc_maincategory?.id) mainCategoryIds.add(c.misc_maincategory.id);
+      }
+    });
+    setDisplayedMainCategoryIds(Array.from(mainCategoryIds));
+  }, [leads, allCategories]);
 
   // Fetch employees
   useEffect(() => {
@@ -1271,61 +1323,30 @@ const NewCasesPage: React.FC = () => {
       return;
     }
 
-    console.log('🔍 Grouping leads by category...');
-    console.log('📊 Total filtered leads:', filteredLeads.length);
-    console.log('📋 All categories loaded:', allCategories.length);
-
     const grouped = new Map<string, any[]>();
     const categorySelections = new Map<string, Set<string>>();
     const categoryAssigningStates = new Map<string, boolean>();
 
-    filteredLeads.forEach((lead, index) => {
-      console.log(`🔍 Lead ${index + 1}:`, {
-        lead_number: lead.lead_number,
-        category: lead.category,
-        category_id: lead.category_id,
-        misc_category: lead.misc_category,
-        topic: lead.topic
-      });
-
+    filteredLeads.forEach((lead) => {
       let mainCategoryName = 'No Category';
-      
-      // Try to get main category from misc_category join
-      if (lead.misc_category?.misc_maincategory?.name) {
-        mainCategoryName = lead.misc_category.misc_maincategory.name;
-        console.log(`✅ Found main category from join: ${mainCategoryName}`);
-      } else if (lead.category_id) {
-        // If no join data, try to find the main category from allCategories
-        const category = allCategories.find(cat => cat.id.toString() === lead.category_id.toString());
-        if (category?.misc_maincategory?.name) {
-          mainCategoryName = category.misc_maincategory.name;
-          console.log(`✅ Found main category from lookup: ${mainCategoryName}`);
-        } else {
-          console.log(`❌ No category found for category_id: ${lead.category_id}`);
-        }
-      } else if (lead.category) {
-        // If using fallback category name, find the main category
-        const category = allCategories.find(cat => cat.name === lead.category);
-        if (category?.misc_maincategory?.name) {
-          mainCategoryName = category.misc_maincategory.name;
-          console.log(`✅ Found main category from fallback: ${mainCategoryName}`);
-        } else {
-          console.log(`❌ No main category found for category: ${lead.category}`);
-        }
+      const cat = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
+      const mainName = cat?.misc_maincategory && (Array.isArray(cat.misc_maincategory) ? cat.misc_maincategory[0]?.name : cat.misc_maincategory?.name);
+
+      if (mainName) {
+        mainCategoryName = mainName;
+      } else if (lead.category_id && allCategories.length > 0) {
+        const category = allCategories.find(c => c.id.toString() === lead.category_id.toString());
+        if (category?.misc_maincategory?.name) mainCategoryName = category.misc_maincategory.name;
+      } else if (lead.category && allCategories.length > 0) {
+        const category = allCategories.find(c => c.name === lead.category);
+        if (category?.misc_maincategory?.name) mainCategoryName = category.misc_maincategory.name;
       }
 
-      // Fallback: Extract main category from category name in parentheses
       if (mainCategoryName === 'No Category' && lead.category) {
         const match = lead.category.match(/\(([^)]+)\)/);
-        if (match) {
-          mainCategoryName = match[1];
-          console.log(`✅ Extracted main category from parentheses: ${mainCategoryName}`);
-        }
+        if (match) mainCategoryName = match[1];
       }
 
-      console.log(`📂 Assigning lead ${lead.lead_number} to category: ${mainCategoryName}`);
-
-      // Add lead to the appropriate category group
       if (!grouped.has(mainCategoryName)) {
         grouped.set(mainCategoryName, []);
         categorySelections.set(mainCategoryName, new Set());
@@ -1334,23 +1355,14 @@ const NewCasesPage: React.FC = () => {
       grouped.get(mainCategoryName)!.push(lead);
     });
 
-    console.log('📊 Final grouped results:');
-    grouped.forEach((leads, categoryName) => {
-      console.log(`  ${categoryName}: ${leads.length} leads`);
-    });
-
     // Initialize employee selections and lead selections for each category
     const leadSelections = new Map<string, Set<string>>();
-    grouped.forEach((leads, categoryName) => {
+    grouped.forEach((leadsInCat, categoryName) => {
       const categoryEmployees = getEmployeesForCategory(categoryName);
       const employeeNames = new Set(categoryEmployees.map(emp => emp.display_name));
       categorySelections.set(categoryName, employeeNames);
-      
-      // Initialize all leads as selected by default
-      const allLeadIds = new Set(leads.map(lead => lead.id));
+      const allLeadIds = new Set(leadsInCat.map(lead => lead.id));
       leadSelections.set(categoryName, allLeadIds);
-      
-      console.log(`👥 Category ${categoryName} has ${categoryEmployees.length} relevant employees and ${leads.length} leads`);
     });
 
     setCategoryGroupedLeads(grouped);
@@ -2340,20 +2352,30 @@ const NewCasesPage: React.FC = () => {
   };
 
 
+  const isPageLoading = loading || !stageIdsResolved;
+
   return (
     <div className="p-2 sm:p-4 md:p-6 lg:p-8">
-      {/* Re-assign Leads Button - commented out for desktop and mobile */}
-      {/* <div className="mb-4 sm:mb-6">
-        <button 
-          className="btn btn-primary btn-sm sm:btn-md"
-          onClick={() => setShowReassignModal(true)}
-        >
-          Re-assign Leads
-        </button>
-      </div> */}
+      {/* Loading state: show spinner and text until leads and stages are ready */}
+      {isPageLoading && (
+        <div className="flex flex-col items-center justify-center min-h-[40vh] gap-4">
+          <span className="loading loading-spinner loading-lg text-primary" />
+          <p className="text-base-content/80 font-medium">Loading cases...</p>
+          <p className="text-sm text-base-content/60">Fetching unassigned leads</p>
+        </div>
+      )}
 
-      {/* Category Grouped Tables */}
-      {categoryGroupedLeads.size > 0 && (
+      {/* Empty state: no unassigned cases */}
+      {!isPageLoading && categoryGroupedLeads.size === 0 && (
+        <div className="flex flex-col items-center justify-center min-h-[40vh] gap-2 text-center">
+          <FolderIcon className="w-12 h-12 text-base-content/40" />
+          <p className="text-base-content/80 font-medium">No unassigned cases</p>
+          <p className="text-sm text-base-content/60">There are no leads in Created or Scheduler Assigned without a scheduler.</p>
+        </div>
+      )}
+
+      {/* Category Grouped Tables - only when not loading and we have data */}
+      {!isPageLoading && categoryGroupedLeads.size > 0 && (
         <div className="mt-6 sm:mt-8 md:mt-12">
           {/* Mobile: floating oval category selector + sticky when scrolled */}
           {isMobile ? (

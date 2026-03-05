@@ -25,6 +25,18 @@ const getCurrencySymbol = (currency?: string) => {
   }
 };
 
+// Strip HTML tags from facts/notes for display (preserve line breaks)
+const stripHtmlForDisplay = (html: string | null | undefined): string => {
+  if (html == null || typeof html !== 'string') return '';
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .trim();
+};
+
 export interface SchedulerLead {
   id: string;
   lead_number: string; // Display format (e.g., "12345/2" for subleads)
@@ -533,7 +545,7 @@ const SchedulerToolPage: React.FC = () => {
       // Fetch all stages
       const { data: stagesData, error: stagesError } = await supabase
         .from('lead_stages')
-        .select('id, name')
+        .select('id, name, colour')
         .order('name', { ascending: true });
       
       if (!stagesError && stagesData) {
@@ -1043,6 +1055,9 @@ const SchedulerToolPage: React.FC = () => {
           misc_leadsource!fk_leads_source_id (
             id,
             name
+          ),
+          leads_lead_tags (
+            misc_leadtag ( name )
           )
         `)
         .eq('scheduler', employeeDisplayName)
@@ -1164,6 +1179,9 @@ const SchedulerToolPage: React.FC = () => {
           misc_language!leads_lead_language_id_fkey (
             id,
             name
+          ),
+          leads_lead_tags (
+            misc_leadtag ( name )
           )
         `)
         .eq('meeting_scheduler_id', Number(userData.employee_id))
@@ -1300,6 +1318,9 @@ const SchedulerToolPage: React.FC = () => {
                     misc_language!leads_lead_language_id_fkey (
                       id,
                       name
+                    ),
+                    leads_lead_tags (
+                      misc_leadtag ( name )
                     )
                   `)
                   .in('id', subLeadIds)
@@ -1338,8 +1359,6 @@ const SchedulerToolPage: React.FC = () => {
       // Run all independent queries in parallel
       const [
         languageMappingResult,
-        legacyTagsResult,
-        newTagsResult,
         newFollowupsResult,
         legacyFollowupsResult,
         legacyCountryResult
@@ -1348,30 +1367,6 @@ const SchedulerToolPage: React.FC = () => {
         supabase
           .from('misc_language')
           .select('id, name'),
-        // Legacy tags
-        legacyLeadIds.length > 0
-          ? supabase
-              .from('leads_lead_tags')
-              .select(`
-                lead_id,
-                misc_leadtag (
-                  name
-                )
-              `)
-              .in('lead_id', legacyLeadIds)
-          : Promise.resolve({ data: [] }),
-        // New tags
-        newLeadIds.length > 0
-          ? supabase
-              .from('leads_lead_tags')
-              .select(`
-                newlead_id,
-                misc_leadtag (
-                  name
-                )
-              `)
-              .in('newlead_id', newLeadIds)
-          : Promise.resolve({ data: [] }),
         // New follow-ups
         (authUser?.email && userData?.id && newLeadIds.length > 0)
           ? supabase
@@ -1417,35 +1412,7 @@ const SchedulerToolPage: React.FC = () => {
         });
       }
 
-      // Process legacy tags
-      const legacyTagsMap = new Map();
-      if (legacyTagsResult.data) {
-        legacyTagsResult.data.forEach((item: any) => {
-          if (item.misc_leadtag) {
-            const leadId = item.lead_id;
-            const tagName = (item.misc_leadtag as any).name;
-            if (!legacyTagsMap.has(leadId)) {
-              legacyTagsMap.set(leadId, []);
-            }
-            legacyTagsMap.get(leadId).push(tagName);
-          }
-        });
-      }
-
-      // Process new tags
-      const newTagsMap = new Map();
-      if (newTagsResult.data) {
-        newTagsResult.data.forEach((item: any) => {
-          if (item.misc_leadtag) {
-            const leadId = item.newlead_id;
-            const tagName = (item.misc_leadtag as any).name;
-            if (!newTagsMap.has(leadId)) {
-              newTagsMap.set(leadId, []);
-            }
-            newTagsMap.get(leadId).push(tagName);
-          }
-        });
-      }
+      // Tags come from join (leads_lead_tags + misc_leadtag) on leads and leads_lead - no separate fetch
 
       // Process follow-ups
       const followUpsMap = new Map<string, string>();
@@ -1554,6 +1521,14 @@ const SchedulerToolPage: React.FC = () => {
         const join = Array.isArray(row?.misc_language) ? row.misc_language[0] : row?.misc_language;
         return join?.name ?? null;
       };
+      const tagsFromJoin = (row: any): string => {
+        const arr = row?.leads_lead_tags;
+        if (!arr || !Array.isArray(arr)) return '';
+        return arr
+          .map((r: any) => (r.misc_leadtag?.name ?? (Array.isArray(r.misc_leadtag) ? r.misc_leadtag[0]?.name : null)))
+          .filter(Boolean)
+          .join(', ');
+      };
 
       // Transform new leads - use joined names first (fast), fallback to getters only when join missing
       const transformedNewLeads: SchedulerLead[] = (newLeads || [])
@@ -1645,7 +1620,7 @@ const SchedulerToolPage: React.FC = () => {
             facts: lead.facts || '',
             special_notes: lead.special_notes || '',
             general_notes: lead.general_notes || '',
-            tags: newTagsMap.get(lead.id)?.join(', ') || '', // Get tags from newTagsMap
+            tags: tagsFromJoin(lead) || '',
             probability: lead.probability || 0,
             number_of_applicants_meeting: lead.number_of_applicants_meeting || '',
             potential_applicants_meeting: lead.potential_applicants_meeting || '',
@@ -1728,7 +1703,7 @@ const SchedulerToolPage: React.FC = () => {
             facts: lead.description || '',
             special_notes: lead.special_notes || '',
             general_notes: lead.notes || '',
-            tags: legacyTagsMap.get(lead.id)?.join(', ') || '', // Get tags from legacyTagsMap
+            tags: tagsFromJoin(lead) || '',
             probability: lead.probability || 0,
             number_of_applicants_meeting: '', // Legacy leads don't have this field
             potential_applicants_meeting: '', // Legacy leads don't have this field
@@ -1884,36 +1859,46 @@ const SchedulerToolPage: React.FC = () => {
     }
   };
 
+  // Stage badge with colour from lead_stages (same logic as Clients.tsx)
   const getStageBadge = (stage: string | number | null | undefined) => {
     if (!stage && stage !== 0) return <span className="badge badge-outline">No Stage</span>;
-    
-    // Convert stage to string for getStageName/getStageColour (handles both numeric IDs and stage names)
-    const stageStr = String(stage);
-    
-    // Get stage name and color from stageUtils
+
+    const stageStr = String(stage).trim();
     const stageName = getStageName(stageStr);
-    const stageColour = getStageColour(stageStr);
-    const badgeTextColour = getContrastingTextColor(stageColour);
-    
-    // Use dynamic color if available, otherwise fallback to default purple
-    const backgroundColor = stageColour || '#3f28cd';
-    const textColor = stageColour ? badgeTextColour : '#ffffff';
-    
-    return <span 
-      className="badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
-      style={{
-        backgroundColor: backgroundColor,
-        borderColor: backgroundColor,
-        color: textColor,
-        whiteSpace: 'nowrap',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        display: 'inline-block'
-      }}
-      title={stageName}
-    >
-      {stageName}
-    </span>;
+
+    // Resolve colour: from allStages (by id or name) then getStageColour fallback (from stageUtils cache)
+    const stageFromList = allStages?.find(
+      (s: any) =>
+        String(s?.id) === stageStr ||
+        (s?.name && String(s.name).trim().toLowerCase() === stageStr.toLowerCase())
+    );
+    const stageColourFromList = stageFromList?.colour && String(stageFromList.colour).trim() ? String(stageFromList.colour).trim() : null;
+    const fallbackStageColour = stageColourFromList || getStageColour(stageStr) || '#3f28cd';
+
+    // Force white text for "Scheduler assigned" (same as Clients.tsx)
+    const badgeTextColour =
+      stageName === 'Scheduler assigned' || stageName === 'scheduler assigned' || stageName === 'scheduler_assigned'
+        ? '#ffffff'
+        : getContrastingTextColor(fallbackStageColour);
+
+    return (
+      <span
+        className="badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
+        style={{
+          backgroundColor: fallbackStageColour,
+          borderColor: fallbackStageColour,
+          color: badgeTextColour,
+          boxShadow: '0 4px 10px rgba(17,24,39,0.12)',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          display: 'inline-block',
+        }}
+        title={stageName}
+      >
+        {stageName}
+      </span>
+    );
   };
 
   const handleCall = (lead: SchedulerLead) => {
@@ -2231,10 +2216,14 @@ const SchedulerToolPage: React.FC = () => {
     setViewMode(prev => prev === 'table' ? 'box' : 'table');
   };
 
-  // Edit functions
+  // Edit functions - for facts/special_notes/general_notes we strip HTML so modal shows plain text
+  const NOTE_FIELDS = ['facts', 'special_notes', 'general_notes'];
   const startEditing = (leadId: string, field: string, currentValue: string) => {
     setEditingField({ leadId, field });
-    setEditValues(prev => ({ ...prev, [`${leadId}_${field}`]: currentValue }));
+    const valueToEdit = NOTE_FIELDS.includes(field)
+      ? stripHtmlForDisplay(currentValue)
+      : currentValue;
+    setEditValues(prev => ({ ...prev, [`${leadId}_${field}`]: valueToEdit }));
   };
 
   const cancelEditing = () => {
@@ -2244,7 +2233,7 @@ const SchedulerToolPage: React.FC = () => {
 
   const saveEdit = async (leadId: string, field: string) => {
     const value = editValues[`${leadId}_${field}`];
-    if (!value) return;
+    if (value === undefined || value === null) return;
 
     try {
       const lead = leads.find(l => l.id === leadId);
@@ -3173,12 +3162,67 @@ const SchedulerToolPage: React.FC = () => {
     );
   }
 
+  const noteEditModalOpen = editingField && NOTE_FIELDS.includes(editingField.field);
+  const noteEditTitle =
+    editingField?.field === 'facts'
+      ? 'Edit Facts of Case'
+      : editingField?.field === 'special_notes'
+        ? 'Edit Special Notes'
+        : editingField?.field === 'general_notes'
+          ? 'Edit General Notes'
+          : 'Edit';
+
   return (
     <div className="p-6">
+      {/* Note edit modal - for Facts of Case, Special Notes, General Notes (mobile + desktop) */}
+      {noteEditModalOpen && editingField && (
+        <dialog open className="modal modal-open">
+          <div className="modal-box max-w-2xl w-full max-h-[90vh] flex flex-col">
+            <h3 className="font-semibold text-lg">{noteEditTitle}</h3>
+            <div className="flex-1 min-h-0 pt-4">
+              <textarea
+                value={editValues[`${editingField.leadId}_${editingField.field}`] ?? ''}
+                onChange={(e) =>
+                  setEditValues(prev => ({
+                    ...prev,
+                    [`${editingField.leadId}_${editingField.field}`]: e.target.value,
+                  }))
+                }
+                className="textarea textarea-bordered w-full text-sm min-h-[200px] max-h-[50vh] resize-y"
+                placeholder={
+                  editingField.field === 'facts'
+                    ? 'Enter facts of case...'
+                    : editingField.field === 'special_notes'
+                      ? 'Enter special notes...'
+                      : 'Enter general notes...'
+                }
+                dir="auto"
+                autoFocus
+              />
+            </div>
+            <div className="modal-action pt-4">
+              <button type="button" className="btn btn-ghost" onClick={cancelEditing}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => saveEdit(editingField.leadId, editingField.field)}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+          <form method="dialog" className="modal-backdrop bg-black/50" onSubmit={cancelEditing}>
+            <button type="submit">close</button>
+          </form>
+        </dialog>
+      )}
+
       <div className="mb-6">
-        {/* Mobile: title + view toggle on first row, search bar full width on second row. Desktop: title | search | view toggle in one row. */}
-        <div className="flex flex-wrap items-center gap-4">
-          <div className="flex items-center gap-3 order-1">
+        {/* Title row; then centered search bar + toggle */}
+        <div className="flex flex-col gap-4">
+          <div className="flex items-center gap-3">
             <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">Hot Leads</h1>
             <div className="badge badge-primary badge-lg">
               {filteredLeads.length === leads.length && !searchTerm ? 
@@ -3188,54 +3232,52 @@ const SchedulerToolPage: React.FC = () => {
             </div>
           </div>
 
-          {/* View Toggle - on mobile same row as title, on desktop after search */}
-          <button
-            onClick={toggleViewMode}
-            className="btn btn-sm btn-primary gap-2 order-2 md:order-3 ml-auto md:ml-0"
-            title={viewMode === 'box' ? 'Switch to Table View' : 'Switch to Box View'}
-          >
-            {viewMode === 'box' ? (
-              <>
-                <TableCellsIcon className="w-4 h-4" />
-                <span className="hidden sm:inline">Table View</span>
-              </>
-            ) : (
-              <>
-                <Squares2X2Icon className="w-4 h-4" />
-                <span className="hidden sm:inline">Box View</span>
-              </>
-            )}
-          </button>
-          
-          {/* Search Bar - on mobile full width below title (order-3); desktop center (order-2) */}
-          <div className="relative w-full min-w-0 order-3 md:order-2 md:flex-1 md:max-w-md md:mx-4 flex items-center rounded-full bg-gray-200 dark:bg-gray-600 border border-gray-300 dark:border-gray-500 shadow-inner">
-            <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-              <svg className="h-5 w-5 text-gray-500 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-            </div>
-            <input
-              type="text"
-              placeholder="Search by lead number, name, phone, or email..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="input w-full pl-10 pr-10 py-2.5 rounded-full bg-transparent border-0 focus:outline-none focus:ring-0 text-base-content placeholder-gray-500 dark:placeholder-gray-400"
-            />
-            {searchTerm && (
+          {/* Search bar centered with toggle right next to it */}
+          <div className="flex justify-center items-center w-full">
+            <div className="flex items-center gap-2 w-full max-w-xl">
+              <div className="relative flex-1 min-w-0 flex items-center rounded-full bg-gray-100 dark:bg-gray-600 border border-gray-200 dark:border-gray-500 shadow-inner">
+                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                  <svg className="h-5 w-5 text-gray-500 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                </div>
+                <input
+                  type="text"
+                  placeholder="Search for leads..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="input w-full pl-10 pr-10 py-2.5 rounded-full bg-transparent border-0 focus:outline-none focus:ring-0 text-base-content placeholder-gray-500 dark:placeholder-gray-400"
+                />
+                {searchTerm && (
+                  <button
+                    onClick={() => setSearchTerm('')}
+                    className="absolute inset-y-0 right-0 pr-4 flex items-center"
+                  >
+                    <XMarkIcon className="h-5 w-5 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200" />
+                  </button>
+                )}
+              </div>
               <button
-                onClick={() => setSearchTerm('')}
-                className="absolute inset-y-0 right-0 pr-4 flex items-center"
+                type="button"
+                onClick={toggleViewMode}
+                className="btn btn-sm btn-primary btn-circle flex-shrink-0"
+                title={viewMode === 'box' ? 'Switch to Table View' : 'Switch to Box View'}
+                aria-label={viewMode === 'box' ? 'Switch to Table View' : 'Switch to Box View'}
               >
-                <XMarkIcon className="h-5 w-5 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200" />
+                {viewMode === 'box' ? (
+                  <TableCellsIcon className="w-4 h-4" />
+                ) : (
+                  <Squares2X2Icon className="w-4 h-4" />
+                )}
               </button>
-            )}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Filters */}
+      {/* Filters - mobile: 2 cols so date from/to, tags/topic, language/source pair on same row */}
       <div className="mb-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-6 gap-4">
           {/* Stage Filter */}
           <div className="relative filter-dropdown">
             <label className="block text-sm font-medium text-gray-700 mb-1">Stage</label>
@@ -3261,6 +3303,38 @@ const SchedulerToolPage: React.FC = () => {
                       }}
                     >
                       {stage.replace(/_/g, ' ')}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Category Filter */}
+          <div className="relative filter-dropdown">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="Filter by category..."
+                value={filters.category}
+                onChange={(e) => updateFilter('category', e.target.value)}
+                onFocus={() => setShowDropdowns(prev => ({ ...prev, category: true }))}
+                className="input input-bordered w-full pr-8"
+              />
+              <ChevronDownIcon className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+              {showDropdowns.category && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                  {getUniqueValues('category').map((category) => (
+                    <div
+                      key={category}
+                      className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
+                      onClick={() => {
+                        updateFilter('category', category);
+                        setShowDropdowns(prev => ({ ...prev, category: false }));
+                      }}
+                    >
+                      {category}
                     </div>
                   ))}
                 </div>
@@ -3332,38 +3406,6 @@ const SchedulerToolPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Category Filter */}
-          <div className="relative filter-dropdown">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
-            <div className="relative">
-              <input
-                type="text"
-                placeholder="Filter by category..."
-                value={filters.category}
-                onChange={(e) => updateFilter('category', e.target.value)}
-                onFocus={() => setShowDropdowns(prev => ({ ...prev, category: true }))}
-                className="input input-bordered w-full pr-8"
-              />
-              <ChevronDownIcon className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-              {showDropdowns.category && (
-                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto">
-                  {getUniqueValues('category').map((category) => (
-                    <div
-                      key={category}
-                      className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
-                      onClick={() => {
-                        updateFilter('category', category);
-                        setShowDropdowns(prev => ({ ...prev, category: false }));
-                      }}
-                    >
-                      {category}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
           {/* Topic Filter */}
           <div className="relative filter-dropdown">
             <label className="block text-sm font-medium text-gray-700 mb-1">Topic</label>
@@ -3428,6 +3470,32 @@ const SchedulerToolPage: React.FC = () => {
             </div>
           </div>
 
+          {/* Date From Filter */}
+          <div className="relative filter-dropdown">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Date From</label>
+            <div className="relative">
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className="input input-bordered w-full"
+              />
+            </div>
+          </div>
+
+          {/* Date To Filter */}
+          <div className="relative filter-dropdown">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Date To</label>
+            <div className="relative">
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                className="input input-bordered w-full"
+              />
+            </div>
+          </div>
+
           {/* Country Filter */}
           <div className="relative filter-dropdown">
             <label className="block text-sm font-medium text-gray-700 mb-1">Country</label>
@@ -3457,32 +3525,6 @@ const SchedulerToolPage: React.FC = () => {
                   ))}
                 </div>
               )}
-            </div>
-          </div>
-
-          {/* Date From Filter */}
-          <div className="relative filter-dropdown">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Date From</label>
-            <div className="relative">
-              <input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                className="input input-bordered w-full"
-              />
-            </div>
-          </div>
-
-          {/* Date To Filter */}
-          <div className="relative filter-dropdown">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Date To</label>
-            <div className="relative">
-              <input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-                className="input input-bordered w-full"
-              />
             </div>
           </div>
 
@@ -3537,16 +3579,16 @@ const SchedulerToolPage: React.FC = () => {
             return (
             <div key={lead.id} className={cardClasses}>
               <div className="card-body p-5 relative">
-                {/* Expand/Collapse Button */}
+                {/* Expand/Collapse Button - right side, icon only (no coloured box) */}
                 <button
                   onClick={(e) => toggleRowExpansion(lead.id, e)}
-                  className="absolute top-2 left-2 flex-shrink-0 p-1 hover:bg-gray-100 rounded-md transition-colors z-10"
+                  className="absolute top-2 right-2 flex-shrink-0 p-2 hover:bg-gray-100 rounded-lg transition-colors z-10 text-gray-600"
                   title={expandedRows.has(lead.id) ? "Collapse" : "Expand"}
                 >
                   {expandedRows.has(lead.id) ? (
-                    <ChevronDownIcon className="w-4 h-4 text-gray-600" />
+                    <ChevronDownIcon className="w-5 h-5" />
                   ) : (
-                    <ChevronRightIcon className="w-4 h-4 text-gray-600" />
+                    <ChevronRightIcon className="w-5 h-5" />
                   )}
                 </button>
 
@@ -3580,10 +3622,6 @@ const SchedulerToolPage: React.FC = () => {
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
                       <span className="font-medium">{formatDate(lead.created_at)}</span>
                     </div>
-                    <div className="flex items-center gap-2" title="Category">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
-                      <span className="truncate">{lead.category || 'N/A'}</span>
-                    </div>
                     <div className="flex items-center gap-2" title="Source">
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
                       <span className="truncate">{lead.source || 'N/A'}</span>
@@ -3610,7 +3648,7 @@ const SchedulerToolPage: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="mt-4 pt-4 border-t border-base-200/50 flex items-center justify-between">
+                  <div className="mt-4 pt-4 border-t border-base-200/50 flex items-center justify-between gap-4 flex-wrap">
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-semibold text-gray-600">Eligible:</span>
                       <input
@@ -3625,13 +3663,17 @@ const SchedulerToolPage: React.FC = () => {
                         title="Toggle Eligible"
                       />
                     </div>
+                    <div className="flex items-center gap-2" title="Category">
+                      <span className="text-xs font-semibold text-gray-600">Category:</span>
+                      <span className="text-sm truncate">{lead.category || 'N/A'}</span>
+                    </div>
                   </div>
                 </div>
 
-                {/* Collapsible Notes Section */}
+                {/* Collapsible Notes Section - less horizontal padding on mobile so note boxes are wider */}
                 {expandedRows.has(lead.id) && (
-                  <div className="mt-4 p-3 border-t border-gray-200 space-y-4">
-                    {/* Facts of Case */}
+                  <div className="mt-4 py-3 px-2 md:px-3 border-t border-gray-200 space-y-4 -mx-1 md:mx-0">
+                    {/* Facts of Case - click to open edit modal */}
                     <div className="bg-white p-3 rounded-lg shadow-sm border border-gray-200">
                       <div className="flex items-center justify-between mb-2">
                         <h6 className="font-semibold text-sm text-gray-800">Facts of Case</h6>
@@ -3646,45 +3688,26 @@ const SchedulerToolPage: React.FC = () => {
                           <PencilSquareIcon className="w-3 h-3" />
                         </button>
                       </div>
-                      {editingField?.leadId === lead.id && editingField?.field === 'facts' ? (
-                        <div className="space-y-2">
-                          <textarea
-                            value={editValues[`${lead.id}_facts`] || ''}
-                            onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_facts`]: e.target.value }))}
-                            className="textarea textarea-bordered w-full text-sm"
-                            rows={3}
-                            placeholder="Enter facts of case..."
-                            dir="auto"
-                          />
-                          <div className="flex gap-2">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                saveEdit(lead.id, 'facts');
-                              }}
-                              className="btn btn-xs btn-primary"
-                            >
-                              Save
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                cancelEditing();
-                              }}
-                              className="btn btn-xs btn-outline"
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <p className="text-sm text-gray-700 whitespace-pre-wrap break-words leading-relaxed min-h-[60px]" dir="auto">
-                          {lead.facts || <span className="text-gray-400 italic">No facts provided</span>}
-                        </p>
-                      )}
+                      <p
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startEditing(lead.id, 'facts', lead.facts || '');
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            startEditing(lead.id, 'facts', lead.facts || '');
+                          }
+                        }}
+                        className="text-sm text-gray-700 whitespace-pre-wrap break-words leading-relaxed min-h-[60px] cursor-pointer hover:bg-gray-50 rounded p-1 -m-1" dir="auto"
+                      >
+                        {stripHtmlForDisplay(lead.facts) || <span className="text-gray-400 italic">No facts provided</span>}
+                      </p>
                     </div>
 
-                    {/* Special Notes */}
+                    {/* Special Notes - click to open edit modal */}
                     <div className="bg-white p-3 rounded-lg shadow-sm border border-gray-200">
                       <div className="flex items-center justify-between mb-2">
                         <h6 className="font-semibold text-sm text-gray-800">Special Notes</h6>
@@ -3699,45 +3722,26 @@ const SchedulerToolPage: React.FC = () => {
                           <PencilSquareIcon className="w-3 h-3" />
                         </button>
                       </div>
-                      {editingField?.leadId === lead.id && editingField?.field === 'special_notes' ? (
-                        <div className="space-y-2">
-                          <textarea
-                            value={editValues[`${lead.id}_special_notes`] || ''}
-                            onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_special_notes`]: e.target.value }))}
-                            className="textarea textarea-bordered w-full text-sm"
-                            rows={3}
-                            placeholder="Enter special notes..."
-                            dir="auto"
-                          />
-                          <div className="flex gap-2">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                saveEdit(lead.id, 'special_notes');
-                              }}
-                              className="btn btn-xs btn-warning"
-                            >
-                              Save
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                cancelEditing();
-                              }}
-                              className="btn btn-xs btn-outline"
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <p className="text-sm text-gray-700 whitespace-pre-wrap break-words leading-relaxed min-h-[60px]" dir="auto">
-                          {lead.special_notes || <span className="text-gray-400 italic">No special notes</span>}
-                        </p>
-                      )}
+                      <p
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startEditing(lead.id, 'special_notes', lead.special_notes || '');
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            startEditing(lead.id, 'special_notes', lead.special_notes || '');
+                          }
+                        }}
+                        className="text-sm text-gray-700 whitespace-pre-wrap break-words leading-relaxed min-h-[60px] cursor-pointer hover:bg-gray-50 rounded p-1 -m-1" dir="auto"
+                      >
+                        {stripHtmlForDisplay(lead.special_notes) || <span className="text-gray-400 italic">No special notes</span>}
+                      </p>
                     </div>
 
-                    {/* General Notes */}
+                    {/* General Notes - click to open edit modal */}
                     <div className="bg-white p-3 rounded-lg shadow-sm border border-gray-200">
                       <div className="flex items-center justify-between mb-2">
                         <h6 className="font-semibold text-sm text-gray-800">General Notes</h6>
@@ -3752,42 +3756,23 @@ const SchedulerToolPage: React.FC = () => {
                           <PencilSquareIcon className="w-3 h-3" />
                         </button>
                       </div>
-                      {editingField?.leadId === lead.id && editingField?.field === 'general_notes' ? (
-                        <div className="space-y-2">
-                          <textarea
-                            value={editValues[`${lead.id}_general_notes`] || ''}
-                            onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_general_notes`]: e.target.value }))}
-                            className="textarea textarea-bordered w-full text-sm"
-                            rows={3}
-                            placeholder="Enter general notes..."
-                            dir="auto"
-                          />
-                          <div className="flex gap-2">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                saveEdit(lead.id, 'general_notes');
-                              }}
-                              className="btn btn-xs btn-success"
-                            >
-                              Save
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                cancelEditing();
-                              }}
-                              className="btn btn-xs btn-outline"
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <p className="text-sm text-gray-700 whitespace-pre-wrap break-words leading-relaxed min-h-[60px]" dir="auto">
-                          {lead.general_notes || <span className="text-gray-400 italic">No general notes</span>}
-                        </p>
-                      )}
+                      <p
+                        role="button"
+                        tabIndex={0}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startEditing(lead.id, 'general_notes', lead.general_notes || '');
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            startEditing(lead.id, 'general_notes', lead.general_notes || '');
+                          }
+                        }}
+                        className="text-sm text-gray-700 whitespace-pre-wrap break-words leading-relaxed min-h-[60px] cursor-pointer hover:bg-gray-50 rounded p-1 -m-1" dir="auto"
+                      >
+                        {stripHtmlForDisplay(lead.general_notes) || <span className="text-gray-400 italic">No general notes</span>}
+                      </p>
                     </div>
                   </div>
                 )}
@@ -3851,13 +3836,13 @@ const SchedulerToolPage: React.FC = () => {
                         <div className="flex items-center gap-2">
                           <button
                             onClick={(e) => toggleRowExpansion(lead.id, e)}
-                            className="flex-shrink-0 p-1.5 hover:bg-gray-200 rounded-lg transition-colors"
+                            className="flex-shrink-0 p-1.5 hover:bg-gray-200 rounded-lg transition-colors text-gray-600"
                             title={expandedRows.has(lead.id) ? "Collapse" : "Expand"}
                           >
                             {expandedRows.has(lead.id) ? (
-                              <ChevronDownIcon className="w-5 h-5 sm:w-6 sm:h-6 text-gray-600" />
+                              <ChevronDownIcon className="w-5 h-5 sm:w-6 sm:h-6" />
                             ) : (
-                              <ChevronRightIcon className="w-5 h-5 sm:w-6 sm:h-6 text-gray-600" />
+                              <ChevronRightIcon className="w-5 h-5 sm:w-6 sm:h-6" />
                             )}
                           </button>
                           <div className="flex flex-col">
@@ -3875,8 +3860,8 @@ const SchedulerToolPage: React.FC = () => {
                         {formatDate(lead.created_at)}
                       </div>
                     </td>
-                    <td className="text-xs sm:text-sm text-gray-700">
-                      {lead.stage ? lead.stage.replace(/_/g, ' ') : 'Unknown'}
+                    <td className="text-xs sm:text-sm text-gray-700 text-left">
+                      {getStageBadge(lead.stage)}
                     </td>
                     <td className="text-xs sm:text-sm text-gray-600">
                       {lead.language || 'N/A'}
@@ -3957,13 +3942,13 @@ const SchedulerToolPage: React.FC = () => {
                     </td>
                   </tr>
                   
-                  {/* Collapsible content row */}
+                  {/* Collapsible content row - notes without boxes, with separator lines */}
                   {expandedRows.has(lead.id) && (
                     <tr>
                       <td colSpan={12} className="p-6 border-t border-gray-200 pb-8">
-                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                          {/* Facts of Case */}
-                          <div className="space-y-2">
+                        <div className="flex flex-col">
+                          {/* Facts of Case - click to open edit modal */}
+                          <div className="space-y-1 pt-2">
                             <div className="flex items-center justify-between">
                               <h4 className="font-semibold text-gray-800 text-sm uppercase tracking-wide">Facts of Case</h4>
                               <button
@@ -3974,42 +3959,28 @@ const SchedulerToolPage: React.FC = () => {
                                 <PencilSquareIcon className="w-2.5 h-2.5" />
                               </button>
                             </div>
-                            <div className="bg-white p-4 rounded-lg shadow-lg border border-gray-200 hover:shadow-xl transition-shadow duration-200 overflow-hidden">
-                              {editingField?.leadId === lead.id && editingField?.field === 'facts' ? (
-                                <div className="space-y-2">
-                                  <textarea
-                                    value={editValues[`${lead.id}_facts`] || ''}
-                                    onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_facts`]: e.target.value }))}
-                                    className="textarea textarea-bordered w-full text-sm"
-                                    rows={4}
-                                    placeholder="Enter facts of case..."
-                                    dir="auto"
-                                  />
-                                  <div className="flex gap-2">
-                                    <button
-                                      onClick={() => saveEdit(lead.id, 'facts')}
-                                      className="btn btn-xs btn-primary"
-                                    >
-                                      Save
-                                    </button>
-                                    <button
-                                      onClick={cancelEditing}
-                                      className="btn btn-xs btn-outline"
-                                    >
-                                      Cancel
-                                    </button>
-                                  </div>
-                                </div>
-                              ) : (
-                                <p className="text-sm text-gray-700 whitespace-pre-wrap break-words leading-relaxed" dir="auto">
-                                  {lead.facts || <span className="text-gray-400 italic">No facts provided</span>}
-                                </p>
-                              )}
+                            <div
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => startEditing(lead.id, 'facts', lead.facts || '')}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  startEditing(lead.id, 'facts', lead.facts || '');
+                                }
+                              }}
+                              className="cursor-pointer hover:bg-gray-50/50 rounded py-1 -mx-1 px-1"
+                            >
+                              <p className="text-sm text-gray-700 whitespace-pre-wrap break-words leading-relaxed" dir="auto">
+                                {stripHtmlForDisplay(lead.facts) || <span className="text-gray-400 italic">No facts provided</span>}
+                              </p>
                             </div>
                           </div>
-                          
-                          {/* Special Notes */}
-                          <div className="space-y-2">
+
+                          <div className="border-t border-gray-200 my-3" aria-hidden="true" />
+
+                          {/* Special Notes - click to open edit modal */}
+                          <div className="space-y-1 pt-2">
                             <div className="flex items-center justify-between">
                               <h4 className="font-semibold text-gray-800 text-sm uppercase tracking-wide">Special Notes</h4>
                               <button
@@ -4020,42 +3991,28 @@ const SchedulerToolPage: React.FC = () => {
                                 <PencilSquareIcon className="w-2.5 h-2.5" />
                               </button>
                             </div>
-                            <div className="bg-white p-4 rounded-lg shadow-lg border border-gray-200 hover:shadow-xl transition-shadow duration-200">
-                              {editingField?.leadId === lead.id && editingField?.field === 'special_notes' ? (
-                                <div className="space-y-2">
-                                  <textarea
-                                    value={editValues[`${lead.id}_special_notes`] || ''}
-                                    onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_special_notes`]: e.target.value }))}
-                                    className="textarea textarea-bordered w-full text-sm"
-                                    rows={4}
-                                    placeholder="Enter special notes..."
-                                    dir="auto"
-                                  />
-                                  <div className="flex gap-2">
-                                    <button
-                                      onClick={() => saveEdit(lead.id, 'special_notes')}
-                                      className="btn btn-xs btn-warning"
-                                    >
-                                      Save
-                                    </button>
-                                    <button
-                                      onClick={cancelEditing}
-                                      className="btn btn-xs btn-outline"
-                                    >
-                                      Cancel
-                                    </button>
-                                  </div>
-                                </div>
-                              ) : (
-                                <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed" dir="auto">
-                                  {lead.special_notes || <span className="text-gray-400 italic">No special notes</span>}
-                                </p>
-                              )}
+                            <div
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => startEditing(lead.id, 'special_notes', lead.special_notes || '')}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  startEditing(lead.id, 'special_notes', lead.special_notes || '');
+                                }
+                              }}
+                              className="cursor-pointer hover:bg-gray-50/50 rounded py-1 -mx-1 px-1"
+                            >
+                              <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed" dir="auto">
+                                {stripHtmlForDisplay(lead.special_notes) || <span className="text-gray-400 italic">No special notes</span>}
+                              </p>
                             </div>
                           </div>
-                          
-                          {/* General Notes */}
-                          <div className="space-y-2">
+
+                          <div className="border-t border-gray-200 my-3" aria-hidden="true" />
+
+                          {/* General Notes - click to open edit modal */}
+                          <div className="space-y-1 pt-2">
                             <div className="flex items-center justify-between">
                               <h4 className="font-semibold text-gray-800 text-sm uppercase tracking-wide">General Notes</h4>
                               <button
@@ -4066,37 +4023,21 @@ const SchedulerToolPage: React.FC = () => {
                                 <PencilSquareIcon className="w-2.5 h-2.5" />
                               </button>
                             </div>
-                            <div className="bg-white p-4 rounded-lg shadow-lg border border-gray-200 hover:shadow-xl transition-shadow duration-200">
-                              {editingField?.leadId === lead.id && editingField?.field === 'general_notes' ? (
-                                <div className="space-y-2">
-                                  <textarea
-                                    value={editValues[`${lead.id}_general_notes`] || ''}
-                                    onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_general_notes`]: e.target.value }))}
-                                    className="textarea textarea-bordered w-full text-sm"
-                                    rows={4}
-                                    placeholder="Enter general notes..."
-                                    dir="auto"
-                                  />
-                                  <div className="flex gap-2">
-                                    <button
-                                      onClick={() => saveEdit(lead.id, 'general_notes')}
-                                      className="btn btn-xs btn-success"
-                                    >
-                                      Save
-                                    </button>
-                                    <button
-                                      onClick={cancelEditing}
-                                      className="btn btn-xs btn-outline"
-                                    >
-                                      Cancel
-                                    </button>
-                                  </div>
-                                </div>
-                              ) : (
-                                <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed" dir="auto">
-                                  {lead.general_notes || <span className="text-gray-400 italic">No general notes</span>}
-                                </p>
-                              )}
+                            <div
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => startEditing(lead.id, 'general_notes', lead.general_notes || '')}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  startEditing(lead.id, 'general_notes', lead.general_notes || '');
+                                }
+                              }}
+                              className="cursor-pointer hover:bg-gray-50/50 rounded py-1 -mx-1 px-1"
+                            >
+                              <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed" dir="auto">
+                                {stripHtmlForDisplay(lead.general_notes) || <span className="text-gray-400 italic">No general notes</span>}
+                              </p>
                             </div>
                           </div>
                         </div>
