@@ -812,11 +812,11 @@ const AppContentInner: React.FC = () => {
                   isMenuOpen={isSidebarOpen}
                 />
                 <main className={`flex-1 overflow-x-hidden overflow-y-auto ${isReportsPage ? 'w-full' : ''}`}>
-                  <Routes>
+                  <Routes location={location} key={location.pathname}>
                     <Route path="/" element={<Dashboard />} />
                     <Route path="/clients" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} />} />
-                    <Route path="/clients/:lead_number/contract" element={<ContractPage />} />
-                    <Route path="/contract/:contractId" element={<ContractPage />} />
+                    <Route path="/clients/:lead_number/contract" element={<ContractPage key="contract-lead" />} />
+                    <Route path="/contract/:contractId" element={<ContractPage key="contract-id" />} />
                     <Route path="/clients/:lead_number/timeline" element={<TimelinePage />} />
                     <Route path="/clients/:lead_number/history" element={<HistoryPage />} />
                     <Route path="/clients/:lead_number/master" element={<MasterLeadPage />} />

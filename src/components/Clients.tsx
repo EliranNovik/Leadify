@@ -3008,7 +3008,8 @@ const Clients: React.FC<ClientsProps> = ({
             closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name),
             expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
             handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name),
-            stage_info:lead_stages!fk_leads_lead_stage(id, name, colour)
+            stage_info:lead_stages!fk_leads_lead_stage(id, name, colour),
+            reason_record:misc_reason!fk_leads_lead_reason_id(name)
           `)
           .eq('id', legacyId)
           .single();
@@ -3133,12 +3134,17 @@ const Clients: React.FC<ClientsProps> = ({
             scheduler: getLegacyEmployeeDisplayFromJoin(data.scheduler_employee, data.meeting_scheduler_id) || '---',
             manager: getLegacyEmployeeDisplayFromJoin(data.manager_employee, data.meeting_manager_id) || '---',
             expert: getLegacyEmployeeDisplayFromJoin(data.expert_employee, data.expert_id) || '---',
-            unactivation_reason: data.unactivation_reason || null, // Use unactivation_reason from legacy table
+            unactivation_reason: (() => {
+              const textReason = data.unactivation_reason || null;
+              if (textReason) return textReason;
+              const reasonName = data.reason_record?.name ?? (Array.isArray(data.reason_record) ? data.reason_record[0]?.name : null);
+              return reasonName || null;
+            })(), // From legacy table or join to misc_reason (replaces map)
             deactivate_notes: data.deactivate_notes || null, // Include deactivate_notes for inactive badge
             potential_total: data.potential_total || null, // Include potential_total for legacy leads
             status: data.status || null, // Include status field for unactivation check
             sales_roles_locked: data.sales_roles_locked || null, // Include sales_roles_locked for roles tab
-            reason_id: data.reason_id || null, // Include reason_id for fallback unactivation reason
+            reason_id: data.reason_id != null ? (typeof data.reason_id === 'number' ? data.reason_id : Number(data.reason_id)) : null, // integer after FK migration
             unactivated_by: data.unactivated_by || null, // Include unactivated_by
             unactivated_at: data.unactivated_at || null, // Include unactivated_at
             vat: (data as any).vat || null, // Include vat column for legacy leads

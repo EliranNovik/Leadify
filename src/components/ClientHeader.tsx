@@ -461,6 +461,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         email: null,
         phone: null
     });
+    const legacyContactFetchRef = useRef<string | null>(null);
 
     // Fetch sources from misc_leadsource table
     useEffect(() => {
@@ -526,18 +527,28 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         fetchCategories();
     }, []);
 
-    // Fetch legacy contact info
+    // Fetch legacy contact info — clear first when client changes to avoid showing previous lead's data
     useEffect(() => {
-        const fetchLegacyContactInfo = async () => {
-            if (!selectedClient) return;
-            const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+        if (!selectedClient) {
+            setLegacyContactInfo({ email: null, phone: null });
+            return;
+        }
 
+        // Clear immediately so we never show the previous lead's email/phone (avoids cache/stale display)
+        setLegacyContactInfo({ email: null, phone: null });
+
+        const currentClientId = selectedClient?.id?.toString() ?? null;
+        legacyContactFetchRef.current = currentClientId;
+        const isLegacyLead = selectedClient?.lead_type === 'legacy' || (currentClientId ?? '').startsWith('legacy_');
+
+        const fetchLegacyContactInfo = async () => {
+            if (!currentClientId) return;
             if (isLegacyLead) {
-                const legacyId = selectedClient.id.toString().replace('legacy_', '');
+                const legacyId = currentClientId.replace('legacy_', '');
                 try {
                     const persistedContactKey = `clientsPage_contactData_${legacyId}`;
                     const persistedContactData = sessionStorage.getItem(persistedContactKey);
-                    if (persistedContactData) {
+                    if (persistedContactData && legacyContactFetchRef.current === currentClientId) {
                         setLegacyContactInfo(JSON.parse(persistedContactData));
                         return;
                     }
@@ -558,7 +569,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             .eq('id', mainContactId)
                             .single();
 
-                        if (contactData) {
+                        if (contactData && legacyContactFetchRef.current === currentClientId) {
                             setLegacyContactInfo(contactData);
                             try {
                                 sessionStorage.setItem(`clientsPage_contactData_${legacyId}`, JSON.stringify(contactData));

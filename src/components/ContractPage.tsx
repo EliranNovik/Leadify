@@ -876,6 +876,26 @@ const ContractPage: React.FC = () => {
     return baseNumber;
   };
 
+  /** Returns the correct /clients/:identifier path for this contract's lead (for navigation). */
+  const getLeadPagePath = (): string => {
+    if (leadNumber) {
+      return `/clients/${encodeURIComponent(leadNumber)}`;
+    }
+    if (client?.lead_number) {
+      return `/clients/${encodeURIComponent(String(client.lead_number))}`;
+    }
+    if (client?.manual_id) {
+      return `/clients/${encodeURIComponent(String(client.manual_id))}`;
+    }
+    if (client?.id != null) {
+      const idStr = client.id.toString();
+      const isLegacy = idStr.startsWith('legacy_') || client.lead_type === 'legacy';
+      const segment = isLegacy ? idStr.replace(/^legacy_/, '') : idStr;
+      return `/clients/${encodeURIComponent(segment)}`;
+    }
+    return '/clients';
+  };
+
   // Helper function to get employee display name from ID (same logic as ClientHeader.tsx)
   const getEmployeeDisplayNameFromId = (employeeId: string | number | null | undefined): string => {
     if (!employeeId || employeeId === '---' || employeeId === null || employeeId === undefined) return '---';
@@ -1239,11 +1259,9 @@ const ContractPage: React.FC = () => {
             .from('leads_lead')
             .select(`
               *,
-              accounting_currencies!leads_lead_currency_id_fkey (
-                id,
-                iso_code,
-                name
-              )
+              accounting_currencies!leads_lead_currency_id_fkey ( id, iso_code, name ),
+              misc_category!leads_lead_category_id_fkey ( id, name, parent_id, misc_maincategory!parent_id ( id, name ) ),
+              closer_employee:tenants_employee!fk_leads_lead_closer_id ( id, display_name )
             `)
             .eq('id', legacyId)
             .single();
@@ -1254,29 +1272,18 @@ const ContractPage: React.FC = () => {
           }
 
           if (legacyClient) {
-            // Get currency from accounting_currencies
-            let currency = '₪'; // Default
-            const currencyData = Array.isArray(legacyClient.accounting_currencies)
+            const currencyRecord = Array.isArray(legacyClient.accounting_currencies)
               ? legacyClient.accounting_currencies[0]
               : legacyClient.accounting_currencies;
-            if (currencyData) {
-              const isoCode = currencyData.iso_code?.toUpperCase();
-              if (isoCode === 'ILS' || isoCode === 'NIS') currency = '₪';
-              else if (isoCode === 'USD') currency = '$';
-              else if (isoCode === 'EUR') currency = '€';
-              else if (isoCode === 'GBP') currency = '£';
-              else currency = isoCode || currencyData.name || '₪';
-            } else if (legacyClient.currency_id) {
-              // Fallback: map currency_id to symbol
-              switch (legacyClient.currency_id) {
-                case 1: currency = '₪'; break;
-                case 2: currency = '$'; break;
-                case 3: currency = '€'; break;
-                default: currency = '₪';
-              }
-            }
+            const balance_currency = (currencyRecord?.name || currencyRecord?.iso_code || '₪').trim() || '₪';
 
-            // Transform legacy client to match new client structure
+            const cat = legacyClient.misc_category;
+            const mainCat = cat && (Array.isArray(cat.misc_maincategory) ? cat.misc_maincategory[0] : cat.misc_maincategory);
+            const categoryDisplay = cat?.name ? (mainCat?.name ? `${cat.name} (${mainCat.name})` : cat.name) : String(legacyClient.category_id || legacyClient.category || '');
+
+            const closerRecord = legacyClient.closer_employee;
+            const closerDisplay = closerRecord && (Array.isArray(closerRecord) ? closerRecord[0]?.display_name : closerRecord.display_name);
+
             clientData = {
               ...legacyClient,
               id: `legacy_${legacyClient.id}`,
@@ -1289,26 +1296,30 @@ const ContractPage: React.FC = () => {
               special_notes: legacyClient.special_notes || '',
               next_followup: legacyClient.next_followup || '',
               probability: String(legacyClient.probability || ''),
-              category: String(legacyClient.category_id || legacyClient.category || ''),
+              category: categoryDisplay,
               language: String(legacyClient.language_id || ''),
               balance: String(legacyClient.total || ''),
               lead_type: 'legacy',
               client_country: null,
-              closer: legacyClient.closer_id || null, // Preserve closer_id for legacy leads
-              closer_id: legacyClient.closer_id || null, // Also keep closer_id field
+              closer: closerDisplay ?? legacyClient.closer_id ?? null,
+              closer_id: legacyClient.closer_id ?? null,
               handler: null,
               unactivation_reason: null,
-              balance_currency: currency, // Store currency for consistency
+              balance_currency,
             };
 
           }
         } else {
-          // For new leads, fetch from leads table
+          // For new leads, fetch from leads table with category and currency joins
           console.log('ContractPage: fetchClient - fetching from leads with id:', leadNumber);
 
           const { data: newClient, error: newError } = await supabase
             .from('leads')
-            .select('*')
+            .select(`
+              *,
+              misc_category!fk_leads_category_id ( id, name, parent_id, misc_maincategory!parent_id ( id, name ) ),
+              accounting_currencies!leads_currency_id_fkey ( id, name, iso_code )
+            `)
             .eq('lead_number', leadNumber)
             .single();
 
@@ -1317,7 +1328,16 @@ const ContractPage: React.FC = () => {
             return;
           }
 
-          clientData = newClient;
+          if (newClient) {
+            const currencyRecord = newClient.accounting_currencies && (Array.isArray(newClient.accounting_currencies) ? newClient.accounting_currencies[0] : newClient.accounting_currencies);
+            const balance_currency = (currencyRecord?.name || currencyRecord?.iso_code || '₪').trim() || '₪';
+            const cat = newClient.misc_category;
+            const mainCat = cat && (Array.isArray(cat.misc_maincategory) ? cat.misc_maincategory[0] : cat.misc_maincategory);
+            const categoryDisplay = cat?.name ? (mainCat?.name ? `${cat.name} (${mainCat.name})` : cat.name) : String(newClient.category_id ?? newClient.category ?? '');
+            clientData = { ...newClient, balance_currency: balance_currency || newClient.balance_currency, category: categoryDisplay || newClient.category };
+          } else {
+            clientData = newClient;
+          }
         }
 
         console.log('ContractPage: fetchClient - setting client data:', clientData);
@@ -1481,11 +1501,9 @@ const ContractPage: React.FC = () => {
                 .from('leads_lead')
                 .select(`
                   *,
-                  accounting_currencies!leads_lead_currency_id_fkey (
-                    id,
-                    iso_code,
-                    name
-                  )
+                  accounting_currencies!leads_lead_currency_id_fkey ( id, iso_code, name ),
+                  misc_category!leads_lead_category_id_fkey ( id, name, parent_id, misc_maincategory!parent_id ( id, name ) ),
+                  closer_employee:tenants_employee!fk_leads_lead_closer_id ( id, display_name )
                 `)
                 .eq('id', contractData.legacy_id)
                 .single();
@@ -1494,28 +1512,15 @@ const ContractPage: React.FC = () => {
                 console.error('ContractPage: Error fetching legacy client:', legacyError);
                 clientError = legacyError;
               } else if (legacyClient) {
-                // Transform legacy client to match new client structure
-                // Get currency from accounting_currencies
-                let currency = '₪'; // Default
-                const currencyData = Array.isArray(legacyClient.accounting_currencies)
+                const currencyRecord = Array.isArray(legacyClient.accounting_currencies)
                   ? legacyClient.accounting_currencies[0]
                   : legacyClient.accounting_currencies;
-                if (currencyData) {
-                  const isoCode = currencyData.iso_code?.toUpperCase();
-                  if (isoCode === 'ILS' || isoCode === 'NIS') currency = '₪';
-                  else if (isoCode === 'USD') currency = '$';
-                  else if (isoCode === 'EUR') currency = '€';
-                  else if (isoCode === 'GBP') currency = '£';
-                  else currency = isoCode || currencyData.name || '₪';
-                } else if (legacyClient.currency_id) {
-                  // Fallback: map currency_id to symbol
-                  switch (legacyClient.currency_id) {
-                    case 1: currency = '₪'; break;
-                    case 2: currency = '$'; break;
-                    case 3: currency = '€'; break;
-                    default: currency = '₪';
-                  }
-                }
+                const balance_currency = (currencyRecord?.name || currencyRecord?.iso_code || '₪').trim() || '₪';
+                const cat = legacyClient.misc_category;
+                const mainCat = cat && (Array.isArray(cat.misc_maincategory) ? cat.misc_maincategory[0] : cat.misc_maincategory);
+                const categoryDisplay = cat?.name ? (mainCat?.name ? `${cat.name} (${mainCat.name})` : cat.name) : String(legacyClient.category_id || legacyClient.category || '');
+                const closerRecord = legacyClient.closer_employee;
+                const closerDisplay = closerRecord && (Array.isArray(closerRecord) ? closerRecord[0]?.display_name : closerRecord.display_name);
 
                 clientData = {
                   ...legacyClient,
@@ -1529,41 +1534,41 @@ const ContractPage: React.FC = () => {
                   special_notes: legacyClient.special_notes || '',
                   next_followup: legacyClient.next_followup || '',
                   probability: String(legacyClient.probability || ''),
-                  category: String(legacyClient.category_id || legacyClient.category || ''),
+                  category: categoryDisplay,
                   language: String(legacyClient.language_id || ''),
                   balance: String(legacyClient.total || ''),
                   lead_type: 'legacy',
                   client_country: null,
-                  closer: legacyClient.closer_id || null, // Preserve closer_id for legacy leads
-                  closer_id: legacyClient.closer_id || null, // Also keep closer_id field
+                  closer: closerDisplay ?? legacyClient.closer_id ?? null,
+                  closer_id: legacyClient.closer_id ?? null,
                   handler: null,
                   unactivation_reason: null,
-                  balance_currency: legacyClient.accounting_currencies?.name || (() => {
-                    // Fallback currency mapping based on currency_id
-                    switch (legacyClient.currency_id) {
-                      case 1: return '₪';
-                      case 2: return '€';
-                      case 3: return '$';
-                      case 4: return '£';
-                      default: return '₪';
-                    }
-                  })(),
+                  balance_currency,
                 };
               }
             } else if (contractData.client_id) {
-              // For new leads, fetch from leads table
+              // For new leads, fetch from leads table with category and currency joins
               console.log('ContractPage: Fetching client from contract client_id:', contractData.client_id);
               const { data: newClient, error: newError } = await supabase
                 .from('leads')
-                .select('*')
+                .select(`
+                  *,
+                  misc_category!fk_leads_category_id ( id, name, parent_id, misc_maincategory!parent_id ( id, name ) ),
+                  accounting_currencies!leads_currency_id_fkey ( id, name, iso_code )
+                `)
                 .eq('id', contractData.client_id)
                 .single();
 
               if (newError) {
                 console.error('ContractPage: Error fetching client:', newError);
                 clientError = newError;
-              } else {
-                clientData = newClient;
+              } else if (newClient) {
+                const currencyRecord = newClient.accounting_currencies && (Array.isArray(newClient.accounting_currencies) ? newClient.accounting_currencies[0] : newClient.accounting_currencies);
+                const balance_currency = (currencyRecord?.name || currencyRecord?.iso_code || '₪').trim() || '₪';
+                const cat = newClient.misc_category;
+                const mainCat = cat && (Array.isArray(cat.misc_maincategory) ? cat.misc_maincategory[0] : cat.misc_maincategory);
+                const categoryDisplay = cat?.name ? (mainCat?.name ? `${cat.name} (${mainCat.name})` : cat.name) : String(newClient.category_id ?? newClient.category ?? '');
+                clientData = { ...newClient, balance_currency: balance_currency || newClient.balance_currency, category: categoryDisplay || newClient.category };
               }
             }
 
@@ -5190,13 +5195,13 @@ const ContractPage: React.FC = () => {
           </p>
           <div className="flex gap-3 justify-center">
             <button
-              onClick={() => navigate(`/clients/${leadNumber}`)}
+              onClick={() => navigate(getLeadPagePath())}
               className="btn btn-outline"
             >
               Back to Client
             </button>
             <button
-              onClick={() => navigate(`/clients/${leadNumber}?tab=contact`)}
+              onClick={() => navigate(`${getLeadPagePath()}?tab=contact`)}
               className="btn btn-primary"
             >
               Create Contract
@@ -5233,22 +5238,15 @@ const ContractPage: React.FC = () => {
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
                 {status === 'signed' && (
-                  <span className="badge badge-success badge-md sm:badge-md">Signed</span>
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 dark:bg-emerald-400/20 text-emerald-700 dark:text-emerald-300 border border-emerald-400/40 dark:border-emerald-400/30 px-3.5 py-1.5 text-sm font-semibold shadow-sm">
+                    <CheckIcon className="w-4 h-4 shrink-0" />
+                    Signed
+                  </span>
                 )}
                 {status === 'draft' && (
                   <>
                     <button
-                      onClick={() => {
-                        let targetUrl = '/clients';
-                        if (leadNumber) {
-                          targetUrl = `/clients/${leadNumber}`;
-                        } else if (client?.id) {
-                          const clientLeadNumber = client.lead_number || client.id.toString().replace('legacy_', '');
-                          targetUrl = `/clients/${clientLeadNumber}`;
-                        }
-                        // Use window.location.href to force full page navigation
-                        window.location.href = targetUrl;
-                      }}
+                      onClick={() => navigate(getLeadPagePath())}
                       className="btn btn-ghost btn-sm sm:btn-sm p-2 sm:p-2"
                       title="Back to client"
                     >
@@ -5264,7 +5262,7 @@ const ContractPage: React.FC = () => {
                   </div>
                   <div className="flex items-center gap-1.5">
                     <ClipboardDocumentIcon className="w-5 h-5 sm:w-5 sm:h-5 text-gray-600" />
-                    <span className="text-sm sm:text-lg font-bold text-gray-900">Lead #{renderLeadNumber()}</span>
+                    <span className="text-sm sm:text-lg font-bold text-gray-900">#{renderLeadNumber()}</span>
                   </div>
                   {(() => {
                     const displayCategory = getCategoryDisplayName(client?.category_id, client?.category);
@@ -5282,6 +5280,16 @@ const ContractPage: React.FC = () => {
                     </div>
                   )}
                 </div>
+                {(leadNumber || client) && (
+                  <button
+                    onClick={() => navigate(getLeadPagePath())}
+                    className="btn btn-outline btn-sm gap-1.5 print-hide"
+                    title="Go to lead page"
+                  >
+                   
+                    <span className="hidden sm:inline">Back to lead</span>
+                  </button>
+                )}
               </div>
             </div>
           </div>

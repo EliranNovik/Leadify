@@ -2426,7 +2426,8 @@ const LeadSearchPage: React.FC = () => {
           lawyer_employee:tenants_employee!fk_leads_lead_meeting_lawyer_id(id, display_name),
           expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
           closer_employee:tenants_employee!fk_leads_lead_closer_id(id, display_name),
-          handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name)
+          handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name),
+          reason_record:misc_reason!fk_leads_lead_reason_id(name)
         `);
 
       console.log('📋 Legacy leads query base:', legacyLeadsQuery);
@@ -3885,7 +3886,7 @@ const LeadSearchPage: React.FC = () => {
           management_notes: legacyLead.management_notes,
           external_notes: legacyLead.external_notes,
           deactivate_notes: legacyLead.deactivate_notes,
-          unactivation_reason: legacyLead.unactivation_reason,
+          unactivation_reason: legacyLead.unactivation_reason ?? (legacyLead.reason_record?.name ?? (Array.isArray(legacyLead.reason_record) ? legacyLead.reason_record[0]?.name : null)) ?? null,
 
           // Roles
           roles: roles,

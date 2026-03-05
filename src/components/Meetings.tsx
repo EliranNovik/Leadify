@@ -45,14 +45,18 @@ interface MeetingRecord {
   helper: string;
   teams_meeting_url: string;
   meeting_brief: string;
+  client_id?: string | null;
+  legacy_lead_id?: number | string | null;
+  status?: string | null;
+  scheduler?: string | null;
   lead?: {
     id: number;
     lead_number: string;
     name: string;
-    status: string;
+    status?: string | number | null;
     topic: string;
     manager?: string;
-    stage?: string;
+    stage?: string | number;
     expert?: string;
     scheduler?: string;
     helper?: string;
@@ -62,11 +66,13 @@ interface MeetingRecord {
     balance_currency?: string | null;
     eligibility_status?: string | null;
     lead_type?: string;
+    unactivated_at?: string | null;
   };
   legacy_lead?: {
     id: number;
     name: string;
     stage?: string | number;
+    status?: string | number | null;
     expert_id?: string;
     meeting_manager_id?: string;
     meeting_lawyer_id?: string;
@@ -129,6 +135,7 @@ const Meetings: React.FC = () => {
   const [todayMeetings, setTodayMeetings] = useState<Meeting[]>([]);
   const [tomorrowMeetings, setTomorrowMeetings] = useState<Meeting[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [meetingsLoading, setMeetingsLoading] = useState(true);
 
   // Helper function to extract valid Teams link from stored data
   const getValidTeamsLink = (link: string | undefined): string => {
@@ -231,6 +238,7 @@ const Meetings: React.FC = () => {
 
   useEffect(() => {
     const fetchMeetings = async () => {
+      setMeetingsLoading(true);
       try {
         // First, fetch current user's employee_id, display name, and email
         const { data: { user } } = await supabase.auth.getUser();
@@ -272,242 +280,194 @@ const Meetings: React.FC = () => {
         const tomorrow = new Date(today.getTime() + 86400000);
         const tomorrowStr = tomorrow.toISOString().split('T')[0];
 
-        // Fetch meetings from Supabase - join with both leads and leads_lead tables to get lead information
-        const { data: meetings, error: fetchError } = await supabase
-          .from('meetings')
-          .select(`
-            id,
-            meeting_date,
-            meeting_time,
-            meeting_location,
-            meeting_manager,
-            meeting_currency,
-            meeting_amount,
-            expert,
-            helper,
-            teams_meeting_url,
-            meeting_brief,
-            lead:leads!client_id (
+        // Fetch meetings and legacy leads in parallel (both with joins to avoid extra round-trips)
+        const legacySelect = `
+          id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, status, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, total, meeting_total_currency_id, currency_id, expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination,
+          scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
+          manager_employee:tenants_employee!fk_leads_lead_meeting_manager_id(id, display_name),
+          lawyer_employee:tenants_employee!fk_leads_lead_meeting_lawyer_id(id, display_name),
+          expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
+          currency_record:accounting_currencies!leads_lead_currency_id_fkey(name, iso_code),
+          stage_record:lead_stages!fk_leads_lead_stage(id, name),
+          category_record:misc_category!leads_lead_category_id_fkey(id, name)
+        `;
+
+        const [meetingsResult, legacyResult] = await Promise.all([
+          supabase
+            .from('meetings')
+            .select(`
               id,
-              lead_number,
-              name,
-              status,
-              topic,
-              manager,
-              stage,
+              meeting_date,
+              meeting_time,
+              meeting_location,
+              meeting_manager,
+              meeting_currency,
+              meeting_amount,
               expert,
-              scheduler,
               helper,
-              closer,
-              handler,
-              balance,
-              balance_currency,
-              eligibility_status
-            ),
-            legacy_lead_id,
-            legacy_lead:leads_lead!legacy_lead_id (
-              id,
-              name,
-              stage,
-              expert_id,
-              meeting_manager_id,
-              meeting_lawyer_id,
-              meeting_scheduler_id,
-              category,
-              category_id,
-              total,
-              currency_id,
-              closer_id,
-              case_handler_id,
-              expert_examination
-            )
-          `)
-          .or(`meeting_date.eq.${todayStr},meeting_date.eq.${tomorrowStr}`)
-          .not('teams_meeting_url', 'is', null)
-          .returns<MeetingRecord[]>();
+              scheduler,
+              status,
+              teams_meeting_url,
+              meeting_brief,
+              client_id,
+              legacy_lead_id,
+              lead:leads!client_id (
+                id,
+                lead_number,
+                name,
+                status,
+                topic,
+                manager,
+                stage,
+                expert,
+                scheduler,
+                helper,
+                closer,
+                handler,
+                balance,
+                balance_currency,
+                eligibility_status,
+                unactivated_at
+              ),
+              legacy_lead:leads_lead!legacy_lead_id (
+                id,
+                name,
+                stage,
+                status,
+                expert_id,
+                meeting_manager_id,
+                meeting_lawyer_id,
+                meeting_scheduler_id,
+                category,
+                category_id,
+                total,
+                currency_id,
+                closer_id,
+                case_handler_id,
+                expert_examination,
+                scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
+                manager_employee:tenants_employee!fk_leads_lead_meeting_manager_id(id, display_name),
+                lawyer_employee:tenants_employee!fk_leads_lead_meeting_lawyer_id(id, display_name),
+                expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
+                currency_record:accounting_currencies!leads_lead_currency_id_fkey(name, iso_code),
+                stage_record:lead_stages!fk_leads_lead_stage(id, name),
+                category_record:misc_category!leads_lead_category_id_fkey(id, name)
+              )
+            `)
+            .or(`meeting_date.eq.${todayStr},meeting_date.eq.${tomorrowStr}`)
+            .or('status.is.null,status.neq.canceled,status.neq.cancelled')
+            .not('teams_meeting_url', 'is', null)
+            .returns<MeetingRecord[]>(),
+          supabase
+            .from('leads_lead')
+            .select(legacySelect)
+            .in('meeting_date', [todayStr, tomorrowStr])
+            .not('meeting_date', 'is', null)
+            .not('name', 'is', null)
+            .limit(500)
+        ]);
+
+        const { data: meetings, error: fetchError } = meetingsResult;
+        const { data: legacyLeadsData, error: legacyError } = legacyResult;
 
         if (fetchError) {
           throw new Error(`Error fetching meetings: ${fetchError.message}`);
         }
-
         if (!meetings) {
           throw new Error('No meetings data received');
         }
 
-        // Fetch legacy leads directly from leads_lead table that have meetings today or tomorrow
-        // Get IDs of legacy leads that are already in meetings table to exclude them
         const existingLegacyLeadIds = new Set<string>();
         meetings.forEach((m: any) => {
-          if (m.legacy_lead_id) {
-            existingLegacyLeadIds.add(String(m.legacy_lead_id));
-          }
+          if (m.legacy_lead_id) existingLegacyLeadIds.add(String(m.legacy_lead_id));
         });
-        
+
         let directLegacyMeetings: any[] = [];
-        try {
-          const { data: legacyLeadsData, error: legacyError } = await supabase
-            .from('leads_lead')
-            .select('id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, total, meeting_total_currency_id, expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination')
-            .in('meeting_date', [todayStr, tomorrowStr])
-            .not('meeting_date', 'is', null)
-            .not('name', 'is', null)
-            .limit(500);
-          
-          if (!legacyError && legacyLeadsData) {
-            // Filter out legacy leads that already exist in meetings table
-            const newLegacyLeads = legacyLeadsData.filter((legacyLead: any) => {
-              return !existingLegacyLeadIds.has(String(legacyLead.id));
-            });
-            
-            // Transform legacy leads to match meeting structure
-            directLegacyMeetings = newLegacyLeads.map((legacyLead: any) => ({
-              id: `legacy_${legacyLead.id}`,
-              meeting_date: legacyLead.meeting_date,
-              meeting_time: legacyLead.meeting_time || '09:00',
-              meeting_location: 'Teams', // Default, can be improved with location lookup
-              meeting_manager: legacyLead.meeting_manager_id,
-              meeting_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
-                               legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
-                               legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
-              meeting_amount: parseFloat(legacyLead.total || '0'),
-              expert: legacyLead.expert_id,
-              helper: legacyLead.meeting_lawyer_id,
-              teams_meeting_url: null,
-              meeting_brief: null,
-              legacy_lead_id: legacyLead.id,
-              legacy_lead: {
-                id: legacyLead.id,
-                name: legacyLead.name,
-                stage: legacyLead.stage,
-                expert_id: legacyLead.expert_id,
-                meeting_manager_id: legacyLead.meeting_manager_id,
-                meeting_lawyer_id: legacyLead.meeting_lawyer_id,
-                meeting_scheduler_id: legacyLead.meeting_scheduler_id,
-                category: legacyLead.category,
-                category_id: legacyLead.category_id,
-                total: parseFloat(legacyLead.total || '0'),
-                currency_id: legacyLead.meeting_total_currency_id,
-                closer_id: null,
-                case_handler_id: null,
-                expert_examination: legacyLead.expert_examination
-              },
-              lead: null
-            }));
-          }
-        } catch (legacyErr) {
-          console.error('Error fetching legacy leads directly:', legacyErr);
-          // Continue even if legacy fetch fails
+        if (!legacyError && legacyLeadsData) {
+          let newLegacyLeads = legacyLeadsData.filter((legacyLead: any) => !existingLegacyLeadIds.has(String(legacyLead.id)));
+          newLegacyLeads = newLegacyLeads.filter((legacyLead: any) => {
+            if (legacyLead.status === 10 || legacyLead.status === '10') return false;
+            if (legacyLead.stage === 91 || legacyLead.stage === '91') return false;
+            return true;
+          });
+          directLegacyMeetings = newLegacyLeads.map((legacyLead: any) => ({
+            id: `legacy_${legacyLead.id}`,
+            meeting_date: legacyLead.meeting_date,
+            meeting_time: legacyLead.meeting_time || '09:00',
+            meeting_location: 'Teams',
+            meeting_manager: legacyLead.meeting_manager_id,
+            meeting_currency: legacyLead.currency_record?.iso_code ?? (legacyLead.meeting_total_currency_id === 1 ? 'NIS' : legacyLead.meeting_total_currency_id === 2 ? 'USD' : legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS'),
+            meeting_amount: parseFloat(legacyLead.total || '0'),
+            expert: legacyLead.expert_id,
+            helper: legacyLead.meeting_lawyer_id,
+            teams_meeting_url: null,
+            meeting_brief: null,
+            legacy_lead_id: legacyLead.id,
+            legacy_lead: {
+              id: legacyLead.id,
+              name: legacyLead.name,
+              stage: legacyLead.stage,
+              status: legacyLead.status,
+              expert_id: legacyLead.expert_id,
+              meeting_manager_id: legacyLead.meeting_manager_id,
+              meeting_lawyer_id: legacyLead.meeting_lawyer_id,
+              meeting_scheduler_id: legacyLead.meeting_scheduler_id,
+              category: legacyLead.category,
+              category_id: legacyLead.category_id,
+              total: parseFloat(legacyLead.total || '0'),
+              currency_id: legacyLead.currency_id ?? legacyLead.meeting_total_currency_id,
+              closer_id: null,
+              case_handler_id: null,
+              expert_examination: legacyLead.expert_examination,
+              scheduler_employee: legacyLead.scheduler_employee,
+              manager_employee: legacyLead.manager_employee,
+              lawyer_employee: legacyLead.lawyer_employee,
+              expert_employee: legacyLead.expert_employee,
+              currency_record: legacyLead.currency_record,
+              stage_record: legacyLead.stage_record,
+              category_record: legacyLead.category_record
+            },
+            lead: null
+          }));
         }
-        
-        // Combine meetings from meetings table with direct legacy meetings
+
         const allMeetingsData = [...meetings, ...directLegacyMeetings];
 
-        // Fetch employee names for ID mapping
-        // Only collect numeric IDs for database query (string names are already display names)
+        // Fetch employee names for fallback (legacy prefers joined data; new leads need this)
         const employeeIds = new Set<number>();
+        const addValidNumericId = (id: any) => {
+          if (id == null || id === '' || id === '---' || id === undefined) return;
+          const numId = typeof id === 'number' ? id : Number(id);
+          if (!isNaN(numId) && numId > 0) employeeIds.add(numId);
+        };
         allMeetingsData.forEach(meeting => {
-          // Helper function to add valid numeric IDs only
-          const addValidNumericId = (id: any) => {
-            if (id != null && id !== '' && id !== '---' && id !== undefined) {
-              const numId = typeof id === 'number' ? id : Number(id);
-              // Only add if it's a valid number and not NaN
-              if (!isNaN(numId) && numId > 0) {
-                employeeIds.add(numId);
-              }
-            }
-          };
-          
-          // Legacy lead IDs (should be numeric)
           addValidNumericId(meeting.legacy_lead?.meeting_manager_id);
           addValidNumericId(meeting.legacy_lead?.meeting_lawyer_id);
           addValidNumericId(meeting.legacy_lead?.meeting_scheduler_id);
           addValidNumericId(meeting.legacy_lead?.expert_id);
-          addValidNumericId(meeting.legacy_lead?.case_handler_id);
-          
-          // Meeting-level fields (might be numeric IDs)
           addValidNumericId(meeting.expert);
           addValidNumericId(meeting.meeting_manager);
+          addValidNumericId((meeting as any).scheduler);
           addValidNumericId(meeting.helper);
-          
-          // New lead fields - only add if they're numeric
-          if (meeting.lead?.scheduler && !isNaN(Number(meeting.lead.scheduler))) {
-            addValidNumericId(meeting.lead.scheduler);
-          }
-          if (meeting.lead?.helper && !isNaN(Number(meeting.lead.helper))) {
-            addValidNumericId(meeting.lead.helper);
-          }
-          if (meeting.lead?.closer && !isNaN(Number(meeting.lead.closer))) {
-            addValidNumericId(meeting.lead.closer);
-          }
-          if (meeting.lead?.expert && !isNaN(Number(meeting.lead.expert))) {
-            addValidNumericId(meeting.lead.expert);
-          }
-          if (meeting.lead?.manager && !isNaN(Number(meeting.lead.manager))) {
-            addValidNumericId(meeting.lead.manager);
-          }
-          if (meeting.lead?.handler && !isNaN(Number(meeting.lead.handler))) {
-            addValidNumericId(meeting.lead.handler);
-          }
+          if (meeting.lead?.scheduler && !isNaN(Number(meeting.lead.scheduler))) addValidNumericId(meeting.lead.scheduler);
+          if (meeting.lead?.helper && !isNaN(Number(meeting.lead.helper))) addValidNumericId(meeting.lead.helper);
+          if (meeting.lead?.closer && !isNaN(Number(meeting.lead.closer))) addValidNumericId(meeting.lead.closer);
+          if (meeting.lead?.expert && !isNaN(Number(meeting.lead.expert))) addValidNumericId(meeting.lead.expert);
+          if (meeting.lead?.manager && !isNaN(Number(meeting.lead.manager))) addValidNumericId(meeting.lead.manager);
+          if (meeting.lead?.handler && !isNaN(Number(meeting.lead.handler))) addValidNumericId(meeting.lead.handler);
         });
 
         let employeeNameMap: Record<string, string> = {};
         if (employeeIds.size > 0) {
-          // Convert Set to array of numbers for the query
-          const numericIds = Array.from(employeeIds);
           const { data: employees, error: employeeError } = await supabase
             .from('tenants_employee')
             .select('id, display_name')
-            .in('id', numericIds);
-          
+            .in('id', Array.from(employeeIds));
           if (!employeeError && employees) {
-            employeeNameMap = employees.reduce((acc, emp) => {
-              // Map both numeric and string versions of the ID
-              acc[emp.id.toString()] = emp.display_name;
-              acc[String(emp.id)] = emp.display_name;
-              return acc;
-            }, {} as Record<string, string>);
-          }
-        }
-
-        // Fetch category names for legacy leads
-        const categoryIds = allMeetingsData
-          .filter(m => m.legacy_lead?.category_id)
-          .map(m => m.legacy_lead!.category_id!)
-          .filter(Boolean);
-
-        let categoryNameMap: Record<number, string> = {};
-        if (categoryIds.length > 0) {
-          const { data: categories, error: categoryError } = await supabase
-            .from('misc_category')
-            .select('id, name')
-            .in('id', categoryIds);
-          
-          if (!categoryError && categories) {
-            categoryNameMap = categories.reduce((acc, cat) => {
-              acc[cat.id] = cat.name;
-              return acc;
-            }, {} as Record<number, string>);
-          }
-        }
-
-        // Fetch currency information for legacy leads
-        const currencyIds = allMeetingsData
-          .filter(m => m.legacy_lead?.currency_id)
-          .map(m => m.legacy_lead!.currency_id!)
-          .filter(Boolean);
-
-        let currencyMap: Record<number, string> = {};
-        if (currencyIds.length > 0) {
-          const { data: currencies, error: currencyError } = await supabase
-            .from('accounting_currencies')
-            .select('id, iso_code')
-            .in('id', currencyIds);
-          
-          if (!currencyError && currencies) {
-            currencyMap = currencies.reduce((acc, curr) => {
-              acc[curr.id] = curr.iso_code;
-              return acc;
-            }, {} as Record<number, string>);
+            employees.forEach((emp: any) => {
+              employeeNameMap[emp.id.toString()] = emp.display_name;
+              employeeNameMap[String(emp.id)] = emp.display_name;
+            });
           }
         }
 
@@ -555,15 +515,18 @@ const Meetings: React.FC = () => {
               checkField(newLead.expert) ||
               checkField(newLead.closer) ||
               checkField(newLead.handler) ||
+              checkField((meeting as any).scheduler) ||
               checkField(meeting.meeting_manager) ||
               checkField(meeting.expert) ||
               checkField(meeting.helper)
             );
           }
           
-          // Fallback: check meeting-level fields
+          // Fallback: check meeting-level fields (meetings table has scheduler, meeting_manager, helper)
           if (userEmployeeId) {
+            const m = meeting as any;
             return (
+              m.scheduler?.toString() === userEmployeeId.toString() ||
               meeting.meeting_manager?.toString() === userEmployeeId.toString() ||
               meeting.expert?.toString() === userEmployeeId.toString() ||
               meeting.helper?.toString() === userEmployeeId.toString()
@@ -571,7 +534,9 @@ const Meetings: React.FC = () => {
           }
           // If we have display name, check against meeting fields that might be display names
           if (userDisplayName) {
+            const m = meeting as any;
             return (
+              (typeof m.scheduler === 'string' && m.scheduler.trim() === userDisplayName.trim()) ||
               (typeof meeting.meeting_manager === 'string' && meeting.meeting_manager.trim() === userDisplayName.trim()) ||
               (typeof meeting.expert === 'string' && meeting.expert.trim() === userDisplayName.trim()) ||
               (typeof meeting.helper === 'string' && meeting.helper.trim() === userDisplayName.trim())
@@ -581,7 +546,31 @@ const Meetings: React.FC = () => {
         };
         
         // Filter meetings by user role
-        const filteredMeetings = allMeetingsData.filter(userMatchesRole);
+        let filteredMeetings = allMeetingsData.filter(userMatchesRole);
+
+        // Exclude canceled/cancelled meetings (client-side)
+        filteredMeetings = filteredMeetings.filter((m: any) => {
+          const s = (m.status || '').toString().toLowerCase();
+          return s !== 'canceled' && s !== 'cancelled';
+        });
+
+        // Exclude meetings with inactive leads (same as CalendarPage)
+        filteredMeetings = filteredMeetings.filter((m: any) => {
+          const lead = m.lead || {};
+          const legacyLead = m.legacy_lead || {};
+          if ((m.client_id != null || m.legacy_lead_id != null) && !lead.id && !legacyLead.id) return false;
+          if (lead.id && !lead.id?.toString?.()?.startsWith('legacy_')) {
+            if (lead.stage === 91 || lead.stage === '91') return false;
+            if (lead.unactivated_at) return false;
+          }
+          if (legacyLead.id || lead.id?.toString?.()?.startsWith('legacy_')) {
+            const stage = legacyLead.stage ?? lead.stage;
+            const status = legacyLead.status ?? lead.status;
+            if (stage === 91 || stage === '91') return false;
+            if (status === 10 || status === '10') return false;
+          }
+          return true;
+        });
         
         // Transform and filter meetings
         const transformedMeetings = filteredMeetings.map(meeting => {
@@ -589,18 +578,14 @@ const Meetings: React.FC = () => {
           let leadData = null;
           
           if (meeting.legacy_lead) {
-            // Use legacy lead data and map column names to match new leads structure
+            const leg = meeting.legacy_lead as any;
             leadData = {
               ...meeting.legacy_lead,
               lead_type: 'legacy',
-              // Map legacy column names to new structure
               manager: meeting.legacy_lead.meeting_manager_id,
               helper: meeting.legacy_lead.meeting_lawyer_id,
-              // For legacy leads, use the ID as lead_number
               lead_number: meeting.legacy_lead.id?.toString(),
-              // Use category name if available, otherwise category_id as string
-              topic: meeting.legacy_lead.category || 
-                     (meeting.legacy_lead.category_id ? categoryNameMap[meeting.legacy_lead.category_id] || meeting.legacy_lead.category_id.toString() : 'Consultation')
+              topic: leg.category ?? leg.category_record?.name ?? (meeting.legacy_lead.category_id ? String(meeting.legacy_lead.category_id) : 'Consultation')
             };
           } else if (meeting.lead) {
             // Use new lead data
@@ -613,13 +598,16 @@ const Meetings: React.FC = () => {
           return {
             id: meeting.id,
             lead: leadData?.lead_number || meeting.legacy_lead?.id?.toString() || 'N/A',
-            info: leadData?.stage ? getStageName(leadData.stage.toString()) : '', // Transform stage ID to name
+            info: (() => {
+              const leg = meeting.legacy_lead as any;
+              if (leg?.stage_record?.name) return leg.stage_record.name;
+              if (leadData?.stage) return getStageName(leadData.stage.toString());
+              return '';
+            })(),
             expert: (() => {
-              // For legacy leads, use expert_id from the lead data
-              if (meeting.legacy_lead?.expert_id) {
-                const expertName = employeeNameMap[meeting.legacy_lead.expert_id.toString()];
-                return expertName || meeting.legacy_lead.expert_id.toString();
-              }
+              const leg = meeting.legacy_lead as any;
+              if (leg?.expert_employee?.display_name) return leg.expert_employee.display_name;
+              if (meeting.legacy_lead?.expert_id) return employeeNameMap[meeting.legacy_lead.expert_id.toString()] || meeting.legacy_lead.expert_id.toString();
               // For new leads, check lead.expert first (might be name or ID), then meeting.expert
               if (meeting.lead?.expert) {
                 // If it's already a name (not a number), return it
@@ -643,10 +631,9 @@ const Meetings: React.FC = () => {
               return 'Unassigned';
             })(),
             helper: (() => {
-              // For legacy leads, use meeting_lawyer_id from the lead data
-              if (meeting.legacy_lead?.meeting_lawyer_id) {
-                return employeeNameMap[meeting.legacy_lead.meeting_lawyer_id] || meeting.legacy_lead.meeting_lawyer_id;
-              }
+              const leg = meeting.legacy_lead as any;
+              if (leg?.lawyer_employee?.display_name) return leg.lawyer_employee.display_name;
+              if (meeting.legacy_lead?.meeting_lawyer_id) return employeeNameMap[meeting.legacy_lead.meeting_lawyer_id] || meeting.legacy_lead.meeting_lawyer_id;
               // For new leads, first check lead.helper field
               if (meeting.lead?.helper) {
                 const helperField = meeting.lead.helper;
@@ -662,10 +649,9 @@ const Meetings: React.FC = () => {
               return meeting.helper ? employeeNameMap[meeting.helper] || meeting.helper : '';
             })(),
             scheduler: (() => {
-              // For legacy leads, use meeting_scheduler_id from the lead data
-              if (meeting.legacy_lead?.meeting_scheduler_id) {
-                return employeeNameMap[meeting.legacy_lead.meeting_scheduler_id] || meeting.legacy_lead.meeting_scheduler_id;
-              }
+              const leg = meeting.legacy_lead as any;
+              if (leg?.scheduler_employee?.display_name) return leg.scheduler_employee.display_name;
+              if (meeting.legacy_lead?.meeting_scheduler_id) return employeeNameMap[meeting.legacy_lead.meeting_scheduler_id] || meeting.legacy_lead.meeting_scheduler_id;
               // For new leads, first check lead.scheduler field
               if (meeting.lead?.scheduler) {
                 const schedulerField = meeting.lead.scheduler;
@@ -687,40 +673,37 @@ const Meetings: React.FC = () => {
               leadBalanceCurrency: meeting.lead?.balance_currency,
               legacyTotal: meeting.legacy_lead?.total,
               legacyCurrencyId: meeting.legacy_lead?.currency_id ?? null,
-              legacyCurrencyCode: meeting.legacy_lead?.currency_id
-                ? currencyMap[meeting.legacy_lead.currency_id]
-                : undefined,
+              legacyCurrencyCode: (meeting.legacy_lead as any)?.currency_record?.iso_code ?? (meeting.legacy_lead as any)?.currency_record?.name ?? undefined,
               meetingAmount: meeting.meeting_amount,
               meetingCurrency: meeting.meeting_currency,
             }).display,
             location: meeting.meeting_location || 'Teams',
             staff: [
-              meeting.meeting_manager ? employeeNameMap[meeting.meeting_manager] || meeting.meeting_manager : '',
               (() => {
-                // For legacy leads, use meeting_lawyer_id from the lead data
-                if (meeting.legacy_lead?.meeting_lawyer_id) {
-                  return employeeNameMap[meeting.legacy_lead.meeting_lawyer_id] || meeting.legacy_lead.meeting_lawyer_id;
-                }
-                // For new leads or meetings table helper
+                const leg = meeting.legacy_lead as any;
+                if (leg?.manager_employee?.display_name) return leg.manager_employee.display_name;
+                return meeting.meeting_manager ? employeeNameMap[meeting.meeting_manager] || meeting.meeting_manager : '';
+              })(),
+              (() => {
+                const leg = meeting.legacy_lead as any;
+                if (leg?.lawyer_employee?.display_name) return leg.lawyer_employee.display_name;
+                if (meeting.legacy_lead?.meeting_lawyer_id) return employeeNameMap[meeting.legacy_lead.meeting_lawyer_id] || meeting.legacy_lead.meeting_lawyer_id;
                 return meeting.helper ? employeeNameMap[meeting.helper] || meeting.helper : '';
               })(),
               (() => {
-                // For legacy leads, use expert_id from the lead data
-                if (meeting.legacy_lead?.expert_id) {
-                  return employeeNameMap[meeting.legacy_lead.expert_id] || meeting.legacy_lead.expert_id;
-                }
-                // For new leads or meetings table expert
+                const leg = meeting.legacy_lead as any;
+                if (leg?.expert_employee?.display_name) return leg.expert_employee.display_name;
+                if (meeting.legacy_lead?.expert_id) return employeeNameMap[meeting.legacy_lead.expert_id] || meeting.legacy_lead.expert_id;
                 return meeting.expert ? employeeNameMap[meeting.expert] || meeting.expert : '';
               })()
-            ].filter(Boolean), // Remove any null/undefined/empty values
+            ].filter(Boolean),
             name: meeting.legacy_lead?.name || leadData?.name || 'Unknown',
             topic: leadData?.topic || 'Consultation',
             link: meeting.teams_meeting_url,
             manager: (() => {
-              // For legacy leads, use meeting_manager_id from the lead data
-              if (meeting.legacy_lead?.meeting_manager_id) {
-                return employeeNameMap[meeting.legacy_lead.meeting_manager_id] || meeting.legacy_lead.meeting_manager_id;
-              }
+              const leg = meeting.legacy_lead as any;
+              if (leg?.manager_employee?.display_name) return leg.manager_employee.display_name;
+              if (meeting.legacy_lead?.meeting_manager_id) return employeeNameMap[meeting.legacy_lead.meeting_manager_id] || meeting.legacy_lead.meeting_manager_id;
               // For new leads, first check lead.manager field
               if (meeting.lead?.manager) {
                 const managerField = meeting.lead.manager;
@@ -738,10 +721,9 @@ const Meetings: React.FC = () => {
             brief: meeting.meeting_brief || '',
             stage: leadData?.stage || '', // Keep original stage for reference
             leadManager: (() => {
-              // For legacy leads, use meeting_manager_id
-              if (meeting.legacy_lead?.meeting_manager_id) {
-                return employeeNameMap[meeting.legacy_lead.meeting_manager_id] || meeting.legacy_lead.meeting_manager_id;
-              }
+              const leg = meeting.legacy_lead as any;
+              if (leg?.manager_employee?.display_name) return leg.manager_employee.display_name;
+              if (meeting.legacy_lead?.meeting_manager_id) return employeeNameMap[meeting.legacy_lead.meeting_manager_id] || meeting.legacy_lead.meeting_manager_id;
               // For new leads, check lead.manager
               if (meeting.lead?.manager) {
                 const managerField = meeting.lead.manager;
@@ -906,15 +888,29 @@ const Meetings: React.FC = () => {
           }
         }
 
-        // Combine client meetings and staff meetings
-        const allTodayMeetings = [
-          ...transformedMeetings.filter(m => m.date === todayStr),
-          ...staffMeetingsToday
-        ];
-        const allTomorrowMeetings = [
-          ...transformedMeetings.filter(m => m.date === tomorrowStr),
-          ...staffMeetingsTomorrow
-        ];
+        // Deduplicate client meetings by lead (one row per lead; same lead can have multiple meeting rows in DB)
+        const dedupeByLead = (list: Meeting[], isStaff: (m: Meeting) => boolean): Meeting[] => {
+          const seen = new Set<string>();
+          return list
+            .slice()
+            .sort((a, b) => (a.time || '00:00').localeCompare(b.time || '00:00'))
+            .filter((m) => {
+              if (isStaff(m)) return true;
+              const key = m.lead != null && m.lead !== 'N/A' ? String(m.lead) : `meeting-${m.id}`;
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+        };
+
+        const todayClient = transformedMeetings.filter(m => m.date === todayStr);
+        const tomorrowClient = transformedMeetings.filter(m => m.date === tomorrowStr);
+        const dedupedTodayClient = dedupeByLead(todayClient, () => false);
+        const dedupedTomorrowClient = dedupeByLead(tomorrowClient, () => false);
+
+        // Combine client meetings (one per lead) and staff meetings
+        const allTodayMeetings: Meeting[] = [...dedupedTodayClient, ...staffMeetingsToday];
+        const allTomorrowMeetings: Meeting[] = [...dedupedTomorrowClient, ...staffMeetingsTomorrow];
 
         // Sort by time
         allTodayMeetings.sort((a, b) => {
@@ -936,6 +932,8 @@ const Meetings: React.FC = () => {
         setError(err instanceof Error ? err.message : 'An unknown error occurred');
         setTodayMeetings([]);
         setTomorrowMeetings([]);
+      } finally {
+        setMeetingsLoading(false);
       }
     };
 
@@ -1019,10 +1017,13 @@ const Meetings: React.FC = () => {
                 {getStageBadge(meeting.info)}
               </td>
               <td>
-                <div className="flex items-center gap-1">
+                <span
+                  className="inline-flex items-center gap-2 px-2 py-1 rounded-md text-white font-medium"
+                  style={{ backgroundColor: 'rgb(25, 49, 31)' }}
+                >
                   <ClockIcon className="w-4 h-4" />
-                  {formatTime(meeting.time)}
-                </div>
+                  <span className="text-sm font-semibold">{formatTime(meeting.time)}</span>
+                </span>
               </td>
               <td className="font-medium">{meeting.name}</td>
               <td>{meeting.topic}</td>
@@ -1079,11 +1080,16 @@ const Meetings: React.FC = () => {
             <span className="font-bold text-lg text-primary">{meeting.name}</span>
             {getStageBadge(meeting.info)}
           </div>
-          <div className="flex items-center gap-2 text-base-content/70 text-sm">
+          <div className="flex items-center gap-2 text-base-content/70 text-sm flex-wrap">
             <CalendarIcon className="w-5 h-5" />
             <span>{meeting.date}</span>
-            <ClockIcon className="w-5 h-5 ml-3" />
-            <span>{formatTime(meeting.time)}</span>
+            <span
+              className="inline-flex items-center gap-2 px-2 py-1 rounded-md text-white font-medium"
+              style={{ backgroundColor: 'rgb(25, 49, 31)' }}
+            >
+              <ClockIcon className="w-4 h-4" />
+              <span className="text-sm font-semibold">{formatTime(meeting.time)}</span>
+            </span>
           </div>
           <div className="flex items-center gap-2 text-base-content/70 text-sm">
             <UserIcon className="w-5 h-5" />
@@ -1150,27 +1156,37 @@ const Meetings: React.FC = () => {
             </span>
           </h2>
         </div>
-        {/* Mobile: Cards */}
-        {todayMeetings.length > 0 && (
-          <div className="md:hidden">
-            {renderMeetingsCards(todayMeetings)}
+        {/* Loading */}
+        {meetingsLoading ? (
+          <div className="flex justify-center items-center py-12 md:py-16">
+            <span className="loading loading-spinner loading-lg text-primary" />
+            <span className="ml-3 text-base-content/70 font-medium">Loading meetings…</span>
           </div>
-        )}
-        {/* Desktop: Table */}
-        <div className="hidden md:block">
-          {todayMeetings.length > 0 ? (
-            renderMeetingsTable(todayMeetings)
-          ) : (
-            <div className="text-center py-8 text-base-content/70">
-              No meetings scheduled for today
+        ) : (
+          <>
+            {/* Mobile: Cards */}
+            {todayMeetings.length > 0 && (
+              <div className="md:hidden">
+                {renderMeetingsCards(todayMeetings)}
+              </div>
+            )}
+            {/* Desktop: Table */}
+            <div className="hidden md:block">
+              {todayMeetings.length > 0 ? (
+                renderMeetingsTable(todayMeetings)
+              ) : (
+                <div className="text-center py-8 text-base-content/70">
+                  No meetings scheduled for today
+                </div>
+              )}
             </div>
-          )}
-        </div>
-        {/* Mobile: No meetings */}
-        {todayMeetings.length === 0 && (
-          <div className="md:hidden text-center py-8 text-base-content/70">
-            No meetings scheduled for today
-          </div>
+            {/* Mobile: No meetings */}
+            {todayMeetings.length === 0 && (
+              <div className="md:hidden text-center py-8 text-base-content/70">
+                No meetings scheduled for today
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -1185,27 +1201,37 @@ const Meetings: React.FC = () => {
             </span>
           </h2>
         </div>
-        {/* Mobile: Cards */}
-        {tomorrowMeetings.length > 0 && (
-          <div className="md:hidden">
-            {renderMeetingsCards(tomorrowMeetings)}
+        {/* Loading / content */}
+        {meetingsLoading ? (
+          <div className="flex justify-center items-center py-12 md:py-16">
+            <span className="loading loading-spinner loading-lg text-primary" />
+            <span className="ml-3 text-base-content/70 font-medium">Loading meetings…</span>
           </div>
-        )}
-        {/* Desktop: Table */}
-        <div className="hidden md:block">
-          {tomorrowMeetings.length > 0 ? (
-            renderMeetingsTable(tomorrowMeetings)
-          ) : (
-            <div className="text-center py-8 text-base-content/70">
-              No meetings scheduled for tomorrow
+        ) : (
+          <>
+            {/* Mobile: Cards */}
+            {tomorrowMeetings.length > 0 && (
+              <div className="md:hidden">
+                {renderMeetingsCards(tomorrowMeetings)}
+              </div>
+            )}
+            {/* Desktop: Table */}
+            <div className="hidden md:block">
+              {tomorrowMeetings.length > 0 ? (
+                renderMeetingsTable(tomorrowMeetings)
+              ) : (
+                <div className="text-center py-8 text-base-content/70">
+                  No meetings scheduled for tomorrow
+                </div>
+              )}
             </div>
-          )}
-        </div>
-        {/* Mobile: No meetings */}
-        {tomorrowMeetings.length === 0 && (
-          <div className="md:hidden text-center py-8 text-base-content/70">
-            No meetings scheduled for tomorrow
-          </div>
+            {/* Mobile: No meetings */}
+            {tomorrowMeetings.length === 0 && (
+              <div className="md:hidden text-center py-8 text-base-content/70">
+                No meetings scheduled for tomorrow
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

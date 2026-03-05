@@ -1163,6 +1163,7 @@ const Dashboard: React.FC = () => {
             meeting_manager,
             meeting_currency,
             meeting_amount,
+            scheduler,
             expert,
             helper,
             teams_meeting_url,
@@ -1170,11 +1171,18 @@ const Dashboard: React.FC = () => {
             legacy_lead_id,
             extern1,
             extern2,
+            status,
             lead:leads!client_id(
-              id, name, lead_number, manager, topic, expert, stage, scheduler, helper, closer, handler, balance, balance_currency
+              id, name, lead_number, manager, topic, expert, stage, scheduler, helper, closer, handler, balance, balance_currency, unactivated_at
             ),
             legacy_lead:leads_lead!legacy_lead_id(
-              id, name, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, category, category_id, expert_id, stage, closer_id, case_handler_id, total, currency_id
+              id, name, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, category, category_id, expert_id, stage, closer_id, case_handler_id, total, currency_id, status,
+              scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
+              manager_employee:tenants_employee!fk_leads_lead_meeting_manager_id(id, display_name),
+              lawyer_employee:tenants_employee!fk_leads_lead_meeting_lawyer_id(id, display_name),
+              expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
+              currency_record:accounting_currencies!leads_lead_currency_id_fkey(name, iso_code),
+              stage_record:lead_stages!fk_leads_lead_stage(id, name)
             )
           `)
           .eq('meeting_date', todayStr)
@@ -1195,7 +1203,15 @@ const Dashboard: React.FC = () => {
         try {
           const { data: legacyLeadsData, error: legacyError } = await supabase
             .from('leads_lead')
-            .select('id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, total, meeting_total_currency_id, expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination')
+            .select(`
+              id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, status, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, total, meeting_total_currency_id, currency_id, expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination,
+              scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
+              manager_employee:tenants_employee!fk_leads_lead_meeting_manager_id(id, display_name),
+              lawyer_employee:tenants_employee!fk_leads_lead_meeting_lawyer_id(id, display_name),
+              expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
+              currency_record:accounting_currencies!leads_lead_currency_id_fkey(name, iso_code),
+              stage_record:lead_stages!fk_leads_lead_stage(id, name)
+            `)
             .eq('meeting_date', todayStr)
             .not('meeting_date', 'is', null)
             .not('name', 'is', null)
@@ -1203,20 +1219,26 @@ const Dashboard: React.FC = () => {
 
           if (!legacyError && legacyLeadsData) {
             // Filter out legacy leads that already exist in meetings table
-            const newLegacyLeads = legacyLeadsData.filter((legacyLead: any) => {
+            let newLegacyLeads = legacyLeadsData.filter((legacyLead: any) => {
               return !existingLegacyLeadIds.has(String(legacyLead.id));
             });
+            // Filter out inactive legacy leads (same as CalendarPage: status 10 or stage 91)
+            newLegacyLeads = newLegacyLeads.filter((legacyLead: any) => {
+              if (legacyLead.status === 10 || legacyLead.status === '10') return false;
+              if (legacyLead.stage === 91 || legacyLead.stage === '91') return false;
+              return true;
+            });
 
-            // Transform legacy leads to match meeting structure
+            // Transform legacy leads to match meeting structure (include joined employee/currency/stage for display)
             directLegacyMeetings = newLegacyLeads.map((legacyLead: any) => ({
               id: `legacy_${legacyLead.id}`,
               meeting_date: legacyLead.meeting_date,
               meeting_time: legacyLead.meeting_time || '09:00',
-              meeting_location: 'Teams', // Will be mapped properly later via meetingLocationLinks or location ID lookup
+              meeting_location: 'Teams',
               meeting_manager: legacyLead.meeting_manager_id,
-              meeting_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' :
+              meeting_currency: legacyLead.currency_record?.iso_code ?? (legacyLead.meeting_total_currency_id === 1 ? 'NIS' :
                 legacyLead.meeting_total_currency_id === 2 ? 'USD' :
-                  legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
+                  legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS'),
               meeting_amount: parseFloat(legacyLead.total || '0'),
               expert: legacyLead.expert_id,
               helper: legacyLead.meeting_lawyer_id,
@@ -1226,6 +1248,7 @@ const Dashboard: React.FC = () => {
                 id: legacyLead.id,
                 name: legacyLead.name,
                 stage: legacyLead.stage,
+                status: legacyLead.status,
                 expert_id: legacyLead.expert_id,
                 meeting_manager_id: legacyLead.meeting_manager_id,
                 meeting_lawyer_id: legacyLead.meeting_lawyer_id,
@@ -1233,8 +1256,14 @@ const Dashboard: React.FC = () => {
                 category: legacyLead.category,
                 category_id: legacyLead.category_id,
                 total: parseFloat(legacyLead.total || '0'),
-                currency_id: legacyLead.meeting_total_currency_id,
-                expert_examination: legacyLead.expert_examination
+                currency_id: legacyLead.currency_id ?? legacyLead.meeting_total_currency_id,
+                expert_examination: legacyLead.expert_examination,
+                scheduler_employee: legacyLead.scheduler_employee,
+                manager_employee: legacyLead.manager_employee,
+                lawyer_employee: legacyLead.lawyer_employee,
+                expert_employee: legacyLead.expert_employee,
+                currency_record: legacyLead.currency_record,
+                stage_record: legacyLead.stage_record,
               },
               lead: null
             }));
@@ -1289,6 +1318,7 @@ const Dashboard: React.FC = () => {
             addValidId(meeting.legacy_lead?.case_handler_id);
             addValidId(meeting.expert);
             addValidId(meeting.meeting_manager);
+            addValidId(meeting.scheduler);
             addValidId(meeting.helper);
             addValidId(meeting.extern1);
             addValidId(meeting.extern2);
@@ -1382,15 +1412,17 @@ const Dashboard: React.FC = () => {
                 checkField(newLead.expert) ||
                 checkField(newLead.closer) ||
                 checkField(newLead.handler) ||
+                checkField(meeting.scheduler) ||
                 checkField(meeting.meeting_manager) ||
                 checkField(meeting.expert) ||
                 checkField(meeting.helper)
               );
             }
 
-            // Fallback: check meeting-level fields
+            // Fallback: check meeting-level fields (meetings table has scheduler, meeting_manager, helper as text)
             if (userEmployeeId) {
               return (
+                meeting.scheduler?.toString() === userEmployeeId.toString() ||
                 meeting.meeting_manager?.toString() === userEmployeeId.toString() ||
                 meeting.expert?.toString() === userEmployeeId.toString() ||
                 meeting.helper?.toString() === userEmployeeId.toString()
@@ -1399,6 +1431,7 @@ const Dashboard: React.FC = () => {
             // If we have display name, check against meeting fields that might be display names
             if (userDisplayName) {
               return (
+                (typeof meeting.scheduler === 'string' && meeting.scheduler.trim() === userDisplayName.trim()) ||
                 (typeof meeting.meeting_manager === 'string' && meeting.meeting_manager.trim() === userDisplayName.trim()) ||
                 (typeof meeting.expert === 'string' && meeting.expert.trim() === userDisplayName.trim()) ||
                 (typeof meeting.helper === 'string' && meeting.helper.trim() === userDisplayName.trim())
@@ -1408,7 +1441,34 @@ const Dashboard: React.FC = () => {
           };
 
           // Filter meetings by user role
-          const filteredMeetings = allMeetingsDataForProcessing.filter(userMatchesRole);
+          let filteredMeetings = allMeetingsDataForProcessing.filter(userMatchesRole);
+
+          // Exclude canceled/cancelled meetings (client-side, same as CalendarPage)
+          filteredMeetings = filteredMeetings.filter((m: any) => {
+            const s = (m.status || '').toString().toLowerCase();
+            return s !== 'canceled' && s !== 'cancelled';
+          });
+
+          // Exclude meetings with inactive leads (same logic as CalendarPage)
+          filteredMeetings = filteredMeetings.filter((m: any) => {
+            const lead = m.lead || {};
+            const legacyLead = m.legacy_lead || {};
+            // If meeting has client/legacy_lead_id but no lead data, exclude
+            if ((m.client_id || m.legacy_lead_id) && !lead.id && !legacyLead.id) return false;
+            // New leads: exclude if stage 91 or unactivated_at
+            if (lead.id && !lead.id?.toString().startsWith('legacy_')) {
+              if (lead.stage === 91 || lead.stage === '91') return false;
+              if (lead.unactivated_at) return false;
+            }
+            // Legacy leads: exclude if stage 91 or status 10
+            if (legacyLead.id || lead.id?.toString().startsWith('legacy_')) {
+              const stage = legacyLead.stage ?? lead.stage;
+              const status = legacyLead.status ?? lead.status;
+              if (stage === 91 || stage === '91') return false;
+              if (status === 10 || status === '10') return false;
+            }
+            return true;
+          });
 
           // Process the meetings to combine lead data from both tables
           const processedMeetings = filteredMeetings.map((meeting: any) => {
@@ -1442,51 +1502,51 @@ const Dashboard: React.FC = () => {
             };
           });
 
-          // Store processed meetings first
+          // Store processed meetings first (use joined data for legacy leads; fallback to employeeNameMap)
           const processedMeetingsList = processedMeetings.map((meeting: any) => {
-            // Determine expert name
+            // Resolve employee display name: prefer joined record, then map, then raw id/name
+            const fromJoinOrMap = (joinedDisplayName: string | null | undefined, idOrName: any, fallbackLabel: string): string => {
+              if (joinedDisplayName) return joinedDisplayName;
+              if (!idOrName) return fallbackLabel;
+              if (typeof idOrName === 'string' && isNaN(Number(idOrName))) return idOrName;
+              return employeeNameMap[idOrName.toString()] || idOrName.toString();
+            };
+
+            // Determine expert name (legacy: use join; new: use map or lead field)
             let expertName = 'Unassigned';
-            if (meeting.legacy_lead?.expert_id) {
-              expertName = employeeNameMap[meeting.legacy_lead.expert_id.toString()] || meeting.legacy_lead.expert_id.toString();
+            if (meeting.legacy_lead) {
+              expertName = fromJoinOrMap(
+                meeting.legacy_lead.expert_employee?.display_name,
+                meeting.legacy_lead.expert_id,
+                'Unassigned'
+              );
             } else if (meeting.lead?.expert) {
-              // For new leads, expert might be a name or ID
-              if (isNaN(Number(meeting.lead.expert))) {
-                expertName = meeting.lead.expert;
-              } else {
-                expertName = employeeNameMap[meeting.lead.expert.toString()] || meeting.lead.expert;
-              }
+              expertName = fromJoinOrMap(null, meeting.lead.expert, 'Unassigned');
             } else if (meeting.expert) {
-              // Fallback to meeting.expert
-              if (isNaN(Number(meeting.expert))) {
-                expertName = meeting.expert;
-              } else {
-                expertName = employeeNameMap[meeting.expert.toString()] || meeting.expert;
-              }
+              expertName = fromJoinOrMap(null, meeting.expert, 'Unassigned');
             }
 
             // Determine scheduler name
             let schedulerName = '---';
-            if (meeting.legacy_lead?.meeting_scheduler_id) {
-              // For legacy leads, use meeting_scheduler_id
-              schedulerName = employeeNameMap[meeting.legacy_lead.meeting_scheduler_id.toString()] || meeting.legacy_lead.meeting_scheduler_id.toString();
+            if (meeting.legacy_lead) {
+              schedulerName = fromJoinOrMap(
+                meeting.legacy_lead.scheduler_employee?.display_name,
+                meeting.legacy_lead.meeting_scheduler_id,
+                '---'
+              );
             } else if (meeting.lead?.scheduler) {
-              // For new leads, first check lead.scheduler field
-              const schedulerField = meeting.lead.scheduler;
-              if (!isNaN(Number(schedulerField))) {
-                // If it's an ID, look it up
-                schedulerName = employeeNameMap[schedulerField.toString()] || schedulerField.toString();
-              } else {
-                // If it's a display name, use it directly
-                schedulerName = schedulerField;
-              }
+              schedulerName = fromJoinOrMap(null, meeting.lead.scheduler, '---');
+            } else if (meeting.scheduler) {
+              schedulerName = fromJoinOrMap(null, meeting.scheduler, '---');
             } else if (meeting.meeting_manager) {
-              // Fallback to meeting_manager if scheduler is not set
-              schedulerName = employeeNameMap[meeting.meeting_manager.toString()] || meeting.meeting_manager;
+              schedulerName = fromJoinOrMap(null, meeting.meeting_manager, '---');
             }
 
-            // Determine stage name
+            // Determine stage name (legacy: use join; else getStageName)
             let stageName = 'N/A';
-            if (meeting.lead?.stage) {
+            if (meeting.legacy_lead?.stage_record?.name) {
+              stageName = meeting.legacy_lead.stage_record.name;
+            } else if (meeting.lead?.stage) {
               stageName = getStageName(meeting.lead.stage.toString());
             } else if (meeting.legacy_lead?.stage) {
               stageName = getStageName(meeting.legacy_lead.stage.toString());
@@ -1494,42 +1554,30 @@ const Dashboard: React.FC = () => {
 
             // Determine manager name
             let managerName = 'Unassigned';
-            if (meeting.legacy_lead?.meeting_manager_id) {
-              // For legacy leads, use meeting_manager_id
-              managerName = employeeNameMap[meeting.legacy_lead.meeting_manager_id.toString()] || meeting.legacy_lead.meeting_manager_id.toString();
+            if (meeting.legacy_lead) {
+              managerName = fromJoinOrMap(
+                meeting.legacy_lead.manager_employee?.display_name,
+                meeting.legacy_lead.meeting_manager_id,
+                'Unassigned'
+              );
             } else if (meeting.lead?.manager) {
-              // For new leads, first check lead.manager field
-              const managerField = meeting.lead.manager;
-              if (!isNaN(Number(managerField))) {
-                // If it's an ID, look it up
-                managerName = employeeNameMap[managerField.toString()] || managerField.toString();
-              } else {
-                // If it's a display name, use it directly
-                managerName = managerField;
-              }
+              managerName = fromJoinOrMap(null, meeting.lead.manager, 'Unassigned');
             } else if (meeting.meeting_manager) {
-              // Fallback to meeting_manager if manager is not set
-              managerName = employeeNameMap[meeting.meeting_manager.toString()] || meeting.meeting_manager;
+              managerName = fromJoinOrMap(null, meeting.meeting_manager, 'Unassigned');
             }
 
             // Determine helper name
             let helperName = '---';
-            if (meeting.legacy_lead?.meeting_lawyer_id) {
-              // For legacy leads, use meeting_lawyer_id
-              helperName = employeeNameMap[meeting.legacy_lead.meeting_lawyer_id.toString()] || meeting.legacy_lead.meeting_lawyer_id.toString();
+            if (meeting.legacy_lead) {
+              helperName = fromJoinOrMap(
+                meeting.legacy_lead.lawyer_employee?.display_name,
+                meeting.legacy_lead.meeting_lawyer_id,
+                '---'
+              );
             } else if (meeting.lead?.helper) {
-              // For new leads, first check lead.helper field
-              const helperField = meeting.lead.helper;
-              if (!isNaN(Number(helperField))) {
-                // If it's an ID, look it up
-                helperName = employeeNameMap[helperField.toString()] || helperField.toString();
-              } else {
-                // If it's a display name, use it directly
-                helperName = helperField;
-              }
+              helperName = fromJoinOrMap(null, meeting.lead.helper, '---');
             } else if (meeting.helper) {
-              // Fallback to meeting.helper if helper is not set
-              helperName = employeeNameMap[meeting.helper.toString()] || meeting.helper;
+              helperName = fromJoinOrMap(null, meeting.helper, '---');
             }
 
             // Determine if user is a guest (extern1 or extern2)
@@ -1560,12 +1608,25 @@ const Dashboard: React.FC = () => {
                 leadBalanceCurrency: meeting.lead?.balance_currency,
                 legacyTotal: meeting.legacy_lead?.total,
                 legacyCurrencyId: meeting.legacy_lead?.currency_id ?? null,
+                legacyCurrencyCode: meeting.legacy_lead?.currency_record?.iso_code ?? meeting.legacy_lead?.currency_record?.name ?? null,
                 meetingAmount: meeting.meeting_amount,
                 meetingCurrency: meeting.meeting_currency,
               }).display,
               link: meeting.teams_meeting_url || meetingLocationLinks[meeting.meeting_location] || '',
             };
           });
+
+          // Deduplicate client meetings by lead (one row per lead; same lead can have multiple meeting rows in DB)
+          const seenLeadKeys = new Set<string>();
+          const dedupedClientMeetings = processedMeetingsList
+            .slice()
+            .sort((a: any, b: any) => (a.time || '00:00').localeCompare(b.time || '00:00'))
+            .filter((m: any) => {
+              const key = m.lead != null && m.lead !== 'N/A' ? String(m.lead) : `meeting-${m.id}`;
+              if (seenLeadKeys.has(key)) return false;
+              seenLeadKeys.add(key);
+              return true;
+            });
 
           // Process staff meetings to match the same structure
           const processedStaffMeetings = staffMeetings.map((staffMeeting: any) => {
@@ -1592,8 +1653,8 @@ const Dashboard: React.FC = () => {
             };
           });
 
-          // Combine client meetings and staff meetings
-          const allMeetings = [...processedMeetingsList, ...processedStaffMeetings];
+          // Combine client meetings (one per lead) and staff meetings
+          const allMeetings = [...dedupedClientMeetings, ...processedStaffMeetings];
 
           // Sort all meetings by time
           allMeetings.sort((a: any, b: any) => {

@@ -297,6 +297,7 @@ export default function LeadsReportPage() {
     const langName = lead.language_id != null ? languageMap.get(lead.language_id) : (lead.language ?? '');
     const srcName = lead.source_id != null ? sourceMap.get(lead.source_id) : (lead.source ?? '');
     const eligibility = lead.expert_eligibility_assessed === true || lead.expert_eligibility_assessed === 'true' ? 'TRUE' : 'FALSE';
+    const reasonName = lead.unactivation_reason ?? (lead.misc_reason?.name ?? (Array.isArray(lead.misc_reason) ? lead.misc_reason[0]?.name : null)) ?? '';
     return {
       Lead: lead.manual_id?.toString() ?? lead.id?.toString() ?? '',
       create_date: formatExportDate(lead.cdate),
@@ -313,7 +314,7 @@ export default function LeadsReportPage() {
       'eligibility determined': eligibility,
       file_id: lead.file_id ?? '',
       status: statusVal,
-      unactivation_reason: lead.unactivation_reason ?? lead.deactivate_notes ?? '',
+      unactivation_reason: (reasonName || lead.deactivate_notes) ?? '',
       deactivate_notes: lead.deactivate_notes ?? '',
       facts: '',
       description: stripHtml(lead.description),
@@ -428,7 +429,7 @@ export default function LeadsReportPage() {
 
       let legacyQuery = supabase
         .from('leads_lead')
-        .select('id, manual_id, name, email, phone, mobile, topic, file_id, status, stage, category_id, language_id, source_id, unactivation_reason, deactivate_notes, expert_eligibility_assessed, cdate, description')
+        .select('id, manual_id, name, email, phone, mobile, topic, file_id, status, stage, category_id, language_id, source_id, unactivation_reason, deactivate_notes, expert_eligibility_assessed, cdate, description, misc_reason!fk_leads_lead_reason_id(name)')
         .order('cdate', { ascending: false });
 
       if (fromDate) legacyQuery = legacyQuery.gte('cdate', fromDate);
