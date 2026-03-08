@@ -27,6 +27,8 @@ interface AuthState {
   userInitials: string | null;
   isLoading: boolean;
   isInitialized: boolean;
+  /** True only after Supabase INITIAL_SESSION has been processed. Used to avoid redirecting before we know session state. */
+  sessionCheckComplete: boolean;
 }
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
@@ -49,10 +51,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     user: null,
     userFullName: null,
     userInitials: null,
-    // Default to initialized=true to prevent premature redirects
-    // INITIAL_SESSION will fire immediately and update the state correctly
     isLoading: false,
-    isInitialized: true, // Default to true - let auth events handle actual state
+    isInitialized: true,
+    sessionCheckComplete: false, // Set true only after INITIAL_SESSION is handled - prevents redirect before we know session
   });
 
   // Prevent duplicate processing
@@ -172,6 +173,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             });
           }
           return {
+            ...prev,
             user: null,
             userFullName: null,
             userInitials: null,
@@ -200,6 +202,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         // Only clear if we're sure the user is signed out
         return {
+          ...prev,
           user: null,
           userFullName: null,
           userInitials: null,
@@ -263,6 +266,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
           lastUserIdRef.current = null;
           return {
+            ...prev,
             user: null,
             userFullName: null,
             userInitials: null,
@@ -316,7 +320,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return; // Session is valid
         }
 
-        // No session - check if we have stored tokens (for mobile persistence)
+        // No session - try refresh once (Supabase autoRefreshToken may not have run yet)
         if (!session && typeof window !== 'undefined') {
           try {
             let hasStoredTokens = false;
@@ -327,35 +331,46 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 break;
               }
             }
-            
-            // If we have stored tokens, don't treat as expired yet
-            // Supabase might still be restoring the session
             if (hasStoredTokens) {
-              consecutiveFailures = 0; // Reset - session might be restoring
-              return;
+              const { data: { session: refreshed }, error } = await supabase.auth.refreshSession();
+              if (!error && refreshed?.user) {
+                consecutiveFailures = 0;
+                updateAuthState(refreshed, true);
+                return;
+              }
+              // Refresh failed - do not clear tokens here; only clear after multiple consecutive failures below
             }
           } catch (e) {
-            // localStorage access failed - don't treat as auth failure
-            console.warn('Could not check localStorage:', e);
+            console.warn('Could not check/refresh session:', e);
           }
         }
 
-        // No session and no stored tokens - increment failure count
+        // No session (and refresh didn't recover) - increment failure count
         consecutiveFailures++;
-        
+
         // Only clear state after multiple consecutive failures
         // This prevents false positives from transient network issues
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
           console.log(`Session check failed ${consecutiveFailures} times consecutively, clearing auth state`);
-          
+
           // Double-check one more time before clearing
           const { data: { session: finalCheck } } = await supabase.auth.getSession();
           if (!finalCheck?.user) {
-            // Only clear if we're sure the session is expired
+            if (typeof window !== 'undefined') {
+              try {
+                Object.keys(localStorage).forEach(key => {
+                  if (key.includes('supabase.auth.token') || (key.includes('sb-') && key.includes('-auth-token'))) {
+                    localStorage.removeItem(key);
+                  }
+                });
+              } catch (e) {
+                console.warn('Could not clear auth storage:', e);
+              }
+            }
             setAuthState(prev => {
-              // Double-check we still have a user before clearing
               if (!prev.user) return prev;
               return {
+                ...prev,
                 user: null,
                 userFullName: null,
                 userInitials: null,
@@ -364,7 +379,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               };
             });
           } else {
-            // Session was restored - reset failure count
             consecutiveFailures = 0;
           }
         }
@@ -417,12 +431,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // This allows immediate render without waiting for async checks
         const getCachedSession = () => {
           try {
-            const storageKey = `sb-${supabaseUrl.split('//')[1]?.split('.')[0]}-auth-token`;
-            const cached = localStorage.getItem(storageKey);
-            if (cached) {
-              const parsed = JSON.parse(cached);
-              if (parsed?.currentSession?.user) {
-                return parsed.currentSession;
+            const keyFromUrl = `sb-${supabaseUrl.split('//')[1]?.split('.')[0]}-auth-token`;
+            for (const key of [keyFromUrl, ...Object.keys(localStorage)]) {
+              if (!key || (!key.includes('supabase.auth.token') && !(key.startsWith('sb-') && key.includes('-auth-token')))) continue;
+              const cached = localStorage.getItem(key);
+              if (cached) {
+                const parsed = JSON.parse(cached);
+                if (parsed?.currentSession?.user) {
+                  return parsed.currentSession;
+                }
               }
             }
           } catch (e) {
@@ -436,6 +453,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // INSTANT: Set user immediately from cache
           console.log('[AuthContext] Using cached session for instant initialization');
           updateAuthState(cachedSession, true);
+          setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
           // Fetch user details in background (non-blocking)
           fetchUserDetails(cachedSession.user).catch(() => {});
         } else {
@@ -466,7 +484,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         // Set up auth state change listener - INITIAL_SESSION should fire immediately
-        const { data: { subscription: authSubscription } } = supabase.auth.onAuthStateChange((event, session) => {
+        const { data: { subscription: authSubscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
           console.log('[AuthContext] onAuthStateChange fired:', event, 'Session:', session?.user?.id || 'no user');
 
           // Handle INITIAL_SESSION - this fires immediately when listener is set up
@@ -476,18 +494,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               if (session?.user) {
                 console.log('[AuthContext] INITIAL_SESSION has user, updating state');
                 updateAuthState(session, true);
+                setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
               } else {
-                // No session - clear state but keep initialized
+                // No session yet - may be timing (Supabase not yet restored from storage). Try refresh once.
+                try {
+                  const { data: { session: refreshed }, error } = await supabase.auth.refreshSession();
+                  if (isMounted && !error && refreshed?.user) {
+                    console.log('[AuthContext] Session refreshed after INITIAL_SESSION null');
+                    updateAuthState(refreshed, true);
+                    setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
+                    return;
+                  }
+                } catch (e) {
+                  console.warn('[AuthContext] refreshSession failed:', e);
+                }
+                // Still no session - do NOT clear tokens here.
+                // Mark session check complete so ProtectedRoute can redirect if it wants; token clearing only in periodic check.
                 setAuthState(prev => ({
                   ...prev,
                   user: null,
                   userFullName: null,
                   userInitials: null,
                   isLoading: false,
-                  isInitialized: true
+                  isInitialized: true,
+                  sessionCheckComplete: true
                 }));
+                // Give Supabase time to restore from storage (e.g. on slow devices), then re-check once
+                setTimeout(async () => {
+                  if (!isMounted) return;
+                  const { data: { session: lateSession } } = await supabase.auth.getSession();
+                  if (lateSession?.user) {
+                    console.log('[AuthContext] Session restored on delayed check after INITIAL_SESSION null');
+                    updateAuthState(lateSession, true);
+                    setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
+                  }
+                }, 1000);
               }
             }
+            return;
+          }
+          // Handle TOKEN_REFRESHED so we keep the session alive without re-fetching user details every time
+          if (event === 'TOKEN_REFRESHED' && session?.user && isMounted) {
+            updateAuthState(session, true);
             return;
           }
           // Handle all other events normally
@@ -549,14 +597,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         window.addEventListener('storage', storageListener);
       } catch (error) {
         console.error('Auth initialization error:', error);
-        // On error, mark as initialized immediately to prevent blocking
+        // On error, mark as initialized and session check complete so ProtectedRoute can decide
         if (isMounted && !initHandled) {
           initHandled = true;
           setAuthState(prev => ({
             ...prev,
             isLoading: false,
             isInitialized: true,
-            // Keep user if we had one (might be network issue)
+            sessionCheckComplete: true,
             user: prev.user || null
           }));
         }

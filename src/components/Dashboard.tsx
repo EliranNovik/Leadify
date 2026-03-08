@@ -10,7 +10,7 @@ import ClockInBox from './ClockInBox';
 const WaitingForPriceOfferMyLeadsWidget = lazy(() => import('./WaitingForPriceOfferMyLeadsWidget'));
 const ClosedDealsWithoutPaymentPlanWidget = lazy(() => import('./ClosedDealsWithoutPaymentPlanWidget'));
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
-import { supabase, isAuthError, sessionManager, handleSessionExpiration } from '../lib/supabase';
+import { supabase, isAuthError, tryRefreshThenExpire } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
 import { useExternalUser } from '../hooks/useExternalUser';
 import ExternalUserDashboard from './ExternalUserDashboard';
@@ -731,11 +731,13 @@ const Dashboard: React.FC = () => {
   const fetchFollowUpLeadsData = async (dateType: 'today' | 'overdue' | 'tomorrow' | 'future', fetchAll = false) => {
     try {
       // Get current user's data
-      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
+      let user = initialUser;
       if (authError && isAuthError(authError)) {
-        console.error('Auth error in fetchFollowUpLeadsData - redirecting');
-        await handleSessionExpiration();
-        return { newLeads: [], legacyLeads: [], totalCount: 0 };
+        const recovered = await tryRefreshThenExpire();
+        if (!recovered) return { newLeads: [], legacyLeads: [], totalCount: 0 };
+        const { data: { user: retryUser } } = await supabase.auth.getUser();
+        user = retryUser;
       }
       if (!user) {
         return { newLeads: [], legacyLeads: [], totalCount: 0 };
@@ -966,11 +968,13 @@ const Dashboard: React.FC = () => {
   useEffect(() => {
     const fetchUserId = async () => {
       try {
-        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
+        let user = initialUser;
         if (authError && isAuthError(authError)) {
-          console.error('Auth error in fetchUserId - redirecting');
-          await handleSessionExpiration();
-          return;
+          const recovered = await tryRefreshThenExpire();
+          if (!recovered) return;
+          const { data: { user: retryUser } } = await supabase.auth.getUser();
+          user = retryUser;
         }
         if (user) {
           const { data: userData } = await supabase
@@ -1097,11 +1101,13 @@ const Dashboard: React.FC = () => {
       setMeetingsLoading(true);
       try {
         // First, fetch current user's employee_id, display name, and email
-        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
+        let user = initialUser;
         if (authError && isAuthError(authError)) {
-          console.error('Auth error in fetchMeetings - redirecting');
-          await handleSessionExpiration();
-          return;
+          const recovered = await tryRefreshThenExpire();
+          if (!recovered) return;
+          const { data: { user: retryUser } } = await supabase.auth.getUser();
+          user = retryUser;
         }
         let userEmployeeId: number | null = null;
         let userDisplayName: string | null = null;
@@ -1905,11 +1911,13 @@ const Dashboard: React.FC = () => {
 
       try {
         // Get current user's data with employee relationship using JOIN
-        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
+        let user = initialUser;
         if (authError && isAuthError(authError)) {
-          console.error('Auth error in fetchOverdueFollowups - redirecting');
-          await handleSessionExpiration();
-          return;
+          const recovered = await tryRefreshThenExpire();
+          if (!recovered) return;
+          const { data: { user: retryUser } } = await supabase.auth.getUser();
+          user = retryUser;
         }
         if (!user) {
           setOverdueFollowups(0);
@@ -1990,11 +1998,13 @@ const Dashboard: React.FC = () => {
     (async () => {
       try {
         // Get current user's leads
-        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
+        let user = initialUser;
         if (authError && isAuthError(authError)) {
-          console.error('Auth error in fetchMessages - redirecting');
-          await handleSessionExpiration();
-          return;
+          const recovered = await tryRefreshThenExpire();
+          if (!recovered) return;
+          const { data: { user: retryUser } } = await supabase.auth.getUser();
+          user = retryUser;
         }
         if (!user) return;
 
@@ -2442,11 +2452,13 @@ const Dashboard: React.FC = () => {
     setPerformanceLoading(true);
     try {
       // Get current user's employee ID and full name
-      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
+      let user = initialUser;
       if (authError && isAuthError(authError)) {
-        console.error('Auth error in fetchInvoicedData - redirecting');
-        await handleSessionExpiration();
-        return;
+        const recovered = await tryRefreshThenExpire();
+        if (!recovered) return;
+        const { data: { user: retryUser } } = await supabase.auth.getUser();
+        user = retryUser;
       }
       if (!user) {
         setPerformanceLoading(false);
@@ -5454,11 +5466,13 @@ const Dashboard: React.FC = () => {
         }
 
         // Get current user info
-        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
+        let user = initialUser;
         if (authError && isAuthError(authError)) {
-          console.error('Auth error in fetchRealSignedLeads - redirecting');
-          await handleSessionExpiration();
-          return;
+          const recovered = await tryRefreshThenExpire();
+          if (!recovered) return;
+          const { data: { user: retryUser } } = await supabase.auth.getUser();
+          user = retryUser;
         }
         if (!user) {
           setRealSignedLeads([]);

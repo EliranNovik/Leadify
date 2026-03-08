@@ -896,6 +896,11 @@ const ContractPage: React.FC = () => {
     return '/clients';
   };
 
+  /** Navigate back to the lead/client page. Uses full page navigation so the contract view reliably unmounts. */
+  const goToLeadPage = () => {
+    window.location.assign(getLeadPagePath());
+  };
+
   // Helper function to get employee display name from ID (same logic as ClientHeader.tsx)
   const getEmployeeDisplayNameFromId = (employeeId: string | number | null | undefined): string => {
     if (!employeeId || employeeId === '---' || employeeId === null || employeeId === undefined) return '---';
@@ -2479,9 +2484,10 @@ const ContractPage: React.FC = () => {
     setCustomPricing((prev: typeof customPricing) => ({ ...prev, payment_plan: paymentPlan }));
   }, [customPricing?.total_amount, customPricing?.discount_amount, customPricing?.archival_research_fee, contract?.client_country, customPricing?.currency, customPricing?._forceVatCalculation, vatIncluded, currencyType]);
 
-  // Force VAT calculation on initial load
+  // Force VAT calculation on initial load (once only to avoid update loop)
+  const hasForcedVatRef = useRef(false);
   useEffect(() => {
-    if (!customPricing || !customPricing.payment_plan) return;
+    if (!customPricing || !customPricing.payment_plan || hasForcedVatRef.current) return;
 
     const currency = customPricing?.currency || '₪';
     const isIsraeli = currency === '₪' || currency === 'ILS' || currency === 'NIS';
@@ -2493,7 +2499,7 @@ const ContractPage: React.FC = () => {
     );
 
     if (needsVatCalculation && isIsraeli) {
-      console.log('🔧 Forcing VAT calculation on initial load');
+      hasForcedVatRef.current = true;
       // Trigger the main VAT calculation by updating a dependency
       setCustomPricing((prev: typeof customPricing) => ({
         ...prev,
@@ -2816,7 +2822,7 @@ const ContractPage: React.FC = () => {
 
       await handleContractSigned(updatedContract);
       alert('Contract signed! Payment plan has been automatically generated.');
-      navigate(`/clients/${leadNumber}`);
+      window.location.assign(getLeadPagePath());
 
     } catch (error) {
       console.error('Error signing contract:', error);
@@ -3631,8 +3637,6 @@ const ContractPage: React.FC = () => {
       }
 
       // Always render {{text}}, {{date}}, and {{signature}} as input fields and signature pads (placeholders without IDs)
-      console.log('🎨 Checking for placeholders in text:', text);
-      console.log('🎨 Has placeholders:', /\{\{(text|date|signature)\}\}/.test(text));
       if (text && /\{\{(text|date|signature)\}\}/.test(text)) {
         const parts = [];
         let lastIndex = 0;
@@ -4504,14 +4508,14 @@ const ContractPage: React.FC = () => {
 
       alert('Contract deleted successfully.');
 
-      // Navigate back to client page
+      // Navigate back to client page (full page nav so contract view unmounts)
       if (leadNumber) {
-        navigate(`/clients/${leadNumber}`);
+        window.location.assign(`/clients/${leadNumber}`);
       } else if (client?.id) {
         const clientLeadNumber = client.lead_number || client.id.toString().replace('legacy_', '');
-        navigate(`/clients/${clientLeadNumber}`);
+        window.location.assign(`/clients/${clientLeadNumber}`);
       } else {
-        navigate('/clients');
+        window.location.assign('/clients');
       }
     } catch (err: any) {
       console.error('Exception deleting contract:', err);
@@ -5195,13 +5199,15 @@ const ContractPage: React.FC = () => {
           </p>
           <div className="flex gap-3 justify-center">
             <button
-              onClick={() => navigate(getLeadPagePath())}
+              type="button"
+              onClick={goToLeadPage}
               className="btn btn-outline"
             >
               Back to Client
             </button>
             <button
-              onClick={() => navigate(`${getLeadPagePath()}?tab=contact`)}
+              type="button"
+              onClick={() => { window.location.assign(`${getLeadPagePath()}?tab=contact`); }}
               className="btn btn-primary"
             >
               Create Contract
@@ -5246,7 +5252,8 @@ const ContractPage: React.FC = () => {
                 {status === 'draft' && (
                   <>
                     <button
-                      onClick={() => navigate(getLeadPagePath())}
+                      type="button"
+                      onClick={goToLeadPage}
                       className="btn btn-ghost btn-sm sm:btn-sm p-2 sm:p-2"
                       title="Back to client"
                     >
@@ -5282,11 +5289,12 @@ const ContractPage: React.FC = () => {
                 </div>
                 {(leadNumber || client) && (
                   <button
-                    onClick={() => navigate(getLeadPagePath())}
+                    type="button"
+                    onClick={goToLeadPage}
                     className="btn btn-outline btn-sm gap-1.5 print-hide"
                     title="Go to lead page"
                   >
-                   
+                    <ArrowLeftIcon className="w-5 h-5 sm:w-5 sm:h-5 shrink-0 sm:hidden" />
                     <span className="hidden sm:inline">Back to lead</span>
                   </button>
                 )}

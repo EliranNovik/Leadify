@@ -43,6 +43,25 @@ if (typeof window !== 'undefined') {
 const REDIRECTING_KEY = 'supabase_auth_redirecting';
 const REDIRECTING_TIMEOUT = 1000; // 1 second
 
+/**
+ * Try to recover session via refresh; only redirect to login if refresh fails.
+ * Use this instead of handleSessionExpiration() when you get an auth error so the user
+ * isn't logged out on a transient failure or while refresh is in progress.
+ * @returns true if session was recovered (caller can retry), false if we're redirecting / session is gone
+ */
+export const tryRefreshThenExpire = async (): Promise<boolean> => {
+  try {
+    const { data: { session }, error } = await supabase.auth.refreshSession();
+    if (!error && session?.user) {
+      return true; // Session recovered - caller can retry the operation
+    }
+  } catch (e) {
+    console.warn('Refresh session failed in tryRefreshThenExpire:', e);
+  }
+  await handleSessionExpiration();
+  return false;
+};
+
 // Function to handle session expiration and redirect
 export const handleSessionExpiration = async () => {
   if (typeof window === 'undefined') return;
@@ -70,9 +89,9 @@ export const handleSessionExpiration = async () => {
     // Clear auth state immediately
     await supabase.auth.signOut();
     
-    // Clear any cached session data
+    // Clear any cached session data (both key patterns Supabase may use)
     Object.keys(localStorage).forEach(key => {
-      if (key.includes('supabase.auth.token')) {
+      if (key && (key.includes('supabase.auth.token') || (key.startsWith('sb-') && key.includes('-auth-token')))) {
         localStorage.removeItem(key);
       }
     });

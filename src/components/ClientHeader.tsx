@@ -958,20 +958,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         >
                                             <Squares2X2Icon className="w-5 h-5" />
                                             {/* Count Badge - Always show total (subleads + master = subLeadsCount + 1) */}
-                                            {(() => {
-                                                const totalCount = (subLeadsCount || 0) + 1;
-                                                console.log('🔍 ClientHeader - Rendering count badge:', {
-                                                    subLeadsCount,
-                                                    totalCount,
-                                                    isSubLead,
-                                                    isMasterLead
-                                                });
-                                                return (
-                                                    <span className="absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full min-w-[1.25rem] h-5 flex items-center justify-center px-1">
-                                                        {totalCount}
-                                                    </span>
-                                                );
-                                            })()}
+                                            <span className="absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full min-w-[1.25rem] h-5 flex items-center justify-center px-1">
+                                                {(subLeadsCount || 0) + 1}
+                                            </span>
                                         </button>
                                     ) : null}
                                 </div>

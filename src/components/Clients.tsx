@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useLocation, useNavigate, useParams, useNavigationType } from 'react-router-dom';
-import { supabase, type Lead } from '../lib/supabase';
+import { supabase, type Lead, isAuthError, tryRefreshThenExpire } from '../lib/supabase';
 import { getStageName, fetchStageNames, areStagesEquivalent, normalizeStageName, getStageColour } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { fetchAllLeads, fetchLatestLead, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
@@ -1005,12 +1005,6 @@ const Clients: React.FC<ClientsProps> = ({
         ).values()
       );
 
-      console.log('✅ findDuplicateContacts: Found duplicates', {
-        duplicateMatchesCount: duplicateMatches.length,
-        uniqueMatchesCount: uniqueMatches.length,
-        uniqueMatches
-      });
-
       setDuplicateContacts(uniqueMatches);
     } catch (error) {
       console.error('❌ Error finding duplicate contacts:', error);
@@ -1313,7 +1307,6 @@ const Clients: React.FC<ClientsProps> = ({
         if (route && route !== '/clients') {
           sessionStorage.setItem('clientsPage_lastLeadRoute', route);
         }
-        console.log('💾 Clients: Persisted client data with key:', persistedKey);
       }
     } catch (error) {
       console.error('Error persisting client data:', error);
@@ -1839,9 +1832,18 @@ const Clients: React.FC<ClientsProps> = ({
   useEffect(() => {
     const fetchSuperuserStatus = async () => {
       try {
-        const { data: { user }, error: authError } = await supabase.auth.getUser();
-
-        if (authError || !user) {
+        const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
+        let user = initialUser;
+        if (authError && isAuthError(authError)) {
+          const recovered = await tryRefreshThenExpire();
+          if (!recovered) {
+            setIsSuperuser(false);
+            return;
+          }
+          const { data: { user: retryUser } } = await supabase.auth.getUser();
+          user = retryUser;
+        }
+        if (!user) {
           setIsSuperuser(false);
           return;
         }
@@ -3088,17 +3090,7 @@ const Clients: React.FC<ClientsProps> = ({
             special_notes: data.special_notes || '',
             next_followup: data.next_followup || '',
             probability: data.probability !== null && data.probability !== undefined ? Number(data.probability) : 0,
-            category: (() => {
-              console.log('🔍 Processing new lead category - raw data:', {
-                category_id: data.category_id,
-                category: data.category,
-                allCategoriesLoaded: allCategories.length > 0,
-                allCategories: allCategories.map(cat => ({ id: cat.id, name: cat.name }))
-              });
-              const categoryName = getCategoryName(data.category_id, data.category);
-              console.log('🔍 Processing new lead category result:', { category_id: data.category_id, category_name: categoryName });
-              return categoryName;
-            })(),
+            category: getCategoryName(data.category_id, data.category),
             language: languageName, // Always use the language name (never use ID)
             balance: String(data.total || ''), // Map total to balance
             total: data.total || null, // Include total for balance badge logic
@@ -3166,8 +3158,6 @@ const Clients: React.FC<ClientsProps> = ({
             special_notes_last_edited_at: data.special_notes_last_edited_at || null,
             // Note: language_id is excluded as we use language (name) instead
           };
-          console.log('onClientUpdate: Setting transformed legacy data:', transformedData);
-          console.log('onClientUpdate: Currency mapping - currency_id:', data.currency_id, 'balance_currency:', transformedData.balance_currency);
           const normalizedTransformedData = normalizeClientStage(transformedData);
           setSelectedClient(normalizedTransformedData);
           persistClientData(normalizedTransformedData);
@@ -3303,7 +3293,6 @@ const Clients: React.FC<ClientsProps> = ({
     }
 
     const refreshClientData = async () => {
-      console.log('🔄 Categories loaded, refreshing client data to update category names');
       try {
         await onClientUpdate();
         lastCategoryRefreshIds.current.add(clientIdKey);
@@ -3398,7 +3387,6 @@ const Clients: React.FC<ClientsProps> = ({
 
                 if (currentMatches) {
                   // Already have the correct client loaded
-                  console.log('🔍 Clients: Already have correct client loaded, skipping fetch');
                   setLocalLoading(false);
                   lastRouteRef.current = currentRoute;
                   return; // Skip fetch - already have correct client
@@ -3406,13 +3394,6 @@ const Clients: React.FC<ClientsProps> = ({
               }
 
               // Use persisted data - this will prevent the fetch
-              console.log('🔍 Clients: Using persisted client data, skipping fetch', {
-                effectiveLeadNumber,
-                persistedClientId,
-                persistedLeadNumber,
-                isLegacy,
-                currentRoute
-              });
               const normalizedPersistedData = normalizeClientStage(parsedData);
               // Update route ref first to prevent duplicate checks
               lastRouteRef.current = currentRoute;
@@ -3429,16 +3410,7 @@ const Clients: React.FC<ClientsProps> = ({
                 }
               }
               return; // Skip fetch - use persisted data
-            } else {
-              console.log('🔍 Clients: Persisted data found but does not match', {
-                effectiveLeadNumber,
-                persistedClientId,
-                persistedLeadNumber,
-                isLegacy
-              });
             }
-          } else {
-            console.log('🔍 Clients: No persisted data found for', effectiveLeadNumber);
           }
         } catch (error) {
           console.error('Error reading persisted client data:', error);

@@ -1,3 +1,7 @@
+/**
+ * Legacy auth hook. Prefer useAuthContext from contexts/AuthContext for a single source of truth.
+ * AuthContext handles session persistence, refresh, and redirect; useAuth is only kept for compatibility.
+ */
 import { useState, useEffect, useCallback } from 'react';
 import { supabase, sessionManager } from '../lib/supabase';
 

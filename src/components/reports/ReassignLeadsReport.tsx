@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useMsal } from '@azure/msal-react';
 import { toast } from 'react-hot-toast';
-import { supabase } from '../../lib/supabase';
+import { supabase, isAuthError, tryRefreshThenExpire } from '../../lib/supabase';
 import { usePersistedFilters, usePersistedState } from '../../hooks/usePersistedState';
 import { getStageName, getStageColour, fetchStageNames } from '../../lib/stageUtils';
 import { convertToNIS } from '../../lib/currencyConversion';
@@ -411,9 +411,19 @@ const ReassignLeadsReport: React.FC = () => {
         const checkCollectionAccess = async () => {
             try {
                 setCheckingAccess(true);
-                const { data: { user }, error: authError } = await supabase.auth.getUser();
-
-                if (authError || !user) {
+                const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
+                let user = initialUser;
+                if (authError && isAuthError(authError)) {
+                    const recovered = await tryRefreshThenExpire();
+                    if (!recovered) {
+                        setHasCollectionAccess(false);
+                        setCheckingAccess(false);
+                        return;
+                    }
+                    const { data: { user: retryUser } } = await supabase.auth.getUser();
+                    user = retryUser;
+                }
+                if (!user) {
                     setHasCollectionAccess(false);
                     setCheckingAccess(false);
                     return;

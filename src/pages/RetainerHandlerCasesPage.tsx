@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
-import { useAuth } from '../hooks/useAuth';
+import { useAuthContext } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { getStageColour } from '../lib/stageUtils';
 import { PlayIcon, PaperAirplaneIcon, ExclamationTriangleIcon, PhoneIcon, EnvelopeIcon, ClockIcon, PencilSquareIcon, EyeIcon, FolderIcon, CurrencyDollarIcon, XMarkIcon, StarIcon, ArrowUturnLeftIcon, CheckCircleIcon, XCircleIcon } from '@heroicons/react/24/outline';
@@ -64,7 +64,7 @@ const getContrastingTextColor = (hexColor?: string | null) => {
 };
 
 const RetainerHandlerCasesPage: React.FC = () => {
-  const { user } = useAuth();
+  const { user } = useAuthContext();
   const navigate = useNavigate();
   const [newCases, setNewCases] = useState<Case[]>([]);
   const [activeCases, setActiveCases] = useState<Case[]>([]);

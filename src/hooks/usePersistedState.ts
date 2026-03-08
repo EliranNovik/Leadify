@@ -11,6 +11,10 @@ const PAGE_UNLOADING_KEY = '__page_unloading__';
 
 // Cache refresh check result within the current page load (module-level variable, not sessionStorage)
 let cachedRefreshCheckResult: boolean | null = null;
+// When we determine the load was a refresh, store the pathname that was active at that time.
+// We only clear persisted state for keys when the *current* route matches this pathname,
+// so that navigating to another page after a refresh doesn't wipe that page's stored state.
+let pathnameWhenRefreshDetected: string | null = null;
 
 // Set up beforeunload listener to detect page refreshes
 if (typeof window !== 'undefined') {
@@ -66,9 +70,10 @@ function isPageRefresh(): boolean {
       const navigationType = navEntries[0].type;
       console.log(`[usePersistedState] Navigation type: ${navigationType}`);
       
-      // 'reload' definitely means refresh - clear state
+      // 'reload' definitely means refresh - clear state only for this route
       if (navigationType === 'reload') {
         console.log(`[usePersistedState] Page refresh detected via Navigation Timing API (reload)`);
+        pathnameWhenRefreshDetected = typeof window !== 'undefined' ? window.location.pathname : null;
         try {
           sessionStorage.removeItem(NAVIGATION_FLAG_KEY);
           sessionStorage.removeItem(PAGE_UNLOADING_KEY);
@@ -141,6 +146,7 @@ function isPageRefresh(): boolean {
       // No valid navigation flag → refresh
       sessionStorage.removeItem(PAGE_UNLOADING_KEY);
       console.log(`[usePersistedState] PAGE_UNLOADING_KEY found without valid navigation flag → refresh`);
+      pathnameWhenRefreshDetected = typeof window !== 'undefined' ? window.location.pathname : null;
       cachedRefreshCheckResult = true; // Cache as refresh
       return true;
     }
@@ -197,6 +203,7 @@ function isPageRefresh(): boolean {
   // Default: no unloading marker and no navigation flag → likely a refresh
   // (first load or refresh where beforeunload didn't fire)
   console.log(`[usePersistedState] No unloading marker or navigation flag found, treating as refresh`);
+  pathnameWhenRefreshDetected = typeof window !== 'undefined' ? window.location.pathname : null;
   cachedRefreshCheckResult = true; // Cache as refresh
   return true;
 }
@@ -282,10 +289,18 @@ export function usePersistedState<T>(
   const [state, setStateInternal] = useState<T>(() => {
     // Check if this is a page refresh (this must happen BEFORE we check storage)
     const wasRefresh = isPageRefresh();
-    
-    if (wasRefresh) {
-      // This is a refresh - clear all persisted state for this key
-      console.log(`[usePersistedState] Page refresh detected, clearing state for key: ${key}`);
+    const currentPath = typeof window !== 'undefined' ? window.location.pathname : '';
+
+    // Only clear state when it was a refresh *and* we're on the same route that was refreshed.
+    // If the user refreshed while on another page (e.g. Dashboard) then navigated here,
+    // we must not clear this page's state - we should load it from storage.
+    const shouldClearForThisRoute =
+      wasRefresh &&
+      (pathnameWhenRefreshDetected === null || pathnameWhenRefreshDetected === currentPath);
+
+    if (shouldClearForThisRoute) {
+      // This route was the one refreshed - clear persisted state for this key
+      console.log(`[usePersistedState] Page refresh on this route, clearing state for key: ${key}`);
       if (storage === 'localStorage' || storage === 'both') {
         try {
           localStorage.removeItem(storageKey);
@@ -300,7 +315,7 @@ export function usePersistedState<T>(
           console.warn(`Failed to clear sessionStorage for ${storageKey}:`, e);
         }
       }
-      
+
       return initialState;
     }
 

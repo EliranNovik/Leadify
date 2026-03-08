@@ -138,7 +138,7 @@ interface RMQMessage {
 const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat, isMenuOpen, onOpenEmailThread, onOpenWhatsApp, onOpenMessaging }) => {
   // Check if alternative (green) theme is active - make it reactive
   const [isAltTheme, setIsAltTheme] = useState(() => document.documentElement.classList.contains('theme-alt'));
-  // Dark mode: for Siriwave icon (white circle + dark blue waves); app uses data-theme="dark"
+  // Dark mode: for search bar active border; app uses data-theme="dark"
   const [isDarkMode, setIsDarkMode] = useState(() => document.documentElement.getAttribute('data-theme') === 'dark');
   const location = useLocation();
   const navigate = useNavigate();
@@ -7104,44 +7104,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               className={`relative flex items-center rounded-full transition-all duration-[700ms] ease-in-out ${isSearchActive ? 'w-full overflow-hidden bg-white dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-600 shadow-md' : `w-12 min-w-12 md:w-48 md:min-w-48 overflow-visible ${isMobile ? 'min-h-[48px] bg-transparent border-0' : 'md:bg-white dark:md:bg-gray-800 md:border-2 md:border-gray-200 dark:md:border-gray-600 md:shadow-md'}`}`}
               style={isSearchActive && isDarkMode ? { borderColor: 'rgba(96, 165, 250, 0.75)' } : undefined}
             >
-              {/* Search icon - on iOS/mobile when collapsed use native label so tap focuses input and keyboard opens */}
+              {/* Search icon - closed: simple search icon; desktop when open (e.g. on hover): purple circle with Siriwave */}
               {isMobile && !isSearchActive ? (
                 <label
                   htmlFor={HEADER_SEARCH_INPUT_ID}
-                  className="absolute left-2 top-1/2 -translate-y-1/2 flex items-center justify-center z-10 transition-opacity duration-300 opacity-100 w-9 h-9 flex-shrink-0 cursor-pointer"
+                  className="absolute left-2 top-1/2 -translate-y-1/2 flex items-center justify-center z-10 transition-opacity duration-300 opacity-100 w-9 h-9 flex-shrink-0 cursor-pointer text-gray-500 dark:text-gray-400"
                   style={{ minWidth: 36, minHeight: 36 }}
                   aria-label="Open search"
                 >
-                  <div
-                    className="w-9 h-9 rounded-full flex items-center justify-center shadow-sm overflow-hidden flex-shrink-0 ring-2"
-                    style={{
-                      backgroundColor: isDarkMode ? '#ffffff' : '#4218cc',
-                      boxShadow: isDarkMode ? '0 0 0 2px rgba(255,255,255,0.4)' : '0 0 0 2px rgba(66,24,204,0.4)',
-                    }}
-                  >
-                    <div className="w-7 h-7 overflow-hidden rounded-full flex items-center justify-center [&>div]:!flex [&>div]:!items-center [&>div]:!justify-center [&_canvas]:!block">
-                      <Siriwave
-                        theme="ios"
-                        width={32}
-                        height={32}
-                        amplitude={0.9}
-                        speed={0.08}
-                        frequency={4}
-                        color={isDarkMode ? '#1e3a5f' : '#ffffff'}
-                        cover={false}
-                        autostart
-                        pixelDepth={0.03}
-                      />
-                    </div>
-                  </div>
+                  <MagnifyingGlassIcon className="w-6 h-6 flex-shrink-0" />
                 </label>
-              ) : (
-                <button
-                  type="button"
-                  className="absolute left-2 top-1/2 -translate-y-1/2 flex items-center justify-center z-10 transition-opacity duration-300 opacity-100 w-9 h-9 flex-shrink-0"
-                  style={{ minWidth: 36, minHeight: 36 }}
-                  aria-label="Search"
-                >
+              ) : !isMobile && isSearchActive ? (
+                <span className="absolute left-2 top-1/2 -translate-y-1/2 flex items-center justify-center z-10 w-9 h-9 flex-shrink-0 pointer-events-none" aria-hidden>
                   <div
                     className="w-9 h-9 rounded-full flex items-center justify-center shadow-sm overflow-hidden flex-shrink-0 ring-2"
                     style={{
@@ -7164,7 +7138,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       />
                     </div>
                   </div>
-                </button>
+                </span>
+              ) : (
+                <span className="absolute left-2 top-1/2 -translate-y-1/2 flex items-center justify-center z-10 w-9 h-9 flex-shrink-0 pointer-events-none text-gray-500 dark:text-gray-400" aria-hidden>
+                  <MagnifyingGlassIcon className="w-5 h-5 flex-shrink-0" />
+                </span>
               )}
               <input
                 id={HEADER_SEARCH_INPUT_ID}
@@ -7192,12 +7170,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   letterSpacing: '-0.01em'
                 }}
               />
-              {/* Search icon on right - preview only in closed/collapsed default mode (desktop) */}
-              {!isSearchActive && !isMobile && (
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400 dark:text-gray-500" aria-hidden>
-                  <MagnifyingGlassIcon className="w-5 h-5" />
-                </span>
-              )}
               {/* Clear search button - visible when search is active */}
               {(searchValue.trim() || searchResults.length > 0) && (
                 <button
