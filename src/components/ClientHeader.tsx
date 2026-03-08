@@ -463,6 +463,24 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     });
     const legacyContactFetchRef = useRef<string | null>(null);
 
+    // Clear/sync all client-derived state when entering another lead so we never show the previous lead's data
+    useEffect(() => {
+        const clientId = selectedClient?.id?.toString() ?? null;
+        if (!clientId) {
+            setLegacyContactInfo({ email: null, phone: null });
+            setCategoryInputValue('');
+            legacyContactFetchRef.current = null;
+            return;
+        }
+        setLegacyContactInfo({ email: null, phone: null });
+        setCategoryInputValue(selectedClient?.category ?? '');
+        setShowCategoryDropdown(false);
+        setShowStageDropdown(false);
+        setShowCategoryModal(false);
+        setIsEditingCategory(false);
+        legacyContactFetchRef.current = null;
+    }, [selectedClient?.id]);
+
     // Fetch sources from misc_leadsource table
     useEffect(() => {
         const fetchSources = async () => {

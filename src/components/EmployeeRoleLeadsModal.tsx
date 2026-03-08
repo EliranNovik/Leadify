@@ -3,7 +3,7 @@ import { XMarkIcon, EyeIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { convertToNIS } from '../lib/currencyConversion';
 import { useNavigate } from 'react-router-dom';
-import { buildCurrencyMeta, parseNumericAmount } from '../utils/salesContributionCalculator';
+import { buildCurrencyMeta, parseNumericAmount, calculateNewLeadAmount, calculateLegacyLeadAmount } from '../utils/salesContributionCalculator';
 
 interface LeadRow {
   role: string;
@@ -339,11 +339,22 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
               const handlerId = lead.case_handler_id ? Number(lead.case_handler_id) : null;
               const handlerName = handlerId ? (handlerMap.get(handlerId) || '—') : '—';
 
+              // Use joined misc_category from select (join) - fallback to getCategoryName only when join is missing
               let categoryDisplay = '—';
-              if (lead.category_id) {
+              const miscCategory: any = lead.misc_category;
+              const categoryEntry: any = Array.isArray(miscCategory) ? miscCategory[0] : miscCategory;
+              const mainCategory: any = categoryEntry?.misc_maincategory;
+              let mainCategoryName: string | undefined;
+              if (Array.isArray(mainCategory) && mainCategory[0]) {
+                mainCategoryName = mainCategory[0]?.name;
+              } else if (mainCategory) {
+                mainCategoryName = mainCategory?.name;
+              }
+              const subCategoryName: string = categoryEntry?.name || lead.category || '—';
+              if (subCategoryName !== '—' || mainCategoryName) {
+                categoryDisplay = mainCategoryName ? `${subCategoryName} (${mainCategoryName})` : subCategoryName;
+              } else if (lead.category_id || lead.category) {
                 categoryDisplay = getCategoryName(lead.category_id, lead.category);
-              } else if (lead.category) {
-                categoryDisplay = getCategoryName(null, lead.category);
               }
 
               // Calculate amount - value only (no VAT)
@@ -831,22 +842,17 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
               roles.push('Meeting Manager');
             }
 
-            const requiredRoles = role.split(',').map(r => r.trim());
-            const hasAllRoles = requiredRoles.every(reqRole => roles.includes(reqRole));
-            // Show leads where employee has the selected role(s) (e.g. "Helper Closer" shows all leads where they are Helper Closer)
+            const isAllRolesMode = role === 'ALL';
+            const requiredRoles = isAllRolesMode ? [] : role.split(',').map(r => r.trim()).sort();
+            // For a specific role row: only include leads where employee has exactly that role set (exact match so modal total matches row)
+            const exactMatch = requiredRoles.length > 0 && roles.length === requiredRoles.length && requiredRoles.every((r: string) => roles.includes(r));
+            const hasAllRoles = isAllRolesMode ? roles.length > 0 : exactMatch;
             if (hasAllRoles) {
               // Check if this is "Handler only" - exclude from signed totals (same logic as main report)
               const isHandlerOnly = roles.length === 1 && roles[0] === 'Handler';
 
-              const balanceAmount = parseFloat(lead.balance || 0);
-              const proposalAmount = parseFloat(lead.proposal_total || 0);
-              const rawAmount = balanceAmount || proposalAmount || 0;
-              const accountingCurrencies = Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies;
-              const currencyCode = accountingCurrencies?.iso_code || lead.balance_currency || lead.proposal_currency || 'NIS';
-              const amountNIS = convertToNIS(rawAmount, currencyCode);
-
-              // For signed total logic: exclude handler-only leads (set to 0)
-              // Use full amount (without subtracting fee) - modal is correct
+              // Use same amount calculation as SalesContributionPage role breakdown so modal total matches row
+              const amountNIS = calculateNewLeadAmount(lead);
               const totalForSigned = isHandlerOnly ? 0 : amountNIS;
 
               let leadNumberDisplay = lead.lead_number || lead.manual_id || lead.id?.toString() || '';
@@ -902,6 +908,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
             expert_id,
             meeting_manager_id,
             category_id,
+            category,
             no_of_applicants,
             accounting_currencies!leads_lead_currency_id_fkey(name, iso_code),
             misc_category!category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
@@ -936,43 +943,22 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
               roles.push('Meeting Manager');
             }
 
-            const requiredRoles = role.split(',').map(r => r.trim());
-            const hasAllRoles = requiredRoles.every(reqRole => roles.includes(reqRole));
-            // Show leads where employee has the selected role(s)
+            const isAllRolesMode = role === 'ALL';
+            const requiredRoles = isAllRolesMode ? [] : role.split(',').map(r => r.trim()).sort();
+            const exactMatch = requiredRoles.length > 0 && roles.length === requiredRoles.length && requiredRoles.every((r: string) => roles.includes(r));
+            const hasAllRoles = isAllRolesMode ? roles.length > 0 : exactMatch;
             if (hasAllRoles) {
               // Check if this is "Handler only" - exclude from signed totals (same logic as main report)
               const isHandlerOnly = roles.length === 1 && roles[0] === 'Handler';
 
-              // Calculate amount same way as SalesContributionPage (lines 1451-1480)
-              // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
-              const currencyId = lead.currency_id;
-              const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-              let resolvedAmount = 0;
-              if (numericCurrencyId === 1) {
-                // Use total_base for NIS/ILS currency
-                resolvedAmount = parseNumericAmount(lead.total_base) || 0;
-              } else {
-                // Use total for other currencies
-                resolvedAmount = parseNumericAmount(lead.total) || 0;
-              }
-
-              // Build currency meta - prioritize accounting_currencies.iso_code (actual currency) over currency_id
-              const currencyMeta = buildCurrencyMeta(
-                lead.accounting_currencies,
-                lead.meeting_total_currency_id,
-                lead.currency_id
-              );
-
-              // Convert to NIS using currencyMeta.conversionValue
-              const amountNIS = convertToNIS(resolvedAmount, currencyMeta.conversionValue);
-
-              // For signed total logic: exclude handler-only leads (set to 0)
-              // Use full amount (without subtracting fee) - modal is correct
+              // Use same amount calculation as SalesContributionPage role breakdown so modal total matches row
+              const amountNIS = calculateLegacyLeadAmount(lead);
               const totalForSigned = isHandlerOnly ? 0 : amountNIS;
 
               const leadNumberDisplay = lead.id?.toString() || '';
+              // Use joined misc_category from select (join) - fallback to lead.category when join is missing
               const miscCategory = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
-              const categoryName = miscCategory?.name || '—';
+              const categoryName = miscCategory?.name || lead.category || '—';
               const mainCategory = Array.isArray(miscCategory?.misc_maincategory) ? miscCategory.misc_maincategory[0] : miscCategory?.misc_maincategory;
               const mainCategoryName = mainCategory?.name;
               const categoryDisplay = mainCategoryName
@@ -1049,6 +1035,20 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
 
   if (!isOpen) return null;
 
+  // Format date as dd-mm-yy for display (input YYYY-MM-DD from filters)
+  const formatDateDdMmYy = (dateStr: string): string => {
+    if (!dateStr || typeof dateStr !== 'string') return dateStr || '—';
+    const parts = dateStr.trim().split(/[-/]/);
+    if (parts.length >= 3) {
+      const [y, m, d] = parts;
+      const day = d.length === 1 ? `0${d}` : d;
+      const month = m.length === 1 ? `0${m}` : m;
+      const year = y.length === 4 ? y.slice(2) : y;
+      return `${day}-${month}-${year}`;
+    }
+    return dateStr;
+  };
+
   const isHandlerRole = role === 'Handler';
   const displayData = isHandlerRole ? paymentRows : leads;
 
@@ -1067,7 +1067,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                 {role} {isHandlerRole ? 'Payment Rows' : 'Leads'} - {employeeName}
               </h2>
               <p className="text-sm text-gray-600 mt-1">
-                {displayData.length} {isHandlerRole ? 'payment row' : 'lead'}{displayData.length !== 1 ? 's' : ''} • {fromDate} to {toDate}
+                {displayData.length} {isHandlerRole ? 'payment row' : 'lead'}{displayData.length !== 1 ? 's' : ''} • {formatDateDdMmYy(fromDate)} to {formatDateDdMmYy(toDate)}
               </p>
             </div>
             <button

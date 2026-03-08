@@ -1,6 +1,7 @@
 import { supabase } from './supabase';
 
 const LEGACY_INTERACTION_LIMIT = 200;
+const LEGACY_INTERACTIONS_DEBUG = typeof window !== 'undefined' && (window as any).__LEGACY_INTERACTIONS_DEBUG__ === true;
 
 interface LegacyInteraction {
   id: number;
@@ -251,7 +252,7 @@ export const fetchLegacyInteractions = async (
   }
 
   const interactions = (data || []) as LegacyInteraction[];
-  console.log(`📊 [fetchLegacyInteractions] Fetched ${interactions.length} interactions from database for lead_id ${numericId}`, {
+  if (LEGACY_INTERACTIONS_DEBUG) console.log(`📊 [fetchLegacyInteractions] Fetched ${interactions.length} interactions from database for lead_id ${numericId}`, {
     leadId: numericId,
     fetchedCount: interactions.length,
     interactionIds: interactions.map(i => i.id).slice(0, 20),

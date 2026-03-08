@@ -286,6 +286,7 @@ const CalendarPage: React.FC = () => {
   const [datesManuallySet, setDatesManuallySet] = usePersistedState('calendar-datesManuallySet', false, {
     storage: 'sessionStorage',
   });
+  const [meetingsRefreshTrigger, setMeetingsRefreshTrigger] = useState(0);
   const [selectedStaff, setSelectedStaff] = useState('');
   const [staffSearchTerm, setStaffSearchTerm] = useState('');
   const [showStaffDropdown, setShowStaffDropdown] = useState(false);
@@ -626,6 +627,15 @@ const CalendarPage: React.FC = () => {
 
   // Track image errors per employee to prevent flickering (persists across re-renders)
   const imageErrorCache = useRef<Map<string | number, boolean>>(new Map());
+
+  // Track previous fetch deps so we don't refetch when navigating back with cached meetings
+  const prevFetchDepsRef = useRef({
+    pathname: location.pathname,
+    appliedFromDate,
+    appliedToDate,
+    datesManuallySet,
+    meetingsRefreshTrigger,
+  });
 
   // Helper component for employee avatar with image error fallback (like CallsLedgerPage)
   const EmployeeAvatar: React.FC<{
@@ -1798,11 +1808,27 @@ const CalendarPage: React.FC = () => {
   }, [employeesAndCategoriesData]);
 
   useEffect(() => {
+    const prev = prevFetchDepsRef.current;
+    const pathname = location.pathname;
+    const depsUnchanged =
+      prev.appliedFromDate === appliedFromDate &&
+      prev.appliedToDate === appliedToDate &&
+      prev.datesManuallySet === datesManuallySet &&
+      prev.meetingsRefreshTrigger === meetingsRefreshTrigger &&
+      prev.pathname === pathname;
+
+    // If we have cached meetings and no fetch-relevant dep changed, skip refetch (preserve state when navigating back)
+    if (meetings.length > 0 && depsUnchanged) {
+      setIsLoading(false);
+      return;
+    }
     // If this is a back/forward navigation (POP) and we have cached meetings, skip the fetch
     if (navType === 'POP' && meetings.length > 0) {
       setIsLoading(false);
       return;
     }
+
+    prevFetchDepsRef.current = { pathname, appliedFromDate, appliedToDate, datesManuallySet, meetingsRefreshTrigger };
 
     const fetchMeetingsAndStaff = async () => {
       setIsLoading(true);
@@ -2174,7 +2200,7 @@ const CalendarPage: React.FC = () => {
     // DISABLED: Meeting counts query removed to prevent timeouts
     // fetchMeetingCountsAndPreviousManagers().catch(error => {
     // });
-  }, [location.pathname, appliedFromDate, appliedToDate, datesManuallySet]); // Run when pathname changes or when date range changes
+  }, [location.pathname, appliedFromDate, appliedToDate, datesManuallySet, meetingsRefreshTrigger]); // Run when pathname/date range changes or when explicitly refreshed (e.g. after Teams modal close)
 
   // Re-render when categories are loaded to update category names
   useEffect(() => {
@@ -7317,8 +7343,8 @@ const CalendarPage: React.FC = () => {
         isOpen={isTeamsMeetingModalOpen}
         onClose={() => {
           setIsTeamsMeetingModalOpen(false);
-          // Refresh meetings when modal closes
-          window.location.reload();
+          // Refetch after a short delay so the new meeting is committed before we query (avoids "appears then disappears")
+          setTimeout(() => setMeetingsRefreshTrigger(prev => prev + 1), 400);
         }}
         selectedDate={selectedDateForMeeting || undefined}
         selectedTime={selectedTimeForMeeting}

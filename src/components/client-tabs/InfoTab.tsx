@@ -3,6 +3,8 @@ import { ClientTabProps } from '../../types/client';
 import { InformationCircleIcon, ExclamationCircleIcon, PencilIcon, CheckIcon, XMarkIcon, PencilSquareIcon, PlusIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 
+const INFOTAB_DEBUG = typeof window !== 'undefined' && (window as any).__INFOTAB_DEBUG__ === true;
+
 // Helper function to decode HTML entities
 const decodeHtmlEntities = (text: string): string => {
   if (!text) return '';
@@ -232,7 +234,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
 
       if (data) {
         setLegacyFileId(data.file_id || '');
-        console.log('✅ InfoTab - Legacy file_id loaded:', data.file_id);
+        if (INFOTAB_DEBUG) console.log('✅ InfoTab - Legacy file_id loaded:', data.file_id);
       }
     } catch (error) {
       console.error('Error in fetchLegacyFileId:', error);
@@ -277,7 +279,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
         setEligibilityStatus(eligibilityValue);
         setSectionEligibility(data.section_eligibility || '');
 
-        console.log('✅ InfoTab - Legacy eligibility data loaded:', {
+        if (INFOTAB_DEBUG) console.log('✅ InfoTab - Legacy eligibility data loaded:', {
           eligibility_status: data.eligibility_status,
           expert_examination: data.expert_examination,
           final_eligibility: eligibilityValue,

@@ -3,6 +3,7 @@ import { useLocation, useNavigationType } from "react-router-dom";
 import { cacheRouteInstance, getCachedRouteInstance } from '../utils/routeCache';
 
 const RESTORE_DELAYS = [0, 100, 300, 500, 1000]; // Multiple attempts to ensure restoration works
+const SCROLL_DEBUG = typeof window !== 'undefined' && (window as any).__SCROLL_DEBUG__ === true;
 
 /**
  * ScrollRestoration - Restores scroll positions using route cache
@@ -15,7 +16,7 @@ export default function ScrollRestoration() {
   const isInitialMountRef = useRef<boolean>(true);
   const currentScrollPositionRef = useRef<number>(0);
 
-  console.log('[ScrollRestoration] Component render:', {
+  if (SCROLL_DEBUG) console.log('[ScrollRestoration] Component render:', {
     pathname: location.pathname,
     navType,
     key: location.key,
@@ -73,7 +74,7 @@ export default function ScrollRestoration() {
       const fallbackScrollPosition = mainScrollTop || windowScrollY;
       const finalScrollPosition = scrollPosition || fallbackScrollPosition;
       
-      console.log('[ScrollRestoration] Cleanup - saving scroll position:', {
+      if (SCROLL_DEBUG) console.log('[ScrollRestoration] Cleanup - saving scroll position:', {
         pathname: pathnameToSave,
         trackedScrollPosition: scrollPosition,
         windowScrollY,
@@ -101,7 +102,7 @@ export default function ScrollRestoration() {
 
   // Restore scroll position on back/forward
   useEffect(() => {
-    console.log('[ScrollRestoration] Restore effect triggered:', {
+    if (SCROLL_DEBUG) console.log('[ScrollRestoration] Restore effect triggered:', {
       pathname: location.pathname,
       navType,
       isPOP: navType === 'POP',
@@ -109,7 +110,7 @@ export default function ScrollRestoration() {
 
     if (navType === 'POP') {
       const cached = getCachedRouteInstance(location.pathname);
-      console.log('[ScrollRestoration] POP navigation - checking cache:', {
+      if (SCROLL_DEBUG) console.log('[ScrollRestoration] POP navigation - checking cache:', {
         pathname: location.pathname,
         cached: cached ? {
           scrollPosition: cached.scrollPosition,
@@ -123,7 +124,7 @@ export default function ScrollRestoration() {
           const mainElement = document.querySelector('main');
           const targetScroll = cached.scrollPosition;
           
-          console.log(`[ScrollRestoration] Restore attempt ${attempt}:`, {
+          if (SCROLL_DEBUG) console.log(`[ScrollRestoration] Restore attempt ${attempt}:`, {
             targetScroll,
             mainElementFound: !!mainElement,
             currentWindowScrollY: window.scrollY,
@@ -134,7 +135,7 @@ export default function ScrollRestoration() {
 
           if (mainElement) {
             mainElement.scrollTop = targetScroll;
-            console.log(`[ScrollRestoration] Set mainElement.scrollTop to ${targetScroll}, now: ${mainElement.scrollTop}`);
+            if (SCROLL_DEBUG) console.log(`[ScrollRestoration] Set mainElement.scrollTop to ${targetScroll}, now: ${mainElement.scrollTop}`);
           }
           
           window.scrollTo({ top: targetScroll, left: 0, behavior: 'auto' });
@@ -143,7 +144,7 @@ export default function ScrollRestoration() {
 
           // Log after scroll
           setTimeout(() => {
-            console.log(`[ScrollRestoration] After restore attempt ${attempt}:`, {
+            if (SCROLL_DEBUG) console.log(`[ScrollRestoration] After restore attempt ${attempt}:`, {
               windowScrollY: window.scrollY,
               mainScrollTop: mainElement?.scrollTop || 0,
               docElementScrollTop: document.documentElement.scrollTop,
@@ -153,19 +154,19 @@ export default function ScrollRestoration() {
           }, 50);
         };
 
-        console.log('[ScrollRestoration] Starting restore attempts with delays:', RESTORE_DELAYS);
+        if (SCROLL_DEBUG) console.log('[ScrollRestoration] Starting restore attempts with delays:', RESTORE_DELAYS);
         requestAnimationFrame(() => restoreScroll(0));
         RESTORE_DELAYS.forEach((delay, index) => {
           setTimeout(() => restoreScroll(index + 1), delay);
         });
       } else {
-        console.log('[ScrollRestoration] No cached position found for POP navigation, scrolling to top');
+        if (SCROLL_DEBUG) console.log('[ScrollRestoration] No cached position found for POP navigation, scrolling to top');
         window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
       }
     } else {
       // Normal navigation - scroll to top (but don't override if we have cached position)
       const cached = getCachedRouteInstance(location.pathname);
-      console.log('[ScrollRestoration] Normal navigation (not POP):', {
+      if (SCROLL_DEBUG) console.log('[ScrollRestoration] Normal navigation (not POP):', {
         pathname: location.pathname,
         navType,
         hasCached: !!cached,
@@ -181,9 +182,9 @@ export default function ScrollRestoration() {
         if (mainElement) {
           mainElement.scrollTop = 0;
         }
-        console.log('[ScrollRestoration] Scrolled to top (normal navigation)');
+        if (SCROLL_DEBUG) console.log('[ScrollRestoration] Scrolled to top (normal navigation)');
       } else {
-        console.log('[ScrollRestoration] Has cached position but not POP, keeping cached scroll');
+        if (SCROLL_DEBUG) console.log('[ScrollRestoration] Has cached position but not POP, keeping cached scroll');
       }
     }
   }, [location.pathname, navType]);

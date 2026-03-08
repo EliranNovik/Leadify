@@ -1081,13 +1081,12 @@ const SalesContributionPage = () => {
           .in('id', newLeadIdsArray);
 
         if (!newLeadsError && newLeads) {
-          // Pre-process leads to ensure categories are correctly mapped
-          const processedLeads = preprocessLeadsCategoriesUtil(newLeads, false, allCategories, categoryNameToDataMap, categoriesLoaded);
-          processedLeads.forEach(lead => {
+          // Use joined data directly (misc_category, misc_maincategory from select) - no preprocess map
+          newLeads.forEach((lead: any) => {
             newLeadsMap.set(lead.id, lead);
           });
           if (DEBUG_HELPER_CLOSER && employeeId === DEBUG_EMPLOYEE_ID) {
-            const debugLead = processedLeads.find((l: any) => (l.lead_number || '').toString().includes('210620'));
+            const debugLead = newLeads.find((l: any) => (l.lead_number || '').toString().includes('210620'));
             if (debugLead) {
               console.log('[SalesContribution Step2] Lead L210620 found in newLeads:', {
                 id: debugLead.id,
@@ -1099,7 +1098,7 @@ const SalesContributionPage = () => {
                 inNewLeadIds: newLeadIds.has(String(debugLead.id)),
               });
             } else {
-              console.log('[SalesContribution Step2] Lead L210620 NOT in newLeads fetch. newLeadIds.size=', newLeadIds.size, 'lead_numbers in fetch=', processedLeads.map((l: any) => l.lead_number).filter(Boolean).slice(0, 10));
+              console.log('[SalesContribution Step2] Lead L210620 NOT in newLeads fetch. newLeadIds.size=', newLeadIds.size, 'lead_numbers in fetch=', newLeads.map((l: any) => l.lead_number).filter(Boolean).slice(0, 10));
             }
           }
         }
@@ -1142,9 +1141,8 @@ const SalesContributionPage = () => {
           .in('id', legacyLeadIdsArray);
 
         if (!legacyLeadsError && legacyLeads) {
-          // Pre-process leads to ensure categories are correctly mapped
-          const processedLeads = preprocessLeadsCategoriesUtil(legacyLeads, true, allCategories, categoryNameToDataMap, categoriesLoaded);
-          processedLeads.forEach(lead => {
+          // Use joined data directly (misc_category, misc_maincategory from select) - no preprocess map
+          legacyLeads.forEach((lead: any) => {
             legacyLeadsMap.set(Number(lead.id), lead);
           });
         }
@@ -2527,21 +2525,17 @@ const SalesContributionPage = () => {
           .in('id', newLeadIdsArray);
 
         if (!newLeadsError && newLeads) {
-          // Pre-process leads to ensure categories are correctly mapped BEFORE processing
-          const processedLeads = preprocessLeadsCategories(newLeads, false);
-
-          // Debug: Track uncategorized leads
+          // Use joined data directly (misc_category, misc_maincategory from select) - no preprocess map
           const uncategorizedLeads: any[] = [];
 
-          processedLeads.forEach((lead: any) => {
-            // Get main category name using helper function
+          newLeads.forEach((lead: any) => {
+            // Get main category name using helper (joined misc_category from select)
             const mainCategoryNameFromLead = resolveMainCategory(
-              lead.category, // category text field
-              lead.category_id, // category ID
-              lead.misc_category // joined misc_category data
+              lead.category,
+              lead.category_id,
+              lead.misc_category
             );
 
-            // Debug: Track leads that resolve to Uncategorized
             if (mainCategoryNameFromLead === 'Uncategorized' && mainCategoryName === 'Uncategorized') {
               uncategorizedLeads.push({
                 leadId: lead.id,
@@ -2552,7 +2546,6 @@ const SalesContributionPage = () => {
               });
             }
 
-            // Get sub category name
             let subCategoryName = 'Uncategorized';
             if (lead.misc_category) {
               const category = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
@@ -2561,11 +2554,8 @@ const SalesContributionPage = () => {
               subCategoryName = lead.category;
             }
 
-            // Only process leads that match the requested main category (or should go to General)
             if (shouldIncludeLead(mainCategoryNameFromLead)) {
-              // Calculate amount using utility function
               const amountAfterFee = calculateNewLeadAmount(lead);
-
               categoryBreakdown.push({
                 category: subCategoryName,
                 lead: lead.lead_number || lead.id,
@@ -2577,11 +2567,10 @@ const SalesContributionPage = () => {
             }
           });
 
-          // Debug: Log uncategorized leads found
           if (mainCategoryName === 'Uncategorized' && uncategorizedLeads.length > 0) {
             console.log('🔍 Category Breakdown (New Leads) - Uncategorized leads found:', {
               count: uncategorizedLeads.length,
-              totalNewLeads: processedLeads.length,
+              totalNewLeads: newLeads.length,
               samples: uncategorizedLeads.slice(0, 5)
             });
           }
@@ -2618,24 +2607,18 @@ const SalesContributionPage = () => {
           .in('id', legacyLeadIdsArray);
 
         if (!legacyLeadsError && legacyLeads) {
-          // Pre-process leads to ensure categories are correctly mapped BEFORE processing
-          const processedLeads = preprocessLeadsCategories(legacyLeads, true);
-
-          // Debug: Track uncategorized leads
+          // Use joined data directly (misc_category, misc_maincategory from select) - no preprocess map
           const uncategorizedLegacyLeads: any[] = [];
 
-          processedLeads.forEach((lead: any) => {
-            // Get main category name using helper function
-            // After preprocessing, misc_category should be set, so this should work correctly
+          legacyLeads.forEach((lead: any) => {
             const mainCategoryNameFromLead = resolveMainCategory(
-              lead.category, // category text field
-              lead.category_id, // category ID
-              lead.misc_category // preprocessed misc_category data
+              lead.category,
+              lead.category_id,
+              lead.misc_category
             );
 
-            // Debug: Log if category was resolved
             if (mainCategoryNameFromLead === 'Uncategorized' && lead.category && lead.category.trim() !== '') {
-              console.warn('⚠️ fetchCategoryBreakdown (Legacy) - Lead still uncategorized after preprocessing:', {
+              console.warn('⚠️ fetchCategoryBreakdown (Legacy) - Lead still uncategorized:', {
                 leadId: lead.id,
                 leadNumber: lead.lead_number,
                 categoryText: lead.category,
@@ -3394,13 +3377,12 @@ const SalesContributionPage = () => {
               .in('id', newLeadIdsArray);
 
             if (!newLeadsError && newLeads) {
-              // Pre-process leads to ensure categories are correctly mapped
-              const processedLeads = preprocessLeadsCategories(newLeads, false);
-              processedLeads.forEach(lead => {
+              // Use joined data directly (misc_category, misc_maincategory from select) - no preprocess map
+              newLeads.forEach((lead: any) => {
                 newLeadsMap.set(lead.id, lead);
               });
               // DEBUG L210620: Is lead in fetched new leads and what are helper fields?
-              const leadL210620 = processedLeads.find((l: any) => (l.lead_number || '').toString().includes('210620'));
+              const leadL210620 = newLeads.find((l: any) => (l.lead_number || '').toString().includes('210620'));
               if (leadL210620) {
                 console.log('🔍 DEBUG L210620 (batch): Lead in newLeads fetch:', {
                   id: leadL210620.id,
@@ -3412,7 +3394,7 @@ const SalesContributionPage = () => {
                   inAllNewLeadIds: allNewLeadIds.has(String(leadL210620.id)),
                 });
               } else {
-                console.log('🔍 DEBUG L210620 (batch): Lead NOT in newLeads fetch. allNewLeadIds.size=', allNewLeadIds.size, 'lead_numbers=', processedLeads.map((l: any) => l.lead_number).slice(0, 15));
+                console.log('🔍 DEBUG L210620 (batch): Lead NOT in newLeads fetch. allNewLeadIds.size=', allNewLeadIds.size, 'lead_numbers=', newLeads.map((l: any) => l.lead_number).slice(0, 15));
               }
             }
           }
@@ -3452,9 +3434,8 @@ const SalesContributionPage = () => {
               .in('id', legacyLeadIdsArray);
 
             if (!legacyLeadsError && legacyLeads) {
-              // Pre-process leads to ensure categories are correctly mapped
-              const processedLeads = preprocessLeadsCategories(legacyLeads, true);
-              processedLeads.forEach(lead => {
+              // Use joined data directly (misc_category, misc_maincategory from select) - no preprocess map
+              legacyLeads.forEach((lead: any) => {
                 legacyLeadsMap.set(Number(lead.id), lead);
               });
             }
@@ -7073,9 +7054,9 @@ const SalesContributionPage = () => {
         </div>
       </div>
 
-      {searchPerformed && !loading && (
+      {searchPerformed && (
         <div className="space-y-6">
-          {/* Summary Boxes - Only show in employee view */}
+          {/* Summary Boxes - Rendered immediately, independent of table loading (employee view only) */}
           {viewMode === 'employee' && (
             <div className="flex md:grid md:grid-cols-5 gap-3 md:gap-6 mb-8 w-full overflow-x-auto scrollbar-hide pb-2 md:pb-0 overflow-y-visible">
               {/* Sales */}
@@ -7115,7 +7096,13 @@ const SalesContributionPage = () => {
             </div>
           )}
 
-          {viewMode === 'employee' ? (
+          {/* Table section - show loading state until report is ready */}
+          {(loading || isCalculating) ? (
+            <div className="flex flex-col items-center justify-center py-16 gap-4 rounded-xl bg-base-200/50 border border-base-300">
+              <span className="loading loading-spinner loading-lg text-primary" />
+              <p className="text-base-content/80 font-medium">Loading report...</p>
+            </div>
+          ) : viewMode === 'employee' ? (
             departmentNames
               .filter(deptName => {
                 const deptData = departmentData.get(deptName);

@@ -2,6 +2,7 @@
  * Route Cache Utility
  * Global cache to store route component instances and their state
  */
+const ROUTE_CACHE_DEBUG = typeof window !== 'undefined' && (window as any).__ROUTE_CACHE_DEBUG__ === true;
 
 export interface CachedRouteInstance {
   componentKey: string;
@@ -29,7 +30,7 @@ export function cacheRouteInstance(pathname: string, scrollPosition: number, sta
   
   routeInstanceCache.set(pathname, cacheEntry);
   
-  console.log('[routeCache] Cached route instance:', {
+  if (ROUTE_CACHE_DEBUG) console.log('[routeCache] Cached route instance:', {
     pathname,
     scrollPosition,
     timestamp: cacheEntry.timestamp,
@@ -41,7 +42,7 @@ export function cacheRouteInstance(pathname: string, scrollPosition: number, sta
   try {
     const cacheArray = Array.from(routeInstanceCache.entries()).map(([key, value]) => [key, value]);
     sessionStorage.setItem('route_cache', JSON.stringify(cacheArray));
-    console.log('[routeCache] Saved to sessionStorage, cache size:', cacheArray.length);
+    if (ROUTE_CACHE_DEBUG) console.log('[routeCache] Saved to sessionStorage, cache size:', cacheArray.length);
   } catch (e) {
     console.warn('[routeCache] Failed to save to sessionStorage:', e);
   }
@@ -52,7 +53,7 @@ export function cacheRouteInstance(pathname: string, scrollPosition: number, sta
  */
 export function getCachedRouteInstance(pathname: string): CachedRouteInstance | undefined {
   const cached = routeInstanceCache.get(pathname);
-  console.log('[routeCache] Getting cached route instance:', {
+  if (ROUTE_CACHE_DEBUG) console.log('[routeCache] Getting cached route instance:', {
     pathname,
     found: !!cached,
     cachedData: cached ? {

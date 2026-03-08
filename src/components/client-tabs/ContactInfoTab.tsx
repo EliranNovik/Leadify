@@ -237,6 +237,32 @@ interface ContactEntry {
   isEditing?: boolean;
 }
 
+const CONTACT_INFO_CACHE_KEY_PREFIX = 'contactInfoTab_contacts_';
+
+function getContactInfoCacheKey(clientId: string | number): string {
+  return `${CONTACT_INFO_CACHE_KEY_PREFIX}${String(clientId)}`;
+}
+
+function restoreContactInfoCache(clientId: string | number): ContactEntry[] | null {
+  try {
+    const raw = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(getContactInfoCacheKey(clientId)) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ContactEntry[];
+    if (Array.isArray(parsed) && parsed.length >= 0) return parsed;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function persistContactInfoCache(clientId: string | number, contacts: ContactEntry[]): void {
+  try {
+    sessionStorage.setItem(getContactInfoCacheKey(clientId), JSON.stringify(contacts));
+  } catch {
+    // ignore
+  }
+}
+
 interface ContractTemplate {
   id: string;
   name: string;
@@ -778,7 +804,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
   // Track if we've already fetched contracts for this client to prevent double-fetching
   const contractsFetchedRef = useRef<Set<string>>(new Set());
-  
+  const prevClientIdRef = useRef<string | null>(null);
+
   // Fetch contracts for each contact
   useEffect(() => {
     if (!client?.id || contacts.length === 0) {
@@ -1245,6 +1272,23 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
   // Update contacts when client data changes
   useEffect(() => {
+    if (!client?.id) return;
+
+    const clientKey = String(client.id);
+
+    // When lead changes: clear stale data so we never show previous lead's contacts first
+    if (prevClientIdRef.current !== clientKey) {
+      prevClientIdRef.current = clientKey;
+      setContacts([]);
+      contractsFetchedRef.current.clear();
+    }
+
+    // Restore from cache so switching back to this tab shows data immediately
+    const cached = restoreContactInfoCache(clientKey);
+    if (cached && cached.length > 0) {
+      setContacts(cached);
+    }
+
     const fetchContacts = async () => {
       // Check if this is a legacy lead
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
@@ -1261,14 +1305,26 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           // because it's already in the leads_contact table and linked via lead_leadcontact
           // This prevents duplicate entries
 
-          // Then get additional contacts from lead-contact relationships
-          const { data: leadContacts, error: leadContactsError } = await supabase
+          // Single joined query: lead_leadcontact with leads_contact (no separate fetch + map)
+          const { data: leadContactsWithContact, error: leadContactsError } = await supabase
             .from('lead_leadcontact')
             .select(`
               id,
               main,
               contact_id,
-              lead_id
+              lead_id,
+              leads_contact (
+                id,
+                name,
+                mobile,
+                phone,
+                email,
+                notes,
+                address,
+                additional_phones,
+                additional_emails,
+                country_id
+              )
             `)
             .eq('lead_id', legacyId);
 
@@ -1277,120 +1333,63 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             return;
           }
 
-          if (leadContacts && leadContacts.length > 0) {
-            // Get all contact IDs
-            const contactIds = leadContacts.map((lc: any) => lc.contact_id).filter(Boolean);
+          const leadContacts = leadContactsWithContact || [];
+          if (leadContacts.length > 0) {
+            let mainContactFound = false;
+            let mainContactId: number | null = null;
 
-            if (contactIds.length > 0) {
-              // Fetch contact details from leads_contact table
-              const { data: contacts, error: contactsError } = await supabase
-                .from('leads_contact')
-                .select('id, name, mobile, phone, email, notes, address, additional_phones, additional_emails, country_id')
-                .in('id', contactIds);
-
-
-              if (contactsError) {
-                console.error('❌ Error fetching contact details:', contactsError);
-              } else if (contacts) {
-                // Map contacts to their lead-contact relationships
-                let mainContactFound = false;
-                let mainContactId: number | null = null;
-
-                // First pass: find explicitly marked main contacts and count them
-                const mainContacts: any[] = [];
-                leadContacts.forEach((leadContact: any) => {
-                  const isMarkedAsMain = leadContact.main === 'true' || leadContact.main === true || leadContact.main === 't';
-                  if (isMarkedAsMain) {
-                    mainContacts.push(leadContact);
-                    if (!mainContactFound) {
-                      mainContactFound = true;
-                      mainContactId = leadContact.contact_id;
-                    }
-                  }
-                });
-
-                // If multiple contacts are marked as main, fix the database to have only one
-                if (mainContacts.length > 1) {
-                  console.warn('⚠️ Multiple main contacts found, fixing database to have only one:', mainContacts.length);
-
-                  // Keep the first one as main, set all others to false
-                  const firstMainContact = mainContacts[0];
-                  mainContactId = firstMainContact.contact_id;
-
-                  // Set all other main contacts to false
-                  const otherMainContacts = mainContacts.slice(1);
-                  for (const otherMain of otherMainContacts) {
-                    const { error: fixError } = await supabase
-                      .from('lead_leadcontact')
-                      .update({ main: 'false' })
-                      .eq('lead_id', legacyId)
-                      .eq('contact_id', otherMain.contact_id);
-
-                    if (fixError) {
-                      console.error('❌ Error fixing duplicate main contact:', fixError);
-                    } else {
-                      console.log('✅ Fixed duplicate main contact:', otherMain.contact_id);
-                      // Update the leadContact object
-                      otherMain.main = 'false';
-                    }
-                  }
-                }
-
-                // If no main contact found and there's only one contact, treat it as main
-                const shouldTreatFirstAsMain = !mainContactFound && leadContacts.length === 1;
-
-                // If we need to mark the first contact as main, update the database
-                if (shouldTreatFirstAsMain && leadContacts.length > 0) {
-                  const firstLeadContact = leadContacts[0];
-
-                  // Update the database to mark this contact as main
-                  const { error: updateError } = await supabase
-                    .from('lead_leadcontact')
-                    .update({ main: 'true' })
-                    .eq('lead_id', legacyId)
-                    .eq('contact_id', firstLeadContact.contact_id);
-
-                  if (updateError) {
-                    console.error('❌ Error updating contact to main:', updateError);
-                  } else {
-                    console.log('✅ Successfully marked contact as main in database');
-                    // Update the leadContact object so the rest of the code sees it as main
-                    firstLeadContact.main = 'true';
-                    mainContactFound = true;
-                    mainContactId = firstLeadContact.contact_id;
-                  }
-                }
-
-                leadContacts.forEach((leadContact: any, index: number) => {
-
-                  const contact = contacts.find((c: any) => c.id === leadContact.contact_id);
-                  if (contact) {
-
-                    // Check if this is marked as main in the lead_leadcontact table
-                    // After database update, this will reflect the updated value
-                    const isMarkedAsMain = leadContact.main === 'true' || leadContact.main === true || leadContact.main === 't';
-
-                    // Mark as main if:
-                    // 1. This is the one we determined should be main (mainContactId), OR
-                    // 2. It's the only contact and we're treating it as main
-                    const isMainContact = (mainContactId !== null && contact.id === mainContactId) || (shouldTreatFirstAsMain && index === 0);
-
-                    // Create contact entry with complete information from leads_contact table
-                    // Only use client data as fallback if the contact field is truly empty
-                    const contactEntry: ContactEntry = {
-                      id: contact.id, // Use the actual contact ID from leads_contact
-                      name: contact.name || '---',
-                      mobile: contact.mobile || '---',
-                      phone: contact.phone || '---',
-                      email: contact.email || '---',
-                      country_id: contact.country_id || null,
-                      isMain: isMainContact,
-                    };
-
-                    contactEntries.push(contactEntry);
-                  }
-                });
+            const mainContacts = leadContacts.filter((lc: any) => {
+              const isMarkedAsMain = lc.main === 'true' || lc.main === true || lc.main === 't';
+              if (isMarkedAsMain && !mainContactFound) {
+                mainContactFound = true;
+                mainContactId = lc.contact_id;
               }
+              return isMarkedAsMain;
+            });
+
+            if (mainContacts.length > 1) {
+              const firstMainContact = mainContacts[0];
+              mainContactId = firstMainContact.contact_id;
+              for (const otherMain of mainContacts.slice(1)) {
+                await supabase
+                  .from('lead_leadcontact')
+                  .update({ main: 'false' })
+                  .eq('lead_id', legacyId)
+                  .eq('contact_id', otherMain.contact_id);
+                otherMain.main = 'false';
+              }
+            }
+
+            const shouldTreatFirstAsMain = !mainContactFound && leadContacts.length === 1;
+            if (shouldTreatFirstAsMain && leadContacts.length > 0) {
+              const firstLeadContact = leadContacts[0];
+              await supabase
+                .from('lead_leadcontact')
+                .update({ main: 'true' })
+                .eq('lead_id', legacyId)
+                .eq('contact_id', firstLeadContact.contact_id);
+              firstLeadContact.main = 'true';
+              mainContactFound = true;
+              mainContactId = firstLeadContact.contact_id;
+            }
+
+            for (let index = 0; index < leadContacts.length; index++) {
+              const leadContact = leadContacts[index];
+              const raw = leadContact.leads_contact;
+              const contact = Array.isArray(raw) ? raw[0] : raw;
+              if (!contact) continue;
+
+              const isMainContact = (mainContactId !== null && contact.id === mainContactId) || (shouldTreatFirstAsMain && index === 0);
+
+              contactEntries.push({
+                id: contact.id,
+                name: contact.name || '---',
+                mobile: contact.mobile || '---',
+                phone: contact.phone || '---',
+                email: contact.email || '---',
+                country_id: contact.country_id || null,
+                isMain: isMainContact,
+              });
             }
           }
 
@@ -1464,21 +1463,31 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           // Process contacts from lead_leadcontact and leads_contact tables
           const contactEntries: ContactEntry[] = [];
 
-          // Get contacts from lead-contact relationships
-          const { data: leadContacts, error: leadContactsError } = await supabase
+          // Single joined query: lead_leadcontact with leads_contact (no separate fetch + map)
+          const { data: leadContactsWithContact, error: leadContactsError } = await supabase
             .from('lead_leadcontact')
             .select(`
               id,
               main,
               contact_id,
-              newlead_id
+              newlead_id,
+              leads_contact (
+                id,
+                name,
+                mobile,
+                phone,
+                email,
+                notes,
+                address,
+                additional_phones,
+                additional_emails,
+                country_id
+              )
             `)
             .eq('newlead_id', newLeadId);
 
-
           if (leadContactsError) {
             console.error('❌ Error fetching new lead contacts:', leadContactsError);
-            // Fallback to basic contact structure
             const mainContact: ContactEntry = {
               id: 1,
               name: client.name || '---',
@@ -1491,130 +1500,68 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             return;
           }
 
-          if (leadContacts && leadContacts.length > 0) {
-            console.log('🔍 Processing new lead contacts:', leadContacts);
+          const leadContacts = leadContactsWithContact || [];
+          const { data: leadData } = await supabase.from('leads').select('country_id').eq('id', newLeadId).maybeSingle();
+          const leadCountryId = leadData?.country_id ?? null;
 
-            // Get all contact IDs
-            const contactIds = leadContacts.map((lc: any) => lc.contact_id).filter(Boolean);
-            console.log('🔍 Contact IDs found:', contactIds);
+          if (leadContacts.length > 0) {
 
-            if (contactIds.length > 0) {
-              // Fetch contact details from leads_contact table
-              const { data: contacts, error: contactsError } = await supabase
-                .from('leads_contact')
-                .select('id, name, mobile, phone, email, notes, address, additional_phones, additional_emails, country_id')
-                .in('id', contactIds);
+            let mainContactFound = false;
+            let mainContactId: number | null = null;
 
-
-              if (contactsError) {
-                console.error('❌ Error fetching contact details:', contactsError);
-              } else if (contacts) {
-                // Get country_id from leads table as fallback for all contacts
-                const { data: leadData } = await supabase
-                  .from('leads')
-                  .select('country_id')
-                  .eq('id', newLeadId)
-                  .single();
-
-                const leadCountryId = leadData?.country_id || null;
-
-                // Map contacts to their lead-contact relationships
-                let mainContactFound = false;
-                let mainContactId: number | null = null;
-
-                // First pass: find explicitly marked main contacts and count them
-                const mainContacts: any[] = [];
-                leadContacts.forEach((leadContact: any) => {
-                  const isMarkedAsMain = leadContact.main === 'true' || leadContact.main === true || leadContact.main === 't';
-                  if (isMarkedAsMain) {
-                    mainContacts.push(leadContact);
-                    if (!mainContactFound) {
-                      mainContactFound = true;
-                      mainContactId = leadContact.contact_id;
-                    }
-                  }
-                });
-
-                // If multiple contacts are marked as main, fix the database to have only one
-                if (mainContacts.length > 1) {
-                  console.warn('⚠️ Multiple main contacts found, fixing database to have only one:', mainContacts.length);
-
-                  // Keep the first one as main, set all others to false
-                  const firstMainContact = mainContacts[0];
-                  mainContactId = firstMainContact.contact_id;
-
-                  // Set all other main contacts to false
-                  const otherMainContacts = mainContacts.slice(1);
-                  for (const otherMain of otherMainContacts) {
-                    const { error: fixError } = await supabase
-                      .from('lead_leadcontact')
-                      .update({ main: 'false' })
-                      .eq('newlead_id', newLeadId)
-                      .eq('contact_id', otherMain.contact_id);
-
-                    if (fixError) {
-                      console.error('❌ Error fixing duplicate main contact:', fixError);
-                    } else {
-                      console.log('✅ Fixed duplicate main contact:', otherMain.contact_id);
-                      // Update the leadContact object
-                      otherMain.main = 'false';
-                    }
-                  }
-                }
-
-                // If no main contact found and there's only one contact, treat it as main
-                const shouldTreatFirstAsMain = !mainContactFound && leadContacts.length === 1;
-
-                // If we need to mark the first contact as main, update the database
-                if (shouldTreatFirstAsMain && leadContacts.length > 0) {
-                  const firstLeadContact = leadContacts[0];
-
-                  // Update the database to mark this contact as main
-                  const { error: updateError } = await supabase
-                    .from('lead_leadcontact')
-                    .update({ main: 'true' })
-                    .eq('newlead_id', newLeadId)
-                    .eq('contact_id', firstLeadContact.contact_id);
-
-                  if (updateError) {
-                    console.error('❌ Error updating contact to main:', updateError);
-                  } else {
-                    console.log('✅ Successfully marked contact as main in database');
-                    // Update the leadContact object so the rest of the code sees it as main
-                    firstLeadContact.main = 'true';
-                    mainContactFound = true;
-                    mainContactId = firstLeadContact.contact_id;
-                  }
-                }
-
-                leadContacts.forEach((leadContact: any, index: number) => {
-
-                  const contact = contacts.find((c: any) => c.id === leadContact.contact_id);
-                  if (contact) {
-
-                    // Mark as main if:
-                    // 1. This is the one we determined should be main (mainContactId), OR
-                    // 2. It's the only contact and we're treating it as main
-                    const isMainContact = (mainContactId !== null && contact.id === mainContactId) || (shouldTreatFirstAsMain && index === 0);
-
-                    // Use country_id from contact, fallback to leads table, then null
-                    const countryId = contact.country_id || leadCountryId || null;
-
-                    // Create contact entry with complete information from leads_contact table
-                    const contactEntry: ContactEntry = {
-                      id: contact.id,
-                      name: contact.name || '---',
-                      mobile: contact.mobile || '---',
-                      phone: contact.phone || '---',
-                      email: contact.email || '---',
-                      country_id: countryId,
-                      isMain: isMainContact,
-                    };
-
-                    contactEntries.push(contactEntry);
-                  }
-                });
+            const mainContacts = leadContacts.filter((lc: any) => {
+              const isMarkedAsMain = lc.main === 'true' || lc.main === true || lc.main === 't';
+              if (isMarkedAsMain && !mainContactFound) {
+                mainContactFound = true;
+                mainContactId = lc.contact_id;
               }
+              return isMarkedAsMain;
+            });
+
+            if (mainContacts.length > 1) {
+              const firstMainContact = mainContacts[0];
+              mainContactId = firstMainContact.contact_id;
+              for (const otherMain of mainContacts.slice(1)) {
+                await supabase
+                  .from('lead_leadcontact')
+                  .update({ main: 'false' })
+                  .eq('newlead_id', newLeadId)
+                  .eq('contact_id', otherMain.contact_id);
+                otherMain.main = 'false';
+              }
+            }
+
+            const shouldTreatFirstAsMain = !mainContactFound && leadContacts.length === 1;
+            if (shouldTreatFirstAsMain && leadContacts.length > 0) {
+              const firstLeadContact = leadContacts[0];
+              await supabase
+                .from('lead_leadcontact')
+                .update({ main: 'true' })
+                .eq('newlead_id', newLeadId)
+                .eq('contact_id', firstLeadContact.contact_id);
+              firstLeadContact.main = 'true';
+              mainContactFound = true;
+              mainContactId = firstLeadContact.contact_id;
+            }
+
+            for (let index = 0; index < leadContacts.length; index++) {
+              const leadContact = leadContacts[index];
+              const raw = leadContact.leads_contact;
+              const contact = Array.isArray(raw) ? raw[0] : raw;
+              if (!contact) continue;
+
+              const isMainContact = (mainContactId !== null && contact.id === mainContactId) || (shouldTreatFirstAsMain && index === 0);
+              const countryId = contact.country_id || leadCountryId || null;
+
+              contactEntries.push({
+                id: contact.id,
+                name: contact.name || '---',
+                mobile: contact.mobile || '---',
+                phone: contact.phone || '---',
+                email: contact.email || '---',
+                country_id: countryId,
+                isMain: isMainContact,
+              });
             }
           }
 
@@ -1889,6 +1836,12 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
     fetchContacts();
   }, [client?.id]); // Only depend on client.id to prevent unnecessary re-fetches
+
+  // Persist contacts to sessionStorage so switching away and back restores state
+  useEffect(() => {
+    if (!client?.id || contacts.length === 0) return;
+    persistContactInfoCache(client.id, contacts);
+  }, [client?.id, contacts]);
 
   // Fetch current stage for legacy leads to ensure we have the latest value
   useEffect(() => {

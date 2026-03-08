@@ -95,6 +95,25 @@ import SendPriceOfferModal from './SendPriceOfferModal';
 import { addToHighlights, removeFromHighlights, isInHighlights } from '../lib/highlightsUtils';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
 
+// Performance debugging for Clients load: in DEV, logs timings to console. Set window.__CLIENTS_PERF__ = true for Performance tab marks.
+const CLIENT_LOAD_PERF = typeof window !== 'undefined' && import.meta.env.DEV;
+// Set window.__CLIENTS_DEBUG__ = true to show verbose console logs (handler options, sub-leads, etc.)
+const CLIENTS_DEBUG = typeof window !== 'undefined' && (window as any).__CLIENTS_DEBUG__ === true;
+function clientsPerfMark(name: string) {
+  if (!CLIENT_LOAD_PERF) return;
+  performance.mark(`clients-${name}`);
+}
+function clientsPerfMeasure(name: string, start: string, end: string) {
+  if (!CLIENT_LOAD_PERF) return;
+  try {
+    performance.measure(`clients-${name}`, `clients-${start}`, `clients-${end}`);
+  } catch (_) { /* ignore */ }
+}
+function clientsPerfLog(label: string, ms: number) {
+  if (!CLIENT_LOAD_PERF) return;
+  console.log(`[Clients perf] ${label}: ${ms.toFixed(1)}ms`);
+}
+
 // Template parsing and formatting utilities (from MeetingTab.tsx)
 const parseTemplateContent = (rawContent: string | null | undefined): string => {
   if (!rawContent) return '';
@@ -786,21 +805,45 @@ const Clients: React.FC<ClientsProps> = ({
       // Step 5: Collect all lead IDs and fetch in parallel
       const newLeadIds = [...new Set(relationships.map(r => r.newlead_id).filter(Boolean))] as string[];
       const legacyLeadIds = [...new Set(relationships.map(r => r.lead_id).filter(Boolean))] as number[];
-      const allSourceIds = new Set<number>();
 
-      // Fetch leads and collect source IDs in parallel
+      // Fetch leads with category and source joins (no separate batch fetch)
       const [newLeadsResult, legacyLeadsResult] = await Promise.all([
         newLeadIds.length > 0
           ? supabase
             .from('leads')
-            .select('id, lead_number, name, stage, category, master_id, status, topic, source_id')
+            .select(`
+              id,
+              lead_number,
+              name,
+              stage,
+              category,
+              category_id,
+              master_id,
+              status,
+              topic,
+              source_id,
+              misc_category!fk_leads_category_id ( id, name, parent_id, misc_maincategory!parent_id ( id, name ) ),
+              misc_leadsource!fk_leads_source_id ( id, name )
+            `)
             .in('id', newLeadIds)
             .is('master_id', null)
           : Promise.resolve({ data: [] }),
         legacyLeadIds.length > 0
           ? supabase
             .from('leads_lead')
-            .select('id, name, stage, category_id, master_id, status, topic, source_id')
+            .select(`
+              id,
+              name,
+              stage,
+              category_id,
+              category,
+              master_id,
+              status,
+              topic,
+              source_id,
+              misc_category!leads_lead_category_id_fkey ( id, name, parent_id, misc_maincategory!parent_id ( id, name ) ),
+              misc_leadsource!leads_lead_source_id_fkey ( id, name )
+            `)
             .in('id', legacyLeadIds)
             .is('master_id', null)
           : Promise.resolve({ data: [] })
@@ -809,26 +852,7 @@ const Clients: React.FC<ClientsProps> = ({
       const newLeads = newLeadsResult.data || [];
       const legacyLeads = legacyLeadsResult.data || [];
 
-      // Collect all source IDs for batch fetching
-      newLeads.forEach(lead => { if (lead.source_id) allSourceIds.add(lead.source_id); });
-      legacyLeads.forEach(lead => { if (lead.source_id) allSourceIds.add(lead.source_id); });
-
-      // Step 6: Batch fetch all source names at once
-      const sourceNamesMap = new Map<number, string>();
-      if (allSourceIds.size > 0) {
-        const { data: sources } = await supabase
-          .from('misc_leadsource')
-          .select('id, name')
-          .in('id', Array.from(allSourceIds));
-
-        (sources || []).forEach(source => {
-          if (source.id && source.name) {
-            sourceNamesMap.set(source.id, source.name);
-          }
-        });
-      }
-
-      // Step 7: Build duplicate matches efficiently
+      // Step 6: Build duplicate matches (category and source from joins on leads)
       const duplicateMatches: Array<{
         contactId: number;
         contactName: string;
@@ -912,9 +936,9 @@ const Clients: React.FC<ClientsProps> = ({
                     leadType: 'new',
                     matchingFields,
                     stage: (lead.stage !== null && lead.stage !== undefined) ? getStageName(String(lead.stage)) : null,
-                    category: lead.category || null,
+                    category: getCategoryDisplayFromJoin(lead) ?? lead.category ?? null,
                     topic: lead.topic || null,
-                    source: lead.source_id ? (sourceNamesMap.get(lead.source_id) || null) : null,
+                    source: getSourceDisplayFromJoin(lead) ?? null,
                     status: lead.status || null,
                   });
                 }
@@ -986,9 +1010,9 @@ const Clients: React.FC<ClientsProps> = ({
                     leadType: 'legacy',
                     matchingFields,
                     stage: (lead.stage !== null && lead.stage !== undefined) ? getStageName(String(lead.stage)) : null,
-                    category: lead.category_id ? getCategoryName(lead.category_id) : null,
+                    category: getCategoryDisplayFromJoin(lead) ?? (lead.category_id ? getCategoryName(lead.category_id) : null),
                     topic: lead.topic || null,
-                    source: lead.source_id ? (sourceNamesMap.get(lead.source_id) || null) : null,
+                    source: getSourceDisplayFromJoin(lead) ?? null,
                     status: lead.status || null,
                   });
                 }
@@ -1523,14 +1547,14 @@ const Clients: React.FC<ClientsProps> = ({
     return true;
   });
   const [backgroundLoading, setBackgroundLoading] = useState(false);
-  // Delay showing the overlay so fast loads (cache/redirect) never flash it
+  // Delay showing the overlay so fast loads (cache or quick fetch) never flash it
   const [showLoadingOverlay, setShowLoadingOverlay] = useState(false);
   useEffect(() => {
     if (!localLoading) {
       setShowLoadingOverlay(false);
       return;
     }
-    const t = window.setTimeout(() => setShowLoadingOverlay(true), 120);
+    const t = window.setTimeout(() => setShowLoadingOverlay(true), 500);
     return () => clearTimeout(t);
   }, [localLoading]);
 
@@ -1603,7 +1627,7 @@ const Clients: React.FC<ClientsProps> = ({
             const data = JSON.parse(cachedData);
             setAllEmployees(data.employees || []);
             setEmployeeAvailabilityData(data.availabilityMap || {});
-            console.log('✅ Employees data loaded from cache');
+            if (CLIENTS_DEBUG) console.log('✅ Employees data loaded from cache');
             return; // Skip fetch - use cache
           }
         }
@@ -1701,7 +1725,7 @@ const Clients: React.FC<ClientsProps> = ({
         };
         sessionStorage.setItem(cacheKey, JSON.stringify(dataToCache));
         sessionStorage.setItem(cacheTimestampKey, Date.now().toString());
-        console.log('✅ Employees data loaded and cached');
+        if (CLIENTS_DEBUG) console.log('✅ Employees data loaded and cached');
       } catch (error) {
         console.error('Clients: Error fetching employees:', error);
         setAllEmployees([]);
@@ -1819,9 +1843,8 @@ const Clients: React.FC<ClientsProps> = ({
       }
     };
 
-    // Call fetchEmployees on mount
+    // Call reference fetches on mount (categories come from loadBackgroundData to avoid duplicate fetch)
     fetchEmployees();
-    fetchCategories();
     fetchLanguages();
     fetchCountries();
     fetchCountryCodes();
@@ -2255,11 +2278,12 @@ const Clients: React.FC<ClientsProps> = ({
   const isSettingUpClientRef = useRef(false); // Flag to prevent useEffect from interfering during setup
   const isFetchingRef = useRef(false); // Flag to prevent duplicate fetches
   const fetchingRouteRef = useRef<string | null>(null); // Track which route is currently being fetched
+  const clientsLoadStartRef = useRef<number | null>(null); // For perf timing (see CLIENT_LOAD_PERF)
 
   useEffect(() => {
     // Skip if we're in the middle of setting up a client
     if (isSettingUpClientRef.current) {
-      console.log('🔍 useEffect: Skipping - client setup in progress');
+      if (CLIENTS_DEBUG) console.log('🔍 useEffect: Skipping - client setup in progress');
       return;
     }
 
@@ -3011,7 +3035,9 @@ const Clients: React.FC<ClientsProps> = ({
             expert_employee:tenants_employee!fk_leads_lead_expert_id(id, display_name),
             handler_employee:tenants_employee!fk_leads_lead_case_handler_id(id, display_name),
             stage_info:lead_stages!fk_leads_lead_stage(id, name, colour),
-            reason_record:misc_reason!fk_leads_lead_reason_id(name)
+            reason_record:misc_reason!fk_leads_lead_reason_id(name),
+            misc_category!leads_lead_category_id_fkey ( id, name, parent_id, misc_maincategory!parent_id ( id, name ) ),
+            misc_leadsource!leads_lead_source_id_fkey ( id, name )
           `)
           .eq('id', legacyId)
           .single();
@@ -3020,17 +3046,6 @@ const Clients: React.FC<ClientsProps> = ({
         error = legacyError;
 
         if (data) {
-          // Fetch source name separately since the foreign key relationship doesn't exist
-          let sourceName = '';
-          if (data.source_id) {
-            const { data: sourceData } = await supabase
-              .from('misc_leadsource')
-              .select('name')
-              .eq('id', data.source_id)
-              .maybeSingle();
-            sourceName = sourceData?.name || '';
-          }
-
           const legacyCurrencyRecord = Array.isArray(data.accounting_currencies)
             ? data.accounting_currencies[0]
             : data.accounting_currencies;
@@ -3083,14 +3098,14 @@ const Clients: React.FC<ClientsProps> = ({
             stage: legacyStageId ?? (typeof data.stage === 'number' ? data.stage : null),
             stage_name: stageNameFromJoin || undefined,
             stage_colour: stageColourFromJoin || undefined,
-            source: sourceName || String(data.source_id || ''), // Get source name from separate query
+            source: getSourceDisplayFromJoin(data) ?? String(data.source_id ?? ''),
             created_at: data.cdate,
             updated_at: data.udate,
             notes: data.notes || '',
             special_notes: data.special_notes || '',
             next_followup: data.next_followup || '',
             probability: data.probability !== null && data.probability !== undefined ? Number(data.probability) : 0,
-            category: getCategoryName(data.category_id, data.category),
+            category: getCategoryDisplayFromJoin(data) ?? getCategoryName(data.category_id, data.category),
             language: languageName, // Always use the language name (never use ID)
             balance: String(data.total || ''), // Map total to balance
             total: data.total || null, // Include total for balance badge logic
@@ -3181,6 +3196,15 @@ const Clients: React.FC<ClientsProps> = ({
               id,
               name,
               iso_code
+            ),
+            misc_category!fk_leads_category_id (
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id (
+                id,
+                name
+              )
             )
           `)
           .eq('id', selectedClient.id)
@@ -3197,7 +3221,7 @@ const Clients: React.FC<ClientsProps> = ({
             category: data.category,
             allCategoriesLoaded: allCategories.length > 0
           });
-          const categoryName = getCategoryName(data.category_id, data.category);
+          const categoryName = getCategoryDisplayFromJoin(data) ?? getCategoryName(data.category_id, data.category);
           const newLeadStageId = resolveStageId(data.stage);
 
           // Extract currency data from joined table (like legacy leads)
@@ -3326,9 +3350,11 @@ const Clients: React.FC<ClientsProps> = ({
     // Removed setTimeout delay - load immediately for faster page load
     // Execute immediately instead of deferring
     (() => {
-      // Prevent duplicate fetches - check this FIRST
-      // Check if we're already fetching the same route
       const currentRoute = location.pathname;
+      clientsLoadStartRef.current = performance.now();
+      clientsPerfMark('load-start');
+
+      // Prevent duplicate fetches - check this FIRST
       if (isFetchingRef.current && fetchingRouteRef.current === currentRoute) {
         return;
       }
@@ -3336,14 +3362,12 @@ const Clients: React.FC<ClientsProps> = ({
       // Check if route has changed - must be calculated BEFORE persisted data check
       const routeChanged = lastRouteRef.current !== currentRoute;
 
-      // Check persisted client data before fetching (same pattern as MasterLeadPage)
-      // Use persisted data when: route unchanged OR initial mount (e.g. refresh with lead in URL).
-      // On refresh, lastRouteRef is undefined so we still want to show cached client immediately.
-      // When navigating from another page (routeChanged and lastRouteRef set), we fetch fresh.
+      // Check persisted client data before fetching — use cache for current URL's lead whenever available
       const effectiveLeadNumber = lead_number || fullLeadNumber || requestedLeadNumber;
       const isInitialMount = lastRouteRef.current == null || lastRouteRef.current === '';
-      if (effectiveLeadNumber && (!routeChanged || isInitialMount) && !isFetchingRef.current && !isSettingUpClientRef.current) {
+      if (effectiveLeadNumber && !isFetchingRef.current && !isSettingUpClientRef.current) {
         try {
+          clientsPerfMark('cache-check');
           const persistedKey = `clientsPage_clientData_${effectiveLeadNumber}`;
           const persistedData = sessionStorage.getItem(persistedKey);
           if (persistedData) {
@@ -3403,11 +3427,20 @@ const Clients: React.FC<ClientsProps> = ({
               // Set loading to false and client data; refresh in background so data stays current
               setLocalLoading(false);
               setSelectedClient(normalizedPersistedData);
-              if (isInitialMount) {
-                const id = normalizedPersistedData?.id ?? (normalizedPersistedData as any)?.lead_number;
-                if (id != null) {
-                  refreshClientData(id).catch(() => {});
-                }
+              clientsPerfMark('cache-hit');
+              if (clientsLoadStartRef.current != null) {
+                const loadStart = clientsLoadStartRef.current;
+                clientsPerfLog('cache hit (total to client set)', performance.now() - loadStart);
+                clientsPerfMeasure('cache-hit-total', 'load-start', 'cache-hit');
+                requestAnimationFrame(() => {
+                  requestAnimationFrame(() => {
+                    clientsPerfLog('  → approx. time to paint', performance.now() - loadStart);
+                  });
+                });
+              }
+              const id = normalizedPersistedData?.id ?? (normalizedPersistedData as any)?.lead_number;
+              if (id != null) {
+                refreshClientData(id).catch(() => {});
               }
               return; // Skip fetch - use persisted data
             }
@@ -3544,16 +3577,21 @@ const Clients: React.FC<ClientsProps> = ({
           }
         }
 
-        setLocalLoading(true);
+        // Only show full loading overlay when fetching a specific lead; when resolving "latest" we avoid overlay
         if (effectiveLeadNumber) {
+          setLocalLoading(true);
+        }
+        if (effectiveLeadNumber) {
+          clientsPerfMark('queries-start');
           // Try to find the lead in both tables - run queries in parallel for faster loading
           let clientData = null;
 
           const isManualIdCandidate = /^\d+$/.test(effectiveLeadNumber);
           const isLegacyLeadId = /^\d+$/.test(effectiveLeadNumber);
 
+          type LeadQueryResult = { type: string; data: any; error: any };
           // Run all possible queries in parallel to find the lead faster
-          const queries = [];
+          const queries: Array<PromiseLike<LeadQueryResult>> = [];
 
           if (isManualIdCandidate) {
             queries.push(
@@ -3655,11 +3693,10 @@ const Clients: React.FC<ClientsProps> = ({
             }
           }
 
-          // Also try by lead_number for new leads
-          // If effectiveLeadNumber contains '/', it's a sublead - query by exact match
-          // Otherwise, query by lead_number
-          // For new leads: only fetch currency_id, join with accounting_currencies to get name
-          if (effectiveLeadNumber.includes('/')) {
+          // Also try by lead_number for new leads (when not a plain number: manual_id query already covers numeric ids)
+          // Skip lead_number query when isManualIdCandidate: we already query leads by manual_id; for numeric ids
+          // manual_id and lead_number often match, so we avoid a redundant request and duplicate 406s.
+          if (!isManualIdCandidate && effectiveLeadNumber.includes('/')) {
             queries.push(
               supabase
                 .from('leads')
@@ -3684,7 +3721,7 @@ const Clients: React.FC<ClientsProps> = ({
                 .single()
                 .then(({ data, error }) => ({ type: 'lead_number', data, error }))
             );
-          } else {
+          } else if (!isManualIdCandidate) {
             queries.push(
               supabase
                 .from('leads')
@@ -3704,15 +3741,38 @@ const Clients: React.FC<ClientsProps> = ({
                   misc_leadsource!fk_leads_source_id ( id, name ),
                   misc_language!fk_leads_language_id ( id, name ),
                   leads_lead_tags ( misc_leadtag ( name ) )
-                `)
+                  `)
                 .eq('lead_number', effectiveLeadNumber)
                 .single()
                 .then(({ data, error }) => ({ type: 'lead_number', data, error }))
             );
           }
 
-          // Wait for all queries to complete
-          const results = await Promise.allSettled(queries);
+          // First-match-wins: use the first query that returns valid data so we don't wait for the slowest
+          const hasValidData = (v: LeadQueryResult) => {
+            if (!v || v.error) return false;
+            if (v.type === 'manual') return !!(v.data && Array.isArray(v.data) && v.data.length > 0);
+            if (v.type === 'legacy' || v.type === 'lead_number') return !!v.data;
+            return false;
+          };
+          const allSettledPromise = Promise.allSettled(queries);
+          const firstValidPromise = new Promise<{ status: 'fulfilled'; value: LeadQueryResult }>((resolve) => {
+            let resolved = false;
+            queries.forEach((q) => {
+              q.then((value: LeadQueryResult) => {
+                if (!resolved && hasValidData(value)) {
+                  resolved = true;
+                  resolve({ status: 'fulfilled', value });
+                }
+              });
+            });
+          });
+          const outcome = await Promise.race([
+            firstValidPromise,
+            allSettledPromise.then((results) => ({ status: 'all' as const, results }))
+          ]);
+          clientsPerfMark('queries-done');
+          const results = outcome.status === 'all' ? outcome.results : [outcome];
 
           // Process results in priority order: manual_id > legacy > lead_number
           for (const result of results) {
@@ -3788,20 +3848,8 @@ const Clients: React.FC<ClientsProps> = ({
                 const legacyStageId = resolveStageId(legacyLead.stage);
                 const { name: stageNameFromJoin, colour: stageColourFromJoin } = getStageDisplayFromJoin(legacyLead.stage_info, legacyLead.stage);
 
-                // Extract language name from joined table (with fallback fetch if join missing)
-                let languageName = getLanguageDisplayFromJoin(legacyLead) ?? '';
-                if (!languageName && legacyLead.language_id) {
-                  try {
-                    const { data: langData } = await supabase
-                      .from('misc_language')
-                      .select('name')
-                      .eq('id', legacyLead.language_id)
-                      .maybeSingle();
-                    if (langData?.name) languageName = langData.name;
-                  } catch (langError) {
-                    console.error('Error fetching language name:', langError);
-                  }
-                }
+                // Use language from join only (no sequential fetch) — refreshClientData will backfill if needed
+                const languageName = getLanguageDisplayFromJoin(legacyLead) ?? '';
 
                 // Create transformed data by explicitly selecting only the fields we want
                 // This ensures unwanted fields (description, tracking fields, language_id) are never included
@@ -4052,20 +4100,55 @@ const Clients: React.FC<ClientsProps> = ({
             // Note: If calculatedIsSubLead is true but calculatedMasterLeadNumber is null,
             // the useEffect hooks will fetch it from the database
 
+            clientsPerfMark('process-done');
             setSelectedClient(normalizedClient);
 
-            // Persist client data to sessionStorage (same pattern as MasterLeadPage)
-            persistClientData(normalizedClient, effectiveLeadNumber);
-            // Also store timestamp for cache invalidation
-            const timestampKey = `clientsPage_clientData_timestamp_${effectiveLeadNumber}`;
-            sessionStorage.setItem(timestampKey, Date.now().toString());
-
             // Update lastRouteRef ONLY after client is successfully loaded
-            // This prevents race conditions where persisted data check runs with wrong state
             lastRouteRef.current = currentRoute;
 
-            // Clear loading overlay as soon as client data is ready (categories load in background)
+            // Clear loading overlay as soon as client data is ready so UI can paint immediately
             setLocalLoading(false);
+            clientsPerfMark('state-set');
+            if (CLIENT_LOAD_PERF && clientsLoadStartRef.current != null) {
+              const total = performance.now() - clientsLoadStartRef.current;
+              clientsPerfLog('fetch total (to state set)', total);
+              clientsPerfMeasure('fetch-queries-ms', 'queries-start', 'queries-done');
+              clientsPerfMeasure('fetch-process-ms', 'queries-done', 'process-done');
+              try {
+                const q = performance.getEntriesByName('clients-fetch-queries-ms', 'measure')[0];
+                const p = performance.getEntriesByName('clients-fetch-process-ms', 'measure')[0];
+                if (q) clientsPerfLog('  → network (first result)', q.duration);
+                if (p) clientsPerfLog('  → sync process result', p.duration);
+              } catch (_) { /* ignore */ }
+              const loadStart = clientsLoadStartRef.current;
+              requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                  if (loadStart != null) clientsPerfLog('  → approx. time to paint', performance.now() - loadStart);
+                });
+              });
+            }
+
+            // Defer sessionStorage and cache work so first paint is not blocked (JSON.stringify + setItem can be slow)
+            setTimeout(() => {
+              try {
+                persistClientData(normalizedClient, effectiveLeadNumber);
+                const timestampKey = `clientsPage_clientData_timestamp_${effectiveLeadNumber}`;
+                sessionStorage.setItem(timestampKey, Date.now().toString());
+              } catch (_) { /* ignore */ }
+              try {
+                const cacheKey = 'clientsPage_backgroundData';
+                const cachedData = sessionStorage.getItem(cacheKey);
+                if (cachedData) {
+                  const data = JSON.parse(cachedData);
+                  if (data.categories && data.categories.length > 0) {
+                    setMainCategories(data.categories);
+                    if (data.categoryObjects && Array.isArray(data.categoryObjects)) {
+                      setAllCategories(data.categoryObjects);
+                    }
+                  }
+                }
+              } catch (_) { /* ignore */ }
+            }, 0);
 
             // Deferred: fetch sub-lead suffix for legacy so lead_number updates from "masterId/?" to "masterId/2" without blocking first paint
             if (clientData.lead_type === 'legacy' && clientData.master_id) {
@@ -4090,23 +4173,6 @@ const Clients: React.FC<ClientsProps> = ({
                   }
                 } catch (_) { /* ignore */ }
               })();
-            }
-
-            // Optionally apply category cache once so names appear sooner (non-blocking)
-            try {
-              const cacheKey = 'clientsPage_backgroundData';
-              const cachedData = sessionStorage.getItem(cacheKey);
-              if (cachedData) {
-                const data = JSON.parse(cachedData);
-                if (data.categories && data.categories.length > 0) {
-                  setMainCategories(data.categories);
-                  if (data.categoryObjects && Array.isArray(data.categoryObjects)) {
-                    setAllCategories(data.categoryObjects);
-                  }
-                }
-              }
-            } catch (_) {
-              /* ignore */
             }
 
             // IMMEDIATELY check for subleads/master lead status (don't wait for useEffect)
@@ -4173,10 +4239,13 @@ const Clients: React.FC<ClientsProps> = ({
                 // Set the client
                 const normalizedLatestLead = normalizeClientStage(latestLead);
                 setSelectedClient(normalizedLatestLead);
-                // Update lastRouteRef after client is loaded
                 lastRouteRef.current = location.pathname;
-                persistClientData(normalizedLatestLead);
-                setLocalLoading(false); // Stop loading immediately
+                setLocalLoading(false); // Stop loading immediately so UI can paint
+                setTimeout(() => {
+                  try {
+                    persistClientData(normalizedLatestLead);
+                  } catch (_) { /* ignore */ }
+                }, 0);
 
                 // Clear flag after a brief delay
                 setTimeout(() => {
@@ -4236,8 +4305,12 @@ const Clients: React.FC<ClientsProps> = ({
             // Now set the client
             const normalizedLatestLead = normalizeClientStage(latestLead);
             setSelectedClient(normalizedLatestLead);
-            persistClientData(normalizedLatestLead);
-            setLocalLoading(false); // Stop loading immediately
+            setLocalLoading(false); // Stop loading immediately so UI can paint
+            setTimeout(() => {
+              try {
+                persistClientData(normalizedLatestLead);
+              } catch (_) { /* ignore */ }
+            }, 0);
 
             // Clear flag immediately and as backup
             isSettingUpClientRef.current = false;
@@ -4302,7 +4375,7 @@ const Clients: React.FC<ClientsProps> = ({
             setAllTags(data.tags || []);
             const tagNames = (data.tags || []).map((tag: any) => tag.name);
             setTagsList(tagNames);
-            console.log('✅ Background data loaded from cache');
+            if (CLIENTS_DEBUG) console.log('✅ Background data loaded from cache');
             return; // Skip fetch - use cache
           }
         }
@@ -4361,6 +4434,7 @@ const Clients: React.FC<ClientsProps> = ({
             }
           }).filter(Boolean);
           setMainCategories(formattedNames);
+          setAllCategories(categoriesResult.data);
         }
 
         if (!sourcesResult.error && sourcesResult.data) {
@@ -5076,27 +5150,31 @@ const Clients: React.FC<ClientsProps> = ({
   };
 
   const getStageBadge = (stage: string | number, anchor: StageDropdownAnchor = 'badge', fromJoin?: { name?: string; colour?: string } | null) => {
+    // Minimal computation for first paint so the badge appears with the rest of the header
     const stageName = (fromJoin?.name && String(fromJoin.name).trim()) ? String(fromJoin.name).trim() : getStageName(String(stage));
-    const currentStageId = resolveStageId(stage);
-    const currentStageIndex = sortedStages.findIndex(
-      stageOption => resolveStageId(stageOption.id) === currentStageId
-    );
-    const dropdownRef = getDropdownRef(anchor);
     const stageColourFromJoin = fromJoin?.colour && String(fromJoin.colour).trim() ? String(fromJoin.colour).trim() : null;
-    const stageColourFromList =
-      sortedStages.find(stageOption => resolveStageId(stageOption.id) === currentStageId)?.colour ?? null;
-    const fallbackStageColour = stageColourFromJoin || stageColourFromList || getStageColour(String(stage)) || '#ffffff';
-    // Force white text for "Scheduler assigned" stage
+    const fallbackStageColour = stageColourFromJoin || getStageColour(String(stage)) || '#ffffff';
     const badgeTextColour = (stageName === 'Scheduler assigned' || stageName === 'scheduler assigned' || stageName === 'scheduler_assigned')
       ? '#ffffff'
       : getContrastingTextColor(fallbackStageColour);
 
-    const previousStages =
-      currentStageIndex > 0 ? sortedStages.slice(0, currentStageIndex) : [];
-    const nextStages =
-      currentStageIndex >= 0
-        ? sortedStages.slice(currentStageIndex + 1)
-        : sortedStages;
+    const dropdownRef = getDropdownRef(anchor);
+    const isDropdownOpen = isSuperuser && stageDropdownAnchor === anchor;
+    // Defer sortedStages lookups until dropdown is open so badge paints immediately
+    const currentStageId = isDropdownOpen ? resolveStageId(stage) : null;
+    const currentStageIndex = currentStageId !== null
+      ? sortedStages.findIndex(stageOption => resolveStageId(stageOption.id) === currentStageId)
+      : -1;
+    const stageColourFromList = currentStageIndex >= 0
+      ? (sortedStages[currentStageIndex]?.colour ?? null)
+      : null;
+    const resolvedFallbackStageColour = stageColourFromList || fallbackStageColour;
+    const previousStages = isDropdownOpen
+      ? (currentStageIndex > 0 ? sortedStages.slice(0, currentStageIndex) : [])
+      : [];
+    const nextStages = isDropdownOpen
+      ? (currentStageIndex >= 0 ? sortedStages.slice(currentStageIndex + 1) : sortedStages)
+      : [];
 
     const renderStageOption = (
       stageOption: { id: number; name: string },
@@ -5154,7 +5232,7 @@ const Clients: React.FC<ClientsProps> = ({
       <div className="px-1">
         <span
           className="text-[11px] uppercase tracking-[0.32em] block mb-2 text-center"
-          style={{ color: fallbackStageColour }}
+          style={{ color: resolvedFallbackStageColour }}
         >
           Current
         </span>
@@ -5163,8 +5241,8 @@ const Clients: React.FC<ClientsProps> = ({
           disabled
           className="w-full text-left px-4 py-3 rounded-xl border shadow-lg flex items-center justify-between cursor-default"
           style={{
-            backgroundColor: fallbackStageColour,
-            borderColor: fallbackStageColour,
+            backgroundColor: resolvedFallbackStageColour,
+            borderColor: resolvedFallbackStageColour,
             color: badgeTextColour,
             boxShadow: '0 10px 24px rgba(17,24,39,0.12)'
           }}
@@ -7913,23 +7991,23 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Filter success stage handler options when search term changes
   useEffect(() => {
-    console.log('🔍 Filtering handler options, search term:', successStageHandlerSearch);
+    if (CLIENTS_DEBUG) console.log('🔍 Filtering handler options, search term:', successStageHandlerSearch);
     if (!successStageHandlerSearch || successStageHandlerSearch.trim() === '') {
-      console.log('📋 No search term, showing all options:', handlerOptions.length);
+      if (CLIENTS_DEBUG) console.log('📋 No search term, showing all options:', handlerOptions.length);
       setFilteredSuccessStageHandlerOptions(handlerOptions);
     } else {
       const searchLower = successStageHandlerSearch.toLowerCase();
       const filtered = handlerOptions.filter(option =>
         option.label.toLowerCase().includes(searchLower)
       );
-      console.log('📋 Filtered options:', filtered.length, 'matches');
+      if (CLIENTS_DEBUG) console.log('📋 Filtered options:', filtered.length, 'matches');
       setFilteredSuccessStageHandlerOptions(filtered);
     }
   }, [successStageHandlerSearch, handlerOptions]);
 
   // Track dropdown visibility changes
   useEffect(() => {
-    console.log('👁️ Success handler dropdown visibility changed:', showSuccessStageHandlerDropdown);
+    if (CLIENTS_DEBUG) console.log('👁️ Success handler dropdown visibility changed:', showSuccessStageHandlerDropdown);
   }, [showSuccessStageHandlerDropdown]);
 
   useEffect(() => {
@@ -8035,11 +8113,11 @@ const Clients: React.FC<ClientsProps> = ({
 
   useEffect(() => {
     if (!showSuccessStageHandlerDropdown) {
-      console.log('🔴 Success handler dropdown is closed, not adding click-outside listener');
+      if (CLIENTS_DEBUG) console.log('🔴 Success handler dropdown is closed, not adding click-outside listener');
       return;
     }
 
-    console.log('🟢 Success handler dropdown is open, adding click-outside listener');
+    if (CLIENTS_DEBUG) console.log('🟢 Success handler dropdown is open, adding click-outside listener');
 
     const handleClickOutside = (event: MouseEvent) => {
       const mobileContains = successStageHandlerContainerRef.current?.contains(event.target as Node);
@@ -10412,7 +10490,7 @@ const Clients: React.FC<ClientsProps> = ({
     }
 
     // If no persisted data, InteractionsTab will fetch when it mounts
-    console.log('🔄 Interactions will be loaded when InteractionsTab mounts for client:', selectedClient.id);
+    if (CLIENTS_DEBUG) console.log('🔄 Interactions will be loaded when InteractionsTab mounts for client:', selectedClient.id);
   }, [selectedClient?.id, interactionsCache?.leadId, handleInteractionsCacheUpdate]);
 
   // Handler to open proforma drawer
@@ -11185,12 +11263,12 @@ const Clients: React.FC<ClientsProps> = ({
   useEffect(() => {
     const fetchMasterSubLeadsCount = async () => {
       if (!isSubLead || !masterLeadNumber || !selectedClient) {
-        console.log('🔍 fetchMasterSubLeadsCount - Early return:', { isSubLead, masterLeadNumber, hasSelectedClient: !!selectedClient });
+        if (CLIENTS_DEBUG) console.log('🔍 fetchMasterSubLeadsCount - Early return:', { isSubLead, masterLeadNumber, hasSelectedClient: !!selectedClient });
         setMasterSubLeadsCount(0);
         return;
       }
 
-      console.log('🔍 fetchMasterSubLeadsCount - Starting fetch:', {
+      if (CLIENTS_DEBUG) console.log('🔍 fetchMasterSubLeadsCount - Starting fetch:', {
         isSubLead,
         masterLeadNumber,
         selectedClientId: selectedClient?.id,
@@ -11216,7 +11294,7 @@ const Clients: React.FC<ClientsProps> = ({
               console.error('Error counting legacy sub-leads:', error);
             } else {
               count = subLeadsCount || 0;
-              console.log('🔍 Master sub-leads count (legacy):', { masterId, count });
+              if (CLIENTS_DEBUG) console.log('🔍 Master sub-leads count (legacy):', { masterId, count });
             }
           }
         } else {
@@ -11236,7 +11314,7 @@ const Clients: React.FC<ClientsProps> = ({
                 console.error('Error counting new sub-leads:', error);
               } else {
                 count = subLeadsCount || 0;
-                console.log('🔍 Master sub-leads count (new, using master_id):', {
+                if (CLIENTS_DEBUG) console.log('🔍 Master sub-leads count (new, using master_id):', {
                   masterId,
                   masterLeadNumber,
                   count,
@@ -11294,7 +11372,7 @@ const Clients: React.FC<ClientsProps> = ({
                 console.error('Error counting new sub-leads (fallback):', error);
               } else {
                 count = subLeadsCount || 0;
-                console.log('🔍 Master sub-leads count (new, fallback):', {
+                if (CLIENTS_DEBUG) console.log('🔍 Master sub-leads count (new, fallback):', {
                   masterLeadId: masterLead.id,
                   masterLeadNumber,
                   count
@@ -11322,7 +11400,7 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Fetch sub-leads when client changes
   useEffect(() => {
-    console.log('🔍 Clients.tsx - Checking for sub-leads:', {
+    if (CLIENTS_DEBUG) console.log('🔍 Clients.tsx - Checking for sub-leads:', {
       selectedClientId: selectedClient?.id,
       masterId: selectedClient?.master_id,
       leadNumber: selectedClient?.lead_number
@@ -11330,7 +11408,7 @@ const Clients: React.FC<ClientsProps> = ({
 
     // Don't fetch subleads if current client is a sublead (has master_id)
     if (selectedClient?.master_id && String(selectedClient.master_id).trim() !== '') {
-      console.log('🔍 Clients.tsx - Client is a sub-lead, not fetching sub-leads');
+      if (CLIENTS_DEBUG) console.log('🔍 Clients.tsx - Client is a sub-lead, not fetching sub-leads');
       setSubLeads([]);
       setIsMasterLead(false);
       return;
@@ -11685,6 +11763,21 @@ const Clients: React.FC<ClientsProps> = ({
       </div>
     );
   }
+
+  // Early return when loading and no client yet — single central loading spinner only
+  if (localLoading && !selectedClient) {
+    const hasLeadInUrl = Boolean(lead_number || fullLeadNumber || requestedLeadNumber);
+    const loadingMessage = hasLeadInUrl ? 'Loading client…' : 'Opening latest client…';
+    return (
+      <div className="min-h-screen bg-base-100 flex items-center justify-center">
+        <div className="text-center">
+          <div className="loading loading-spinner loading-lg text-primary"></div>
+          <p className="mt-4 text-base-content/70">{loadingMessage}</p>
+        </div>
+      </div>
+    );
+  }
+
   const interactionsCacheForLead =
     selectedClient?.id && interactionsCache?.leadId === selectedClient.id
       ? interactionsCache
@@ -13894,34 +13987,8 @@ const Clients: React.FC<ClientsProps> = ({
     );
   }
 
-  // When we have a lead in URL we show inline loading instead of full overlay so UI feels quick (e.g. from sidebar or slow network)
-  const hasLeadInUrl = Boolean(lead_number || fullLeadNumber || requestedLeadNumber);
-  // Full-screen overlay only when loading and no lead in URL (e.g. fetching latest lead on /clients)
-  const showFullOverlay = localLoading && showLoadingOverlay && !hasLeadInUrl;
-
-  // Render full layout structure immediately, show loading overlay instead of blocking render
-  // This prevents sidebar/header from loading first, then content appearing later
   return (
     <div className="min-h-screen bg-base-100">
-      {/* Full overlay only when we have no lead in URL (fetching latest); with lead we show inline loading below */}
-      {showFullOverlay && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 backdrop-blur-sm">
-          <div className="text-center">
-            <div className="loading loading-spinner loading-lg text-primary"></div>
-            <p className="mt-4 text-gray-600">Loading client data...</p>
-          </div>
-        </div>
-      )}
-
-      {/* Inline loading when we have lead in URL but data not ready yet - keeps UI responsive on slow networks */}
-      {hasLeadInUrl && localLoading && !selectedClient && (
-        <div className="flex flex-col items-center justify-center min-h-[50vh] gap-3 p-6">
-          <span className="loading loading-spinner loading-lg text-primary"></span>
-          <p className="text-base-content/70 text-lg font-medium">Loading client...</p>
-        </div>
-      )}
-
-      {/* Don't render content if selectedClient is null (prevents errors) */}
       {!selectedClient && !localLoading && (
         <div className="p-6">
           <h1 className="text-2xl font-bold mb-4">Clients</h1>
@@ -16060,12 +16127,6 @@ const Clients: React.FC<ClientsProps> = ({
             loginRequest={loginRequest}
             onOfferSent={onClientUpdate}
           />
-          {/* Loading overlay - same rule: only when no lead in URL so UI stays quick */}
-          {localLoading && showLoadingOverlay && !hasLeadInUrl && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/60">
-              <span className="loading loading-spinner loading-lg text-primary"></span>
-            </div>
-          )}
           {showSubLeadDrawer && (
             <div className="fixed inset-0 z-50 flex">
               <div

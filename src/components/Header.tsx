@@ -7805,6 +7805,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   <StarIcon className="w-5 h-5 text-base-content/70" style={{ color: '#3E28CD' }} />
                   Highlights
                 </button>
+                {typeof onOpenAIChat === 'function' && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full hidden md:flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
+                    onClick={() => {
+                      setShowProfileDropdown(false);
+                      onOpenAIChat();
+                    }}
+                  >
+                    <FaRobot className="w-5 h-5 text-base-content/70" />
+                    RMQ AI
+                  </button>
+                )}
                 <button
                   type="button"
                   role="menuitem"

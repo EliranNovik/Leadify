@@ -61,6 +61,12 @@ import { generateProformaName } from '../../lib/proforma';
 import { getClientContracts, getContractDetails } from '../../lib/contractAutomation';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
 
+const FINANCES_TAB_CACHE_KEY_PREFIX = 'financesTab_cache_';
+
+function getFinancesTabCacheKey(clientId: string | number): string {
+  return `${FINANCES_TAB_CACHE_KEY_PREFIX}${String(clientId)}`;
+}
+
 interface PaymentPlan {
   id: string | number;
   duePercent: string;
@@ -88,6 +94,40 @@ interface FinancePlan {
   total: number;
   vat: number;
   payments: PaymentPlan[];
+}
+
+type FinancesTabCachedState = {
+  financePlan: FinancePlan | null;
+  contacts: any[];
+  contracts: any[];
+  availableCurrencies: Array<{ id: number; name: string; iso_code: string }>;
+  viewMode: 'table' | 'boxes';
+  collapsedContacts: { [key: string]: boolean };
+  paidMap: { [id: string]: boolean };
+};
+
+function restoreFinancesTabCache(clientId: string | number): FinancesTabCachedState | null {
+  try {
+    const key = getFinancesTabCacheKey(clientId);
+    const raw = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(key) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as FinancesTabCachedState;
+    if (parsed && Array.isArray(parsed.contacts) && Array.isArray(parsed.contracts) && Array.isArray(parsed.availableCurrencies)) {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function persistFinancesTabCache(clientId: string | number, state: FinancesTabCachedState): void {
+  try {
+    const key = getFinancesTabCacheKey(clientId);
+    sessionStorage.setItem(key, JSON.stringify(state));
+  } catch {
+    // ignore
+  }
 }
 
 interface FinancesTabProps extends ClientTabProps {
@@ -1298,9 +1338,36 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   // Use a ref to track if we're currently fetching to prevent infinite loops
   const isFetchingRef = React.useRef(false);
   const contactsLoadedRef = React.useRef<string | null>(null);
+  const cacheRestoredRef = React.useRef(false);
+  const restoredContactsRef = React.useRef<any[] | null>(null);
 
   // Fetch payment plans when component mounts or client changes
   useEffect(() => {
+    cacheRestoredRef.current = false;
+    restoredContactsRef.current = null;
+    if (!client?.id) {
+      setIsLoadingFinancePlan(false);
+      return;
+    }
+
+    const clientIdKey = client.id.toString();
+    const cached = restoreFinancesTabCache(clientIdKey);
+    if (cached) {
+      setFinancePlan(cached.financePlan);
+      setContacts(cached.contacts);
+      setContracts(cached.contracts);
+      setAvailableCurrencies(cached.availableCurrencies);
+      setViewMode(cached.viewMode);
+      setCollapsedContacts(cached.collapsedContacts);
+      setPaidMap(cached.paidMap || {});
+      setIsLoadingFinancePlan(false);
+      cacheRestoredRef.current = true;
+      if (cached.contacts.length > 0) {
+        contactsLoadedRef.current = clientIdKey;
+        restoredContactsRef.current = cached.contacts;
+      }
+    }
+
     const fetchPaymentPlans = async () => {
       if (!client?.id) {
         setIsLoadingFinancePlan(false);
@@ -1312,18 +1379,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         return;
       }
 
-      // Check if contacts are already loaded for this client
-      const clientIdKey = client.id.toString();
-      const contactsAlreadyLoaded = contactsLoadedRef.current === clientIdKey && contacts.length > 0;
+      // Use restored contacts from cache if available to avoid double fetch
+      const contactsAlreadyLoaded = contactsLoadedRef.current === clientIdKey && (contacts.length > 0 || (restoredContactsRef.current && restoredContactsRef.current.length > 0));
 
       isFetchingRef.current = true;
-      setIsLoadingFinancePlan(true);
+      if (!cacheRestoredRef.current) setIsLoadingFinancePlan(true);
 
       // CRITICAL: Ensure contacts are loaded BEFORE fetching payment plans
-      // This prevents payment plans from being incorrectly labeled with main client name
-      // Get contacts directly from fetchContacts (returns immediately, doesn't wait for state update)
       let currentContacts = contacts;
-      if (!contactsAlreadyLoaded) {
+      if (restoredContactsRef.current && restoredContactsRef.current.length > 0) {
+        currentContacts = restoredContactsRef.current;
+        restoredContactsRef.current = null;
+      } else if (!contactsAlreadyLoaded) {
         currentContacts = await fetchContacts();
         contactsLoadedRef.current = clientIdKey;
       }
@@ -1822,6 +1889,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         setFinancePlan(null);
         setPaidMap({});
       } finally {
+        cacheRestoredRef.current = false;
         setIsLoadingFinancePlan(false);
         isFetchingRef.current = false;
       }
@@ -1829,6 +1897,20 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     fetchPaymentPlans();
   }, [client?.id]);
+
+  // Persist state so switching tabs doesn't reload; skip while still loading to avoid overwriting with empty
+  useEffect(() => {
+    if (!client?.id || isLoadingFinancePlan) return;
+    persistFinancesTabCache(client.id, {
+      financePlan,
+      contacts,
+      contracts,
+      availableCurrencies,
+      viewMode,
+      collapsedContacts,
+      paidMap,
+    });
+  }, [client?.id, isLoadingFinancePlan, financePlan, contacts, contracts, availableCurrencies, viewMode, collapsedContacts, paidMap]);
 
   const fetchContracts = async () => {
     if (!client?.id || typeof client.id !== 'string' || client.id.length === 0) return;

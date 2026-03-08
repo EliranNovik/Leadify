@@ -585,7 +585,7 @@ function mapNewLeadRow(row: any): CombinedLead {
   return {
     id: String(row.id),
     lead_number: row.lead_number || "",
-    manual_id: row.lead_number || null,
+    manual_id: row.manual_id ?? row.lead_number ?? null,
     name: row.name || "",
     email: row.email || "",
     phone: row.phone || "",
@@ -1096,7 +1096,7 @@ export async function fetchLatestLead(): Promise<CombinedLead | null> {
     const [newResult, legacyResult] = await Promise.all([
       supabase
         .from("leads")
-        .select("id, lead_number, name, email, phone, mobile, topic, stage, created_at, status")
+        .select("id, lead_number, manual_id, name, email, phone, mobile, topic, stage, created_at, status")
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle(),
