@@ -4,7 +4,7 @@ import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { convertToNIS } from '../lib/currencyConversion';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
-import { EnvelopeIcon, PhoneIcon, ChatBubbleLeftRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, PencilIcon } from '@heroicons/react/24/outline';
+import { EnvelopeIcon, PhoneIcon, ChatBubbleLeftRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, PencilIcon, MagnifyingGlassIcon, ChartBarIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import * as Slider from '@radix-ui/react-slider';
 
@@ -67,6 +67,7 @@ const CloserSuperPipelinePage = () => {
   const [showLanguageDropdown, setShowLanguageDropdown] = useState<boolean>(false);
   const [showStageDropdown, setShowStageDropdown] = useState<boolean>(false);
   const [showTagsDropdown, setShowTagsDropdown] = useState<boolean>(false);
+  const [probabilityExpanded, setProbabilityExpanded] = useState<boolean>(false);
 
   // Helper function to toggle stage selection
   const toggleStageSelection = (stageId: string) => {
@@ -774,18 +775,28 @@ const CloserSuperPipelinePage = () => {
     // Keep results, totals, and table visibility - don't clear them
   };
 
-  const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string | number) => {
-    // For display purposes, we'll show a simple category name
-    // This function is used for displaying category names in the results
-    if (!categoryId || categoryId === '---' || categoryId === '--') {
-      return '---';
-    }
-
-    // Try to find the main category by looking up subcategories
-    // For now, return a simple display - this can be enhanced if needed
-    return fallbackCategory ? String(fallbackCategory) : '---';
+  // Format stage name from joined lead_stages (same pattern as CalendarPage / SchedulerToolPage)
+  const getStageNameFromJoin = (lead: any): string | null => {
+    const stage = lead?.lead_stages;
+    if (!stage) return null;
+    const record = Array.isArray(stage) ? stage[0] : stage;
+    return record?.name && typeof record.name === 'string' ? record.name.trim() || null : null;
   };
-
+  // Format category from joined misc_category + misc_maincategory
+  const getCategoryDisplayFromJoin = (lead: any): string | null => {
+    const cat = lead?.misc_category;
+    if (!cat || !cat.name) return null;
+    const main = Array.isArray(cat.misc_maincategory) ? cat.misc_maincategory[0] : cat.misc_maincategory;
+    return main?.name ? `${cat.name} (${main.name})` : (cat.name || null);
+  };
+  // Format language from joined misc_language
+  const getLanguageDisplayFromJoin = (lead: any): string | null => {
+    const lang = lead?.misc_language;
+    if (!lang) return null;
+    const record = Array.isArray(lang) ? lang[0] : lang;
+    return record?.name && typeof record.name === 'string' ? record.name.trim() || null : null;
+  };
+  // Fallback when join data is missing
   const getStageName = (stageId: string | number | null | undefined) => {
     if (!stageId) return '---';
     // Stage names mapping - you may need to fetch from lead_stages table
@@ -1144,12 +1155,13 @@ const CloserSuperPipelinePage = () => {
         maxProbability: filters.maxProbability
       });
 
-      // Fetch new leads - we'll filter by meeting date later
+      // Fetch new leads with joins for stage and category (same pattern as SchedulerToolPage / CalendarPage)
       let newLeadsQuery = supabase
         .from('leads')
         .select(`
           id,
           lead_number,
+          manual_id,
           name,
           created_at,
           latest_interaction,
@@ -1173,6 +1185,25 @@ const CloserSuperPipelinePage = () => {
             id,
             name,
             iso_code
+          ),
+          lead_stages!fk_leads_stage (
+            id,
+            name,
+            colour
+          ),
+          misc_category!fk_leads_category_id (
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id (
+              id,
+              name
+            )
+          ),
+          leads_lead_tags (
+            misc_leadtag (
+              name
+            )
           ),
           expert_notes,
           management_notes,
@@ -1265,171 +1296,6 @@ const CloserSuperPipelinePage = () => {
         }
       }
 
-      // First, directly query lead L210471 to see its actual values
-      const targetNewLeadNumber = 'L210471';
-      const { data: directNewLeadData, error: directNewLeadError } = await supabase
-        .from('leads')
-        .select('id, lead_number, name, probability, closer, stage, unactivated_at, category_id, language, created_at')
-        .eq('lead_number', targetNewLeadNumber)
-        .single();
-
-      const newLeadFilterChecks = directNewLeadData ? {
-        hasProbability: {
-          passes: directNewLeadData.probability !== null && Number(directNewLeadData.probability) >= filters.minProbability && Number(directNewLeadData.probability) <= filters.maxProbability,
-          required: `Not null and between ${filters.minProbability}-${filters.maxProbability}`,
-          actual: directNewLeadData.probability,
-          type: typeof directNewLeadData.probability
-        },
-        hasCloser: {
-          passes: directNewLeadData.closer !== null,
-          required: 'Not null',
-          actual: directNewLeadData.closer
-        },
-        correctStage: {
-          passes: selectedStageIdsNumeric.length === 0 || selectedStageIdsNumeric.includes(Number(directNewLeadData.stage)),
-          required: selectedStageIds.length > 0 ? selectedStageIds.join(' or ') : 'Any (no filter)',
-          actual: directNewLeadData.stage
-        },
-        isActive: {
-          passes: directNewLeadData.unactivated_at === null,
-          required: 'null (unactivated_at)',
-          actual: directNewLeadData.unactivated_at
-        },
-        categoryMatch: {
-          passes: !filters.categories || filters.categories.length === 0 || (() => {
-            // Check if category_id matches any selected main category's subcategories
-            // This is a simplified check - actual filtering happens in query
-            return true; // Will be filtered by query
-          })(),
-          required: filters.categories?.length > 0 ? filters.categories.join(', ') : 'Any',
-          actual: directNewLeadData.category_id
-        },
-        languageMatch: {
-          passes: !filters.languages || filters.languages.length === 0 || filters.languages.includes(directNewLeadData.language),
-          required: filters.languages?.length > 0 ? filters.languages.join(', ') : 'Any',
-          actual: directNewLeadData.language
-        },
-        employeeMatch: {
-          passes: !filters.employee || (() => {
-            const employee = employees.find(emp => emp.id.toString() === filters.employee);
-            if (!employee) return false;
-            
-            // Helper function to check if a value matches the employee (by ID or name)
-            const matchesEmployee = (value: any): boolean => {
-              if (!value) return false;
-              
-              const employeeIdNum = Number(filters.employee);
-              const employeeName = (employee.name || '').trim().toLowerCase();
-              
-              // Try to match by ID first (works for both string "84" and number 84)
-              const valueAsNumber = Number(value);
-              if (!isNaN(valueAsNumber) && isFinite(valueAsNumber)) {
-                if (valueAsNumber === employeeIdNum) {
-                  return true;
-                }
-              }
-              
-              // Also try to match by name (works for string "Einat")
-              if (typeof value === 'string') {
-                const trimmed = value.trim().toLowerCase();
-                if (trimmed === employeeName) {
-                  return true;
-                }
-              }
-              
-              return false;
-            };
-            
-            // Check both closer and scheduler fields
-            return matchesEmployee(directNewLeadData.closer) || matchesEmployee(directNewLeadData.scheduler);
-          })(),
-          required: filters.employee ? `closer or scheduler = "${filters.employee}" (ID) or "${employees.find(emp => emp.id.toString() === filters.employee)?.name}" (name)` : 'Any',
-          actual: { closer: directNewLeadData.closer, scheduler: directNewLeadData.scheduler },
-          expectedEmployeeId: filters.employee,
-          expectedEmployeeName: filters.employee ? employees.find(emp => emp.id.toString() === filters.employee)?.name : null
-        }
-      } : {};
-
-      const newLeadFailingFilters = Object.entries(newLeadFilterChecks)
-        .filter(([, check]: any) => !check.passes)
-        .map(([name]) => name);
-
-      const newLeadPassesAllFilters = newLeadFailingFilters.length === 0;
-
-      console.log('🔍 DEBUG: Direct query for lead L210471 - FULL DETAILS', {
-        found: !!directNewLeadData,
-        error: directNewLeadError,
-        leadData: directNewLeadData,
-        filterChecks: newLeadFilterChecks,
-        passesAllFilters: newLeadPassesAllFilters,
-        failingFilters: newLeadFailingFilters,
-        failingFilterDetails: newLeadFailingFilters.map((filterName: string) => ({
-          filterName,
-          check: newLeadFilterChecks[filterName as keyof typeof newLeadFilterChecks]
-        }))
-      });
-
-      // Log each filter check individually for clarity
-      if (directNewLeadData) {
-        console.log('🔍 DEBUG: Lead L210471 - Individual Filter Checks:', {
-          hasProbability: {
-            passes: newLeadFilterChecks.hasProbability?.passes,
-            required: newLeadFilterChecks.hasProbability?.required,
-            actual: newLeadFilterChecks.hasProbability?.actual
-          },
-          hasCloser: {
-            passes: newLeadFilterChecks.hasCloser?.passes,
-            required: newLeadFilterChecks.hasCloser?.required,
-            actual: newLeadFilterChecks.hasCloser?.actual
-          },
-          correctStage: {
-            passes: newLeadFilterChecks.correctStage?.passes,
-            required: newLeadFilterChecks.correctStage?.required,
-            actual: newLeadFilterChecks.correctStage?.actual,
-            allowedStages: selectedStageIds
-          },
-          isActive: {
-            passes: newLeadFilterChecks.isActive?.passes,
-            required: newLeadFilterChecks.isActive?.required,
-            actual: newLeadFilterChecks.isActive?.actual
-          },
-          categoryMatch: {
-            passes: newLeadFilterChecks.categoryMatch?.passes,
-            required: newLeadFilterChecks.categoryMatch?.required,
-            actual: newLeadFilterChecks.categoryMatch?.actual,
-            filterCategories: filters.categories?.length > 0 ? filters.categories.join(', ') : 'Any'
-          },
-          languageMatch: {
-            passes: newLeadFilterChecks.languageMatch?.passes,
-            required: newLeadFilterChecks.languageMatch?.required,
-            actual: newLeadFilterChecks.languageMatch?.actual,
-            filterLanguages: filters.languages?.length > 0 ? filters.languages.join(', ') : 'Any'
-          },
-          employeeMatch: {
-            passes: newLeadFilterChecks.employeeMatch?.passes,
-            required: newLeadFilterChecks.employeeMatch?.required,
-            actual: newLeadFilterChecks.employeeMatch?.actual,
-            filterEmployee: filters.employee,
-            employeeName: filters.employee ? employees.find(emp => emp.id.toString() === filters.employee)?.name : null
-          }
-        });
-
-        // Explicitly log which filters are failing
-        if (newLeadFailingFilters.length > 0) {
-          console.error('❌ DEBUG: Lead L210471 FAILING FILTERS:', newLeadFailingFilters);
-          newLeadFailingFilters.forEach((filterName: string) => {
-            const check = newLeadFilterChecks[filterName as keyof typeof newLeadFilterChecks];
-            console.error(`❌ Filter "${filterName}" FAILED:`, {
-              required: check?.required,
-              actual: check?.actual,
-              passes: check?.passes
-            });
-          });
-        } else {
-          console.log('✅ DEBUG: Lead L210471 passes all filter checks');
-        }
-      }
-
       console.log('🔍 DEBUG: Executing new leads query...', {
         activeFilters: {
           stages: selectedStageIds,
@@ -1497,14 +1363,6 @@ const CloserSuperPipelinePage = () => {
       }
       
       const { data: newLeads, error: newLeadsError } = await newLeadsQuery.order('created_at', { ascending: false });
-
-      // Check if lead L210471 is in the query results
-      const targetNewLeadInQuery = newLeads?.find((l: any) => l.lead_number === targetNewLeadNumber);
-      console.log('🔍 DEBUG: Checking for lead L210471 in query results', {
-        found: !!targetNewLeadInQuery,
-        leadData: targetNewLeadInQuery,
-        totalLeadsInQuery: newLeads?.length || 0
-      });
 
       console.log('🔍 DEBUG: New leads query result', {
         newLeadsCount: newLeads?.length || 0,
@@ -1598,36 +1456,12 @@ const CloserSuperPipelinePage = () => {
       // Filter new leads by meeting date if date filters are applied
       let filteredNewLeads = newLeads || [];
       if (applyDateFilters && (filters.fromDate || filters.toDate)) {
-        // Debug check for L210471 before date filter
-        const targetNewLeadBeforeDateFilter = filteredNewLeads.find((l: any) => l.lead_number === targetNewLeadNumber);
-        if (targetNewLeadBeforeDateFilter) {
-          const meetingDate = meetingDatesMap[targetNewLeadBeforeDateFilter.id];
-          console.log('🔍 DEBUG: Lead L210471 before date filter', {
-            found: true,
-            meetingDate: meetingDate || 'NO MEETING DATE',
-            fromDate: filters.fromDate,
-            toDate: filters.toDate,
-            willPassDateFilter: meetingDate &&
-              (!filters.fromDate || meetingDate >= filters.fromDate) &&
-              (!filters.toDate || meetingDate <= filters.toDate)
-          });
-        }
-
         filteredNewLeads = filteredNewLeads.filter((lead: any) => {
           const meetingDate = meetingDatesMap[lead.id];
           if (!meetingDate) return false; // Exclude leads without meeting dates when filtering
           if (filters.fromDate && meetingDate < filters.fromDate) return false;
           if (filters.toDate && meetingDate > filters.toDate) return false;
           return true;
-        });
-
-        // Debug check for L210471 after date filter
-        const targetNewLeadAfterDateFilter = filteredNewLeads.find((l: any) => l.lead_number === targetNewLeadNumber);
-        console.log('🔍 DEBUG: Lead L210471 after date filter', {
-          found: !!targetNewLeadAfterDateFilter,
-          passedDateFilter: !!targetNewLeadAfterDateFilter,
-          totalBeforeFilter: (newLeads || []).length,
-          totalAfterFilter: filteredNewLeads.length
         });
       }
 
@@ -1782,15 +1616,6 @@ const CloserSuperPipelinePage = () => {
             else balanceCurrency = '₪'; // Unknown format, default to NIS
           }
 
-          // Debug check for L210471
-          if (lead.lead_number === targetNewLeadNumber) {
-            console.log('🔍 DEBUG: Processing lead L210471 in new leads', {
-              lead,
-              meetingDate: meetingDatesMap[lead.id] || null,
-              followUpDate: followUpDatesMap[lead.id] || null
-            });
-          }
-
           // Determine if this is a master lead or sublead
           // Sublead: has master_id set OR lead_number contains "/" (pattern like "L209667/1")
           const hasMasterId = lead.master_id !== null && lead.master_id !== undefined && String(lead.master_id).trim() !== '';
@@ -1800,22 +1625,27 @@ const CloserSuperPipelinePage = () => {
           // (Note: To fully confirm it's a master lead, we'd need to check if it has subleads, but this is a good indicator)
           const isMasterLead = !isSubLead;
 
+          const newTagsFromJoin = (lead.leads_lead_tags || [])
+            .map((t: any) => (t.misc_leadtag?.name ?? (Array.isArray(t.misc_leadtag) ? t.misc_leadtag[0]?.name : null)))
+            .filter(Boolean)
+            .join(', ');
           allLeads.push({
             ...lead,
             lead_type: 'new',
-            stage: getStageName(lead.stage), // Convert stage ID to name
+            stage: getStageNameFromJoin(lead) || getStageName(lead.stage),
+            category: getCategoryDisplayFromJoin(lead) || '---',
             expert_opinion: expertOpinionText,
             manager_notes: managerNotesText,
-            closer: lead.closer || '---', // Show --- if NULL
-            scheduler: lead.scheduler || '---', // Show --- if NULL
+            closer: lead.closer || '---',
+            scheduler: lead.scheduler || '---',
             meeting_date: meetingDatesMap[lead.id] || null,
             follow_up_date: followUpDatesMap[lead.id] || null,
-            follow_up_notes: null, // New leads don't have follow-up notes in leads table
-            latest_interaction: lead.latest_interaction || null, // Add latest_interaction
+            follow_up_notes: null,
+            latest_interaction: lead.latest_interaction || null,
             balance_currency: balanceCurrency,
             currency_id: (lead as any).currency_id,
             total: lead.balance || '',
-            tags: newTagsMap.get(lead.id)?.join(', ') || '', // Add tags
+            tags: newTagsFromJoin || newTagsMap.get(lead.id)?.join(', ') || '',
             master_id: lead.master_id || null,
             is_master_lead: isMasterLead,
             is_sub_lead: isSubLead,
@@ -1866,6 +1696,45 @@ const CloserSuperPipelinePage = () => {
             id,
             name,
             iso_code
+          ),
+          lead_stages!fk_leads_lead_stage (
+            id,
+            name,
+            colour
+          ),
+          misc_category!leads_lead_category_id_fkey (
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id (
+              id,
+              name
+            )
+          ),
+          misc_language!leads_lead_language_id_fkey (
+            id,
+            name
+          ),
+          closer_emp:tenants_employee!fk_leads_lead_closer_id (
+            id,
+            display_name
+          ),
+          scheduler_emp:tenants_employee!fk_leads_lead_meeting_scheduler_id (
+            id,
+            display_name
+          ),
+          expert_emp:tenants_employee!fk_leads_lead_expert_id (
+            id,
+            display_name
+          ),
+          manager_emp:tenants_employee!fk_leads_lead_meeting_manager_id (
+            id,
+            display_name
+          ),
+          leads_lead_tags (
+            misc_leadtag (
+              name
+            )
           ),
           expert_notes,
           management_notes,
@@ -1952,97 +1821,7 @@ const CloserSuperPipelinePage = () => {
         }
       }
 
-      // Debug: Log all active filters for lead 76792 debugging
-      const targetLeadId = 76792;
-      console.log('🔍 DEBUG: Active filters for legacy leads query', {
-        minProbability: filters.minProbability,
-        maxProbability: filters.maxProbability,
-        categories: filters.categories?.length > 0 ? filters.categories.join(', ') : 'any',
-        employee: filters.employee,
-        languages: filters.languages?.length > 0 ? filters.languages.join(', ') : 'any',
-        fromDate: filters.fromDate,
-        toDate: filters.toDate,
-        applyDateFilters,
-        selectedLegacyStageIds,
-        stageFilter: `stages ${selectedLegacyStageIds.join(' or ')}`,
-        statusFilter: 'status = 0',
-        closerFilter: 'closer_id IS NOT NULL',
-        probabilityFilter: 'probability IS NOT NULL AND probability != ""'
-      });
-
       console.log('🔍 DEBUG: Executing legacy leads query...');
-
-      // First, directly query lead 76792 to see its actual values
-      const { data: directLeadData, error: directLeadError } = await supabase
-        .from('leads_lead')
-        .select('id, name, probability, closer_id, stage, status, category_id, language_id, meeting_date, cdate')
-        .eq('id', targetLeadId)
-        .single();
-
-      if (directLeadData) {
-        const hasProbability = directLeadData.probability !== null && directLeadData.probability !== '';
-        const hasCloser = directLeadData.closer_id !== null;
-        const correctStatus = directLeadData.status === 0;
-        const correctStage = selectedLegacyStageIds.length === 0 || selectedLegacyStageIds.includes(Number(directLeadData.stage));
-        const correctEmployee = !filters.employee || filters.employee === '--' || (filters.employee !== '--' && Number(filters.employee) === directLeadData.closer_id);
-        const correctDateRange = !applyDateFilters || (!filters.fromDate || filters.fromDate.trim() === '' || (directLeadData.meeting_date && directLeadData.meeting_date >= filters.fromDate)) &&
-          (!filters.toDate || filters.toDate.trim() === '' || (directLeadData.meeting_date && directLeadData.meeting_date <= filters.toDate));
-        const passesAll = hasProbability && hasCloser && correctStatus && correctStage && correctEmployee && correctDateRange;
-
-        console.log('🔍 DEBUG: Direct query for lead 76792 - FULL DETAILS', {
-          found: true,
-          error: directLeadError,
-          leadData: {
-            id: directLeadData.id,
-            name: directLeadData.name,
-            probability: directLeadData.probability,
-            probabilityType: typeof directLeadData.probability,
-            closer_id: directLeadData.closer_id,
-            stage: directLeadData.stage,
-            stageNumber: Number(directLeadData.stage),
-            status: directLeadData.status,
-            category_id: directLeadData.category_id,
-            language_id: directLeadData.language_id,
-            meeting_date: directLeadData.meeting_date
-          },
-          filterChecks: {
-            hasProbability: { result: hasProbability, required: 'probability IS NOT NULL AND != ""', actual: directLeadData.probability },
-            hasCloser: { result: hasCloser, required: 'closer_id IS NOT NULL', actual: directLeadData.closer_id },
-            correctStatus: { result: correctStatus, required: 'status = 0', actual: directLeadData.status },
-            correctStage: { result: correctStage, required: selectedLegacyStageIds.length > 0 ? `stage IN (${selectedLegacyStageIds.join(', ')})` : 'any stage', actual: directLeadData.stage, stageNumber: Number(directLeadData.stage), selectedStages: selectedLegacyStageIds },
-            correctEmployee: { result: correctEmployee, required: filters.employee ? (filters.employee === '--' ? 'NULL closer' : `closer_id = ${filters.employee}`) : 'any employee', actual: directLeadData.closer_id, filterEmployee: filters.employee },
-            correctDateRange: { result: correctDateRange, required: applyDateFilters ? `meeting_date between ${filters.fromDate || 'any'} and ${filters.toDate || 'any'}` : 'no date filter', actual: directLeadData.meeting_date, fromDate: filters.fromDate, toDate: filters.toDate, applyDateFilters }
-          },
-          passesAllFilters: passesAll,
-          failingFilters: [
-            !hasProbability && 'probability filter',
-            !hasCloser && 'closer_id filter',
-            !correctStatus && 'status filter',
-            !correctStage && 'stage filter',
-            !correctEmployee && 'employee filter',
-            !correctDateRange && 'date range filter'
-          ].filter(Boolean)
-        });
-      } else {
-        console.log('🔍 DEBUG: Direct query for lead 76792 - NOT FOUND', {
-          found: false,
-          error: directLeadError
-        });
-      }
-
-      // Check if lead 76792's probability is in the range
-      if (directLeadData) {
-        const probValue = Number(directLeadData.probability);
-        console.log('🔍 DEBUG: Lead 76792 probability check', {
-          probability: directLeadData.probability,
-          probValue,
-          minProbability: filters.minProbability,
-          maxProbability: filters.maxProbability,
-          inRange: probValue >= filters.minProbability && probValue <= filters.maxProbability,
-          willBeIncluded: probValue >= filters.minProbability && probValue <= filters.maxProbability,
-          cdate: directLeadData.cdate || directLeadData.meeting_date
-        });
-      }
 
       // Test query first to see if it returns any results (limit 1)
       const { data: testQueryResults, error: testQueryError } = await legacyLeadsQuery
@@ -2076,11 +1855,6 @@ const CloserSuperPipelinePage = () => {
           hasMore = pageResults.length === pageSize;
           page++;
 
-          // Check if we found lead 76792
-          const foundTarget = pageResults.find((l: any) => l.id === targetLeadId);
-          if (foundTarget) {
-            console.log('🔍 DEBUG: Found lead 76792 in page', { page, totalFetched: allLegacyLeads.length });
-          }
         } else {
           hasMore = false;
         }
@@ -2097,26 +1871,7 @@ const CloserSuperPipelinePage = () => {
 
       console.log('🔍 DEBUG: Paginated query complete', {
         totalLeadsFetched: legacyLeads.length,
-        pagesFetched: page,
-        foundTargetLead: legacyLeads.some((l: any) => l.id === targetLeadId)
-      });
-
-      // Debug specific lead 76792
-      const targetLead = legacyLeads?.find((l: any) => l.id === targetLeadId);
-      console.log('🔍 DEBUG: Checking for lead 76792 in query results', {
-        found: !!targetLead,
-        leadData: targetLead ? {
-          id: targetLead.id,
-          name: targetLead.name,
-          probability: targetLead.probability,
-          probabilityType: typeof targetLead.probability,
-          probabilityNumber: Number(targetLead.probability),
-          closer_id: targetLead.closer_id,
-          stage: targetLead.stage,
-          category_id: targetLead.category_id,
-          language_id: targetLead.language_id
-        } : null,
-        totalLeadsInQuery: legacyLeads?.length || 0
+        pagesFetched: page
       });
 
       console.log('🔍 DEBUG: Legacy leads query result (before probability filter)', {
@@ -2134,29 +1889,8 @@ const CloserSuperPipelinePage = () => {
           const probValue = Number(lead.probability);
           const isValidNumber = !isNaN(probValue) && lead.probability !== null && lead.probability !== '';
 
-          // Debug lead 76792 specifically
-          if (lead.id === targetLeadId) {
-            console.log('🔍 DEBUG: Lead 76792 probability filter check', {
-              probability: lead.probability,
-              probValue,
-              isValidNumber,
-              minProbability: filters.minProbability,
-              maxProbability: filters.maxProbability,
-              passesMin: probValue >= Number(filters.minProbability),
-              passesMax: probValue <= Number(filters.maxProbability),
-              willPass: isValidNumber && probValue >= Number(filters.minProbability) && probValue <= Number(filters.maxProbability)
-            });
-          }
-
           if (!isValidNumber) return false;
           return probValue >= Number(filters.minProbability) && probValue <= Number(filters.maxProbability);
-        });
-
-        // Check if lead 76792 passed probability filter
-        const targetLeadAfterProb = filteredLegacyLeads.find((l: any) => l.id === targetLeadId);
-        console.log('🔍 DEBUG: Lead 76792 after probability filter', {
-          found: !!targetLeadAfterProb,
-          passedProbabilityFilter: !!targetLeadAfterProb
         });
 
         console.log('🔍 DEBUG: After probability filter', {
@@ -2229,102 +1963,10 @@ const CloserSuperPipelinePage = () => {
         }
       }
 
-      // Fetch tags for legacy leads
-      const legacyTagsMap = new Map<number, string[]>();
-      if (legacyLeadIds.length > 0) {
-        const { data: legacyTagsData } = await supabase
-          .from('leads_lead_tags')
-          .select(`
-            lead_id,
-            misc_leadtag (
-              name
-            )
-          `)
-          .in('lead_id', legacyLeadIds);
-
-        if (legacyTagsData) {
-          legacyTagsData.forEach((item: any) => {
-            if (item.misc_leadtag) {
-              const leadId = item.lead_id;
-              const tagName = (item.misc_leadtag as any).name;
-              if (!legacyTagsMap.has(leadId)) {
-                legacyTagsMap.set(leadId, []);
-              }
-              legacyTagsMap.get(leadId)!.push(tagName);
-            }
-          });
-        }
-      }
+      // Tags for legacy leads come from join leads_lead_tags (misc_leadtag) in the main query
 
       if (legacyLeadsToProcess && legacyLeadsToProcess.length > 0) {
-        // Fetch closer names for legacy leads
-        const closerIds = [...new Set(legacyLeadsToProcess.map((l: any) => l.closer_id).filter(Boolean))];
-        const closerMap: Record<number, string> = {};
-
-        if (closerIds.length > 0) {
-          const { data: closerData } = await supabase
-            .from('tenants_employee')
-            .select('id, display_name')
-            .in('id', closerIds);
-
-          if (closerData) {
-            closerData.forEach((emp: any) => {
-              closerMap[emp.id] = emp.display_name || `Employee #${emp.id}`;
-            });
-          }
-        }
-
-        // Fetch scheduler names for legacy leads
-        const schedulerIds = [...new Set(legacyLeadsToProcess.map((l: any) => l.meeting_scheduler_id).filter(Boolean))];
-        const schedulerMap: Record<number, string> = {};
-
-        if (schedulerIds.length > 0) {
-          const { data: schedulerData } = await supabase
-            .from('tenants_employee')
-            .select('id, display_name')
-            .in('id', schedulerIds);
-
-          if (schedulerData) {
-            schedulerData.forEach((emp: any) => {
-              schedulerMap[emp.id] = emp.display_name || `Employee #${emp.id}`;
-            });
-          }
-        }
-
-        // Fetch currency codes
-        const currencyIds = [...new Set(legacyLeadsToProcess.map((l: any) => l.currency_id).filter(Boolean))];
-        const currencyMap: Record<number, string> = {};
-
-        if (currencyIds.length > 0) {
-          const { data: currencyData } = await supabase
-            .from('accounting_currencies')
-            .select('id, iso_code')
-            .in('id', currencyIds);
-
-          if (currencyData) {
-            currencyData.forEach((curr: any) => {
-              currencyMap[curr.id] = curr.iso_code || '';
-            });
-          }
-        }
-
-        // Fetch language names for legacy leads
-        const languageIds = [...new Set(legacyLeadsToProcess.map((l: any) => l.language_id).filter(Boolean))];
-        const languageMap: Record<number, string> = {};
-
-        if (languageIds.length > 0) {
-          const { data: languageData } = await supabase
-            .from('misc_language')
-            .select('id, name')
-            .in('id', languageIds);
-
-          if (languageData) {
-            languageData.forEach((lang: any) => {
-              languageMap[lang.id] = lang.name || '';
-            });
-          }
-        }
-
+        // Stage, category, language, employees and currency come from joins (no separate fetches)
         console.log('🔍 DEBUG: Processing legacy leads', { legacyLeadsCount: legacyLeadsToProcess?.length || 0 });
 
         legacyLeadsToProcess.forEach((lead: any) => {
@@ -2397,20 +2039,29 @@ const CloserSuperPipelinePage = () => {
           // (Note: To fully confirm it's a master lead, we'd need to check if it has subleads, but this is a good indicator)
           const isLegacyMasterLead = !isLegacySubLead;
 
+          const closerDisplay = lead.closer_emp ? (Array.isArray(lead.closer_emp) ? lead.closer_emp[0]?.display_name : lead.closer_emp?.display_name) : null;
+          const schedulerDisplay = lead.scheduler_emp ? (Array.isArray(lead.scheduler_emp) ? lead.scheduler_emp[0]?.display_name : lead.scheduler_emp?.display_name) : null;
+          const expertDisplay = lead.expert_emp ? (Array.isArray(lead.expert_emp) ? lead.expert_emp[0]?.display_name : lead.expert_emp?.display_name) : null;
+          const managerDisplay = lead.manager_emp ? (Array.isArray(lead.manager_emp) ? lead.manager_emp[0]?.display_name : lead.manager_emp?.display_name) : null;
+          const legacyTagsFromJoin = (lead.leads_lead_tags || [])
+            .map((t: any) => (t.misc_leadtag?.name ?? (Array.isArray(t.misc_leadtag) ? t.misc_leadtag[0]?.name : null)))
+            .filter(Boolean)
+            .join(', ');
+
           allLeads.push({
             id: `legacy_${lead.id}`,
             lead_number: lead.id?.toString() || '',
             name: lead.name || '',
             created_at: lead.cdate || new Date().toISOString(),
-            closer: (lead.closer_id && closerMap[lead.closer_id]) ? closerMap[lead.closer_id] : '---',
-            scheduler: (lead.meeting_scheduler_id && schedulerMap[lead.meeting_scheduler_id]) ? schedulerMap[lead.meeting_scheduler_id] : '---',
-            expert: lead.expert_id ? '---' : '---', // Expert field - show --- for now (can be enhanced if needed)
-            manager: lead.meeting_manager_id ? '---' : '---', // Manager field - show --- for now (can be enhanced if needed)
-            category: getCategoryName(lead.category_id),
+            closer: closerDisplay || '---',
+            scheduler: schedulerDisplay || '---',
+            expert: expertDisplay || '---',
+            manager: managerDisplay || '---',
+            category: getCategoryDisplayFromJoin(lead) || '---',
             category_id: lead.category_id,
-            stage: getStageName(lead.stage),
+            stage: getStageNameFromJoin(lead) || getStageName(lead.stage),
             probability: lead.probability || 0,
-            language: lead.language_id ? (languageMap[lead.language_id] || `Language #${lead.language_id}`) : null,
+            language: getLanguageDisplayFromJoin(lead) || (lead.language_id ? `Language #${lead.language_id}` : null),
             number_of_applicants_meeting: lead.no_of_applicants || 0,
             potential_applicants_meeting: lead.potential_applicants || 0,
             total: lead.total || '',
@@ -2426,45 +2077,13 @@ const CloserSuperPipelinePage = () => {
             meeting_date: meetingDate,
             follow_up_date: legacyFollowUpDatesMap[lead.id] || null,
             follow_up_notes: lead.followup_log || null,
-            latest_interaction: lead.latest_interaction || null, // Add latest_interaction
-            tags: legacyTagsMap.get(lead.id)?.join(', ') || '', // Add tags
+            latest_interaction: lead.latest_interaction || null,
+            tags: legacyTagsFromJoin || '',
           });
         });
       } else {
         console.log('🔍 DEBUG: No legacy leads to process (legacyLeadsToProcess is null or empty)');
       }
-
-      // Check if lead 76792 is in allLeads
-      const targetLeadInAllLeads = allLeads.find((l: any) => l.id === `legacy_${targetLeadId}` || l.lead_number === targetLeadId.toString());
-      console.log('🔍 DEBUG: Lead 76792 in allLeads before sorting', {
-        found: !!targetLeadInAllLeads,
-        leadData: targetLeadInAllLeads ? {
-          id: targetLeadInAllLeads.id,
-          lead_number: targetLeadInAllLeads.lead_number,
-          name: targetLeadInAllLeads.name,
-          probability: targetLeadInAllLeads.probability,
-          stage: targetLeadInAllLeads.stage,
-          closer: targetLeadInAllLeads.closer,
-          category: targetLeadInAllLeads.category,
-          language: targetLeadInAllLeads.language
-        } : null
-      });
-
-      // Check if lead L210471 is in allLeads
-      const targetNewLeadInAllLeads = allLeads.find((l: any) => l.lead_number === targetNewLeadNumber);
-      console.log('🔍 DEBUG: Lead L210471 in allLeads before sorting', {
-        found: !!targetNewLeadInAllLeads,
-        leadData: targetNewLeadInAllLeads ? {
-          id: targetNewLeadInAllLeads.id,
-          lead_number: targetNewLeadInAllLeads.lead_number,
-          name: targetNewLeadInAllLeads.name,
-          probability: targetNewLeadInAllLeads.probability,
-          stage: targetNewLeadInAllLeads.stage,
-          closer: targetNewLeadInAllLeads.closer,
-          category: targetNewLeadInAllLeads.category,
-          language: targetNewLeadInAllLeads.language
-        } : null
-      });
 
       console.log('🔍 DEBUG: Before sorting', {
         allLeadsCount: allLeads.length,
@@ -2498,32 +2117,6 @@ const CloserSuperPipelinePage = () => {
         return dateB - dateA;
       });
 
-      // Check if lead 76792 is in final sorted results
-      const targetLeadInFinal = sortedLeads.find((l: any) => l.id === `legacy_${targetLeadId}` || l.lead_number === targetLeadId.toString());
-      console.log('🔍 DEBUG: Lead 76792 in final sorted results', {
-        found: !!targetLeadInFinal,
-        leadData: targetLeadInFinal ? {
-          id: targetLeadInFinal.id,
-          lead_number: targetLeadInFinal.lead_number,
-          name: targetLeadInFinal.name,
-          probability: targetLeadInFinal.probability
-        } : null
-      });
-
-      // Check if lead L210471 is in final sorted results
-      const targetNewLeadInFinal = sortedLeads.find((l: any) => l.lead_number === targetNewLeadNumber);
-      console.log('🔍 DEBUG: Lead L210471 in final sorted results', {
-        found: !!targetNewLeadInFinal,
-        leadData: targetNewLeadInFinal ? {
-          id: targetNewLeadInFinal.id,
-          lead_number: targetNewLeadInFinal.lead_number,
-          name: targetNewLeadInFinal.name,
-          probability: targetNewLeadInFinal.probability,
-          stage: targetNewLeadInFinal.stage,
-          closer: targetNewLeadInFinal.closer
-        } : null
-      });
-
       console.log('🔍 DEBUG: Final results', {
         sortedLeadsCount: sortedLeads.length,
         newLeadsCount: sortedLeads.filter((l: any) => l.lead_type === 'new').length,
@@ -2541,8 +2134,12 @@ const CloserSuperPipelinePage = () => {
     }
   };
 
-  // Automatically load all leads on component mount (without date filters)
+  // Automatically load leads on first visit only. When returning to the page (e.g. back from a lead),
+  // keep persisted results and filters — do not run search or we overwrite saved state with default table.
   useEffect(() => {
+    if (results.length > 0 && searchPerformed) {
+      return; // Restored from sessionStorage — don't run search
+    }
     handleSearch(false); // Pass false to skip date filters on initial load
     setSearchPerformed(true); // Show the table with initial results
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2656,6 +2253,39 @@ const CloserSuperPipelinePage = () => {
 
   const legacySubleadSuffixMap = calculateLegacySubleadSuffixes();
 
+  // New leads: sublead suffixes by master_id (same pattern as legacy and CalendarPage)
+  // master_id -> (lead_id -> suffix 2, 3, 4...); master leads get no suffix
+  const calculateNewLeadSubleadSuffixes = useCallback(() => {
+    const suffixMap = new Map<number | string, Map<number | string, number>>();
+    const newLeadsByMaster = new Map<number | string, any[]>();
+    results.forEach((lead: any) => {
+      const isLegacy = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
+      if (isLegacy || !lead.master_id || String(lead.master_id).trim() === '') return;
+      const masterId = lead.master_id;
+      if (!newLeadsByMaster.has(masterId)) {
+        newLeadsByMaster.set(masterId, []);
+      }
+      newLeadsByMaster.get(masterId)!.push(lead);
+    });
+    newLeadsByMaster.forEach((subleads, masterId) => {
+      subleads.sort((a: any, b: any) => {
+        const idA = a.id != null ? Number(a.id) : NaN;
+        const idB = b.id != null ? Number(b.id) : NaN;
+        if (!isNaN(idA) && !isNaN(idB)) return idA - idB;
+        return String(a.id ?? '').localeCompare(String(b.id ?? ''));
+      });
+      const masterSuffixMap = new Map<number | string, number>();
+      subleads.forEach((sublead: any, index: number) => {
+        const leadId = sublead.id;
+        masterSuffixMap.set(leadId, index + 2); // First sublead /2, second /3, etc.
+      });
+      suffixMap.set(masterId, masterSuffixMap);
+    });
+    return suffixMap;
+  }, [results]);
+
+  const newLeadSubleadSuffixMap = calculateNewLeadSubleadSuffixes();
+
   const getDisplayLeadNumber = (lead: any): string => {
     if (!lead) return '---';
 
@@ -2666,7 +2296,7 @@ const CloserSuperPipelinePage = () => {
       const leadId = lead.lead_number || lead.id?.toString().replace('legacy_', '') || '---';
       const masterId = lead.master_id;
 
-      // If master_id is null/empty, it's a master lead - return just the ID
+      // If master_id is null/empty, it's a master lead - return just the ID (no /1)
       if (!masterId || String(masterId).trim() === '') {
         return leadId;
       }
@@ -2689,16 +2319,11 @@ const CloserSuperPipelinePage = () => {
       // Fallback: show master_id/? if suffix not found
       return `${masterId}/?`;
     } else {
-      // For new leads
-      let displayNumber = lead.lead_number || lead.id || '---';
-      const displayStr = displayNumber.toString();
-      const hasExistingSuffix = displayStr.includes('/');
+      // For new leads (align with CalendarPage: master = no suffix, sublead = masterBase/suffix)
+      let baseNumber = (lead.manual_id || lead.lead_number || lead.id || '---').toString();
+      const hasExistingSuffix = baseNumber.includes('/');
+      if (hasExistingSuffix) baseNumber = baseNumber.split('/')[0];
 
-      // Strip any existing suffix for processing
-      let baseNumber = hasExistingSuffix ? displayStr.split('/')[0] : displayStr;
-
-      // Show "C" prefix in UI when stage is Success (100)
-      // Since we convert stage ID to name, check the stage name for "Success"
       const stageName = typeof lead.stage === 'string' ? lead.stage : String(lead.stage || '');
       const isSuccessStage = stageName.toLowerCase().includes('success') ||
         stageName === '100' ||
@@ -2707,23 +2332,32 @@ const CloserSuperPipelinePage = () => {
         baseNumber = baseNumber.toString().replace(/^L/, 'C');
       }
 
-      // Add /1 suffix to master leads (frontend only)
       const hasNoMasterId = !lead.master_id || String(lead.master_id).trim() === '';
-      const isSubLead = !hasNoMasterId || hasExistingSuffix;
+      const isSubLead = !hasNoMasterId;
 
-      if (!isSubLead) {
-        // Master lead - add /1
-        displayNumber = `${baseNumber}/1`;
-      } else {
-        // Sublead - show as is (with existing suffix)
-        displayNumber = displayStr;
-        // But still apply C prefix if needed
-        if (isSuccessStage && displayNumber && !displayNumber.toString().startsWith('C')) {
-          displayNumber = displayNumber.toString().replace(/^L/, 'C');
+      if (isSubLead) {
+        // Sublead: show masterBase/suffix (e.g. L209667/2, /3...) like CalendarPage
+        const masterId = lead.master_id;
+        const master = results.find((l: any) => !l.id?.toString().startsWith('legacy_') && (l.id === masterId || String(l.id) === String(masterId)));
+        const masterBase = master
+          ? (master.manual_id || master.lead_number || master.id || '').toString().split('/')[0]
+          : String(masterId);
+        const suffixMap = newLeadSubleadSuffixMap.get(masterId);
+        const suffix = suffixMap?.get(lead.id);
+        if (suffix !== undefined) {
+          const displayBase = isSuccessStage && masterBase && !masterBase.startsWith('C')
+            ? masterBase.replace(/^L/, 'C')
+            : masterBase;
+          return `${displayBase}/${suffix}`;
         }
+        // Fallback: if lead_number already has / use it, else masterBase/2
+        const raw = (lead.lead_number || '').toString();
+        if (raw.includes('/')) return isSuccessStage && !raw.startsWith('C') ? raw.replace(/^L/, 'C') : raw;
+        return `${baseNumber}/2`;
       }
 
-      return displayNumber.toString();
+      // Master lead: show number as-is (no /1), same as CalendarPage
+      return baseNumber;
     }
   };
 
@@ -3184,106 +2818,126 @@ const CloserSuperPipelinePage = () => {
             )}
           </div>
         </div>
-        <div className="mt-4 flex flex-col md:flex-row gap-4 items-start md:items-center flex-wrap">
-          {/* Probability Filter Sliders */}
-          <div className="flex flex-col md:flex-row gap-4 md:gap-6 items-end bg-white p-4 md:p-5 rounded-xl border border-gray-200 shadow-sm w-full md:w-auto max-w-full overflow-hidden">
-            <div className="flex flex-col gap-3 w-full md:min-w-[220px] md:w-auto">
-              <label className="block text-sm font-semibold text-gray-800">
-                Min Probability
-              </label>
-              <div className="flex items-center gap-3">
-                <div className="relative flex-shrink-0">
-                  <input
-                    type="number"
-                    min="0"
-                    max="100"
-                    value={filters.minProbability}
-                    onFocus={(e) => e.target.select()}
-                    onChange={(e) => {
-                      const newMin = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
-                      // Only update min, don't change max
-                      handleFilterChange('minProbability', newMin);
-                    }}
-                    className="w-24 md:w-28 px-3 md:px-4 py-2 md:py-2.5 text-sm md:text-base font-semibold border-2 border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#411CCF] focus:border-[#411CCF] bg-white shadow-sm transition-all text-center"
-                    style={{ appearance: 'textfield' }}
-                  />
-                  <span className="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-xs md:text-sm font-semibold text-gray-500 pointer-events-none">%</span>
+        <div className="mt-4 flex flex-row items-center justify-between gap-4 w-full flex-wrap">
+          {/* Left: Probability - collapsed as icon, expands on click */}
+          <div className="relative">
+            {!probabilityExpanded ? (
+              <button
+                type="button"
+                onClick={() => setProbabilityExpanded(true)}
+                className="flex items-center gap-2 px-3 py-2 rounded-xl border border-gray-200 bg-white shadow-sm hover:bg-gray-50 hover:border-gray-300 focus:outline-none focus:ring-2 focus:ring-[#411CCF] focus:ring-offset-2 transition-colors"
+                title="Probability range"
+              >
+                <ChartBarIcon className="w-5 h-5 text-gray-600 flex-shrink-0" />
+                <span className="text-sm font-medium text-gray-700 whitespace-nowrap">Probability</span>
+              </button>
+            ) : (
+              <div className="flex flex-col md:flex-row gap-4 md:gap-6 items-end bg-white p-4 md:p-5 rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setProbabilityExpanded(false)}
+                  className="absolute top-2 right-2 p-1 rounded hover:bg-gray-100 text-gray-500"
+                  title="Close"
+                  aria-label="Close probability panel"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+                <div className="flex flex-col gap-3 w-full md:min-w-[200px] md:w-auto">
+                  <label className="block text-sm font-semibold text-gray-800">Min Probability</label>
+                  <div className="flex items-center gap-3">
+                    <div className="relative flex-shrink-0">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={filters.minProbability}
+                        onFocus={(e) => e.target.select()}
+                        onChange={(e) => {
+                          const newMin = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
+                          handleFilterChange('minProbability', newMin);
+                        }}
+                        className="w-24 md:w-28 px-3 md:px-4 py-2 md:py-2.5 text-sm md:text-base font-semibold border-2 border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#411CCF] focus:border-[#411CCF] bg-white shadow-sm transition-all text-center"
+                        style={{ appearance: 'textfield' }}
+                      />
+                      <span className="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-xs md:text-sm font-semibold text-gray-500 pointer-events-none">%</span>
+                    </div>
+                  </div>
+                  <Slider.Root
+                    className="relative flex items-center select-none touch-none w-full h-7"
+                    value={[filters.minProbability]}
+                    min={0}
+                    max={100}
+                    step={1}
+                    onValueChange={(value) => setFilters(prev => ({ ...prev, minProbability: value[0] }))}
+                  >
+                    <Slider.Track className="bg-gray-300 relative flex-1 rounded-full h-3.5 shadow-inner">
+                      <Slider.Range className="absolute bg-gradient-to-r from-[#411CCF] via-[#5B21B6] to-[#6B46C1] rounded-full h-full shadow-sm" />
+                    </Slider.Track>
+                    <Slider.Thumb className="block w-7 h-7 bg-white border-3 border-[#411CCF] rounded-full shadow-lg hover:shadow-xl focus:outline-none focus:ring-4 focus:ring-[#411CCF]/30 focus:ring-offset-2 cursor-grab active:cursor-grabbing" style={{ transition: 'box-shadow 0.15s ease-out' }} />
+                  </Slider.Root>
+                </div>
+                <div className="flex flex-col gap-3 w-full md:min-w-[200px] md:w-auto">
+                  <label className="block text-sm font-semibold text-gray-800">Max Probability</label>
+                  <div className="flex items-center gap-3">
+                    <div className="relative flex-shrink-0">
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={filters.maxProbability}
+                        onFocus={(e) => e.target.select()}
+                        onChange={(e) => {
+                          const newMax = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
+                          handleFilterChange('maxProbability', newMax);
+                        }}
+                        className="w-24 md:w-28 px-3 md:px-4 py-2 md:py-2.5 text-sm md:text-base font-semibold border-2 border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#411CCF] focus:border-[#411CCF] bg-white shadow-sm transition-all text-center"
+                        style={{ appearance: 'textfield' }}
+                      />
+                      <span className="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-xs md:text-sm font-semibold text-gray-500 pointer-events-none">%</span>
+                    </div>
+                  </div>
+                  <Slider.Root
+                    className="relative flex items-center select-none touch-none w-full h-7"
+                    value={[filters.maxProbability]}
+                    min={0}
+                    max={100}
+                    step={1}
+                    onValueChange={(value) => setFilters(prev => ({ ...prev, maxProbability: value[0] }))}
+                  >
+                    <Slider.Track className="bg-gray-300 relative flex-1 rounded-full h-3.5 shadow-inner">
+                      <Slider.Range className="absolute bg-gradient-to-r from-[#411CCF] via-[#5B21B6] to-[#6B46C1] rounded-full h-full shadow-sm" />
+                    </Slider.Track>
+                    <Slider.Thumb className="block w-7 h-7 bg-white border-3 border-[#411CCF] rounded-full shadow-lg hover:shadow-xl focus:outline-none focus:ring-4 focus:ring-[#411CCF]/30 focus:ring-offset-2 cursor-grab active:cursor-grabbing" style={{ transition: 'box-shadow 0.15s ease-out' }} />
+                  </Slider.Root>
                 </div>
               </div>
-              <Slider.Root
-                className="relative flex items-center select-none touch-none w-full h-7"
-                value={[filters.minProbability]}
-                min={0}
-                max={100}
-                step={1}
-                onValueChange={(value) => {
-                  const newMin = value[0];
-                  // Direct state update for immediate response
-                  setFilters(prev => ({ ...prev, minProbability: newMin }));
-                }}
-              >
-                <Slider.Track className="bg-gray-300 relative flex-1 rounded-full h-3.5 shadow-inner">
-                  <Slider.Range className="absolute bg-gradient-to-r from-[#411CCF] via-[#5B21B6] to-[#6B46C1] rounded-full h-full shadow-sm" />
-                </Slider.Track>
-                <Slider.Thumb className="block w-7 h-7 bg-white border-3 border-[#411CCF] rounded-full shadow-lg hover:shadow-xl focus:outline-none focus:ring-4 focus:ring-[#411CCF]/30 focus:ring-offset-2 cursor-grab active:cursor-grabbing" style={{ transition: 'box-shadow 0.15s ease-out' }} />
-              </Slider.Root>
-            </div>
-            <div className="flex flex-col gap-3 w-full md:min-w-[220px] md:w-auto">
-              <label className="block text-sm font-semibold text-gray-800">
-                Max Probability
-              </label>
-              <div className="flex items-center gap-3">
-                <div className="relative flex-shrink-0">
-                  <input
-                    type="number"
-                    min="0"
-                    max="100"
-                    value={filters.maxProbability}
-                    onFocus={(e) => e.target.select()}
-                    onChange={(e) => {
-                      const newMax = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
-                      // Only update max, don't change min
-                      handleFilterChange('maxProbability', newMax);
-                    }}
-                    className="w-24 md:w-28 px-3 md:px-4 py-2 md:py-2.5 text-sm md:text-base font-semibold border-2 border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#411CCF] focus:border-[#411CCF] bg-white shadow-sm transition-all text-center"
-                    style={{ appearance: 'textfield' }}
-                  />
-                  <span className="absolute right-2 md:right-3 top-1/2 -translate-y-1/2 text-xs md:text-sm font-semibold text-gray-500 pointer-events-none">%</span>
-                </div>
-              </div>
-              <Slider.Root
-                className="relative flex items-center select-none touch-none w-full h-7"
-                value={[filters.maxProbability]}
-                min={0}
-                max={100}
-                step={1}
-                onValueChange={(value) => {
-                  const newMax = value[0];
-                  // Direct state update for immediate response
-                  setFilters(prev => ({ ...prev, maxProbability: newMax }));
-                }}
-              >
-                <Slider.Track className="bg-gray-300 relative flex-1 rounded-full h-3.5 shadow-inner">
-                  <Slider.Range className="absolute bg-gradient-to-r from-[#411CCF] via-[#5B21B6] to-[#6B46C1] rounded-full h-full shadow-sm" />
-                </Slider.Track>
-                <Slider.Thumb className="block w-7 h-7 bg-white border-3 border-[#411CCF] rounded-full shadow-lg hover:shadow-xl focus:outline-none focus:ring-4 focus:ring-[#411CCF]/30 focus:ring-offset-2 cursor-grab active:cursor-grabbing" style={{ transition: 'box-shadow 0.15s ease-out' }} />
-              </Slider.Root>
-            </div>
+            )}
           </div>
-          <button
-            onClick={handleCancelFilters}
-            className="px-6 py-2 border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => handleSearch(true)} // Pass true to apply date filters when Show is clicked
-            disabled={isSearching}
-            className="px-6 py-2 text-white rounded-md hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            style={{ backgroundColor: '#411CCF' }}
-          >
-            {isSearching ? 'Searching...' : 'Show'}
-          </button>
+          {/* Right: Cancel + Search icon */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleCancelFilters}
+              className="flex items-center justify-center w-11 h-11 rounded-lg border border-gray-300 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 transition-colors text-gray-600 font-semibold text-3xl leading-none"
+              title="Clear filters"
+              aria-label="Clear filters"
+            >
+              ×
+            </button>
+            <button
+              onClick={() => handleSearch(true)}
+              disabled={isSearching}
+              className="flex items-center justify-center w-11 h-11 rounded-lg text-white hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors active:opacity-100 active:bg-[#411CCF]"
+              style={{ backgroundColor: '#411CCF' }}
+              title="Search"
+              aria-label="Search"
+            >
+              {isSearching ? (
+                <span className="loading loading-spinner loading-sm text-white" />
+              ) : (
+                <MagnifyingGlassIcon className="w-6 h-6" />
+              )}
+            </button>
+          </div>
           <style>{`
             input[type="number"]::-webkit-inner-spin-button,
             input[type="number"]::-webkit-outer-spin-button {
@@ -3342,7 +2996,7 @@ const CloserSuperPipelinePage = () => {
               // Since we're converting everything to NIS, display in NIS
               const symbol = '₪';
               return (
-                <div className="badge badge-lg text-white border-none bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600">
+                <div className="badge badge-lg text-white border-none bg-green-900">
                   Total: {symbol} {totalAmount.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                 </div>
               );

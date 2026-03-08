@@ -200,12 +200,12 @@ function isPageRefresh(): boolean {
     console.warn('[usePersistedState] Navigation flag check failed:', e);
   }
   
-  // Default: no unloading marker and no navigation flag → likely a refresh
-  // (first load or refresh where beforeunload didn't fire)
-  console.log(`[usePersistedState] No unloading marker or navigation flag found, treating as refresh`);
-  pathnameWhenRefreshDetected = typeof window !== 'undefined' ? window.location.pathname : null;
-  cachedRefreshCheckResult = true; // Cache as refresh
-  return true;
+  // Default: no unloading marker → we did not refresh (page never unloaded).
+  // Preserve state so that SPA back/forward (e.g. CloserSuperPipeline → lead → back) restores correctly.
+  // We only clear when we had PAGE_UNLOADING_KEY (actual reload) and no valid navigation flag.
+  console.log(`[usePersistedState] No unloading marker found, preserving state (treat as navigation)`);
+  cachedRefreshCheckResult = false; // Preserve state
+  return false;
 }
 
 // Intercept React Router navigations to set the flag
