@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
 import Meetings from './Meetings';
-import AISuggestions from './AISuggestions';
+import AIAssistantBox from './AIAssistantBox';
 import AISuggestionsModal from './AISuggestionsModal';
 import OverdueFollowups from './OverdueFollowups';
 import UnavailableEmployeesModal from './UnavailableEmployeesModal';
@@ -28,6 +28,7 @@ import { formatMeetingValue } from '../lib/meetingValue';
 import { toast } from 'react-hot-toast';
 import CompactAvailabilityCalendar, { CompactAvailabilityCalendarRef } from './CompactAvailabilityCalendar';
 import SickDaysDocumentUploadModal from './SickDaysDocumentUploadModal';
+import MyContribution from './MyContribution';
 import { DocumentArrowUpIcon } from '@heroicons/react/24/outline';
 
 
@@ -6126,7 +6127,7 @@ const Dashboard: React.FC = () => {
       <div className="flex md:grid md:grid-cols-4 gap-3 md:gap-6 mb-8 w-full mt-6 md:mt-0 overflow-x-auto scrollbar-hide pb-2 md:pb-0 overflow-y-visible">
         {/* Meetings Today */}
         <div
-          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr ${isAltTheme ? 'from-green-500 via-emerald-600 to-lime-600' : 'from-pink-500 via-purple-500 to-purple-600'} text-white relative overflow-visible p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ml-4 md:ml-0`}
+          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] bg-gradient-to-tr ${isAltTheme ? 'from-green-500 via-emerald-600 to-lime-600' : 'from-pink-500 via-purple-500 to-purple-600'} text-white relative overflow-visible p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ml-4 md:ml-0`}
           onClick={() => setExpanded(expanded === 'meetings' ? null : 'meetings')}
         >
           {/* Meetings in Next Hour Badge - Desktop: top, Mobile: bottom */}
@@ -6204,7 +6205,7 @@ const Dashboard: React.FC = () => {
             </>
           )}
           <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
+            <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20">
               <CalendarIcon className="w-7 h-7 md:w-7 md:h-7 text-white opacity-90" />
             </div>
             <div>
@@ -6218,11 +6219,11 @@ const Dashboard: React.FC = () => {
 
         {/* Follow ups */}
         <div
-          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr ${isAltTheme ? 'from-emerald-600 via-green-600 to-green-500' : 'from-purple-600 via-blue-600 to-blue-500'} text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto`}
+          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] bg-gradient-to-tr ${isAltTheme ? 'from-emerald-600 via-green-600 to-green-500' : 'from-purple-600 via-blue-600 to-blue-500'} text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto`}
           onClick={() => setExpanded(expanded === 'overdue' ? null : 'overdue')}
         >
           <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
+            <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20">
               <ExclamationTriangleIcon className="w-7 h-7 md:w-7 md:h-7 text-white opacity-90" />
             </div>
             <div>
@@ -6236,11 +6237,11 @@ const Dashboard: React.FC = () => {
 
         {/* New Messages */}
         <div
-          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr ${isAltTheme ? 'from-green-500 via-emerald-500 to-lime-400' : 'from-blue-500 via-cyan-500 to-teal-400'} text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto`}
+          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] bg-gradient-to-tr ${isAltTheme ? 'from-green-500 via-emerald-500 to-lime-400' : 'from-blue-500 via-cyan-500 to-teal-400'} text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto`}
           onClick={() => setExpanded(expanded === 'messages' ? null : 'messages')}
         >
           <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
+            <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20">
               <ChatBubbleLeftRightIcon className="w-7 h-7 md:w-7 md:h-7 mr-1 text-white" />
             </div>
             <div>
@@ -6254,11 +6255,11 @@ const Dashboard: React.FC = () => {
 
         {/* Action Required */}
         <div
-          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr ${isAltTheme ? 'from-green-600 via-emerald-600 to-lime-600' : 'from-[#4b2996] via-[#6c4edb] to-[#3b28c7]'} text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto`}
+          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] bg-gradient-to-tr ${isAltTheme ? 'from-green-600 via-emerald-600 to-lime-600' : 'from-[#4b2996] via-[#6c4edb] to-[#3b28c7]'} text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto`}
           onClick={() => setIsAISuggestionsModalOpen(true)}
         >
           <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
+            <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20">
               <ArrowTrendingUpIcon className="w-7 h-7 md:w-7 md:h-7 text-white opacity-90" />
             </div>
             <div>
@@ -7160,49 +7161,31 @@ const Dashboard: React.FC = () => {
       <div className="flex flex-col md:flex-row mb-6 md:mb-10 w-full relative transition-all duration-500 ease-in-out md:items-start gap-4 md:gap-0">
         {/* AI Suggestions Box */}
         {!aiContainerCollapsed && (
-          <div
+          <AIAssistantBox
             ref={aiRef}
-            className={`bg-white border border-gray-200 rounded-2xl p-4 shadow-lg flex flex-col transition-all duration-500 ease-in-out w-full md:w-1/5 opacity-100 md:overflow-hidden`}
-            style={aiHeight ? { height: `${aiHeight}px`, minHeight: `${aiHeight}px`, maxHeight: `${aiHeight}px` } : undefined}
-          >
-            <div className="flex justify-between items-center mb-4 flex-shrink-0">
-              <h3 className="text-lg font-semibold text-gray-900">AI Assistant</h3>
-              <button
-                onClick={() => setAiContainerCollapsed(true)}
-                className="btn btn-ghost btn-sm text-gray-500 hover:text-gray-700 transition-colors"
-                title="Close AI Assistant"
-              >
-                <XMarkIcon className="w-5 h-5" />
-              </button>
-            </div>
-            {/* On mobile: no flex-1, let content determine height. On desktop: flex-1 with scroll */}
-            <div className="md:flex-1 md:overflow-y-auto md:min-h-0 scrollbar-hide" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
-              <style>{`
-              .scrollbar-hide::-webkit-scrollbar {
-                display: none;
-              }
-            `}</style>
-              <AISuggestions />
-            </div>
-          </div>
+            height={aiHeight}
+            onClose={() => setAiContainerCollapsed(true)}
+            currentUserEmployeeId={currentUserEmployeeId}
+            currentUserDisplayName={currentUserFullName || undefined}
+          />
         )}
 
-        {/* Professional CRM Scoreboard */}
+        {/* Professional CRM Scoreboard - no big box; title and tabs on background */}
         <div
           ref={performanceDashboardRef}
-          className={`bg-white border border-gray-200 rounded-2xl shadow-lg transition-all duration-500 ease-in-out ${aiContainerCollapsed ? 'w-full' : 'w-full md:w-4/5'
+          className={`transition-all duration-500 ease-in-out ${aiContainerCollapsed ? 'w-full' : 'w-full md:w-4/5'
             } ${aiContainerCollapsed ? 'ml-0' : 'md:ml-8'}`}
         >
-          <div className="p-8">
-            {/* Header with gradient background */}
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-8 gap-4">
+          <div className="p-4 md:p-6">
+            {/* Header - simple on background */}
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6 gap-4">
               <div className="flex items-center gap-3">
-                <div className={`flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr ${isAltTheme ? 'from-green-600 to-emerald-600' : 'from-purple-600 to-indigo-600'} shadow-lg`}>
-                  <ChartBarIcon className="w-8 h-8 text-white" />
+                <div className={`flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-tr ${isAltTheme ? 'from-green-600 to-emerald-600' : 'from-purple-600 to-indigo-600'}`}>
+                  <ChartBarIcon className="w-6 h-6 text-white" />
                 </div>
                 <div>
-                  <h2 className="text-3xl font-bold text-gray-900">Performance Dashboard</h2>
-                  <p className="text-gray-600 text-sm mt-1">Real-time sales metrics and analytics</p>
+                  <h2 className="text-2xl md:text-3xl font-bold text-gray-900 dark:text-base-content">Performance Dashboard</h2>
+                  <p className="text-gray-600 dark:text-base-content/70 text-sm mt-0.5">Real-time sales metrics and analytics</p>
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -7338,13 +7321,10 @@ const Dashboard: React.FC = () => {
             {/* Department Performance Boxes */}
             {scoreTab === 'Tables' && (
               <div className="space-y-6">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className={`p-2 bg-gradient-to-br ${isAltTheme ? 'from-green-100 to-emerald-100 rounded-lg border border-green-200' : 'from-purple-100 to-indigo-100 rounded-lg border border-purple-200'}`}>
-                    <ChartBarIcon className={`w-5 h-5 ${isAltTheme ? 'text-green-600' : 'text-purple-600'}`} />
-                  </div>
-                  <h3 className="text-lg font-semibold text-slate-800">Department Performance</h3>
+                <div className="flex items-center gap-3 mb-4">
+                  <h3 className="text-lg font-semibold text-slate-800 dark:text-base-content">Department Performance</h3>
                 </div>
-                {/* Performance tables - no box on mobile to use max space; box on desktop */}
+                {/* Agreement signed */}
                 <div>
                   <div className="md:bg-white md:rounded-xl md:border md:border-gray-200 md:shadow-lg overflow-hidden -mx-4 md:mx-0">
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between px-2 md:p-3 py-2 md:py-3 border-b border-slate-200 bg-slate-50 gap-2">
@@ -7424,7 +7404,7 @@ const Dashboard: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Duplicate table for Invoiced section */}
+                {/* Invoiced */}
                 <div className="mt-4 md:mt-6">
                   <div className="md:bg-white md:rounded-xl md:border md:border-gray-200 md:shadow-lg overflow-hidden -mx-4 md:mx-0">
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between px-2 md:p-3 py-2 md:py-3 border-b border-slate-200 bg-slate-50 gap-2">
@@ -7506,33 +7486,33 @@ const Dashboard: React.FC = () => {
               </div>
             )}
 
-            {/* Professional Chart Visualization */}
+            {/* Professional Chart Visualization - coloured box, no shadow */}
             {(scoreTab === 'Today' || scoreTab === selectedMonth || scoreTab === 'Last 30d') && (
-              <div className="bg-gradient-to-br from-gray-50 to-white rounded-2xl border border-gray-200 p-8 shadow-lg">
-                <div className="flex items-center justify-between mb-8">
+              <div className={`rounded-2xl p-6 md:p-8 border-0 ${isAltTheme ? 'bg-teal-50/90 dark:bg-teal-950/30' : 'bg-indigo-50/90 dark:bg-indigo-950/30'}`}>
+                <div className="flex items-center justify-between mb-6">
                   <div className="flex items-center gap-3">
-                    <div className={`p-3 bg-gradient-to-r ${isAltTheme ? 'from-green-600 to-emerald-600' : 'from-purple-600 to-indigo-600'} rounded-xl shadow-lg`}>
+                    <div className={`p-3 rounded-xl ${isAltTheme ? 'bg-gradient-to-r from-green-600 to-emerald-600' : 'bg-gradient-to-r from-purple-600 to-indigo-600'}`}>
                       <ChartBarIcon className="w-6 h-6 text-white" />
                     </div>
                     <div>
-                      <h3 className="text-xl font-bold text-gray-900">Performance Analytics</h3>
-                      <p className="text-sm text-gray-600">Real-time business metrics</p>
+                      <h3 className="text-xl font-bold text-gray-900 dark:text-base-content">Performance Analytics</h3>
+                      <p className="text-sm text-gray-600 dark:text-base-content/70">Real-time business metrics</p>
                     </div>
                   </div>
-                  <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-200">
+                  <div className={`rounded-xl p-4 border-0 ${isAltTheme ? 'bg-emerald-100/70' : 'bg-purple-100/70'}`}>
                     <div className="flex items-center gap-6">
                       <div className="flex items-center gap-2">
-                        <div className={`w-4 h-4 bg-gradient-to-r ${isAltTheme ? 'from-green-600 to-green-700' : 'from-purple-600 to-purple-700'} rounded-full shadow-sm`}></div>
-                        <span className="text-sm font-medium text-gray-700">Signed</span>
+                        <div className={`w-4 h-4 rounded-full ${isAltTheme ? 'bg-green-600' : 'bg-purple-600'}`}></div>
+                        <span className="text-sm font-medium text-gray-700 dark:text-base-content">Signed</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <div className={`w-4 h-4 bg-gradient-to-r ${isAltTheme ? 'from-emerald-500 to-green-500' : 'from-cyan-500 to-blue-500'} rounded-full shadow-sm`}></div>
-                        <span className="text-sm font-medium text-gray-700">Due</span>
+                        <div className={`w-4 h-4 rounded-full ${isAltTheme ? 'bg-emerald-500' : 'bg-cyan-500'}`}></div>
+                        <span className="text-sm font-medium text-gray-700 dark:text-base-content">Due</span>
                       </div>
                     </div>
                   </div>
                 </div>
-                <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+                <div className={`rounded-xl p-6 border-0 ${isAltTheme ? 'bg-white/50 dark:bg-black/20' : 'bg-white/50 dark:bg-black/20'}`}>
                   <div className="w-full h-[450px]" style={{ minWidth: '400px', minHeight: '450px' }}>
                     {(() => {
                       const chartData = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === selectedMonth ? scoreboardBarDataMonth : scoreboardBarData30d;
@@ -7666,14 +7646,22 @@ const Dashboard: React.FC = () => {
             )}
 
             {/* Quick Actions removed per request */}
-          </div>
-        </div>
       </div>
+    </div>
+  </div>
 
       {/* Clock In/Out Box - Commented out */}
       {/* <div className="w-full mt-12">
         <ClockInBox employeeId={currentUserEmployeeId} />
       </div> */}
+
+      {/* My Contribution - below AI assistant, above Team Availability */}
+      <div className="w-full mt-8">
+        <MyContribution
+          employeeId={currentUserEmployeeId}
+          employeeName={currentUserFullName || ''}
+        />
+      </div>
 
       {/* Team Availability and Calendar Section */}
       <div className="w-full mt-12">

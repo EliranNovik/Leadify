@@ -5,6 +5,19 @@ import { supabase } from '../_shared/supabase-client.ts';
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
 const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
+/** Format an ISO date string to dd-mm-yy and hh:mm for display. */
+function formatDateAndTime(isoDate: string | null | undefined): { date: string; time: string } {
+  if (!isoDate) return { date: '--', time: '--:--' };
+  const d = new Date(isoDate);
+  if (isNaN(d.getTime())) return { date: '--', time: '--:--' };
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = String(d.getFullYear()).slice(-2);
+  const hours = String(d.getHours()).padStart(2, '0');
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  return { date: `${day}-${month}-${year}`, time: `${hours}:${minutes}` };
+}
+
 interface NotificationData {
   id: string;
   type: 'urgent' | 'important' | 'reminder';
@@ -36,7 +49,6 @@ async function getNotifications(): Promise<NotificationData[]> {
         id,
         meeting_date,
         meeting_time,
-        meeting_brief,
         leads!inner(
           id,
           lead_number,
@@ -61,7 +73,7 @@ async function getNotifications(): Promise<NotificationData[]> {
           message: `${isToday ? 'Today' : 'Tomorrow'} meeting with ${meeting.leads.name} (${meeting.leads.lead_number}) ${timeStr}`,
           action: 'Assess Eligibility',
           dueDate: isToday ? 'Today' : 'Tomorrow',
-          context: `Expert opinion missing. Meeting Brief: ${meeting.meeting_brief || 'No brief provided'}`,
+          context: 'Expert opinion missing.',
           leadId: meeting.leads.id,
           leadNumber: meeting.leads.lead_number,
           clientName: meeting.leads.name,
@@ -179,13 +191,14 @@ async function getNotifications(): Promise<NotificationData[]> {
       console.error('Documents error:', documentsError);
     } else {
       documents?.forEach((lead, index) => {
+        const { date: docDate, time: docTime } = formatDateAndTime(lead.documents_uploaded_date);
         notifications.push({
           id: `documents-new-${index}`,
           type: 'important',
           message: `New documents uploaded for ${lead.name} (${lead.lead_number}), check it out now`,
           action: 'Review Documents',
           dueDate: 'Today',
-          context: `Documents uploaded on ${lead.documents_uploaded_date}`,
+          context: `Documents uploaded on ${docDate} at ${docTime}`,
           leadId: lead.id,
           leadNumber: lead.lead_number,
           clientName: lead.name,
@@ -208,13 +221,14 @@ async function getNotifications(): Promise<NotificationData[]> {
       console.error('Assessments error:', assessmentsError);
     } else {
       assessments?.forEach((lead, index) => {
+        const { date: assessDate, time: assessTime } = formatDateAndTime(lead.expert_eligibility_date);
         notifications.push({
           id: `assessment-new-${index}`,
           type: 'reminder',
           message: `Express check done for ${lead.name} (${lead.lead_number})`,
           action: 'Contact Client',
           dueDate: 'Today',
-          context: `Assessed by ${lead.expert_eligibility_assessed_by || 'Unknown'} on ${lead.expert_eligibility_date}`,
+          context: `Assessed by ${lead.expert_eligibility_assessed_by || 'Unknown'} on ${assessDate} at ${assessTime}`,
           leadId: lead.id,
           leadNumber: lead.lead_number,
           clientName: lead.name,

@@ -796,11 +796,25 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     return `${countryCode}${number}`;
   };
 
-  // Get main contact ID for dependency tracking
+  // Stable main contact ID: same sort as display (main first, then by id) so contract placement never flickers
   const mainContactId = useMemo(() => {
-    const mainContact = contacts.find(c => c.isMain);
-    return mainContact?.id ?? null;
+    if (contacts.length === 0) return null;
+    const sorted = [...contacts].sort((a, b) => {
+      if (a.isMain && !b.isMain) return -1;
+      if (!a.isMain && b.isMain) return 1;
+      return a.id - b.id;
+    });
+    return sorted[0].id;
   }, [contacts]);
+
+  // Contract to show in the main contact card: always prefer main contact's contract, then any contract (so it never disappears)
+  const contractForMainCard = useMemo(() => {
+    if (mainContactId == null) return null;
+    const mainContract = contactContracts[mainContactId];
+    if (mainContract) return mainContract;
+    const firstContract = Object.values(contactContracts).find(c => c != null);
+    return firstContract ?? null;
+  }, [mainContactId, contactContracts]);
 
   // Track if we've already fetched contracts for this client to prevent double-fetching
   const contractsFetchedRef = useRef<Set<string>>(new Set());
@@ -1046,25 +1060,20 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 }
               }
 
-              // If contact_id is null OR contact_id doesn't match any contact, assign to main contact (backward compatibility)
-              if (!assigned) {
-                const mainContact = contacts.find(c => c.isMain);
-                
-                if (mainContact) {
-                  const existingContract = contactContractsMap[mainContact.id];
-                  const shouldAssign = !existingContract || 
-                    (contract.signed_at && !existingContract.signed_at); // Prefer signed over draft
-
-                  if (shouldAssign) {
-                    const contractName = contractTemplates.find(t => t.id === contract.template_id)?.name || 'Contract';
-                    contactContractsMap[mainContact.id] = {
-                      id: contract.id,
-                      name: contractName,
-                      status: contract.status,
-                      signed_at: contract.signed_at
-                    };
-                    assigned = true;
-                  }
+              // If contact_id is null OR contact_id doesn't match any contact, assign to stable main contact (avoids flicker)
+              if (!assigned && mainContactId != null) {
+                const existingContract = contactContractsMap[mainContactId];
+                const shouldAssign = !existingContract ||
+                  (contract.signed_at && !existingContract.signed_at); // Prefer signed over draft
+                if (shouldAssign) {
+                  const contractName = contractTemplates.find(t => t.id === contract.template_id)?.name || 'Contract';
+                  contactContractsMap[mainContactId] = {
+                    id: contract.id,
+                    name: contractName,
+                    status: contract.status,
+                    signed_at: contract.signed_at
+                  };
+                  assigned = true;
                 }
               }
             });
@@ -3617,6 +3626,22 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           )}
                         </div>
                         <div className="flex items-center gap-2 flex-shrink-0">
+                          {/* View contract - round icon, green if signed, white if draft */}
+                          {(() => {
+                            const contractForThisCard = contact.id === mainContactId ? contractForMainCard : contactContracts[contact.id];
+                            if (!contractForThisCard) return null;
+                            const isSigned = contractForThisCard.status === 'signed';
+                            return (
+                              <button
+                                type="button"
+                                className={`btn btn-sm btn-circle ${isSigned ? 'bg-green-600 hover:bg-green-700 border-green-600 text-white' : 'bg-white/90 hover:bg-white text-gray-800 border-white/50'}`}
+                                onClick={() => handleViewContract(contractForThisCard.id)}
+                                title={`View contract (${contractForThisCard.status})`}
+                              >
+                                <DocumentTextIcon className="w-4 h-4" />
+                              </button>
+                            );
+                          })()}
                           {/* Edit and Delete buttons - icon only */}
                           {((contact.isMain && !isEditingMainContact) || (!contact.isMain && !contact.isEditing)) && (
                             <>
@@ -4205,36 +4230,36 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         </div>
                       </div>
 
-                      {/* Contract - Only show for main contact */}
-                      {contact.isMain && (
+                      {/* Contract - Only show for main contact; use contractForMainCard so contract always appears in main card */}
+                      {contact.id === mainContactId && (
                         <div className="flex items-center justify-between py-3">
                           <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Contract</label>
                           <div className="flex-1 ml-4">
-                            {contactContracts[contact.id] ? (
+                            {contractForMainCard ? (
                               <div className="flex flex-col gap-2 items-end">
                                 <div className="flex items-center justify-end gap-2">
                                   <span className="text-sm font-medium text-gray-700">
-                                    {contactContracts[contact.id]?.name}
+                                    {contractForMainCard.name}
                                   </span>
-                                  <span className={`badge badge-sm ${contactContracts[contact.id]?.status === 'signed' ? 'bg-purple-600 text-white border-none' : 'badge-warning'
+                                  <span className={`badge badge-sm ${contractForMainCard.status === 'signed' ? 'bg-purple-600 text-white border-none' : 'badge-warning'
                                     }`}>
-                                    {contactContracts[contact.id]?.status}
+                                    {contractForMainCard.status}
                                   </span>
                                 </div>
                                 <div className="flex gap-2">
                                   <button
                                     className="btn btn-outline btn-primary btn-sm justify-start w-auto min-w-0 px-2 self-start"
-                                    onClick={() => handleViewContract(contactContracts[contact.id]?.id)}
+                                    onClick={() => handleViewContract(contractForMainCard.id)}
                                   >
                                     <DocumentTextIcon className="w-4 h-4" />
                                     View Contract
                                   </button>
-                                  {contactContracts[contact.id]?.status === 'draft' && (
+                                  {contractForMainCard.status === 'draft' && (
                                     <button
                                       className="btn btn-outline btn-primary btn-sm justify-start w-auto min-w-0 px-2 self-start"
                                       onClick={() => {
                                         if (window.confirm('Are you sure you want to delete this contract? This action cannot be undone.')) {
-                                          handleDeleteContract(contactContracts[contact.id]?.id!);
+                                          handleDeleteContract(contractForMainCard.id);
                                         }
                                       }}
                                     >

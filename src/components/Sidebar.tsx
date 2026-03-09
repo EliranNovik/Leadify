@@ -132,7 +132,7 @@ const mobileSidebarItems: SidebarItem[] = [
   { icon: ShieldCheckIcon, label: 'Admin Panel', path: '/admin' },
 ];
 
-const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, userRole = 'User', isOpen = false, onClose, onOpenAIChat, mobileOnly = false }) => {
+const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole = 'User', isOpen = false, onClose, onOpenAIChat, mobileOnly = false }) => {
   // Check if alternative (green) theme is active - make it reactive
   const [isAltTheme, setIsAltTheme] = useState(() => document.documentElement.classList.contains('theme-alt'));
 
@@ -229,6 +229,14 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
   const [isSuperUser, setIsSuperUser] = React.useState<boolean>(initialUserInfo.isSuperUser);
   const [isLoadingUserInfo, setIsLoadingUserInfo] = React.useState<boolean>(false); // Always false - never show loading
 
+  // Sync display name from AuthContext as soon as user is available so we don't show placeholder before DB fetch
+  React.useEffect(() => {
+    const fromContext = userFullName || authUser?.email || '';
+    if (fromContext && fromContext !== 'User') {
+      setUserOfficialName(prev => (prev === 'User' || prev === '' || !prev ? fromContext : prev));
+    }
+  }, [userFullName, authUser?.email]);
+
   // Compute initials immediately from available data
   const initials = React.useMemo(() => {
     // Priority: userInitials prop > authUserInitials > computed from userOfficialName > computed from userName > computed from userFullName > computed from email
@@ -241,7 +249,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
       }
       return userOfficialName[0]?.toUpperCase() || 'U';
     }
-    if (userName && userName !== 'John Doe') {
+    if (userName) {
       const parts = userName.trim().split(' ');
       if (parts.length >= 2) {
         return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
@@ -772,11 +780,18 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
 
                 {/* User info - only visible when sidebar is expanded */}
                 {isSidebarHovered && (
-                  <div className="flex flex-col min-w-0">
-                    {/* Always show user info immediately - never show loading */}
-                    <span className="text-white font-medium text-sm truncate">
-                      {userOfficialName || userName || authUser?.email || 'User'}
-                    </span>
+                  <div className="flex flex-col min-w-0 flex-1">
+                    {/* Name row with Admin badge on the right */}
+                    <div className="flex items-center gap-2 w-full min-w-0">
+                      <span className="text-white font-medium text-sm truncate min-w-0 flex-1">
+                        {userOfficialName || userName || authUser?.email || 'User'}
+                      </span>
+                      {isSuperUser && (
+                        <span className="flex-shrink-0 w-9 h-9 rounded-full bg-green-500 flex items-center justify-center" title="Admin">
+                          <ShieldCheckIcon className="w-5 h-5 text-white" />
+                        </span>
+                      )}
+                    </div>
                     {/* Always show role - will be "User" initially, then update when data loads */}
                     <span className="text-white/70 text-xs truncate">
                       {userRoleFromDB || 'User'}
@@ -927,11 +942,18 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                 </button>
 
                 {/* User info - always visible on mobile */}
-                <div className="flex flex-col min-w-0">
-                  {/* Always show user info immediately - never show loading */}
-                  <span className="text-base-content font-medium text-sm truncate">
-                    {userOfficialName || userName || authUser?.email || 'User'}
-                  </span>
+                <div className="flex flex-col min-w-0 flex-1">
+                  {/* Name row with Admin badge on the right */}
+                  <div className="flex items-center gap-2 w-full min-w-0">
+                    <span className="text-base-content font-medium text-sm truncate min-w-0 flex-1">
+                      {userOfficialName || userName || authUser?.email || 'User'}
+                    </span>
+                    {isSuperUser && (
+                      <span className="flex-shrink-0 w-9 h-9 rounded-full bg-green-500 flex items-center justify-center" title="Admin">
+                        <ShieldCheckIcon className="w-5 h-5 text-white" />
+                      </span>
+                    )}
+                  </div>
                   {/* Always show role - will be "User" initially, then update when data loads */}
                   <span className="text-base-content/70 text-xs truncate">
                     {userRoleFromDB || 'User'}

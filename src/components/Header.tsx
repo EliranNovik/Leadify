@@ -28,6 +28,7 @@ import {
   ChatBubbleLeftRightIcon,
   StarIcon,
   Cog6ToothIcon,
+  ShieldCheckIcon,
 } from '@heroicons/react/24/outline';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
@@ -38,6 +39,7 @@ import RMQMessagesPage from '../pages/RMQMessagesPage';
 import HighlightsPanel from './HighlightsPanel';
 import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
 import { useExternalUser } from '../hooks/useExternalUser';
+import { useAuthContext } from '../contexts/AuthContext';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -169,6 +171,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const searchDropdownRef = useRef<HTMLDivElement>(null);
   const filterDropdownRef = useRef<HTMLDivElement>(null);
   const { instance } = useMsal();
+  const { userFullName: authUserFullName, userInitials: authUserInitials } = useAuthContext();
   const [isMsalLoading, setIsMsalLoading] = useState(false);
   const [userAccount, setUserAccount] = useState<any>(null);
   const [isMsalInitialized, setIsMsalInitialized] = useState(false);
@@ -234,6 +237,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [newLeadsCount, setNewLeadsCount] = useState<number>(0);
   const [showProfileDropdown, setShowProfileDropdown] = useState(false);
   const profileDropdownRef = useRef<HTMLDivElement>(null);
+  const profileDropdownRefDesktop = useRef<HTMLDivElement>(null);
   const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
   const createdStageIdsRef = useRef<number[]>([0, 11]);
   const schedulerStageIdsRef = useRef<number[]>([10]);
@@ -553,11 +557,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         setShowNotifications(false);
       }
 
-      // Close profile dropdown when clicking outside
-      if (
-        profileDropdownRef.current &&
-        !profileDropdownRef.current.contains(target as Node)
-      ) {
+      // Close profile dropdown when clicking outside (check both mobile and desktop profile refs)
+      const outsideMobile = !profileDropdownRef.current?.contains(target as Node);
+      const outsideDesktop = !profileDropdownRefDesktop.current?.contains(target as Node);
+      if (outsideMobile && outsideDesktop) {
         setShowProfileDropdown(false);
       }
 
@@ -4345,13 +4348,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       if (!instance) return;
 
       try {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-
         const accounts = instance.getAllAccounts();
         if (accounts.length > 0) {
           setUserAccount(accounts[0]);
         }
-
         setIsMsalInitialized(true);
       } catch (error) {
         console.error('Failed to initialize MSAL:', error);
@@ -4475,6 +4475,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               tenants_employee!employee_id(
                 id,
                 display_name,
+                official_name,
                 bonuses_role,
                 department_id,
                 user_id,
@@ -6804,7 +6805,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     <>
       <div className="navbar bg-base-100 px-2 md:px-0 h-14 md:h-16 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
         {/* Left section with menu and logo */}
-        <div className={`flex-1 justify-start flex items-center gap-4 overflow-hidden transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+        <div className={`flex-1 justify-start flex items-center gap-4 overflow-hidden md:overflow-visible transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
           <button className="md:hidden btn btn-ghost btn-square" onClick={onMenuClick} aria-label={isMenuOpen ? "Close menu" : "Open menu"}>
             {isMenuOpen ? (
               <XMarkIcon className="w-6 h-6" />
@@ -6934,139 +6935,298 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             )}
           </div>
 
-          <div className="h-14 md:h-16 flex items-center">
-            <Link to="/" className="hidden md:flex items-center gap-2">
-
-              <span className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
-            </Link>
-          </div>
-          {/* Quick Actions Dropdown - Desktop only */}
-          <div className="hidden md:block relative ml-4" data-quick-actions-dropdown>
+          {/* Desktop: hamburger flush left, RMQ logo next to it */}
+          <div className="hidden md:flex items-center h-14 pl-2 md:pl-4">
             <button
               ref={buttonRef}
+              type="button"
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 setShowQuickActionsDropdown(!showQuickActionsDropdown);
-                setShowMobileQuickActionsDropdown(false); // Close mobile dropdown if open
+                setShowMobileQuickActionsDropdown(false);
               }}
-              className={`btn btn-sm transition-all duration-300 bg-gradient-to-tr ${isAltTheme ? 'from-green-500 via-emerald-600 to-lime-600' : 'from-pink-500 via-purple-500 to-purple-600'} text-white flex items-center gap-2 px-3 rounded-full border-0`}
+              className="btn btn-ghost btn-square min-h-12 h-12 w-12 p-0 flex items-center justify-center rounded-xl"
+              aria-label={showQuickActionsDropdown ? 'Close menu' : 'Open menu'}
               title="Quick Actions"
+              data-quick-actions-dropdown
             >
-              <BoltIcon className="w-5 h-5 text-white" />
-              <ChevronDownIcon className={`w-4 h-4 text-white transition-transform duration-200 ${showQuickActionsDropdown ? 'rotate-180' : ''}`} />
+              <Bars3Icon className="w-8 h-8" />
             </button>
-
-            {/* Dropdown Menu */}
-            {showQuickActionsDropdown && createPortal(
-              <div
-                className="fixed w-48 bg-white rounded-xl shadow-2xl border border-gray-200 z-[9999] overflow-hidden"
-                data-dropdown-menu
-                style={{
-                  top: buttonRef.current ? `${buttonRef.current.getBoundingClientRect().bottom + 8}px` : '0px',
-                  left: buttonRef.current ? `${buttonRef.current.getBoundingClientRect().left}px` : '0px'
+            <Link to="/" className="flex items-center ml-2" onClick={() => setShowQuickActionsDropdown(false)}>
+              <span className="text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
+            </Link>
+            {/* Desktop only: profile image + name + dropdown next to RMQ */}
+            <div className="hidden md:block relative ml-4 flex items-center flex-shrink-0" ref={profileDropdownRefDesktop}>
+              <button
+                type="button"
+                className="btn btn-ghost gap-2 min-h-0 h-10 w-auto min-w-[2.5rem] pl-2 pr-2.5 rounded-full flex items-center justify-start flex-shrink-0"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setShowProfileDropdown((v) => !v);
                 }}
+                aria-expanded={showProfileDropdown}
+                aria-haspopup="true"
+              >
+                {(currentUserEmployee?.photo_url || currentUserEmployee?.photo) ? (
+                  <>
+                    <span
+                      className="w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] flex-shrink-0 rounded-full bg-base-300 block bg-no-repeat bg-center"
+                      style={{
+                        backgroundImage: `url(${currentUserEmployee.photo_url || currentUserEmployee.photo})`,
+                        backgroundSize: 'contain',
+                      }}
+                    />
+                    <img
+                      src={currentUserEmployee.photo_url || currentUserEmployee.photo}
+                      alt=""
+                      className="hidden"
+                      onError={(e) => {
+                        const target = e.target as HTMLImageElement;
+                        target.previousElementSibling?.classList.add('hidden');
+                        target.nextElementSibling?.classList.remove('hidden');
+                      }}
+                    />
+                  </>
+                ) : null}
+                <span className={`w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] flex-shrink-0 rounded-full overflow-hidden aspect-square bg-base-300 flex items-center justify-center ${(currentUserEmployee?.photo_url || currentUserEmployee?.photo) ? 'hidden' : ''}`}>
+                  {(authUserInitials || authUserFullName || userFullName) ? (
+                    <span className="text-sm font-semibold text-base-content/80">
+                      {(authUserInitials || (authUserFullName || userFullName || '').trim().split(/\s+/).map(n => n[0]).join('').toUpperCase().slice(0, 2)) || 'U'}
+                    </span>
+                  ) : (
+                    <UserIcon className="w-5 h-5 text-base-content/70" />
+                  )}
+                </span>
+                <span className="font-medium text-base-content max-w-[120px] truncate text-sm">
+                  {currentUserEmployee?.official_name || currentUserEmployee?.display_name || userFullName || authUserFullName || 'User'}
+                </span>
+                <ChevronDownIcon className={`w-4 h-4 flex-shrink-0 transition-transform ${showProfileDropdown ? 'rotate-180' : ''}`} />
+              </button>
+              {showProfileDropdown && (
+                <div
+                  className="absolute left-0 top-full mt-2 w-52 py-1 rounded-xl shadow-xl border border-base-300 bg-base-100 z-50"
+                  role="menu"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
+                    onClick={() => {
+                      setShowProfileDropdown(false);
+                      navigate('/my-profile');
+                    }}
+                  >
+                    <UserIcon className="w-5 h-5 text-base-content/70" />
+                    View profile
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
+                    onClick={() => {
+                      setShowProfileDropdown(false);
+                      setIsHighlightsPanelOpen(true);
+                    }}
+                  >
+                    <StarIcon className="w-5 h-5 text-base-content/70" style={{ color: '#3E28CD' }} />
+                    Highlights
+                  </button>
+                  {typeof onOpenAIChat === 'function' && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
+                      onClick={() => {
+                        setShowProfileDropdown(false);
+                        onOpenAIChat();
+                      }}
+                    >
+                      <FaRobot className="w-5 h-5 text-base-content/70" />
+                      RMQ AI
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
+                    onClick={() => {
+                      setShowProfileDropdown(false);
+                      navigate('/settings');
+                    }}
+                  >
+                    <Cog6ToothIcon className="w-5 h-5 text-base-content/70" />
+                    Settings
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
+                    onClick={() => {
+                      setShowProfileDropdown(false);
+                      if (userAccount) {
+                        setShowSignOutModal(true);
+                      } else {
+                        handleMicrosoftSignIn();
+                      }
+                    }}
+                    disabled={isMsalLoading || !isMsalInitialized}
+                  >
+                    <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24">
+                      <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
+                    </svg>
+                    <span className={userAccount ? 'text-primary' : 'text-base-content/70'}>
+                      {userAccount ? 'Signed in' : 'Sign in with Microsoft'}
+                    </span>
+                  </button>
+                  <div className="border-t border-base-300 my-1" />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors text-error"
+                    onClick={() => {
+                      setShowProfileDropdown(false);
+                      handleSignOut();
+                    }}
+                  >
+                    <ArrowRightOnRectangleIcon className="w-5 h-5" />
+                    Log out
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Desktop: overlay + left-side panel when hamburger menu is open */}
+          {showQuickActionsDropdown && createPortal(
+            <>
+              <div
+                className="fixed inset-0 bg-black/40 z-[9998] hidden md:block"
+                data-dropdown-menu
+                aria-hidden="true"
+                onClick={() => setShowQuickActionsDropdown(false)}
+              />
+              <div
+                className="fixed left-0 top-0 h-full w-72 max-w-[85vw] bg-base-100 shadow-2xl z-[9999] hidden md:flex flex-col overflow-hidden"
+                data-dropdown-menu
                 onClick={(e) => e.stopPropagation()}
               >
-                {/* RMQ Messages Option - COMMENTED OUT */}
-                {/* <button
-                  onClick={() => {
-                    setShowQuickActionsDropdown(false);
-                    if (onOpenMessaging) {
-                      onOpenMessaging();
-                    }
-                  }}
-                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50"
-                >
-                  <ChatBubbleLeftRightIcon className="w-5 h-5 text-gray-500" />
-                  <span className="text-sm font-medium">RMQ Messages</span>
-                </button> */}
-
-                {/* My Profile Option */}
-                <button
-                  onClick={() => {
-                    setShowQuickActionsDropdown(false);
-                    setShowMobileQuickActionsDropdown(false);
-                    navigate('/my-profile');
-                    setShowQuickActionsDropdown(false);
-                    setShowMobileQuickActionsDropdown(false);
-                  }}
-                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100"
-                >
-                  <UserIcon className="w-5 h-5 text-gray-500" />
-                  <span className="text-sm font-medium">My Profile</span>
-                </button>
-
+                {/* RMQ 2.0 at top */}
+                <div className="flex-shrink-0 pt-16 px-4 pb-4 border-b border-base-300">
+                  <span className="text-xl font-extrabold tracking-tight" style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
+                </div>
+                {/* Nav links - scrollable */}
+                <div className="flex-1 overflow-y-auto py-2">
                 {navTabs
                   .filter(tab => isSuperUser || tab.path !== '/new-cases')
-                  .map(tab => {
+                  .map((tab, index) => {
                     const Icon = tab.icon;
                     const showCount = tab.path === '/new-cases' && newLeadsCount > 0;
+                    const itemClass = "flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 dark:text-base-content w-full text-left hover:bg-base-200";
                     if (false) { // Removed action check
                       return (
-                        <button
-                          key={tab.label}
-                          onClick={() => {
-                            setShowQuickActionsDropdown(false);
-                            setShowMobileQuickActionsDropdown(false);
-                            if (onOpenEmailThread) {
-                              onOpenEmailThread();
-                            }
-                          }}
-                          className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left"
-                        >
-                          <Icon className="w-5 h-5 text-gray-500" />
-                          <span className="text-sm font-medium">{tab.label}</span>
-                        </button>
+                        <React.Fragment key={tab.label}>
+                          {index > 0 && <div className="border-t border-base-300" />}
+                          <button
+                            onClick={() => {
+                              setShowQuickActionsDropdown(false);
+                              setShowMobileQuickActionsDropdown(false);
+                              if (onOpenEmailThread) onOpenEmailThread();
+                            }}
+                            className={itemClass}
+                          >
+                            <Icon className="w-5 h-5 text-gray-500" />
+                            <span className="text-sm font-medium">{tab.label}</span>
+                          </button>
+                        </React.Fragment>
                       );
                     }
                     if (tab.path === '/whatsapp') {
                       return (
-                        <button
-                          key={tab.label}
-                          onClick={() => {
-                            setShowQuickActionsDropdown(false);
-                            setShowMobileQuickActionsDropdown(false);
-                            if (onOpenWhatsApp) {
-                              onOpenWhatsApp();
-                            }
-                          }}
-                          className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left relative"
-                        >
-                          <Icon className="w-5 h-5 text-gray-500" />
-                          <span className="text-sm font-medium">{tab.label}</span>
-                          {whatsappClientsUnreadCount > 0 && (
-                            <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                              {whatsappClientsUnreadCount > 9 ? '9+' : whatsappClientsUnreadCount}
-                            </span>
-                          )}
-                        </button>
+                        <React.Fragment key={tab.label}>
+                          {index > 0 && <div className="border-t border-base-300" />}
+                          <button
+                            onClick={() => {
+                              setShowQuickActionsDropdown(false);
+                              setShowMobileQuickActionsDropdown(false);
+                              if (onOpenWhatsApp) onOpenWhatsApp();
+                            }}
+                            className={itemClass}
+                          >
+                            <Icon className="w-5 h-5 text-gray-500" />
+                            <span className="text-sm font-medium">{tab.label}</span>
+                            {whatsappClientsUnreadCount > 0 && (
+                              <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                                {whatsappClientsUnreadCount > 9 ? '9+' : whatsappClientsUnreadCount}
+                              </span>
+                            )}
+                          </button>
+                        </React.Fragment>
                       );
                     }
                     return (
-                      <Link
-                        key={tab.path || tab.label}
-                        to={tab.path || '/'}
-                        onClick={() => {
-                          setShowQuickActionsDropdown(false);
-                          setShowMobileQuickActionsDropdown(false);
-                        }}
-                        className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700"
-                      >
-                        <Icon className="w-5 h-5 text-gray-500" />
-                        <span className="text-sm font-medium">{tab.label}</span>
-                        {showCount && (
-                          <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full font-semibold">
-                            {newLeadsCount}
-                          </span>
-                        )}
-                      </Link>
+                      <React.Fragment key={tab.path || tab.label}>
+                        {index > 0 && <div className="border-t border-base-300" />}
+                        <Link
+                          to={tab.path || '/'}
+                          onClick={() => {
+                            setShowQuickActionsDropdown(false);
+                            setShowMobileQuickActionsDropdown(false);
+                          }}
+                          className={itemClass}
+                        >
+                          <Icon className="w-5 h-5 text-gray-500" />
+                          <span className="text-sm font-medium">{tab.label}</span>
+                          {showCount && (
+                            <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full font-semibold">
+                              {newLeadsCount}
+                            </span>
+                          )}
+                        </Link>
+                      </React.Fragment>
                     );
                   })}
-              </div>,
-              document.body
-            )}
-          </div>
+                </div>
+                {/* Employee profile at bottom */}
+                <div className="flex-shrink-0 px-4 py-4 pb-6 border-t border-base-300 flex items-center gap-3">
+                  {(currentUserEmployee?.photo_url || currentUserEmployee?.photo) ? (
+                    <span
+                      className="w-12 h-12 min-w-[3rem] min-h-[3rem] flex-shrink-0 rounded-full bg-base-300 block bg-no-repeat bg-center"
+                      style={{
+                        backgroundImage: `url(${currentUserEmployee.photo_url || currentUserEmployee.photo})`,
+                        backgroundSize: 'cover',
+                      }}
+                    />
+                  ) : (
+                    <span className="w-12 h-12 min-w-[3rem] min-h-[3rem] flex-shrink-0 rounded-full bg-base-300 flex items-center justify-center text-base-content/80 font-semibold text-sm">
+                      {(authUserInitials || authUserFullName || userFullName)
+                        ? (authUserInitials || (authUserFullName || userFullName || '').trim().split(/\s+/).map(n => n[0]).join('').toUpperCase().slice(0, 2))
+                        : 'U'}
+                    </span>
+                  )}
+                  <div className="flex flex-col min-w-0 flex-1">
+                    <div className="flex items-center gap-2 w-full min-w-0">
+                      <span className="font-medium text-sm text-base-content truncate min-w-0 flex-1">
+                        {currentUserEmployee?.official_name || currentUserEmployee?.display_name || userFullName || authUserFullName || 'User'}
+                      </span>
+                      {isSuperUser && (
+                        <span className="flex-shrink-0 w-9 h-9 rounded-full bg-green-500 flex items-center justify-center" title="Admin">
+                          <ShieldCheckIcon className="w-5 h-5 text-white" />
+                        </span>
+                      )}
+                    </div>
+                    {currentUserEmployee?.department && (
+                      <span className="text-xs text-base-content/60 truncate">
+                        {currentUserEmployee.department}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </>,
+            document.body
+          )}
         </div>
 
         {/* Search bar */}
@@ -7706,20 +7866,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             )}
           </div>
 
-          {/* Microsoft sign in/out button - icon only, desktop */}
-          <button
-            type="button"
-            className={`btn btn-ghost btn-sm btn-circle hidden md:flex items-center justify-center min-h-9 h-9 w-9 p-0 ${userAccount ? 'text-primary' : 'text-base-content/70'}`}
-            onClick={handleMicrosoftSignIn}
-            disabled={isMsalLoading || !isMsalInitialized}
-            title={userAccount ? 'Sign out' : 'Sign in with Microsoft'}
-          >
-            <svg className="w-5 h-5" viewBox="0 0 24 24">
-              <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
-            </svg>
-          </button>
-
-          {/* Microsoft sign in - mobile only, show only when NOT logged in */}
+          {/* Microsoft sign in - mobile only, show only when NOT logged in (desktop: inside profile dropdown) */}
           {!userAccount && (
             <button
               type="button"
@@ -7738,8 +7885,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             </button>
           )}
 
-          {/* Profile + dropdown: desktop (with name), mobile (avatar + arrow only) */}
-          <div className="relative mr-2 flex items-center flex-shrink-0" ref={profileDropdownRef}>
+          {/* Profile + dropdown: mobile only (desktop profile is in left section next to RMQ) */}
+          <div className="relative mr-2 flex items-center flex-shrink-0 md:hidden" ref={profileDropdownRef}>
             <button
               type="button"
               className="btn btn-ghost gap-2 md:gap-2.5 min-h-0 h-10 md:h-10 w-auto min-w-[2.5rem] pl-2 pr-2.5 md:px-2.5 rounded-full flex items-center justify-center md:justify-start flex-shrink-0"
@@ -7769,10 +7916,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 </>
               ) : null}
               <span className={`w-10 h-10 min-w-[2.5rem] min-h-[2.5rem] flex-shrink-0 rounded-full overflow-hidden aspect-square bg-base-300 flex items-center justify-center ${(currentUserEmployee?.photo_url || currentUserEmployee?.photo) ? 'hidden' : ''}`}>
-                <UserIcon className="w-5 h-5 md:w-6 md:h-6 text-base-content/70" />
+                {(authUserInitials || authUserFullName || userFullName) ? (
+                  <span className="text-sm md:text-base font-semibold text-base-content/80">
+                    {(authUserInitials || (authUserFullName || userFullName || '').trim().split(/\s+/).map(n => n[0]).join('').toUpperCase().slice(0, 2)) || 'U'}
+                  </span>
+                ) : (
+                  <UserIcon className="w-5 h-5 md:w-6 md:h-6 text-base-content/70" />
+                )}
               </span>
               <span className="hidden md:inline font-medium text-base-content max-w-[140px] truncate text-sm">
-                {currentUserEmployee?.display_name || userFullName || 'User'}
+                {currentUserEmployee?.official_name || currentUserEmployee?.display_name || userFullName || authUserFullName || 'User'}
               </span>
               <ChevronDownIcon className={`w-4 h-4 flex-shrink-0 transition-transform ${showProfileDropdown ? 'rotate-180' : ''}`} />
             </button>
@@ -7830,6 +7983,28 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 >
                   <Cog6ToothIcon className="w-5 h-5 text-base-content/70" />
                   Settings
+                </button>
+                {/* Microsoft sign in / signed in - desktop only, inside profile dropdown */}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full hidden md:flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
+                  onClick={() => {
+                    setShowProfileDropdown(false);
+                    if (userAccount) {
+                      setShowSignOutModal(true);
+                    } else {
+                      handleMicrosoftSignIn();
+                    }
+                  }}
+                  disabled={isMsalLoading || !isMsalInitialized}
+                >
+                  <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24">
+                    <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
+                  </svg>
+                  <span className={userAccount ? 'text-primary' : 'text-base-content/70'}>
+                    {userAccount ? 'Signed in' : 'Sign in with Microsoft'}
+                  </span>
                 </button>
                 <div className="border-t border-base-300 my-1" />
                 <button

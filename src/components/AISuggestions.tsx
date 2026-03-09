@@ -156,7 +156,100 @@ const allSuggestions: Suggestion[] = [
   }
 ];
 
-const AISuggestions = forwardRef((props, ref) => {
+export interface AISuggestionsProps {
+  /** When set, only show suggestions for leads where this user has a role (RolesTab roles). */
+  currentUserEmployeeId?: number | null;
+  /** User display name for matching text role fields on new leads. */
+  currentUserDisplayName?: string;
+}
+
+/** Role field names for new leads (leads table) - same as RolesTab. */
+const NEW_LEAD_ROLE_FIELDS = ['scheduler', 'manager', 'helper', 'expert', 'closer', 'handler', 'case_handler_id'] as const;
+/** Role field names for legacy leads (leads_lead table) - same as RolesTab. */
+const LEGACY_LEAD_ROLE_FIELDS = ['meeting_scheduler_id', 'meeting_manager_id', 'meeting_lawyer_id', 'expert_id', 'closer_id', 'case_handler_id', 'retainer_handler_id'] as const;
+
+/**
+ * Fetches lead role data and returns the set of leadId values where the current user has a role.
+ * Uses the same role fields as RolesTab (new + legacy).
+ */
+async function getLeadIdsWhereUserHasRole(
+  suggestions: Suggestion[],
+  employeeId: number | null | undefined,
+  displayName: string | undefined
+): Promise<Set<string> | null> {
+  if ((employeeId == null || employeeId === undefined) && !displayName?.trim()) return null;
+
+  const newLeadIds: string[] = [];
+  const legacyLeadIds: number[] = [];
+  for (const s of suggestions) {
+    const lid = s.leadId;
+    if (!lid) continue;
+    if (typeof lid === 'string' && lid.startsWith('legacy_')) {
+      const num = parseInt(lid.replace('legacy_', ''), 10);
+      if (!isNaN(num)) legacyLeadIds.push(num);
+    } else if (lid) {
+      newLeadIds.push(String(lid));
+    }
+  }
+
+  const allowed = new Set<string>();
+  const empIdStr = employeeId != null ? String(employeeId) : '';
+  const dispTrim = displayName?.trim() ?? '';
+
+  const checkNewLeadRole = (val: unknown): boolean => {
+    if (val == null || val === '') return false;
+    if (typeof val === 'number' || (typeof val === 'string' && /^\d+$/.test(val))) {
+      return empIdStr !== '' && String(val) === empIdStr;
+    }
+    if (typeof val === 'string' && dispTrim) {
+      return val.trim() === dispTrim;
+    }
+    return false;
+  };
+
+  if (newLeadIds.length > 0) {
+    const { data: newLeads, error: newErr } = await supabase
+      .from('leads')
+      .select('id, scheduler, manager, helper, expert, closer, handler, case_handler_id')
+      .in('id', newLeadIds);
+
+    if (!newErr && newLeads) {
+      for (const row of newLeads) {
+        for (const field of NEW_LEAD_ROLE_FIELDS) {
+          const val = (row as Record<string, unknown>)[field];
+          if (checkNewLeadRole(val)) {
+            allowed.add(String(row.id));
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  if (legacyLeadIds.length > 0 && empIdStr) {
+    const { data: legacyLeads, error: legErr } = await supabase
+      .from('leads_lead')
+      .select('id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, closer_id, case_handler_id, retainer_handler_id')
+      .in('id', legacyLeadIds);
+
+    if (!legErr && legacyLeads) {
+      for (const row of legacyLeads) {
+        for (const field of LEGACY_LEAD_ROLE_FIELDS) {
+          const val = (row as Record<string, unknown>)[field];
+          if (val != null && String(val) === empIdStr) {
+            allowed.add(`legacy_${row.id}`);
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  return allowed;
+}
+
+const AISuggestions = forwardRef<unknown, AISuggestionsProps>((props, ref) => {
+  const { currentUserEmployeeId, currentUserDisplayName } = props;
   const navigate = useNavigate();
   const { isAltTheme } = useTheme();
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -238,7 +331,7 @@ const AISuggestions = forwardRef((props, ref) => {
       const data = await response.json();
       
       // Convert notifications to suggestions format
-      const newSuggestions: Suggestion[] = data.notifications.map((notification: any) => ({
+      let newSuggestions: Suggestion[] = data.notifications.map((notification: any) => ({
         id: notification.id,
         type: notification.type,
         message: notification.message,
@@ -249,6 +342,23 @@ const AISuggestions = forwardRef((props, ref) => {
         leadNumber: notification.leadNumber,
         clientName: notification.clientName
       }));
+
+      // Filter to only leads where the signed-in user has a role (new + legacy, same as RolesTab)
+      if (currentUserEmployeeId != null || (currentUserDisplayName && currentUserDisplayName.trim())) {
+        const allowedLeadIds = await getLeadIdsWhereUserHasRole(
+          newSuggestions,
+          currentUserEmployeeId ?? undefined,
+          currentUserDisplayName
+        );
+        if (allowedLeadIds) {
+          newSuggestions = newSuggestions.filter((s) => {
+            if (!s.leadId && !s.leadNumber) return true; // no lead → show to everyone
+            if (s.leadId && allowedLeadIds.has(s.leadId)) return true;
+            if (s.leadNumber && (allowedLeadIds.has(s.leadNumber) || allowedLeadIds.has(`legacy_${s.leadNumber}`))) return true;
+            return false;
+          });
+        }
+      }
 
       setSuggestions(newSuggestions);
       setAiMessage(data.aiMessage);
@@ -268,19 +378,11 @@ const AISuggestions = forwardRef((props, ref) => {
     return text.replace(/(\d{1,2}:\d{2}):\d{2}/g, '$1');
   };
 
-  // Auto-refresh notifications every 5 minutes
+  // Fetch once on mount and when user identity changes; no auto-reload (only manual page refresh)
   useEffect(() => {
     fetchNotifications();
     fetchPublicMessages();
-    
-    const interval = setInterval(fetchNotifications, 5 * 60 * 1000); // 5 minutes
-    const publicMessagesInterval = setInterval(fetchPublicMessages, 10 * 60 * 1000); // 10 minutes
-    
-    return () => {
-      clearInterval(interval);
-      clearInterval(publicMessagesInterval);
-    };
-  }, []);
+  }, [currentUserEmployeeId, currentUserDisplayName]);
   const getDueColor = (type: Suggestion['type']) => {
     switch (type) {
       case 'urgent': return 'bg-red-100 text-red-700';

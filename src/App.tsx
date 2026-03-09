@@ -788,7 +788,8 @@ const AppContentInner: React.FC = () => {
         element={
           < ProtectedRoute user={authUser} >
             <div className={`flex h-screen bg-base-100 ${appJustLoggedIn ? 'fade-in' : ''}`}>
-              {!isSignedSalesPage && !isCaseManagerPage && !isContractPage && (
+              {/* Always mount Sidebar so it does not reload when navigating; hide on full-width pages */}
+              <div className={isSignedSalesPage || isCaseManagerPage || isContractPage ? 'hidden' : undefined}>
                 <Sidebar
                   userName={sidebarUserName}
                   userInitials={userInitials}
@@ -797,7 +798,7 @@ const AppContentInner: React.FC = () => {
                   onOpenAIChat={handleOpenAIChat}
                   mobileOnly={sidebarMobileOnly}
                 />
-              )}
+              </div>
               <div className={`flex-1 flex flex-col overflow-hidden ${!isAdminPage && !isReportsPage && !isSignedSalesPage && !isCaseManagerPage && !isContractPage ? 'md:pl-24' : ''}`}>
                 <Header
                   onMenuClick={handleMenuClick}

@@ -150,7 +150,7 @@ const AISuggestionsModal: React.FC<AISuggestionsModalProps> = ({ isOpen, onClose
 
   const SuggestionCard = ({ suggestion }: { suggestion: Suggestion }) => (
     <div 
-      className="relative flex flex-col bg-white rounded-2xl shadow-md transition-transform duration-200 md:hover:shadow-xl md:hover:scale-[1.025] p-5 h-[280px] w-full cursor-pointer"
+      className="relative flex flex-col bg-white rounded-2xl border border-gray-200 transition-transform duration-200 md:hover:scale-[1.025] p-5 h-[280px] w-full cursor-pointer"
       onClick={() => handleActionClick(suggestion)}
     >
       <div className="flex items-start justify-between mb-2 flex-shrink-0">

@@ -9,6 +9,8 @@ import EmployeeRoleLeadsModal from '../components/EmployeeRoleLeadsModal';
 import EmployeeFieldAssignmentsModal from '../components/EmployeeFieldAssignmentsModal';
 import DynamicIsland from '../components/DynamicIsland';
 import DynamicTab from '../components/DynamicTab';
+import FixedContributionModal from '../components/FixedContributionModal';
+import EmployeeDepartmentRolesModal from '../components/EmployeeDepartmentRolesModal';
 import { calculateSignedPortionAmount } from '../utils/rolePercentageCalculator';
 import {
   calculateEmployeeMetrics,
@@ -168,6 +170,8 @@ const SalesContributionPage = () => {
   const [rolePercentages, setRolePercentages] = useState<Map<string, number>>(new Map());
   const [tempRolePercentages, setTempRolePercentages] = useState<Map<string, string>>(new Map());
   const [isDynamicIslandOpen, setIsDynamicIslandOpen] = useState(false);
+  const [isFixedContributionModalOpen, setIsFixedContributionModalOpen] = useState(false);
+  const [isDepartmentRolesModalOpen, setIsDepartmentRolesModalOpen] = useState(false);
   const [savingRolePercentages, setSavingRolePercentages] = useState(false);
   const [loadingRolePercentages, setLoadingRolePercentages] = useState(false);
 
@@ -2909,7 +2913,7 @@ const SalesContributionPage = () => {
       });
 
       // Step 1: Fetch ALL employees (similar to EmployeePerformancePage)
-      // Fetch employees from users table with tenants_employee join (only active users)
+      // Fetch employees from users table with tenants_employee join (only active staff users)
       const { data: allEmployeesData, error: allEmployeesDataError } = await supabase
         .from('users')
         .select(`
@@ -2918,6 +2922,7 @@ const SalesContributionPage = () => {
           email,
           employee_id,
           is_active,
+          is_staff,
           tenants_employee!employee_id(
             id,
             display_name,
@@ -2933,7 +2938,8 @@ const SalesContributionPage = () => {
           )
         `)
         .not('employee_id', 'is', null)
-        .eq('is_active', true);
+        .eq('is_active', true)
+        .eq('is_staff', true);
 
       if (allEmployeesDataError) {
         console.error('❌ Sales Contribution Report - Error fetching employees:', allEmployeesDataError);
@@ -2985,97 +2991,35 @@ const SalesContributionPage = () => {
 
       console.log('✅ Sales Contribution Report - Fetched', filteredEmployees.length, 'employees');
 
-      // Step 2: Group employees by bonuses_role (same logic as EmployeePerformancePage)
-      // Helper function to determine department from bonuses_role and department name
-      const getDepartmentFromEmployee = (emp: any): string => {
-        const role = emp.bonuses_role?.toLowerCase() || '';
-        const deptName = emp.department?.toLowerCase() || '';
+      // Step 2: Group employees by department role from employee_field_assignments (aligned with Department Roles modal)
+      const { data: roleAssignments, error: roleAssignmentsError } = await supabase
+        .from('employee_field_assignments')
+        .select('employee_id, department_role')
+        .in('department_role', departmentNames)
+        .eq('is_active', true);
 
-        // Partners: employees with department_id 17 go to Partners (check this first)
-        if (emp.department_id === 17) {
-          return 'Partners';
-        }
+      if (roleAssignmentsError) {
+        console.error('❌ Sales Contribution Report - Error fetching department role assignments:', roleAssignmentsError);
+        throw roleAssignmentsError;
+      }
 
-        // Sales: scheduler, manager, closer, expert (s, z, Z, c, e)
-        if (['s', 'z', 'c', 'e'].includes(role)) {
-          return 'Sales';
+      const employeeIdsByRole = new Map<string, Set<number>>();
+      departmentNames.forEach(name => employeeIdsByRole.set(name, new Set()));
+      (roleAssignments || []).forEach((row: any) => {
+        const role = row.department_role;
+        const empId = Number(row.employee_id);
+        if (role && !isNaN(empId) && employeeIdsByRole.has(role)) {
+          employeeIdsByRole.get(role)!.add(empId);
         }
-        // Handlers: handler (h, d, dm) - Note: 'e' (Expert) is excluded from Handlers
-        if (['h', 'd', 'dm'].includes(role)) {
-          return 'Handlers';
-        }
-        // Marketing: marketing (ma)
-        if (['ma'].includes(role)) {
-          return 'Marketing';
-        }
-        // Partners: partners (p, m, pm, se, b, partners, dv) - Note: 'dm' moved to Handlers
-        if (['p', 'm', 'pm', 'se', 'b', 'partners', 'dv'].includes(role)) {
-          return 'Partners';
-        }
-        // Finance/Collection: collection (col) or department name contains finance/collection
-        if (['col'].includes(role) || deptName.includes('finance') || deptName.includes('collection')) {
-          return 'Finance';
-        }
-
-        return 'Sales'; // Default
-      };
-
-      // Group employees by department using bonuses_role (same logic as EmployeePerformancePage)
-      const salesEmployees = filteredEmployees.filter(emp => {
-        // Exclude employees with department_id 17 (they go to Partners)
-        if (emp.department_id === 17) {
-          return false;
-        }
-        const role = emp.bonuses_role;
-        return role && ['s', 'z', 'Z', 'c', 'e'].includes(role);
       });
 
-      const handlersEmployees = filteredEmployees.filter(emp => {
-        // Exclude employees with department_id 17 (they go to Partners)
-        if (emp.department_id === 17) {
-          return false;
-        }
-        const role = emp.bonuses_role;
-        // Include h, d, dm - but exclude 'e' (Expert) from Handlers
-        return role && ['h', 'd', 'dm'].includes(role);
-      });
+      const salesEmployees = filteredEmployees.filter(emp => employeeIdsByRole.get('Sales')?.has(emp.id));
+      const handlersEmployees = filteredEmployees.filter(emp => employeeIdsByRole.get('Handlers')?.has(emp.id));
+      const marketingEmployees = filteredEmployees.filter(emp => employeeIdsByRole.get('Marketing')?.has(emp.id));
+      const financeEmployees = filteredEmployees.filter(emp => employeeIdsByRole.get('Finance')?.has(emp.id));
+      const partnersEmployees = filteredEmployees.filter(emp => employeeIdsByRole.get('Partners')?.has(emp.id));
 
-      const marketingEmployees = filteredEmployees.filter(emp => {
-        // Exclude employees with department_id 17 (they go to Partners)
-        if (emp.department_id === 17) {
-          return false;
-        }
-        const role = emp.bonuses_role;
-        return role && ['ma'].includes(role);
-      });
-
-      const financeEmployees = filteredEmployees.filter(emp => {
-        // Exclude employees with department_id 17 (they go to Partners)
-        if (emp.department_id === 17) {
-          return false;
-        }
-        const dept = emp.department?.toLowerCase() || '';
-        const role = emp.bonuses_role;
-        return dept.includes('finance') ||
-          dept.includes('collection') ||
-          (role && ['col'].includes(role));
-      });
-
-      const partnersEmployees = filteredEmployees.filter(emp => {
-        // Include employees with department_id 17 in Partners
-        if (emp.department_id === 17) {
-          return true;
-        }
-        const role = emp.bonuses_role;
-        // Exclude employees with department_id 9 (Finance)
-        if (emp.department_id === 9) {
-          return false;
-        }
-        // Note: 'dm' moved to Handlers
-        return role && ['p', 'm', 'pm', 'se', 'b', 'partners', 'dv'].includes(role);
-      });
-
-      console.log('✅ Sales Contribution Report - Grouped employees:', {
+      console.log('✅ Sales Contribution Report - Grouped employees (from employee_field_assignments):', {
         Sales: salesEmployees.length,
         Handlers: handlersEmployees.length,
         Marketing: marketingEmployees.length,
@@ -6894,6 +6838,22 @@ const SalesContributionPage = () => {
               <Squares2X2Icon className="w-4 h-4" />
               Dynamic Island
             </button>
+            <button
+              onClick={() => setIsFixedContributionModalOpen(true)}
+              className="btn btn-primary btn-sm gap-2"
+              title="Fixed contribution per employee by department role"
+            >
+              <CurrencyDollarIcon className="w-4 h-4" />
+              Fixed contribution
+            </button>
+            <button
+              onClick={() => setIsDepartmentRolesModalOpen(true)}
+              className="btn btn-primary btn-sm gap-2"
+              title="Assign or move employees between department roles"
+            >
+              <UserGroupIcon className="w-4 h-4" />
+              Department roles
+            </button>
             {/* Total Signed Value */}
             <div className="flex items-center gap-2">
               <div className="px-4 py-2 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg min-w-[120px] text-right text-white shadow-md">
@@ -6907,6 +6867,18 @@ const SalesContributionPage = () => {
           </div>
         </div>
       </div>
+
+      {/* Fixed contribution modal */}
+      <FixedContributionModal
+        isOpen={isFixedContributionModalOpen}
+        onClose={() => setIsFixedContributionModalOpen(false)}
+        formatCurrency={formatCurrency}
+      />
+
+      <EmployeeDepartmentRolesModal
+        isOpen={isDepartmentRolesModalOpen}
+        onClose={() => setIsDepartmentRolesModalOpen(false)}
+      />
 
       {/* Dynamic Island Modal */}
       <DynamicIsland
