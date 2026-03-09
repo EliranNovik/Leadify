@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { supabase, sessionManager, isAuthError, handleSessionExpiration } from '../lib/supabase';
+import { supabase, sessionManager, isAuthError, isExpectedNoSessionError, handleSessionExpiration } from '../lib/supabase';
 import { preCheckExternalUser } from '../hooks/useExternalUser';
 
 // Helper to check if error is a network/transient error (not a real auth failure)
@@ -59,6 +59,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Prevent duplicate processing
   const processingRef = useRef(false);
   const lastUserIdRef = useRef<string | null>(null);
+  /** Set when we restore session from getSession() before INITIAL_SESSION; prevents INITIAL_SESSION(null) from overwriting. */
+  const restoredFromStorageRef = useRef(false);
 
   const fetchUserDetails = useCallback(async (user: any) => {
     if (!user?.id) return;
@@ -472,9 +474,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               }
               
               if (hasStoredTokens) {
-                console.log('[AuthContext] Found stored tokens, waiting for Supabase to restore session...');
-                // Don't set user yet, but also don't redirect - let INITIAL_SESSION handle it
-                // This prevents premature redirects on mobile
+                console.log('[AuthContext] Found stored tokens, trying getSession() for deployed env...');
+                // In production INITIAL_SESSION can fire with null; getSession() reads storage directly and is more reliable
+                const { data: { session } } = await supabase.auth.getSession();
+                if (isMounted && session?.user) {
+                  restoredFromStorageRef.current = true;
+                  updateAuthState(session, true);
+                  setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
+                }
               }
             } catch (e) {
               // localStorage access failed - might be private mode
@@ -496,7 +503,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 updateAuthState(session, true);
                 setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
               } else {
-                // No session yet - may be timing (Supabase not yet restored from storage). Try refresh once.
+                // If we already restored user from getSession() (hasStoredTokens path), do not overwrite with null.
+                if (restoredFromStorageRef.current) {
+                  setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
+                  return;
+                }
+                // No session from INITIAL_SESSION - in production Supabase may not have hydrated from storage yet.
+                // 1) Prefer getSession() first (reads storage, no network) - most reliable in deployed envs.
+                const { data: { session: fromStorage } } = await supabase.auth.getSession();
+                if (isMounted && fromStorage?.user) {
+                  console.log('[AuthContext] Session from getSession() after INITIAL_SESSION null');
+                  updateAuthState(fromStorage, true);
+                  setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
+                  return;
+                }
+                // 2) If still no session, try refresh (network). Do NOT sign out on failure - can clear valid sessions in production.
                 try {
                   const { data: { session: refreshed }, error } = await supabase.auth.refreshSession();
                   if (isMounted && !error && refreshed?.user) {
@@ -505,11 +526,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
                     return;
                   }
-                } catch (e) {
-                  console.warn('[AuthContext] refreshSession failed:', e);
+                } catch (e: any) {
+                  // Never sign out here - in deployed envs this can wrongly clear a valid session (e.g. transient/refresh errors).
+                  if (!isExpectedNoSessionError(e)) {
+                    console.warn('[AuthContext] refreshSession failed:', e);
+                  }
                 }
-                // Still no session - do NOT clear tokens here.
-                // Mark session check complete so ProtectedRoute can redirect if it wants; token clearing only in periodic check.
+                // 3) Mark session check complete; delayed getSession() retries can still restore session.
                 setAuthState(prev => ({
                   ...prev,
                   user: null,
@@ -519,16 +542,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   isInitialized: true,
                   sessionCheckComplete: true
                 }));
-                // Give Supabase time to restore from storage (e.g. on slow devices), then re-check once
-                setTimeout(async () => {
-                  if (!isMounted) return;
-                  const { data: { session: lateSession } } = await supabase.auth.getSession();
-                  if (lateSession?.user) {
-                    console.log('[AuthContext] Session restored on delayed check after INITIAL_SESSION null');
-                    updateAuthState(lateSession, true);
-                    setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
-                  }
-                }, 1000);
+                // 4) Retry getSession() after delays (storage may hydrate late on mobile/slow devices).
+                const retryDelays = [800, 2000, 4500];
+                retryDelays.forEach((delayMs) => {
+                  setTimeout(async () => {
+                    if (!isMounted) return;
+                    const { data: { session: lateSession } } = await supabase.auth.getSession();
+                    if (lateSession?.user) {
+                      console.log('[AuthContext] Session restored on delayed getSession() after', delayMs, 'ms');
+                      updateAuthState(lateSession, true);
+                      setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
+                    }
+                  }, delayMs);
+                });
               }
             }
             return;

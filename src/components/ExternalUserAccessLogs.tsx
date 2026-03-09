@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, isExpectedNoSessionError } from '../lib/supabase';
 import { DocumentTextIcon, CalendarIcon, ClockIcon } from '@heroicons/react/24/outline';
 import { usePersistedState, usePersistedFilters } from '../hooks/usePersistedState';
 
@@ -51,7 +51,9 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ onBack,
                 const { data: { user }, error: authError } = await supabase.auth.getUser();
                 
                 if (authError || !user) {
-                    console.error('Error getting auth user:', authError);
+                    if (authError && !isExpectedNoSessionError(authError)) {
+                      console.error('Error getting auth user:', authError);
+                    }
                     return;
                 }
 

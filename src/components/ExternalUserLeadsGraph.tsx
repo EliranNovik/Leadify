@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, isExpectedNoSessionError } from '../lib/supabase';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from 'recharts';
 import { ChartBarIcon } from '@heroicons/react/24/outline';
 
@@ -45,7 +45,9 @@ const ExternalUserLeadsGraph: React.FC = () => {
                 const { data: { user }, error: authError } = await supabase.auth.getUser();
                 
                 if (authError || !user) {
-                    console.error('Error getting auth user:', authError);
+                    if (authError && !isExpectedNoSessionError(authError)) {
+                      console.error('Error getting auth user:', authError);
+                    }
                     setError('Unable to fetch user data');
                     setLoading(false);
                     return;
@@ -221,7 +223,9 @@ const ExternalUserLeadsGraph: React.FC = () => {
                 const { data: { user }, error: authError } = await supabase.auth.getUser();
                 
                 if (authError || !user) {
-                    console.error('Error getting auth user:', authError);
+                    if (authError && !isExpectedNoSessionError(authError)) {
+                      console.error('Error getting auth user:', authError);
+                    }
                     setErrorSuccessful('Unable to fetch user data');
                     setLoadingSuccessful(false);
                     return;

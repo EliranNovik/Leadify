@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { supabase } from '../lib/supabase';
+import { supabase, isExpectedNoSessionError } from '../lib/supabase';
 import ExternalUserLeadSearch from './ExternalUserLeadSearch';
 import ExternalUserLeadsGraph from './ExternalUserLeadsGraph';
 import ExternalUserAccessLogs from './ExternalUserAccessLogs';
@@ -64,7 +64,9 @@ const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName 
                 const { data: { user }, error: authError } = await supabase.auth.getUser();
                 
                 if (authError || !user) {
-                    console.error('Error getting auth user:', authError);
+                    if (authError && !isExpectedNoSessionError(authError)) {
+                      console.error('Error getting auth user:', authError);
+                    }
                     return;
                 }
 

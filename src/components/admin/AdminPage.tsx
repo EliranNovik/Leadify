@@ -41,7 +41,7 @@ import WebhookSettingsManager from './WebhookSettingsManager';
 import EmployeeFieldAssignmentsManager from './EmployeeFieldAssignmentsManager';
 import { useAdminRole } from '../../hooks/useAdminRole';
 import { useNavigate } from 'react-router-dom';
-import { supabase } from '../../lib/supabase';
+import { supabase, isExpectedNoSessionError } from '../../lib/supabase';
 
 interface AdminTab {
   label: string;
@@ -325,7 +325,9 @@ const AdminPage: React.FC = () => {
       const { data: { user }, error: authError } = await supabase.auth.getUser();
 
       if (authError) {
-        console.error('Error getting auth user:', authError);
+        if (!isExpectedNoSessionError(authError)) {
+          console.error('Error getting auth user:', authError);
+        }
         setUserLoading(false);
         return;
       }

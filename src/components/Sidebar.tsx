@@ -32,7 +32,7 @@ import {
   EnvelopeIcon,
   BriefcaseIcon,
 } from '@heroicons/react/24/outline';
-import { supabase } from '../lib/supabase';
+import { supabase, isExpectedNoSessionError } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
 
 interface SidebarProps {
@@ -312,7 +312,9 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
           const { data: { user }, error: authError } = await supabase.auth.getUser();
 
           if (authError) {
-            console.error('Error getting auth user:', authError);
+            if (!isExpectedNoSessionError(authError)) {
+              console.error('Error getting auth user:', authError);
+            }
             return;
           }
 

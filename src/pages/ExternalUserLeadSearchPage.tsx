@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { supabase, type Lead } from '../lib/supabase';
+import { supabase, isExpectedNoSessionError, type Lead } from '../lib/supabase';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
 import ExternalUserLeadDetailsModal from '../components/ExternalUserLeadDetailsModal';
@@ -977,7 +977,9 @@ const ExternalUserLeadSearchPage: React.FC = () => {
         const { data: { user }, error: authError } = await supabase.auth.getUser();
         
         if (authError || !user) {
-          console.error('Error getting auth user:', authError);
+          if (authError && !isExpectedNoSessionError(authError)) {
+            console.error('Error getting auth user:', authError);
+          }
           return;
         }
 

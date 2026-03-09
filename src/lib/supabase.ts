@@ -162,6 +162,25 @@ export const isAuthError = (error: any): boolean => {
   return false;
 };
 
+/**
+ * True when the auth error is "expected" when no one is signed in (e.g. session missing, invalid/expired refresh token).
+ * Use this to avoid logging these as errors in the console on deployed/production.
+ */
+export const isExpectedNoSessionError = (error: any): boolean => {
+  if (!error) return false;
+  const msg = String(error.message || error).toLowerCase();
+  const name = String(error.name || '').toLowerCase();
+  return (
+    name.includes('authsessionmissing') ||
+    name.includes('auth_session_missing') ||
+    msg.includes('auth session missing') ||
+    msg.includes('session missing') ||
+    msg.includes('invalid refresh token') ||
+    msg.includes('refresh token not found') ||
+    msg.includes('refresh token expired')
+  );
+};
+
 // Wrapper function for Supabase queries that automatically handles auth errors
 // LESS AGGRESSIVE - only redirects on confirmed auth failures, not network errors
 export const safeSupabaseQuery = async <T>(
