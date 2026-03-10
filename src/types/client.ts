@@ -44,6 +44,10 @@ export interface Client extends Lead {
   closer_id?: string;
   case_handler_id?: string;
   user_internal_id?: string | number | null;
+  // Follow-up from join (follow_ups for current user) – when parent loads with join, InfoTab uses this
+  next_followup?: string | null;
+  follow_up_date?: string | null;
+  follow_up_id?: number | null;
 }
 
 export interface ClientInteractionsCache {

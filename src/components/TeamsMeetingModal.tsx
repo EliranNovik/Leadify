@@ -254,38 +254,41 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
         return;
       }
 
-      // Get user's email from users table using auth_id (not by name)
+      // Resolve user email from users table: auth_id first, then email fallback (so it never fails when user exists)
       let userEmail: string | null = null;
       try {
-        const { data: userData } = await supabase
+        let userData: { email: string } | null = null;
+        const byAuth = await supabase
           .from('users')
           .select('email')
           .eq('auth_id', authUser.id)
           .maybeSingle();
-
-        if (userData?.email) {
-          userEmail = userData.email;
+        if (byAuth.data?.email) {
+          userData = byAuth.data;
+        } else if (authUser.email) {
+          const byEmail = await supabase
+            .from('users')
+            .select('email')
+            .eq('email', authUser.email)
+            .maybeSingle();
+          if (byEmail.data?.email) userData = byEmail.data;
         }
+        if (userData?.email) userEmail = userData.email;
       } catch (dbError) {
-        console.error('Error fetching user email from database:', dbError);
+        console.warn('TeamsMeetingModal: error resolving user email', dbError);
       }
+      if (!userEmail && authUser.email) userEmail = authUser.email;
 
-      // Find the MSAL account that matches the database user's email
-      let account = accounts[0]; // Default fallback
+      // Find the MSAL account that matches the database/user email
+      let account = accounts[0];
 
       if (userEmail && accounts.length > 0) {
-        // Try to find account matching the database email
         const matchingAccount = accounts.find(acc =>
           acc.username?.toLowerCase() === userEmail?.toLowerCase() ||
           acc.name?.toLowerCase() === userEmail?.toLowerCase()
         );
-
         if (matchingAccount) {
           account = matchingAccount;
-          console.log('✅ Found matching MSAL account for user:', userEmail);
-        } else {
-          console.warn('⚠️ No MSAL account found matching database email:', userEmail, 'Using first account:', accounts[0]?.username);
-          // Still use accounts[0] but log the mismatch
         }
       }
 

@@ -12,7 +12,38 @@ interface CombinedLead {
   topic?: string;
   next_followup?: string;
   lead_type: 'new' | 'legacy';
+  manual_id?: string | null;
 }
+
+// Build client route (match CalendarPage: sublead query param, no legacy prefix)
+const buildClientRoute = (lead: CombinedLead): string => {
+  if (!lead) return '/clients';
+  if (lead.lead_type === 'new' && lead.lead_number) {
+    const isSubLead = lead.lead_number.includes('/');
+    if (isSubLead) {
+      const manualId = lead.manual_id || null;
+      if (manualId) return `/clients/${encodeURIComponent(manualId)}?lead=${encodeURIComponent(lead.lead_number)}`;
+      const base = lead.lead_number.split('/')[0];
+      return `/clients/${encodeURIComponent(base)}?lead=${encodeURIComponent(lead.lead_number)}`;
+    }
+    return `/clients/${encodeURIComponent(lead.manual_id || lead.lead_number)}`;
+  }
+  if (lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_')) {
+    const legacyId = lead.id?.toString().replace('legacy_', '') || lead.id;
+    const isSubLead = lead.lead_number && lead.lead_number.includes('/');
+    if (isSubLead) return `/clients/${encodeURIComponent(legacyId)}?lead=${encodeURIComponent(lead.lead_number)}`;
+    return `/clients/${encodeURIComponent(legacyId)}`;
+  }
+  if (lead.lead_number) {
+    const isSubLead = lead.lead_number.includes('/');
+    if (isSubLead) {
+      const base = lead.lead_number.split('/')[0];
+      return `/clients/${encodeURIComponent(base)}?lead=${encodeURIComponent(lead.lead_number)}`;
+    }
+    return `/clients/${encodeURIComponent(lead.lead_number)}`;
+  }
+  return '/clients';
+};
 
 const getStageBadge = (stage: string | undefined) => {
     const style = {
@@ -90,7 +121,7 @@ const OverdueFollowups: React.FC = () => {
                 fiftyDaysAgo.setHours(0, 0, 0, 0); // Start of day
                 const fiftyDaysAgoISO = fiftyDaysAgo.toISOString();
                 
-                // Fetch new leads with overdue follow-ups from follow_ups table
+                // Fetch new leads with overdue follow-ups from follow_ups table (include manual_id, master_id for sublead display)
                 const { data: newFollowupsData, error: newFollowupsError } = await supabase
                     .from('follow_ups')
                     .select(`
@@ -100,6 +131,8 @@ const OverdueFollowups: React.FC = () => {
                         leads!follow_ups_new_lead_id_fkey (
                             id,
                             lead_number,
+                            manual_id,
+                            master_id,
                             name,
                             stage,
                             topic,
@@ -113,7 +146,7 @@ const OverdueFollowups: React.FC = () => {
 
                 if (newFollowupsError) throw newFollowupsError;
 
-                // Fetch legacy leads with overdue follow-ups from follow_ups table
+                // Fetch legacy leads with overdue follow-ups from follow_ups table (include lead_number, master_id for display)
                 const { data: legacyFollowupsData, error: legacyFollowupsError } = await supabase
                     .from('follow_ups')
                     .select(`
@@ -123,6 +156,8 @@ const OverdueFollowups: React.FC = () => {
                         leads_lead!follow_ups_lead_id_fkey (
                             id,
                             name,
+                            lead_number,
+                            master_id,
                             stage,
                             topic,
                             status
@@ -135,6 +170,43 @@ const OverdueFollowups: React.FC = () => {
 
                 if (legacyFollowupsError) throw legacyFollowupsError;
 
+                // Fetch master lead_numbers for sublead display (match CalendarPage logic)
+                const legacyMasterIds = [...new Set((legacyFollowupsData || [])
+                    .map((f: any) => f.leads_lead?.master_id)
+                    .filter((id: unknown) => id != null))] as number[];
+                const newMasterIds = [...new Set((newFollowupsData || [])
+                    .map((f: any) => f.leads?.master_id)
+                    .filter((id: unknown) => id != null))] as number[];
+
+                let legacyMasterMap: Record<string, { lead_number: string }> = {};
+                let newMasterMap: Record<string, { lead_number: string; manual_id?: string | null }> = {};
+                if (legacyMasterIds.length > 0) {
+                    const { data: legacyMasters } = await supabase.from('leads_lead').select('id, lead_number').in('id', legacyMasterIds);
+                    legacyMasters?.forEach((m: any) => { legacyMasterMap[String(m.id)] = { lead_number: m.lead_number || '' }; });
+                }
+                if (newMasterIds.length > 0) {
+                    const { data: newMasters } = await supabase.from('leads').select('id, lead_number, manual_id').in('id', newMasterIds);
+                    newMasters?.forEach((m: any) => { newMasterMap[String(m.id)] = { lead_number: m.lead_number || '', manual_id: m.manual_id }; });
+                }
+
+                // Format display lead_number for subleads (title on top of data, no (L) badge)
+                const formatNewLeadNumber = (lead: any): string => {
+                    const raw = lead.lead_number || lead.id?.toString() || '';
+                    if (!lead.master_id) return raw;
+                    if (raw && raw.includes('/')) return raw;
+                    const master = newMasterMap[String(lead.master_id)];
+                    const masterNum = master?.manual_id || master?.lead_number || lead.master_id?.toString() || '';
+                    return masterNum ? `${masterNum}/2` : raw;
+                };
+                const formatLegacyLeadNumber = (lead: any): string => {
+                    const raw = lead.lead_number || lead.id?.toString() || '';
+                    if (!lead.master_id) return raw;
+                    if (raw && raw.includes('/')) return raw;
+                    const master = legacyMasterMap[String(lead.master_id)];
+                    const masterNum = master?.lead_number || lead.master_id?.toString() || '';
+                    return masterNum ? `${masterNum}/2` : raw;
+                };
+
                 // Process new leads (filter for active leads)
                 const processedNewLeads: CombinedLead[] = (newFollowupsData || [])
                     .filter(followup => {
@@ -145,12 +217,13 @@ const OverdueFollowups: React.FC = () => {
                         const lead = followup.leads as any;
                         return {
                             id: lead.id,
-                            lead_number: lead.lead_number,
+                            lead_number: formatNewLeadNumber(lead),
                             name: lead.name || '',
                             stage: lead.stage,
                             topic: lead.topic || 'Consultation',
                             next_followup: followup.date,
-                            lead_type: 'new' as const
+                            lead_type: 'new' as const,
+                            manual_id: lead.manual_id ?? null
                         };
                     });
 
@@ -164,7 +237,7 @@ const OverdueFollowups: React.FC = () => {
                         const lead = followup.leads_lead as any;
                         return {
                             id: `legacy_${lead.id}`,
-                            lead_number: lead.id?.toString() || '',
+                            lead_number: formatLegacyLeadNumber(lead),
                             name: lead.name || '',
                             stage: lead.stage?.toString() || '',
                             topic: lead.topic || 'Consultation',
@@ -223,16 +296,15 @@ const OverdueFollowups: React.FC = () => {
                             return (
                                 <tr key={lead.id} className="transition-all duration-150 hover:bg-[#f7f6fd] border-b border-base-200 last:border-0">
                                     <td>
-                                        <Link to={`/clients/${lead.lead_number}`} className="font-bold" style={{ color: '#4638e2', fontWeight: 700, fontSize: '1.05em' }}>
+                                        <Link to={buildClientRoute(lead)} className="font-bold" style={{ color: '#4638e2', fontWeight: 700, fontSize: '1.05em' }}>
                                             {lead.lead_number}
-                                            {lead.lead_type === 'legacy' && <span className="text-xs text-gray-500 ml-1">(L)</span>}
                                         </Link>
                                     </td>
                                     <td>
                                         {getStageBadge(lead.stage)}
                                     </td>
                                     <td>
-                                        <Link to={`/clients/${lead.lead_number}`} className="font-bold hover:underline" style={{ color: '#222', fontWeight: 700, fontSize: '1.05em' }}>
+                                        <Link to={buildClientRoute(lead)} className="font-bold hover:underline" style={{ color: '#222', fontWeight: 700, fontSize: '1.05em' }}>
                                             {lead.name}
                                         </Link>
                                     </td>

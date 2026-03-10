@@ -566,62 +566,111 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
     fetchUserInfo();
   }, []);
 
-  // Fetch current user's follow-up for this lead
+  // Fetch current user's follow-up: use join data from client when present, else query follow_ups (with fallback)
   useEffect(() => {
+    if (!client?.id) {
+      setCurrentUserFollowup(null);
+      setFollowupId(null);
+      return;
+    }
+
+    const fromClient = client?.next_followup ?? client?.follow_up_date ?? (client as any)?.followup_date;
+    const fromClientId = client?.follow_up_id ?? (client as any)?.followup_id;
+    if (fromClient && typeof fromClient === 'string') {
+      const dateStr = fromClient.includes('T') ? fromClient.split('T')[0] : fromClient;
+      setCurrentUserFollowup(dateStr);
+      setFollowupId(fromClientId != null ? Number(fromClientId) : null);
+      return;
+    }
+
+    setCurrentUserFollowup(null);
+    setFollowupId(null);
+
     const fetchUserFollowup = async () => {
-      if (!currentUserId || !client?.id) {
-        setCurrentUserFollowup(null);
-        setFollowupId(null);
-        return;
-      }
+      const setFollowup = (id: number | null, dateStr: string | null) => {
+        setFollowupId(id);
+        setCurrentUserFollowup(dateStr);
+      };
 
       try {
-        let query;
+        const legacy = isLegacyLead(client);
+        const legacyIdRaw = client.id.toString().replace('legacy_', '');
+        const legacyIdNum = /^\d+$/.test(legacyIdRaw) ? parseInt(legacyIdRaw, 10) : null;
 
-        if (isLegacy) {
-          const legacyId = client.id.toString().replace('legacy_', '');
-          query = supabase
-            .from('follow_ups')
-            .select('id, date')
-            .eq('lead_id', legacyId)
-            .eq('user_id', currentUserId)
-            .is('new_lead_id', null)
-            .maybeSingle();
-        } else {
-          query = supabase
-            .from('follow_ups')
-            .select('id, date')
-            .eq('new_lead_id', client.id)
-            .eq('user_id', currentUserId)
-            .is('lead_id', null)
-            .maybeSingle();
+        let data: { id: number; date: string } | null = null;
+        let error: any = null;
+
+        if (currentUserId) {
+          if (legacy && legacyIdNum != null) {
+            const res = await supabase
+              .from('follow_ups')
+              .select('id, date')
+              .eq('lead_id', legacyIdNum)
+              .eq('user_id', currentUserId)
+              .order('date', { ascending: false })
+              .limit(1);
+            error = res.error;
+            data = res.data?.[0] ?? null;
+          } else if (!legacy) {
+            const res = await supabase
+              .from('follow_ups')
+              .select('id, date')
+              .eq('new_lead_id', client.id)
+              .eq('user_id', currentUserId)
+              .order('date', { ascending: false })
+              .limit(1);
+            error = res.error;
+            data = res.data?.[0] ?? null;
+          }
         }
 
-        const { data, error } = await query;
+        if (!data && !error && currentUserId) {
+          if (legacy && legacyIdNum != null) {
+            const res = await supabase
+              .from('follow_ups')
+              .select('id, date, user_id')
+              .eq('lead_id', legacyIdNum)
+              .order('date', { ascending: false })
+              .limit(20);
+            if (!res.error && res.data?.length) {
+              const forUser = res.data.find((r: any) => r.user_id === currentUserId);
+              if (forUser) data = { id: forUser.id, date: forUser.date };
+            }
+          } else if (!legacy) {
+            const res = await supabase
+              .from('follow_ups')
+              .select('id, date, user_id')
+              .eq('new_lead_id', client.id)
+              .order('date', { ascending: false })
+              .limit(20);
+            if (!res.error && res.data?.length) {
+              const forUser = res.data.find((r: any) => r.user_id === currentUserId);
+              if (forUser) data = { id: forUser.id, date: forUser.date };
+            }
+          }
+        }
 
-        if (error && error.code !== 'PGRST116') { // PGRST116 is "no rows returned", which is fine
-          console.error('Error fetching follow-up:', error);
+        if (error && error.code !== 'PGRST116') {
+          if (INFOTAB_DEBUG) console.warn('InfoTab follow-up fetch:', error);
+          setFollowup(null, null);
           return;
         }
 
         if (data) {
-          setFollowupId(data.id);
-          // Convert date to string format for display
           const dateStr = data.date ? new Date(data.date).toISOString().split('T')[0] : null;
-          setCurrentUserFollowup(dateStr);
+          setFollowup(data.id, dateStr);
         } else {
-          setFollowupId(null);
-          setCurrentUserFollowup(null);
+          setFollowup(null, null);
         }
-      } catch (error) {
-        console.error('Error fetching user follow-up:', error);
+      } catch (err) {
+        if (INFOTAB_DEBUG) console.warn('Error fetching user follow-up:', err);
         setCurrentUserFollowup(null);
         setFollowupId(null);
       }
     };
 
     fetchUserFollowup();
-  }, [currentUserId, client?.id]);
+  }, [currentUserId, client?.id, client?.next_followup, client?.follow_up_date, client?.follow_up_id]);
 
   const handleProbabilityChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const newProbability = Number(event.target.value);

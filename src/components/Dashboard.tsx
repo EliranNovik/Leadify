@@ -781,7 +781,7 @@ const Dashboard: React.FC = () => {
       fiftyDaysAgo.setHours(0, 0, 0, 0);
       const fiftyDaysAgoISO = fiftyDaysAgo.toISOString();
 
-      // Fetch new leads with follow-ups from follow_ups table
+      // Fetch new leads with follow-ups from follow_ups table (include manual_id, master_id for sublead display)
       let newFollowupsQuery = supabase
         .from('follow_ups')
         .select(`
@@ -791,6 +791,8 @@ const Dashboard: React.FC = () => {
           leads!follow_ups_new_lead_id_fkey (
             id,
             lead_number,
+            manual_id,
+            master_id,
             name,
             stage,
             topic,
@@ -833,7 +835,7 @@ const Dashboard: React.FC = () => {
       const { data: newFollowupsData, error: newFollowupsError } = await newFollowupsQuery;
       if (newFollowupsError) throw newFollowupsError;
 
-      // Fetch legacy leads with follow-ups from follow_ups table
+      // Fetch legacy leads with follow-ups from follow_ups table (include lead_number, master_id for sublead display)
       let legacyFollowupsQuery = supabase
         .from('follow_ups')
         .select(`
@@ -843,6 +845,8 @@ const Dashboard: React.FC = () => {
           leads_lead!follow_ups_lead_id_fkey (
             id,
             name,
+            lead_number,
+            master_id,
             stage,
             topic,
             status,
@@ -878,7 +882,41 @@ const Dashboard: React.FC = () => {
       const { data: legacyFollowupsData, error: legacyFollowupsError } = await legacyFollowupsQuery;
       if (legacyFollowupsError) throw legacyFollowupsError;
 
-      // Process new leads - filter for active leads only
+      // Fetch master lead_numbers for sublead display (match CalendarPage / OverdueFollowups)
+      const legacyMasterIds = [...new Set((legacyFollowupsData || []).map((f: any) => f.leads_lead?.master_id).filter((id: unknown) => id != null))] as number[];
+      const newMasterIds = [...new Set((newFollowupsData || []).map((f: any) => f.leads?.master_id).filter((id: unknown) => id != null))] as number[];
+      let legacyMasterMap: Record<string, { lead_number: string }> = {};
+      let newMasterMap: Record<string, { lead_number: string; manual_id?: string | null }> = {};
+      if (legacyMasterIds.length > 0) {
+        const { data: legacyMasters } = await supabase.from('leads_lead').select('id, lead_number').in('id', legacyMasterIds);
+        legacyMasters?.forEach((m: any) => { legacyMasterMap[String(m.id)] = { lead_number: m.lead_number || '' }; });
+      }
+      if (newMasterIds.length > 0) {
+        const { data: newMasters } = await supabase.from('leads').select('id, lead_number, manual_id').in('id', newMasterIds);
+        newMasters?.forEach((m: any) => { newMasterMap[String(m.id)] = { lead_number: m.lead_number || '', manual_id: m.manual_id }; });
+      }
+      // leads table: id = UUID (internal), lead_number = business id (e.g. L211325). Never use leads.id as display.
+      const isUuid = (s: unknown) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s ?? '').trim());
+      const formatNewLeadNumber = (lead: any): string => {
+        let raw = typeof lead.lead_number === 'string' ? lead.lead_number : (lead.lead_number != null ? String(lead.lead_number) : '');
+        if (isUuid(raw)) raw = ''; // lead_number must not be the internal UUID
+        if (!raw && typeof lead.id === 'number') raw = String(lead.id); // only fall back to numeric id, never UUID
+        if (!lead.master_id) return raw;
+        if (raw && raw.includes('/')) return raw;
+        const master = newMasterMap[String(lead.master_id)];
+        const masterNum = master?.manual_id || master?.lead_number || lead.master_id?.toString() || '';
+        return masterNum ? `${masterNum}/2` : raw;
+      };
+      const formatLegacyLeadNumber = (lead: any): string => {
+        const raw = lead.lead_number || lead.id?.toString() || '';
+        if (!lead.master_id) return raw;
+        if (raw && raw.includes('/')) return raw;
+        const master = legacyMasterMap[String(lead.master_id)];
+        const masterNum = master?.lead_number || lead.master_id?.toString() || '';
+        return masterNum ? `${masterNum}/2` : raw;
+      };
+
+      // Process new leads - filter for active leads only; exclude rows with no valid lead_number (e.g. UUID from leads.id)
       const processedNewLeads = (newFollowupsData || [])
         .filter(followup => {
           const lead = followup.leads as any;
@@ -894,10 +932,15 @@ const Dashboard: React.FC = () => {
           const lead = followup.leads as any;
           return {
             ...lead,
+            lead_number: formatNewLeadNumber(lead),
             next_followup: followup.date, // Include follow-up date for compatibility
             follow_up_id: followup.id, // Include follow-up ID for editing/deleting
             lead_type: 'new' as const
           };
+        })
+        .filter(lead => {
+          const num = lead.lead_number != null ? String(lead.lead_number) : '';
+          return num !== '' && !isUuid(num); // drop new leads with no valid number (avoids duplicate row showing UUID)
         });
 
       // Process legacy leads - filter for active leads only (status = 0, stage < 100)
@@ -915,14 +958,38 @@ const Dashboard: React.FC = () => {
             next_followup: followup.date, // Include follow-up date for compatibility
             follow_up_id: followup.id, // Include follow-up ID for editing/deleting
             lead_type: 'legacy' as const,
-            lead_number: lead.id?.toString() || ''
+            lead_number: formatLegacyLeadNumber(lead)
           };
         });
 
+      // Deduplicate: (1) one row per lead id within type, (2) same person in both new and legacy = one row (prefer new)
+      const combined = [...processedNewLeads, ...processedLegacyLeads].sort((a, b) => {
+        const da = a.next_followup ? new Date(a.next_followup).getTime() : 0;
+        const db = b.next_followup ? new Date(b.next_followup).getTime() : 0;
+        if (da !== db) return da - db;
+        // Same date: prefer new over legacy so we keep new when both exist for same person
+        return (a.lead_type === 'new' ? 0 : 1) - (b.lead_type === 'new' ? 0 : 1);
+      });
+      const seenById = new Set<string>();
+      const nameDateKeptForNew = new Set<string>(); // when we keep a new lead, record name+date so we can drop legacy duplicate
+      const deduped = combined.filter(lead => {
+        const idKey = lead.lead_type === 'new' ? `new_${lead.id}` : `legacy_${lead.id}`;
+        if (seenById.has(idKey)) return false;
+        const name = (lead.name || '').trim().toLowerCase();
+        const dateStr = lead.next_followup || '';
+        const nameDateKey = `${name}_${dateStr}`;
+        if (lead.lead_type === 'legacy' && nameDateKeptForNew.has(nameDateKey)) return false; // already have new lead for this person+date
+        seenById.add(idKey);
+        if (lead.lead_type === 'new') nameDateKeptForNew.add(nameDateKey);
+        return true;
+      });
+      const dedupedNew = deduped.filter(l => l.lead_type === 'new');
+      const dedupedLegacy = deduped.filter(l => l.lead_type === 'legacy');
+
       const result = {
-        newLeads: processedNewLeads,
-        legacyLeads: processedLegacyLeads,
-        totalCount: processedNewLeads.length + processedLegacyLeads.length
+        newLeads: dedupedNew,
+        legacyLeads: dedupedLegacy,
+        totalCount: deduped.length
       };
 
       return result;
@@ -963,6 +1030,41 @@ const Dashboard: React.FC = () => {
     if (!location) return false;
     const locationLower = location.toLowerCase().trim();
     return locationLower === 'online' || locationLower === 'teams' || locationLower === 'zoom';
+  };
+
+  // Build client route for lead (match CalendarPage: sublead query param, no (L) badge)
+  const buildClientRoute = (lead: any): string => {
+    if (!lead) return '/clients';
+    if (lead.lead_type === 'new' && lead.lead_number) {
+      const isSubLead = lead.lead_number.includes('/');
+      if (isSubLead) {
+        const manualId = lead.manual_id || null;
+        if (manualId) return `/clients/${encodeURIComponent(manualId)}?lead=${encodeURIComponent(lead.lead_number)}`;
+        const base = lead.lead_number.split('/')[0];
+        return `/clients/${encodeURIComponent(base)}?lead=${encodeURIComponent(lead.lead_number)}`;
+      }
+      return `/clients/${encodeURIComponent(lead.manual_id || lead.lead_number)}`;
+    }
+    if (lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_')) {
+      const legacyId = lead.id?.toString().replace('legacy_', '') || lead.id;
+      const isSubLead = lead.lead_number && lead.lead_number.includes('/');
+      if (isSubLead) return `/clients/${encodeURIComponent(legacyId)}?lead=${encodeURIComponent(lead.lead_number)}`;
+      return `/clients/${encodeURIComponent(legacyId)}`;
+    }
+    if (lead.lead_number) {
+      const isSubLead = lead.lead_number.includes('/');
+      if (isSubLead) {
+        const base = lead.lead_number.split('/')[0];
+        return `/clients/${encodeURIComponent(base)}?lead=${encodeURIComponent(lead.lead_number)}`;
+      }
+      return `/clients/${encodeURIComponent(lead.lead_number)}`;
+    }
+    return '/clients';
+  };
+
+  const formatLeadNumberForDisplay = (leadNumber: string | undefined): string => {
+    const s = (leadNumber || '').trim();
+    return s || '--';
   };
 
   // Fetch current user ID on mount
@@ -1180,10 +1282,10 @@ const Dashboard: React.FC = () => {
             extern2,
             status,
             lead:leads!client_id(
-              id, name, lead_number, manager, topic, expert, stage, scheduler, helper, closer, handler, balance, balance_currency, unactivated_at
+              id, name, lead_number, manual_id, master_id, manager, topic, expert, stage, scheduler, helper, closer, handler, balance, balance_currency, unactivated_at
             ),
             legacy_lead:leads_lead!legacy_lead_id(
-              id, name, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, category, category_id, expert_id, stage, closer_id, case_handler_id, total, currency_id, status,
+              id, name, lead_number, master_id, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, category, category_id, expert_id, stage, closer_id, case_handler_id, total, currency_id, status,
               scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
               manager_employee:tenants_employee!fk_leads_lead_meeting_manager_id(id, display_name),
               lawyer_employee:tenants_employee!fk_leads_lead_meeting_lawyer_id(id, display_name),
@@ -1208,10 +1310,10 @@ const Dashboard: React.FC = () => {
 
         let directLegacyMeetings: any[] = [];
         try {
-          const { data: legacyLeadsData, error: legacyError } = await supabase
+            const { data: legacyLeadsData, error: legacyError } = await supabase
             .from('leads_lead')
             .select(`
-              id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, status, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, total, meeting_total_currency_id, currency_id, expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination,
+              id, name, lead_number, master_id, meeting_date, meeting_time, category, category_id, stage, status, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, total, meeting_total_currency_id, currency_id, expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination,
               scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
               manager_employee:tenants_employee!fk_leads_lead_meeting_manager_id(id, display_name),
               lawyer_employee:tenants_employee!fk_leads_lead_meeting_lawyer_id(id, display_name),
@@ -1477,29 +1579,59 @@ const Dashboard: React.FC = () => {
             return true;
           });
 
+          // Build maps for sublead lead_number formatting (match CalendarPage)
+          const legacyLeadsMap = new Map<string, { lead_number?: string }>();
+          const newLeadsMap = new Map<string, { lead_number?: string; manual_id?: string | null }>();
+          (filteredMeetings || []).forEach((m: any) => {
+            if (m.legacy_lead?.id) legacyLeadsMap.set(String(m.legacy_lead.id), m.legacy_lead);
+            if (m.lead?.id) newLeadsMap.set(String(m.lead.id), m.lead);
+          });
+          directLegacyMeetings.forEach((m: any) => {
+            const ll = m.legacy_lead;
+            if (ll?.id) legacyLeadsMap.set(String(ll.id), ll);
+          });
+
           // Process the meetings to combine lead data from both tables
           const processedMeetings = filteredMeetings.map((meeting: any) => {
             // Determine which lead data to use
             let leadData = null;
 
             if (meeting.legacy_lead) {
-              // Use legacy lead data and map column names to match new leads structure
+              const leg = meeting.legacy_lead;
+              let displayLegacyLeadNumber = leg.lead_number || leg.id?.toString() || '';
+              if (leg.master_id) {
+                if (displayLegacyLeadNumber && displayLegacyLeadNumber.includes('/')) {
+                  // already formatted
+                } else {
+                  const master = legacyLeadsMap.get(String(leg.master_id));
+                  const masterNum = master?.lead_number || leg.master_id?.toString() || '';
+                  displayLegacyLeadNumber = masterNum ? `${masterNum}/2` : displayLegacyLeadNumber;
+                }
+              }
               leadData = {
-                ...meeting.legacy_lead,
+                ...leg,
                 lead_type: 'legacy',
-                // Map legacy column names to new structure
-                manager: meeting.legacy_lead.meeting_manager_id,
-                helper: meeting.legacy_lead.meeting_lawyer_id,
-                // For legacy leads, use the ID as lead_number
-                lead_number: meeting.legacy_lead.id?.toString(),
-                // Use category_id if category is null
-                topic: meeting.legacy_lead.category || meeting.legacy_lead.category_id
+                manager: leg.meeting_manager_id,
+                helper: leg.meeting_lawyer_id,
+                lead_number: displayLegacyLeadNumber,
+                topic: leg.category || leg.category_id
               };
             } else if (meeting.lead) {
-              // Use new lead data
+              const lead = meeting.lead;
+              let displayLeadNumber = lead.lead_number || lead.id?.toString() || '';
+              if (lead.master_id) {
+                if (displayLeadNumber && displayLeadNumber.includes('/')) {
+                  // already formatted
+                } else {
+                  const master = newLeadsMap.get(String(lead.master_id));
+                  const masterNum = master?.manual_id || master?.lead_number || lead.master_id?.toString() || '';
+                  displayLeadNumber = masterNum ? `${masterNum}/2` : displayLeadNumber;
+                }
+              }
               leadData = {
-                ...meeting.lead,
-                lead_type: 'new'
+                ...lead,
+                lead_type: 'new',
+                lead_number: displayLeadNumber
               };
             }
 
@@ -6519,22 +6651,10 @@ const Dashboard: React.FC = () => {
                               className="cursor-pointer hover:bg-gray-50"
                               onClick={(e) => {
                                 const isCtrlOrCmd = e.ctrlKey || e.metaKey;
-                                let url = '';
-
-                                if (lead.lead_type === 'legacy') {
-                                  // For legacy leads, remove "legacy_" prefix and navigate to {id}
-                                  const legacyId = lead.id?.toString().replace('legacy_', '');
-                                  url = `/clients/${legacyId}`;
-                                } else {
-                                  // For new leads, use lead_number instead of id
-                                  url = `/clients/${lead.lead_number}`;
-                                }
-
+                                const url = buildClientRoute(lead);
                                 if (isCtrlOrCmd) {
-                                  // Open in new tab
                                   window.open(url, '_blank');
                                 } else {
-                                  // Navigate normally
                                   navigate(url);
                                 }
                               }}
@@ -6542,8 +6662,7 @@ const Dashboard: React.FC = () => {
                               <td>
                                 <div className="flex flex-col">
                                   <span className="text-sm text-gray-500">
-                                    {lead.lead_number}
-                                    {lead.lead_type === 'legacy' && <span className="text-xs text-gray-400 ml-1">(L)</span>}
+                                    {formatLeadNumberForDisplay(lead.lead_number)}
                                   </span>
                                   <span className="font-semibold text-gray-900">{lead.name}</span>
                                 </div>
@@ -6637,22 +6756,10 @@ const Dashboard: React.FC = () => {
                           className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative cursor-pointer"
                           onClick={(e) => {
                             const isCtrlOrCmd = e.ctrlKey || e.metaKey;
-                            let url = '';
-
-                            if (lead.lead_type === 'legacy') {
-                              // For legacy leads, remove "legacy_" prefix and navigate to legacy-{id}
-                              const legacyId = lead.id?.toString().replace('legacy_', '');
-                              url = `/clients/legacy-${legacyId}`;
-                            } else {
-                              // For new leads, use lead_number instead of id
-                              url = `/clients/${lead.lead_number}`;
-                            }
-
+                            const url = buildClientRoute(lead);
                             if (isCtrlOrCmd) {
-                              // Open in new tab
                               window.open(url, '_blank');
                             } else {
-                              // Navigate normally
                               navigate(url);
                             }
                           }}
@@ -6661,8 +6768,7 @@ const Dashboard: React.FC = () => {
                             <div className="mb-3 flex flex-col gap-1">
                               <div className="flex items-center gap-2">
                                 <span className="text-sm font-semibold text-gray-400 tracking-widest">
-                                  {lead.lead_number}
-                                  {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
+                                  {formatLeadNumberForDisplay(lead.lead_number)}
                                 </span>
                                 {followUpTab === 'today' && (
                                   <span className="text-sm font-bold px-2 py-1 rounded bg-green-600 text-white">Today</span>
@@ -6798,23 +6904,13 @@ const Dashboard: React.FC = () => {
                       <div
                         key={lead.id}
                         className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative cursor-pointer"
-                        onClick={() => {
-                          if (lead.lead_type === 'legacy') {
-                            // For legacy leads, remove "legacy_" prefix and navigate to legacy-{id}
-                            const legacyId = lead.id?.toString().replace('legacy_', '');
-                            navigate(`/clients/legacy-${legacyId}`);
-                          } else {
-                            // For new leads, use lead_number instead of id
-                            navigate(`/clients/${lead.lead_number}`);
-                          }
-                        }}
+                        onClick={() => navigate(buildClientRoute(lead))}
                       >
                         <div className="flex-1 flex flex-col">
                           {/* Lead Number and Name */}
                           <div className="mb-3 flex items-center gap-2">
                             <span className="text-sm font-semibold text-gray-400 tracking-widest">
-                              {lead.lead_number}
-                              {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
+                              {formatLeadNumberForDisplay(lead.lead_number)}
                             </span>
                             <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
                             <h3 className={`text-xl font-extrabold text-gray-900 transition-colors truncate flex-1 ${isAltTheme ? 'group-hover:text-green-600' : 'group-hover:text-primary'}`}>{lead.name}</h3>
@@ -6947,23 +7043,13 @@ const Dashboard: React.FC = () => {
                       <div
                         key={lead.id}
                         className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative cursor-pointer"
-                        onClick={() => {
-                          if (lead.lead_type === 'legacy') {
-                            // For legacy leads, remove "legacy_" prefix and navigate to legacy-{id}
-                            const legacyId = lead.id?.toString().replace('legacy_', '');
-                            navigate(`/clients/legacy-${legacyId}`);
-                          } else {
-                            // For new leads, use lead_number instead of id
-                            navigate(`/clients/${lead.lead_number}`);
-                          }
-                        }}
+                        onClick={() => navigate(buildClientRoute(lead))}
                       >
                         <div className="flex-1 flex flex-col">
                           {/* Lead Number and Name */}
                           <div className="mb-3 flex items-center gap-2">
                             <span className="text-sm font-semibold text-gray-400 tracking-widest">
-                              {lead.lead_number}
-                              {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
+                              {formatLeadNumberForDisplay(lead.lead_number)}
                             </span>
                             <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
                             <h3 className={`text-xl font-extrabold text-gray-900 transition-colors truncate flex-1 ${isAltTheme ? 'group-hover:text-green-600' : 'group-hover:text-primary'}`}>{lead.name}</h3>

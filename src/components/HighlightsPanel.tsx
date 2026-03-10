@@ -59,51 +59,150 @@ const HighlightsPanel: React.FC<HighlightsPanelProps> = ({ isOpen, onClose }) =>
   const [commentText, setCommentText] = useState('');
   const [isSavingComment, setIsSavingComment] = useState(false);
 
-  // Get current user ID and employee data
+  // Get current user ID (simple query, no join) + fallback: auth_id first, then email
   useEffect(() => {
-    const fetchUserId = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const { data: userData, error } = await supabase
+    const fetchUser = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+
+        let userData: { id: string; employee_id?: number | null } | null = null;
+        const byAuth = await supabase
           .from('users')
-          .select(`
-            id,
-            employee_id,
-            tenants_employee!employee_id(
-              display_name,
-              photo_url
-            )
-          `)
+          .select('id, employee_id')
           .eq('auth_id', user.id)
-          .single();
-        if (userData) {
-          setCurrentUserId(userData.id);
-          
-          // Get employee name and photo
-          const empData = Array.isArray(userData.tenants_employee) 
-            ? userData.tenants_employee[0] 
-            : userData.tenants_employee;
-          
-          if (empData?.display_name) {
-            setCurrentUserEmployeeName(empData.display_name);
-          }
-          if (empData?.photo_url) {
-            setCurrentUserEmployeePhoto(empData.photo_url);
-          }
-        } else if (error) {
-          console.error('Error fetching user ID:', error);
+          .maybeSingle();
+        if (byAuth.data) {
+          userData = byAuth.data;
+        } else if (user.email) {
+          const byEmail = await supabase
+            .from('users')
+            .select('id, employee_id')
+            .eq('email', user.email)
+            .maybeSingle();
+          if (byEmail.data) userData = byEmail.data;
         }
+
+        if (userData?.id) {
+          setCurrentUserId(userData.id);
+          if (userData.employee_id) {
+            const emp = await supabase
+              .from('tenants_employee')
+              .select('display_name, photo_url')
+              .eq('id', userData.employee_id)
+              .maybeSingle();
+            if (emp.data?.display_name) setCurrentUserEmployeeName(emp.data.display_name);
+            if (emp.data?.photo_url) setCurrentUserEmployeePhoto(emp.data.photo_url);
+          }
+        }
+      } catch (e) {
+        console.warn('HighlightsPanel: error resolving user', e);
       }
     };
-    fetchUserId();
+    fetchUser();
   }, []);
 
-  // Fetch highlights
+  // Fetch highlights: try join (one query) first, fallback to N+1 per-lead fetch
   const fetchHighlights = useCallback(async () => {
     if (!currentUserId) return;
 
     setIsLoading(true);
     try {
+      const joinSelect = `
+        id,
+        user_id,
+        lead_id,
+        new_lead_id,
+        lead_number,
+        created_at,
+        comment,
+        comment_updated_at,
+        leads:leads!user_highlights_new_lead_id_fkey(
+          id,
+          lead_number,
+          name,
+          created_at,
+          topic,
+          stage,
+          misc_category(
+            name,
+            misc_maincategory(name)
+          )
+        ),
+        leads_lead:leads_lead!user_highlights_lead_id_fkey(
+          id,
+          lead_number,
+          name,
+          cdate,
+          topic,
+          stage,
+          status,
+          category_id,
+          source_id,
+          language_id,
+          misc_category:category_id(name,misc_maincategory(name)),
+          misc_leadsource:source_id(name),
+          misc_language!fk_leads_lead_language_id(name)
+        )
+      `;
+
+      const { data: joinData, error: joinError } = await supabase
+        .from('user_highlights')
+        .select(joinSelect)
+        .eq('user_id', currentUserId)
+        .order('created_at', { ascending: false });
+
+      if (!joinError && joinData && joinData.length > 0) {
+        const normalized: HighlightLead[] = [];
+        for (const row of joinData as any[]) {
+          const leadNew = Array.isArray(row.leads) ? row.leads[0] : row.leads;
+          const leadLegacy = Array.isArray(row.leads_lead) ? row.leads_lead[0] : row.leads_lead;
+          if (leadNew) {
+            const cat = Array.isArray(leadNew.misc_category) ? leadNew.misc_category[0] : leadNew.misc_category;
+            normalized.push({
+              id: leadNew.id,
+              lead_number: leadNew.lead_number || '',
+              name: leadNew.name || '',
+              created_at: leadNew.created_at || '',
+              category: (cat as any)?.name || null,
+              source: null,
+              language: null,
+              topic: leadNew.topic || null,
+              stage: leadNew.stage || null,
+              lead_type: 'new',
+              display_lead_number: leadNew.lead_number || '',
+              misc_category: cat || undefined,
+              comment: row.comment || null,
+              comment_updated_at: row.comment_updated_at || null,
+            });
+          } else if (leadLegacy) {
+            const cat = Array.isArray(leadLegacy.misc_category) ? leadLegacy.misc_category[0] : leadLegacy.misc_category;
+            normalized.push({
+              id: `legacy_${leadLegacy.id}`,
+              lead_number: leadLegacy.lead_number != null ? String(leadLegacy.lead_number) : String(leadLegacy.id),
+              name: leadLegacy.name || '',
+              created_at: leadLegacy.cdate || '',
+              category: (cat as any)?.name || null,
+              source: (leadLegacy.misc_leadsource as any)?.name || null,
+              language: (leadLegacy.misc_language as any)?.name ?? (Array.isArray(leadLegacy.misc_language) ? (leadLegacy.misc_language[0] as any)?.name : null),
+              topic: leadLegacy.topic || null,
+              stage: leadLegacy.stage || null,
+              lead_type: 'legacy',
+              display_lead_number: leadLegacy.lead_number != null ? String(leadLegacy.lead_number) : String(leadLegacy.id),
+              status: leadLegacy.status ?? undefined,
+              misc_category: cat || undefined,
+              comment: row.comment || null,
+              comment_updated_at: row.comment_updated_at || null,
+            });
+          }
+        }
+        setHighlights(joinData.map((r: any) => ({ id: r.id, user_id: r.user_id, lead_id: r.lead_id, new_lead_id: r.new_lead_id, lead_number: r.lead_number, created_at: r.created_at, comment: r.comment, comment_updated_at: r.comment_updated_at })));
+        setHighlightLeads(normalized);
+        setIsLoading(false);
+        if (normalized.length === joinData.length) return;
+      }
+
+      // Fallback: fetch highlights list then lead details per row (or when join missed rows, e.g. legacy)
       const { data, error } = await supabase
         .from('user_highlights')
         .select('*')
@@ -113,11 +212,9 @@ const HighlightsPanel: React.FC<HighlightsPanelProps> = ({ isOpen, onClose }) =>
       if (error) throw error;
       setHighlights(data || []);
 
-      // Fetch lead details for each highlight
       if (data && data.length > 0) {
-        const leadsPromises = data.map(async (highlight) => {
+        const leadsPromises = data.map(async (highlight: any) => {
           if (highlight.new_lead_id) {
-            // New lead
             const { data: leadData, error: leadError } = await supabase
               .from('leads')
               .select(`
@@ -137,15 +234,8 @@ const HighlightsPanel: React.FC<HighlightsPanelProps> = ({ isOpen, onClose }) =>
               .eq('id', highlight.new_lead_id)
               .single();
 
-            if (leadError) {
-              console.error('Error fetching new lead:', leadError);
-              return null;
-            }
-
-            const categoryData = Array.isArray(leadData.misc_category) 
-              ? leadData.misc_category[0] 
-              : leadData.misc_category;
-
+            if (leadError) return null;
+            const categoryData = Array.isArray(leadData.misc_category) ? leadData.misc_category[0] : leadData.misc_category;
             return {
               id: leadData.id,
               lead_number: leadData.lead_number || '',
@@ -162,69 +252,53 @@ const HighlightsPanel: React.FC<HighlightsPanelProps> = ({ isOpen, onClose }) =>
               comment: highlight.comment || null,
               comment_updated_at: highlight.comment_updated_at || null,
             };
-          } else if (highlight.lead_id) {
-            // Legacy lead
-            const { data: leadData, error: leadError } = await supabase
-              .from('leads_lead')
-              .select(`
-                id,
-                lead_number,
-                name,
-                cdate,
-                topic,
-                stage,
-                status,
-                category_id,
-                source_id,
-                language_id,
-                misc_category:category_id (
+          }
+          if (highlight.lead_id != null && highlight.lead_id !== '') {
+            const legacyId = Number(highlight.lead_id);
+            if (!Number.isNaN(legacyId)) {
+              const { data: leadData, error: leadError } = await supabase
+                .from('leads_lead')
+                .select(`
+                  id,
+                  lead_number,
                   name,
-                  misc_maincategory (
-                    name
-                  )
-                ),
-                misc_leadsource:source_id (
-                  name
-                ),
-                misc_language!fk_leads_lead_language_id (
-                  name
-                )
-              `)
-              .eq('id', highlight.lead_id)
-              .single();
+                  cdate,
+                  topic,
+                  stage,
+                  status,
+                  misc_category!leads_lead_category_id_fkey ( name ),
+                  misc_leadsource!leads_lead_source_id_fkey ( name ),
+                  misc_language!leads_lead_language_id_fkey ( name )
+                `)
+                .eq('id', legacyId)
+                .maybeSingle();
 
-            if (leadError) {
-              console.error('Error fetching legacy lead:', leadError);
-              return null;
+              if (leadError || !leadData) return null;
+              const legacyCategoryData = Array.isArray(leadData.misc_category) ? leadData.misc_category[0] : leadData.misc_category;
+              return {
+                id: `legacy_${leadData.id}`,
+                lead_number: leadData.lead_number != null ? String(leadData.lead_number) : String(leadData.id),
+                name: leadData.name || '',
+                created_at: leadData.cdate || '',
+                category: (legacyCategoryData as any)?.name || null,
+                source: ((leadData.misc_leadsource as any)?.name ?? (Array.isArray(leadData.misc_leadsource) ? (leadData.misc_leadsource[0] as any)?.name : null)) ?? null,
+                language: ((leadData.misc_language as any)?.name ?? (Array.isArray(leadData.misc_language) ? (leadData.misc_language[0] as any)?.name : null)) ?? null,
+                topic: leadData.topic || null,
+                stage: leadData.stage || null,
+                lead_type: 'legacy' as const,
+                display_lead_number: leadData.lead_number != null ? String(leadData.lead_number) : String(leadData.id),
+                status: leadData.status ?? undefined,
+                misc_category: legacyCategoryData || undefined,
+                comment: highlight.comment || null,
+                comment_updated_at: highlight.comment_updated_at || null,
+              };
             }
-
-            const legacyCategoryData = Array.isArray(leadData.misc_category)
-              ? leadData.misc_category[0]
-              : leadData.misc_category;
-
-            return {
-              id: `legacy_${leadData.id}`,
-              lead_number: leadData.lead_number ? String(leadData.lead_number) : String(leadData.id),
-              name: leadData.name || '',
-              created_at: leadData.cdate || '',
-              category: (legacyCategoryData as any)?.name || null,
-              source: (leadData.misc_leadsource as any)?.name || null,
-              language: (leadData.misc_language as any)?.name || null,
-              topic: leadData.topic || null,
-              stage: leadData.stage || null,
-              lead_type: 'legacy' as const,
-              display_lead_number: leadData.lead_number ? String(leadData.lead_number) : String(leadData.id),
-              status: leadData.status || undefined,
-              misc_category: legacyCategoryData || undefined,
-              comment: highlight.comment || null,
-              comment_updated_at: highlight.comment_updated_at || null,
-            };
           }
           return null;
         });
 
         const leads = await Promise.all(leadsPromises);
-        setHighlightLeads(leads.filter((lead) => lead !== null) as HighlightLead[]);
+        setHighlightLeads(leads.filter((l) => l !== null) as HighlightLead[]);
       } else {
         setHighlightLeads([]);
       }

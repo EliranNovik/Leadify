@@ -36,20 +36,18 @@ const emailTemplates = [
   },
 ];
 
-// Helper to get current user's full name from Supabase
+// Helper to get current user's full name from Supabase (auth_id first, then email fallback)
 async function fetchCurrentUserFullName() {
   const { data: { user } } = await supabase.auth.getUser();
-  if (user) {
-    const { data, error } = await supabase
-      .from('users')
-      .select('full_name')
-      .eq('auth_id', user.id)
-      .maybeSingle();
-    if (!error && data?.full_name) {
-      return data.full_name;
-    }
+  if (!user) return null;
+  let data: { full_name: string } | null = null;
+  const byAuth = await supabase.from('users').select('full_name').eq('auth_id', user.id).maybeSingle();
+  if (byAuth.data?.full_name) data = byAuth.data;
+  else if (user.email) {
+    const byEmail = await supabase.from('users').select('full_name').eq('email', user.email).maybeSingle();
+    if (byEmail.data?.full_name) data = byEmail.data;
   }
-  return null;
+  return data?.full_name ?? null;
 }
 
 // Helper to acquire token, falling back to popup if needed
@@ -373,23 +371,29 @@ const CalendarPage: React.FC = () => {
     const fetchCurrentEmployeeMetadata = async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser();
-        if (!user?.id) {
-          return;
-        }
-        const { data, error } = await supabase
+        if (!user?.id) return;
+        let data: { employee_id: number | null; full_name: string; email?: string } | null = null;
+        const byAuth = await supabase
           .from('users')
           .select('employee_id, full_name, email')
           .eq('auth_id', user.id)
-          .single();
-        if (error || !data) {
-          return;
+          .maybeSingle();
+        if (byAuth.data) data = byAuth.data;
+        else if (user.email) {
+          const byEmail = await supabase
+            .from('users')
+            .select('employee_id, full_name, email')
+            .eq('email', user.email)
+            .maybeSingle();
+          if (byEmail.data) data = byEmail.data;
         }
-        if (data.employee_id !== null && data.employee_id !== undefined && !Number.isNaN(Number(data.employee_id))) {
+        if (!data) return;
+        if (data.employee_id != null && !Number.isNaN(Number(data.employee_id))) {
           setCurrentEmployeeId(Number(data.employee_id));
         }
         setCurrentEmployeeName(data.full_name || user.email || '');
       } catch (error) {
-        console.error('Failed to load current employee info for meeting confirmation toggle:', error);
+        console.warn('CalendarPage: failed to load current employee metadata', error);
       }
     };
 
@@ -798,24 +802,17 @@ const CalendarPage: React.FC = () => {
   // Send notification message to employee when added as guest
   const sendGuestNotification = async (employeeId: string | number, meeting: any, guestType: 'extern1' | 'extern2') => {
     try {
-      // Get current user info
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user?.id) {
-        console.error('No current user found');
-        return;
-      }
+      if (!user?.id) return;
 
-      // Get current user's user_id from users table
-      const { data: currentUserData } = await supabase
-        .from('users')
-        .select('id')
-        .eq('auth_id', user.id)
-        .single();
-
-      if (!currentUserData?.id) {
-        console.error('Current user not found in users table');
-        return;
+      let currentUserData: { id: string } | null = null;
+      const byAuth = await supabase.from('users').select('id').eq('auth_id', user.id).maybeSingle();
+      if (byAuth.data) currentUserData = byAuth.data;
+      else if (user.email) {
+        const byEmail = await supabase.from('users').select('id').eq('email', user.email).maybeSingle();
+        if (byEmail.data) currentUserData = byEmail.data;
       }
+      if (!currentUserData?.id) return;
 
       // Get target employee's user_id from users table
       const { data: targetUserData } = await supabase
@@ -996,22 +993,20 @@ const CalendarPage: React.FC = () => {
       if (employeeIdToUse === null || !currentEmployeeName) {
         const { data: { user } } = await supabase.auth.getUser();
         if (user?.id) {
-          const { data: userRecord, error: userError } = await supabase
-            .from('users')
-            .select('employee_id, full_name, email')
-            .eq('auth_id', user.id)
-            .single();
-          if (!userError && userRecord) {
-            if (employeeIdToUse === null && userRecord.employee_id !== null && userRecord.employee_id !== undefined) {
-              const parsedId = Number(userRecord.employee_id);
-              if (!Number.isNaN(parsedId)) {
-                employeeIdToUse = parsedId;
-                setCurrentEmployeeId(parsedId);
-              }
+          let userRecord: { employee_id: number | null; full_name: string; email?: string } | null = null;
+          const byAuth = await supabase.from('users').select('employee_id, full_name, email').eq('auth_id', user.id).maybeSingle();
+          if (byAuth.data) userRecord = byAuth.data;
+          else if (user.email) {
+            const byEmail = await supabase.from('users').select('employee_id, full_name, email').eq('email', user.email).maybeSingle();
+            if (byEmail.data) userRecord = byEmail.data;
+          }
+          if (userRecord) {
+            if (employeeIdToUse === null && userRecord.employee_id != null && !Number.isNaN(Number(userRecord.employee_id))) {
+              employeeIdToUse = Number(userRecord.employee_id);
+              setCurrentEmployeeId(Number(userRecord.employee_id));
             }
             if (!currentEmployeeName) {
-              const resolvedName = userRecord.full_name || user.email || '';
-              setCurrentEmployeeName(resolvedName);
+              setCurrentEmployeeName(userRecord.full_name || user.email || '');
             }
           }
         }

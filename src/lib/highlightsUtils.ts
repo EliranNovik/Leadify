@@ -1,6 +1,19 @@
 import { supabase } from './supabase';
 import { toast } from 'react-hot-toast';
 
+/** Resolve users.id for current auth user (auth_id first, then email fallback). */
+async function getCurrentUserId(): Promise<string | null> {
+  const { data: { user: authUser } } = await supabase.auth.getUser();
+  if (!authUser?.id) return null;
+  let res = await supabase.from('users').select('id').eq('auth_id', authUser.id).maybeSingle();
+  if (res.data?.id) return res.data.id;
+  if (authUser.email) {
+    res = await supabase.from('users').select('id').eq('email', authUser.email).maybeSingle();
+    if (res.data?.id) return res.data.id;
+  }
+  return null;
+}
+
 /**
  * Add a lead to user's highlights
  * @param leadId - The lead ID (can be UUID for new leads or number for legacy leads)
@@ -13,22 +26,9 @@ export const addToHighlights = async (
   isLegacy: boolean = false
 ): Promise<boolean> => {
   try {
-    // Get current user
-    const { data: { user: authUser } } = await supabase.auth.getUser();
-    if (!authUser?.id) {
+    const userId = await getCurrentUserId();
+    if (!userId) {
       toast.error('You must be logged in to add highlights');
-      return false;
-    }
-
-    // Get user ID from users table
-    const { data: userData, error: userError } = await supabase
-      .from('users')
-      .select('id')
-      .eq('auth_id', authUser.id)
-      .single();
-
-    if (userError || !userData) {
-      toast.error('Failed to get user information');
       return false;
     }
 
@@ -37,14 +37,14 @@ export const addToHighlights = async (
       ? supabase
           .from('user_highlights')
           .select('id')
-          .eq('user_id', userData.id)
+          .eq('user_id', userId)
           .eq('lead_id', leadId)
           .is('new_lead_id', null)
           .maybeSingle()
       : supabase
           .from('user_highlights')
           .select('id')
-          .eq('user_id', userData.id)
+          .eq('user_id', userId)
           .eq('new_lead_id', leadId)
           .is('lead_id', null)
           .maybeSingle();
@@ -59,13 +59,13 @@ export const addToHighlights = async (
     // Insert new highlight
     const insertData = isLegacy
       ? {
-          user_id: userData.id,
+          user_id: userId,
           lead_id: leadId,
           new_lead_id: null,
           lead_number: leadNumber || String(leadId),
         }
       : {
-          user_id: userData.id,
+          user_id: userId,
           lead_id: null,
           new_lead_id: leadId,
           lead_number: leadNumber || String(leadId),
@@ -109,37 +109,23 @@ export const removeFromHighlights = async (
   isLegacy: boolean = false
 ): Promise<boolean> => {
   try {
-    // Get current user
-    const { data: { user: authUser } } = await supabase.auth.getUser();
-    if (!authUser?.id) {
+    const userId = await getCurrentUserId();
+    if (!userId) {
       toast.error('You must be logged in to remove highlights');
       return false;
     }
 
-    // Get user ID from users table
-    const { data: userData, error: userError } = await supabase
-      .from('users')
-      .select('id')
-      .eq('auth_id', authUser.id)
-      .single();
-
-    if (userError || !userData) {
-      toast.error('Failed to get user information');
-      return false;
-    }
-
-    // Delete highlight
     const deleteQuery = isLegacy
       ? supabase
           .from('user_highlights')
           .delete()
-          .eq('user_id', userData.id)
+          .eq('user_id', userId)
           .eq('lead_id', leadId)
           .is('new_lead_id', null)
       : supabase
           .from('user_highlights')
           .delete()
-          .eq('user_id', userData.id)
+          .eq('user_id', userId)
           .eq('new_lead_id', leadId)
           .is('lead_id', null);
 
@@ -174,36 +160,21 @@ export const isInHighlights = async (
   isLegacy: boolean = false
 ): Promise<boolean> => {
   try {
-    // Get current user
-    const { data: { user: authUser } } = await supabase.auth.getUser();
-    if (!authUser?.id) {
-      return false;
-    }
+    const userId = await getCurrentUserId();
+    if (!userId) return false;
 
-    // Get user ID from users table
-    const { data: userData, error: userError } = await supabase
-      .from('users')
-      .select('id')
-      .eq('auth_id', authUser.id)
-      .single();
-
-    if (userError || !userData) {
-      return false;
-    }
-
-    // Check if highlight exists
     const checkQuery = isLegacy
       ? supabase
           .from('user_highlights')
           .select('id')
-          .eq('user_id', userData.id)
+          .eq('user_id', userId)
           .eq('lead_id', leadId)
           .is('new_lead_id', null)
           .maybeSingle()
       : supabase
           .from('user_highlights')
           .select('id')
-          .eq('user_id', userData.id)
+          .eq('user_id', userId)
           .eq('new_lead_id', leadId)
           .is('lead_id', null)
           .maybeSingle();

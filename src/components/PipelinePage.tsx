@@ -63,6 +63,10 @@ interface LeadForPipeline {
   meeting_total_currency_id?: number | null;
   expert_id?: string | null;
   expert_examination?: number | null;
+  /** Expert display name from JOIN (when available); avoids client-side map lookup. */
+  expert_name_from_join?: string | null;
+  /** Expert profile photo URL from JOIN (tenants_employee.photo_url). */
+  expert_photo_url?: string | null;
   language_id?: number | null;
   language?: string | null;
   latest_interaction?: string;
@@ -149,35 +153,51 @@ const getEmployeeDisplayName = (employeeId: string | number | null | undefined, 
     console.warn('⚠️ PipelinePage - Employee not found for ID:', employeeId, 'Available employees:', allEmployees.length);
   }
   
-  return employee ? employee.display_name : employeeId.toString(); // Fallback to ID if not found
+  return employee ? employee.display_name : employeeId.toString();
 };
 
-// Helper function to get expert display name (copied from Meetings.tsx)
+// Helper function to get expert display name (prefer JOIN data when available)
 const getExpertDisplayName = (lead: LeadForPipeline, allEmployees: any[]): string => {
+  if (lead.expert_name_from_join) return lead.expert_name_from_join;
   // For legacy leads, use expert_id
   if (lead.lead_type === 'legacy' && lead.expert_id) {
     const expertName = getEmployeeDisplayName(lead.expert_id, allEmployees);
     return expertName !== lead.expert_id.toString() ? expertName : '--';
   }
-  
   // For new leads, prioritize expert_id (numeric field) over expert (text field)
   if (lead.expert_id) {
     const expertName = getEmployeeDisplayName(lead.expert_id, allEmployees);
     return expertName !== lead.expert_id.toString() ? expertName : '--';
   }
-  
   // Fallback to expert field (might be name or ID)
   if (lead.expert) {
-    // If it's already a name (not a number), return it
-    if (isNaN(Number(lead.expert))) {
-      return lead.expert;
-    }
-    // Otherwise, try to look it up as an ID
+    if (isNaN(Number(lead.expert))) return lead.expert;
     const expertName = getEmployeeDisplayName(lead.expert, allEmployees);
     return expertName;
   }
-  
   return '--';
+};
+
+// Helper to get expert initials for avatar fallback
+const getExpertInitials = (lead: LeadForPipeline, allEmployees: any[]): string => {
+  const name = getExpertDisplayName(lead, allEmployees);
+  if (!name || name === '--') return '?';
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  return name.slice(0, 2).toUpperCase();
+};
+
+// True when lead has an assigned expert (show avatar); false = show only "--", no image
+const hasExpertAssigned = (lead: LeadForPipeline, allEmployees: any[]): boolean => {
+  return getExpertDisplayName(lead, allEmployees) !== '--';
+};
+
+// Get expert photo URL from allEmployees by expert_id (when JOIN is not available)
+const getExpertPhotoUrl = (lead: LeadForPipeline, allEmployees: any[]): string | null => {
+  const id = lead.expert_id ?? (typeof lead.expert === 'number' || (typeof lead.expert === 'string' && /^\d+$/.test(lead.expert)) ? lead.expert : null);
+  if (id == null) return null;
+  const emp = allEmployees.find((e: any) => String(e.id) === String(id));
+  return emp?.photo_url ?? null;
 };
 
 // Helper function to get expert status icon and color (copied from CalendarPage.tsx)
@@ -886,7 +906,7 @@ const PipelinePage: React.FC = () => {
         // This ensures we have all employees, even those without user accounts
         const { data: employeesData, error: employeesError } = await supabase
           .from('tenants_employee')
-          .select('id, display_name, bonuses_role')
+          .select('id, display_name, official_name, bonuses_role, photo_url')
           .order('display_name', { ascending: true });
         
         if (!employeesError && employeesData) {
@@ -1160,6 +1180,20 @@ const PipelinePage: React.FC = () => {
                     id,
                     name
                   ),
+                  lead_stages!fk_leads_stage (
+                    id,
+                    name,
+                    colour
+                  ),
+                  misc_category!fk_leads_category_id (
+                    id,
+                    name,
+                    parent_id,
+                    misc_maincategory!parent_id (
+                      id,
+                      name
+                    )
+                  ),
                   language,
                   source,
                   facts,
@@ -1212,6 +1246,20 @@ const PipelinePage: React.FC = () => {
                   misc_country!country_id (
                     id,
                     name
+                  ),
+                  lead_stages!fk_leads_stage (
+                    id,
+                    name,
+                    colour
+                  ),
+                  misc_category!fk_leads_category_id (
+                    id,
+                    name,
+                    parent_id,
+                    misc_maincategory!parent_id (
+                      id,
+                      name
+                    )
                   ),
                   language,
                   source,
@@ -1273,6 +1321,20 @@ const PipelinePage: React.FC = () => {
                 misc_country!country_id (
                   id,
                   name
+                ),
+                lead_stages!fk_leads_stage (
+                  id,
+                  name,
+                  colour
+                ),
+                misc_category!fk_leads_category_id (
+                  id,
+                  name,
+                  parent_id,
+                  misc_maincategory!parent_id (
+                    id,
+                    name
+                  )
                 ),
                 language,
                 source,
@@ -1367,6 +1429,24 @@ const PipelinePage: React.FC = () => {
                 id,
                 name,
                 iso_code
+              ),
+              lead_stages!fk_leads_lead_stage (
+                id,
+                name,
+                colour
+              ),
+              misc_category!leads_lead_category_id_fkey (
+                id,
+                name,
+                parent_id,
+                misc_maincategory!parent_id (
+                  id,
+                  name
+                )
+              ),
+              misc_language!leads_lead_language_id_fkey (
+                id,
+                name
               )
             `)
             .limit(1000)
@@ -1490,6 +1570,64 @@ const PipelinePage: React.FC = () => {
             }
           }
 
+          // Fetch legacy country from lead_leadcontact + leads_contact (main contact), like SchedulerToolPage
+          const legacyCountryMap = new Map<string, string>();
+          const legacyCountryIdMap = new Map<string, number | null>();
+          if (legacyLeadIds.length > 0) {
+            const { data: legacyCountryData } = await supabase
+              .from('lead_leadcontact')
+              .select(`
+                lead_id,
+                leads_contact (
+                  country_id,
+                  misc_country (
+                    id,
+                    name
+                  )
+                )
+              `)
+              .in('lead_id', legacyLeadIds)
+              .eq('main', 'true');
+            (legacyCountryData || []).forEach((item: any) => {
+              const leadId = item.lead_id;
+              const contact = item.leads_contact;
+              if (contact && (contact as any).misc_country) {
+                const mc = Array.isArray((contact as any).misc_country) ? (contact as any).misc_country[0] : (contact as any).misc_country;
+                if (mc?.name) legacyCountryMap.set(String(leadId), mc.name);
+                if (mc?.id != null) legacyCountryIdMap.set(String(leadId), Number(mc.id));
+              } else if (contact && (contact as any).country_id != null) {
+                legacyCountryIdMap.set(String(leadId), Number((contact as any).country_id));
+              }
+            });
+          }
+
+          // Helpers to read from joined relations (replacement for client-side map lookups)
+          const stageNameFromJoin = (row: any): string | null => {
+            const join = Array.isArray(row?.lead_stages) ? row.lead_stages[0] : row?.lead_stages;
+            return join?.name ?? null;
+          };
+          const categoryNameFromJoin = (row: any): string | null => {
+            const cat = Array.isArray(row?.misc_category) ? row.misc_category[0] : row?.misc_category;
+            if (!cat?.name) return null;
+            const main = Array.isArray(cat?.misc_maincategory) ? cat.misc_maincategory[0] : cat?.misc_maincategory;
+            return main?.name ? `${cat.name} (${main.name})` : cat.name;
+          };
+          const expertFromJoin = (row: any): { name: string | null; photo_url: string | null } => {
+            const emp = Array.isArray(row?.expert_emp) ? row.expert_emp[0] : row?.expert_emp;
+            return {
+              name: emp?.display_name ?? null,
+              photo_url: emp?.photo_url ?? null
+            };
+          };
+          const countryFromJoin = (row: any): string | null => {
+            const c = Array.isArray(row?.misc_country) ? row.misc_country[0] : row?.misc_country;
+            return c?.name ?? null;
+          };
+          const languageNameFromJoin = (row: any): string | null => {
+            const lang = Array.isArray(row?.misc_language) ? row.misc_language[0] : row?.misc_language;
+            return lang?.name ?? null;
+          };
+
           // Process new leads with proper category handling
           // Filter out non-eligible, inactive, wrong scheduler, and wrong stage leads for scheduler pipeline (explicit check)
           const eligibleNewLeads = pipelineMode === 'scheduler' 
@@ -1559,9 +1697,12 @@ const PipelinePage: React.FC = () => {
             // For new leads, use balance or proposal_total (same as SchedulerToolPage)
             const balanceValue = lead.balance || lead.proposal_total || null;
             
+            const expertJoin = expertFromJoin(lead);
             return {
               ...lead,
-              category: getCategoryName(lead.category_id, lead.category), // Use proper category handling
+              category: categoryNameFromJoin(lead) ?? getCategoryName(lead.category_id, lead.category),
+              expert_name_from_join: expertJoin.name ?? undefined,
+              expert_photo_url: expertJoin.photo_url ?? undefined,
               meetings: lead.meetings || [], // Ensure meetings is always an array
               lead_type: 'new' as const,
               // New leads use language text column directly - preserve even if null/empty
@@ -1570,8 +1711,8 @@ const PipelinePage: React.FC = () => {
               next_followup: followUpsMap.get(lead.id) || null, // Get follow-up from follow_ups table
               // Preserve misc_country from JOIN (like SchedulerToolPage)
               misc_country: lead.misc_country || null,
-              // Extract country name directly from JOIN (exactly like SchedulerToolPage.tsx line 1165)
-              country: (lead as any).misc_country?.name || '',
+              // Extract country name from JOIN (handles array or object)
+              country: countryFromJoin(lead) ?? '',
               // Update balance and balance_currency with correct values
               balance: balanceValue,
               balance_currency: balanceCurrency,
@@ -1649,14 +1790,17 @@ const PipelinePage: React.FC = () => {
               balanceValue = lead.total ?? null;
             }
             
+            const expertJoin = expertFromJoin(lead);
             return {
               id: `legacy_${lead.id}`,
               lead_number: lead.id?.toString() || '',
               name: lead.name || '',
               created_at: lead.cdate || new Date().toISOString(),
               expert: lead.expert_id || null, // Use expert_id for legacy leads (not closer_id)
+              expert_name_from_join: expertJoin.name ?? undefined,
+              expert_photo_url: expertJoin.photo_url ?? undefined,
               topic: null, // Legacy leads don't have topic field
-              category: getCategoryName(lead.category_id), // Use proper category handling
+              category: categoryNameFromJoin(lead) ?? getCategoryName(lead.category_id),
               handler_notes: (lead as any).handler_notes || [],
               expert_notes: (lead as any).expert_notes || [],
               meetings: [], // Legacy leads don't have meetings relationship
@@ -1691,9 +1835,9 @@ const PipelinePage: React.FC = () => {
               expert_id: lead.expert_id || null, // Use expert_id from database (not closer_id)
               closer_id: lead.closer_id, // Preserve closer_id for closer pipeline filtering
               language_id: lead.language_id || null,
-              language: null, // Legacy leads use language_id
-              country_id: null, // Legacy leads don't have country_id directly, would need to fetch via contacts
-              country: null,
+              language: languageNameFromJoin(lead) ?? null, // From JOIN or fallback to getLanguageName in UI
+              country_id: legacyCountryIdMap.get(String(lead.id)) ?? null,
+              country: legacyCountryMap.get(String(lead.id)) ?? null,
               currency_id: lead.currency_id // Preserve currency_id for calculations
             };
           });
@@ -1859,62 +2003,38 @@ const PipelinePage: React.FC = () => {
   const hasLoadedFromStorageRef = useRef<{ [mode: string]: boolean }>({});
   const previousModeRef = useRef<string>('');
 
-  // Only fetch leads when we have a valid employee ID
+  // Load leads: use saved state per tab so switching Closer/Scheduler does not reload content
   useEffect(() => {
     if (!currentUserEmployeeId) {
       return;
     }
 
-    // Check if mode has changed - if so, always refetch
+    const persistedLeadsKey = `persisted_state_filters_pipelinePage_${pipelineMode}_leads`;
     const modeChanged = previousModeRef.current !== pipelineMode && previousModeRef.current !== '';
     previousModeRef.current = pipelineMode;
 
-    // If mode changed, always refetch (don't use persisted state from previous mode)
-    if (modeChanged) {
-      hasLoadedFromStorageRef.current[pipelineMode] = false;
-      fetchLeads();
-      return;
-    }
-
-    // On first mount or when employee ID changes, check for persisted state
-    // Check if we have persisted state in sessionStorage for the current mode
-    const persistedLeadsKey = `persisted_state_filters_pipelinePage_${pipelineMode}_leads`;
-    let hasPersistedState = false;
+    // Try to restore from sessionStorage (for this mode) so tab switch is instant
+    let restored = false;
     try {
-      const persistedLeads = sessionStorage.getItem(persistedLeadsKey);
-      if (persistedLeads) {
-        const parsed = JSON.parse(persistedLeads);
-        if (parsed && Array.isArray(parsed) && parsed.length > 0) {
-          hasPersistedState = true;
+      const raw = sessionStorage.getItem(persistedLeadsKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed)) {
+          setLeadsInternal(parsed);
+          hasLoadedFromStorageRef.current[pipelineMode] = true;
+          setIsLoading(false);
+          restored = true;
         }
       }
     } catch (e) {
-      // Ignore errors
+      // Ignore
     }
 
-    // Only use persisted state if we haven't loaded from storage for this mode yet
-    const alreadyLoadedForMode = hasLoadedFromStorageRef.current[pipelineMode] || false;
-    if (hasPersistedState && !alreadyLoadedForMode) {
-      // Load from persisted state instead of fetching
-      try {
-        const persistedLeads = sessionStorage.getItem(persistedLeadsKey);
-        if (persistedLeads) {
-          const parsed = JSON.parse(persistedLeads);
-          if (parsed && Array.isArray(parsed)) {
-            setLeadsInternal(parsed);
-            hasLoadedFromStorageRef.current[pipelineMode] = true;
-            setIsLoading(false);
-            return;
-          }
-        }
-      } catch (e) {
-        // Ignore errors, continue to fetch
-      }
+    // Only fetch when we have no saved state for this mode (first time or no cache)
+    if (!restored) {
+      hasLoadedFromStorageRef.current[pipelineMode] = false;
+      fetchLeads();
     }
-
-    // Mark that we're doing a fresh fetch (not from storage)
-    hasLoadedFromStorageRef.current[pipelineMode] = false;
-    fetchLeads();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pipelineMode, currentUserEmployeeId]);
 
@@ -4259,117 +4379,128 @@ const PipelinePage: React.FC = () => {
     }
   }, [showMyStatsModal, pipelineMode, currentUserEmployeeId, currentUserFullName]);
 
-  // Fetch user id and full name on mount
+  // Fetch user id and full name on mount — JOIN to tenants_employee, with fallbacks so the pipeline never fails to resolve
+  const userSelectWithJoin = `
+    id,
+    full_name,
+    email,
+    employee_id,
+    is_superuser,
+    tenants_employee!users_employee_id_fkey(
+      id,
+      display_name,
+      bonuses_role
+    )
+  `;
   useEffect(() => {
     (async () => {
       try {
         const { data: { user }, error: authError } = await supabase.auth.getUser();
-        
+        setUserId(user?.id || null);
+
+        const fallbackName = user?.email?.split('@')[0] || user?.email || 'User';
         if (authError) {
-          console.error('🔍 Authentication error:', authError);
-          // Set a fallback name to allow the page to function
-          setCurrentUserFullName('Eliran');
+          console.warn('Pipeline: auth getUser warning', authError);
+          setCurrentUserFullName(fallbackName);
           return;
         }
-        
-        setUserId(user?.id || null);
-        
-        // Fetch current user's data with employee relationship using JOIN
-        if (user?.id) {
-          const { data: userData, error: userError } = await supabase
+
+        if (!user?.id) {
+          setCurrentUserFullName(fallbackName);
+          return;
+        }
+
+        // 1) Try with JOIN (users_employee_id_fkey) — use maybeSingle() so we don't throw
+        let { data: userData, error: userError } = await supabase
+          .from('users')
+          .select(userSelectWithJoin)
+          .eq('auth_id', user.id)
+          .maybeSingle();
+
+        // 2) If no row or error, fallback: by email
+        if ((userError || !userData) && user.email) {
+          const byEmail = await supabase
             .from('users')
-            .select(`
-              id,
-              full_name,
-              email,
-              employee_id,
-              is_superuser,
-              tenants_employee!employee_id(
-                id,
-                display_name,
-                bonuses_role
-              )
-            `)
+            .select(userSelectWithJoin)
+            .eq('email', user.email)
+            .maybeSingle();
+          if (byEmail.data) {
+            userData = byEmail.data;
+            userError = byEmail.error;
+          }
+        }
+
+        // 3) If JOIN failed (e.g. wrong FK name), fallback: users without join
+        if (!userData) {
+          const byAuth = await supabase
+            .from('users')
+            .select('id, full_name, email, employee_id, is_superuser')
             .eq('auth_id', user.id)
-            .single();
-          
-          // If not found by auth_id, try by email (fallback)
-          let finalUserData = userData;
-          if ((userError || !userData) && user.email) {
-            const { data: userByEmail } = await supabase
+            .maybeSingle();
+          if (byAuth.data) {
+            userData = byAuth.data as any;
+          } else if (user.email) {
+            const byEmail = await supabase
               .from('users')
-              .select(`
-                id,
-                full_name,
-                email,
-                employee_id,
-                is_superuser,
-                tenants_employee!employee_id(
-                  id,
-                  display_name,
-                  bonuses_role
-                )
-              `)
+              .select('id, full_name, email, employee_id, is_superuser')
               .eq('email', user.email)
               .maybeSingle();
-            
-            if (userByEmail) {
-              finalUserData = userByEmail;
-            }
+            if (byEmail.data) userData = byEmail.data as any;
           }
-          
-          if (userError && !finalUserData) {
-            console.error('🔍 User data fetch error details:', userError);
-            setCurrentUserFullName('Eliran');
-            return;
-          }
-          
-          if (finalUserData?.id) {
-            setCurrentUserId(finalUserData.id); // Store user ID from users table for RLS
-          }
-          
-          // Set superuser status
-          if (finalUserData?.is_superuser !== undefined) {
-            setIsSuperUser(finalUserData.is_superuser === true || finalUserData.is_superuser === 'true' || finalUserData.is_superuser === 1);
-          }
-          
-          if (finalUserData?.full_name) {
-            setCurrentUserFullName(finalUserData.full_name);
-          } else if (finalUserData?.tenants_employee && Array.isArray(finalUserData.tenants_employee) && finalUserData.tenants_employee.length > 0) {
-            setCurrentUserFullName(finalUserData.tenants_employee[0].display_name);
-          } else {
-            setCurrentUserFullName('Eliran');
-          }
-          
-          // Store employee ID for efficient filtering
-          if (finalUserData?.employee_id && typeof finalUserData.employee_id === 'number') {
-            setCurrentUserEmployeeId(finalUserData.employee_id);
-          } else {
-            setCurrentUserEmployeeId(null);
-          }
-          
-          // Store bonus role for default pipeline mode
-          if (finalUserData?.tenants_employee && Array.isArray(finalUserData.tenants_employee) && finalUserData.tenants_employee.length > 0) {
-            const bonusRole = finalUserData.tenants_employee[0].bonuses_role;
-            setCurrentUserBonusRole(bonusRole || null);
-          } else if (finalUserData?.employee_id) {
-            // Fallback: fetch bonus role directly if not in join
-            const { data: employeeData } = await supabase
-              .from('tenants_employee')
-              .select('bonuses_role')
-              .eq('id', finalUserData.employee_id)
-              .single();
-            if (employeeData?.bonuses_role) {
-              setCurrentUserBonusRole(employeeData.bonuses_role);
-            }
-          }
+        }
+
+        const finalUserData = userData as any;
+        if (!finalUserData) {
+          setCurrentUserFullName(fallbackName);
+          if (userError) console.warn('Pipeline: user fetch', userError);
+          return;
+        }
+
+        if (finalUserData.id) {
+          setCurrentUserId(finalUserData.id);
+        }
+        if (finalUserData.is_superuser !== undefined) {
+          setIsSuperUser(finalUserData.is_superuser === true || finalUserData.is_superuser === 'true' || finalUserData.is_superuser === 1);
+        }
+
+        // Display name: full_name, then joined display_name, then email, then fallback
+        const joinedEmployee = Array.isArray(finalUserData.tenants_employee)
+          ? finalUserData.tenants_employee[0]
+          : finalUserData.tenants_employee;
+        if (finalUserData.full_name) {
+          setCurrentUserFullName(finalUserData.full_name);
+        } else if (joinedEmployee?.display_name) {
+          setCurrentUserFullName(joinedEmployee.display_name);
         } else {
-          setCurrentUserFullName('Eliran');
+          setCurrentUserFullName(finalUserData.email || fallbackName);
+        }
+
+        // Employee ID — from users.employee_id (join is for display/role only)
+        const empId = finalUserData.employee_id;
+        if (empId != null && typeof empId === 'number') {
+          setCurrentUserEmployeeId(empId);
+        } else if (empId != null && typeof empId === 'string' && /^\d+$/.test(empId)) {
+          setCurrentUserEmployeeId(parseInt(empId, 10));
+        } else {
+          setCurrentUserEmployeeId(null);
+        }
+
+        // Bonus role: from JOIN first, else fetch by employee_id
+        if (joinedEmployee?.bonuses_role != null) {
+          setCurrentUserBonusRole(joinedEmployee.bonuses_role);
+        } else if (finalUserData.employee_id != null) {
+          const { data: empRow } = await supabase
+            .from('tenants_employee')
+            .select('bonuses_role')
+            .eq('id', finalUserData.employee_id)
+            .maybeSingle();
+          if (empRow?.bonuses_role != null) {
+            setCurrentUserBonusRole(empRow.bonuses_role);
+          }
         }
       } catch (error) {
-        console.error('�� Error in user data fetching:', error);
-        // Set fallback name to ensure page functionality
-        setCurrentUserFullName('Eliran');
+        console.warn('Pipeline: user/employee resolve error', error);
+        setCurrentUserFullName('User');
       }
     })();
   }, []);
@@ -4940,35 +5071,35 @@ const PipelinePage: React.FC = () => {
             {showSignedAgreements ? 'Signed Agreements' : 'Pipeline'}
           </h1>
           
-          {/* Pipeline Mode Switch */}
-          <div className="relative inline-flex items-center rounded-xl border border-gray-200 shadow-sm bg-white/50 backdrop-blur-sm">
+          {/* Pipeline Mode Switch - depth effect: recessed container, active tab elevated */}
+          <div className="relative inline-flex items-center rounded-xl border border-gray-200 bg-gray-100 shadow-inner p-1">
             <button
-              className={`relative px-6 py-2.5 font-semibold text-sm transition-all duration-300 ease-out ${
-                pipelineMode === 'closer' 
-                  ? 'text-white' 
-                  : 'text-gray-600 hover:text-gray-900'
+              className={`relative px-6 py-2.5 font-semibold text-sm transition-all duration-300 ease-out rounded-lg ${
+                pipelineMode === 'closer'
+                  ? 'text-white shadow-md'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-200/60'
               } ${isLoading ? 'cursor-not-allowed' : 'cursor-pointer'}`}
               onClick={() => !isLoading && setPipelineMode('closer')}
               disabled={isLoading}
             >
               <span className="relative z-10 tracking-wide">Closer</span>
               {pipelineMode === 'closer' && (
-                <span className="absolute inset-0 bg-gradient-to-r from-primary via-primary to-primary/95 rounded-xl shadow-lg transform scale-105 transition-all duration-300"></span>
+                <span className="absolute inset-0 bg-gradient-to-r from-primary via-primary to-primary/95 rounded-lg shadow-md transition-all duration-300" aria-hidden></span>
               )}
             </button>
-            <div className="w-px h-5 bg-gray-200"></div>
+            <div className="w-px h-5 bg-gray-300 mx-0.5" aria-hidden></div>
             <button
-              className={`relative px-6 py-2.5 font-semibold text-sm transition-all duration-300 ease-out ${
-                pipelineMode === 'scheduler' 
-                  ? 'text-white' 
-                  : 'text-gray-600 hover:text-gray-900'
+              className={`relative px-6 py-2.5 font-semibold text-sm transition-all duration-300 ease-out rounded-lg ${
+                pipelineMode === 'scheduler'
+                  ? 'text-white shadow-md'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-200/60'
               } ${isLoading ? 'cursor-not-allowed' : 'cursor-pointer'}`}
               onClick={() => !isLoading && setPipelineMode('scheduler')}
               disabled={isLoading}
             >
               <span className="relative z-10 tracking-wide">Scheduler</span>
               {pipelineMode === 'scheduler' && (
-                <span className="absolute inset-0 bg-gradient-to-r from-primary via-primary to-primary/95 rounded-xl shadow-lg transform scale-105 transition-all duration-300"></span>
+                <span className="absolute inset-0 bg-gradient-to-r from-primary via-primary to-primary/95 rounded-lg shadow-md transition-all duration-300" aria-hidden></span>
               )}
             </button>
           </div>
@@ -5012,15 +5143,75 @@ const PipelinePage: React.FC = () => {
           )}
         </div>
       </div>
+      {/* Summary Statistics Cards */}
+      <div className="mb-8 grid grid-cols-1 md:grid-cols-3 gap-6">
+        {/* Contracts Signed / Meetings Created */}
+        <div 
+          className="bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105 cursor-pointer"
+          onClick={() => {
+            setShowSignedAgreements(!showSignedAgreements);
+          }}
+        >
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-white/90 text-sm font-medium">
+                {pipelineMode === 'closer' ? 'Contracts Signed' : 'Meetings Created'}
+              </p>
+              <p className="text-3xl font-bold">{summaryStats.contractsSigned}</p>
+              <p className="text-white/90 text-xs mt-1">
+                {pipelineMode === 'closer' ? 'Last 30 days' : 'Last 30 days'}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 bg-white/20 rounded-full p-3">
+              <FileText className="w-7 h-7 text-white/90" />
+              <PencilLine className="w-6 h-6 text-white/80 -ml-2" />
+            </div>
+          </div>
+        </div>
+
+        {/* Top Worker */}
+        <div className="bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-white/90 text-sm font-medium">Top {pipelineMode === 'closer' ? 'Closer' : 'Scheduler'}</p>
+              <p className="text-xl font-bold truncate">{summaryStats.topWorker}</p>
+              <p className="text-white/90 text-xs mt-1">
+                {pipelineMode === 'closer' 
+                  ? `${summaryStats.topWorkerCount} contract${summaryStats.topWorkerCount === 1 ? '' : 's'} signed (last 30 days)`
+                  : `${summaryStats.topWorkerCount} meeting${summaryStats.topWorkerCount === 1 ? '' : 's'} created (last 30 days)`
+                }
+              </p>
+            </div>
+            <div className="bg-white/20 rounded-full p-3">
+              <UserIcon className="w-8 h-8" />
+            </div>
+          </div>
+        </div>
+
+        {/* Total Leads */}
+        <div className="bg-gradient-to-b from-teal-600 via-green-500 to-green-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-white/90 text-sm font-medium">Total Leads</p>
+              <p className="text-3xl font-bold">{summaryStats.totalLeads}</p>
+              <p className="text-white/90 text-xs mt-1">In pipeline</p>
+            </div>
+            <div className="bg-white/20 rounded-full p-3">
+              <ChartBarIcon className="w-8 h-8" />
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Filters and Search */}
       <div className="mb-6 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
-        {/* Search Bar */}
+        {/* Search Bar - oval (pill) shape with search icon inside on the left */}
         <div className="relative flex items-center h-full w-full max-w-md mb-2 md:mb-0">
-          <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-base-content/50" />
+          <MagnifyingGlassIcon className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-base-content/50 pointer-events-none z-10" />
           <input
             type="text"
             placeholder="Search by name or lead..."
-            className="input input-bordered w-full pl-10 max-w-xs"
+            className="input input-bordered w-full pl-11 pr-4 rounded-full max-w-xs"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
           />
@@ -5110,67 +5301,6 @@ const PipelinePage: React.FC = () => {
           </div>
         </div>
       </div>
-      
-      
-      {/* Summary Statistics Cards */}
-      <div className="mb-8 grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Contracts Signed / Meetings Created */}
-        <div 
-          className="bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105 cursor-pointer"
-          onClick={() => {
-            setShowSignedAgreements(!showSignedAgreements);
-          }}
-        >
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-white/90 text-sm font-medium">
-                {pipelineMode === 'closer' ? 'Contracts Signed' : 'Meetings Created'}
-              </p>
-              <p className="text-3xl font-bold">{summaryStats.contractsSigned}</p>
-              <p className="text-white/90 text-xs mt-1">
-                {pipelineMode === 'closer' ? 'Last 30 days' : 'Last 30 days'}
-              </p>
-            </div>
-            <div className="flex items-center gap-2 bg-white/20 rounded-full p-3">
-              <FileText className="w-7 h-7 text-white/90" />
-              <PencilLine className="w-6 h-6 text-white/80 -ml-2" />
-            </div>
-          </div>
-        </div>
-
-        {/* Top Worker */}
-        <div className="bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-white/90 text-sm font-medium">Top {pipelineMode === 'closer' ? 'Closer' : 'Scheduler'}</p>
-              <p className="text-xl font-bold truncate">{summaryStats.topWorker}</p>
-              <p className="text-white/90 text-xs mt-1">
-                {pipelineMode === 'closer' 
-                  ? `${summaryStats.topWorkerCount} contract${summaryStats.topWorkerCount === 1 ? '' : 's'} signed (last 30 days)`
-                  : `${summaryStats.topWorkerCount} meeting${summaryStats.topWorkerCount === 1 ? '' : 's'} created (last 30 days)`
-                }
-              </p>
-            </div>
-            <div className="bg-white/20 rounded-full p-3">
-              <UserIcon className="w-8 h-8" />
-            </div>
-          </div>
-        </div>
-
-        {/* Total Leads */}
-        <div className="bg-gradient-to-b from-teal-600 via-green-500 to-green-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-white/90 text-sm font-medium">Total Leads</p>
-              <p className="text-3xl font-bold">{summaryStats.totalLeads}</p>
-              <p className="text-white/90 text-xs mt-1">In pipeline</p>
-            </div>
-            <div className="bg-white/20 rounded-full p-3">
-              <ChartBarIcon className="w-8 h-8" />
-            </div>
-          </div>
-        </div>
-      </div>
 
       {/* Leads Cards Grid or List */}
       {viewMode === 'cards' ? (
@@ -5254,24 +5384,43 @@ const PipelinePage: React.FC = () => {
                     <div className="flex justify-between items-center py-1">
                       <span className="text-sm font-semibold text-gray-500">Total Applicants</span>
                       <span className="text-sm font-bold text-gray-800 ml-2">
-                        {lead.number_of_applicants_meeting ?? 'N/A'}
+                        {lead.number_of_applicants_meeting ?? '--'}
                       </span>
                     </div>
                     {/* Potential Applicants */}
                     <div className="flex justify-between items-center py-1">
                       <span className="text-sm font-semibold text-gray-500">Potential Applicants</span>
                       <span className="text-sm font-bold text-gray-800 ml-2">
-                        {lead.potential_applicants_meeting ?? 'N/A'}
+                        {lead.potential_applicants_meeting ?? '--'}
                       </span>
                     </div>
                     {/* Expert */}
                     <div className="flex justify-between items-center py-1">
                       <span className="text-sm font-semibold text-gray-500">Expert</span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-gray-800">
-                          {getExpertDisplayName(lead, allEmployees)}
-                        </span>
-                        {getExpertStatusIcon(lead)}
+                      <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-0.5 min-w-0">
+                          {hasExpertAssigned(lead, allEmployees) && (
+                            (lead.expert_photo_url || getExpertPhotoUrl(lead, allEmployees)) ? (
+                              <div className="avatar flex-shrink-0">
+                                <div className="w-10 h-10 rounded-full ring-1 ring-base-200">
+                                  <img src={lead.expert_photo_url || getExpertPhotoUrl(lead, allEmployees) || ''} alt="" />
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="avatar placeholder flex-shrink-0">
+                                <div className="w-10 h-10 rounded-full bg-neutral text-neutral-content text-sm font-semibold">
+                                  <span>{getExpertInitials(lead, allEmployees)}</span>
+                                </div>
+                              </div>
+                            )
+                          )}
+                          <span className="text-sm font-bold text-gray-800 truncate">
+                            {getExpertDisplayName(lead, allEmployees)}
+                          </span>
+                        </div>
+                        <div className="w-9 flex-shrink-0 flex items-center justify-center">
+                          {getExpertStatusIcon(lead)}
+                        </div>
                       </div>
                     </div>
                     {/* Follow Up Date */}
@@ -5286,14 +5435,14 @@ const PipelinePage: React.FC = () => {
                           </span>
                         );
                       })() : (
-                        <span className="text-sm font-bold text-gray-800 ml-2">N/A</span>
+                        <span className="text-sm font-bold text-gray-800 ml-2">--</span>
                       )}
                     </div>
                     {/* Country */}
                     <div className="flex justify-between items-center py-1">
                       <span className="text-sm font-semibold text-gray-500">Country</span>
                       <div className="flex items-center gap-1.5">
-                        <span className="text-sm font-bold text-gray-800 ml-2">{(lead as any).country || '--'}</span>
+                        <span className="text-sm font-bold text-gray-800 ml-2">{(lead as any).country || (lead.country_id != null ? getCountryName(lead.country_id) : '') || '--'}</span>
                         {(lead as any).country && (() => {
                           // Find country by name to get timezone (like SchedulerToolPage.tsx)
                           const countryByName = allCountries.find((c: any) => c.name === (lead as any).country);
@@ -5448,7 +5597,7 @@ const PipelinePage: React.FC = () => {
                         <span className={`px-2 py-1 rounded font-semibold ${getFollowUpColor(lead.next_followup)}`}>
                           {format(parseISO(lead.next_followup), 'dd/MM/yyyy')}
                         </span>
-                      ) : 'N/A'}
+                      ) : '--'}
                     </td>
                     {/* Stage */}
                     <td className="px-2 py-3 md:py-4 text-center">
@@ -5485,23 +5634,42 @@ const PipelinePage: React.FC = () => {
                       <span className={`font-bold ${(lead.probability ?? 0) >= 80 ? 'text-green-600' : (lead.probability ?? 0) >= 60 ? 'text-yellow-600' : (lead.probability ?? 0) >= 40 ? 'text-orange-600' : 'text-red-600'}`}>{lead.probability !== undefined && lead.probability !== null ? `${lead.probability}%` : 'N/A'}</span>
                     </td>
                     {/* Total Applicants */}
-                    <td className="px-2 py-3 md:py-4 text-center truncate">{lead.number_of_applicants_meeting ?? 'N/A'}</td>
+                    <td className="px-2 py-3 md:py-4 text-center truncate">{lead.number_of_applicants_meeting ?? '--'}</td>
                     {/* Potential Applicants */}
-                    <td className="px-2 py-3 md:py-4 text-center truncate">{lead.potential_applicants_meeting ?? 'N/A'}</td>
+                    <td className="px-2 py-3 md:py-4 text-center truncate">{lead.potential_applicants_meeting ?? '--'}</td>
                     {/* Expert Status */}
                     <td className="px-2 py-3 md:py-4 text-center">
-                      <div className="flex items-center justify-center gap-2">
-                        <span className="text-xs sm:text-sm text-gray-700 font-medium min-w-[80px] inline-block text-center">
-                          {getExpertDisplayName(lead, allEmployees)}
-                        </span>
-                        {getExpertStatusIcon(lead)}
+                      <div className="flex items-center justify-center gap-1">
+                        <div className="flex items-center gap-0.5 min-w-0 flex-1 justify-center">
+                          {hasExpertAssigned(lead, allEmployees) && (
+                            (lead.expert_photo_url || getExpertPhotoUrl(lead, allEmployees)) ? (
+                              <div className="avatar flex-shrink-0">
+                                <div className="w-10 h-10 rounded-full ring-1 ring-base-200">
+                                  <img src={lead.expert_photo_url || getExpertPhotoUrl(lead, allEmployees) || ''} alt="" />
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="avatar placeholder flex-shrink-0">
+                                <div className="w-10 h-10 rounded-full bg-neutral text-neutral-content text-sm font-semibold">
+                                  <span>{getExpertInitials(lead, allEmployees)}</span>
+                                </div>
+                              </div>
+                            )
+                          )}
+                          <span className="text-xs sm:text-sm text-gray-700 font-medium min-w-[60px] inline-block text-center truncate">
+                            {getExpertDisplayName(lead, allEmployees)}
+                          </span>
+                        </div>
+                        <div className="w-9 flex-shrink-0 flex items-center justify-center">
+                          {getExpertStatusIcon(lead)}
+                        </div>
                       </div>
                     </td>
                     {/* Country */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">
                       <div className="flex items-center justify-center gap-1">
                         <span className="text-xs sm:text-sm text-gray-700">
-                          {(lead as any).country || '--'}
+                          {(lead as any).country || (lead.country_id != null ? getCountryName(lead.country_id) : '') || '--'}
                         </span>
                         {(lead.country_id || lead.country) && (() => {
                           const timezone = getCountryTimezone(lead.country_id || lead.country, lead.phone, lead.mobile);
