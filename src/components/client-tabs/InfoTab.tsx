@@ -539,34 +539,39 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
   // State to hold current user's display name
   const [currentUserName, setCurrentUserName] = useState<string>('Unknown');
 
-  // Fetch current user ID and name
+  // Fetch current user ID and name (auth_id first, then email fallback so it never fails when user exists)
   useEffect(() => {
     async function fetchUserInfo() {
       try {
         const { data: { user } } = await supabase.auth.getUser();
-        if (user && user.email) {
-          const { data: userProfile } = await supabase
+        if (!user) return;
+        let userProfile: { id: string; full_name?: string; email?: string } | null = null;
+        const byAuth = await supabase
+          .from('users')
+          .select('id, full_name, email')
+          .eq('auth_id', user.id)
+          .maybeSingle();
+        if (byAuth.data) userProfile = byAuth.data;
+        else if (user.email) {
+          const byEmail = await supabase
             .from('users')
             .select('id, full_name, email')
             .eq('email', user.email)
-            .single();
-          if (userProfile) {
-            setCurrentUserId(userProfile.id);
-            if (userProfile.full_name) {
-              setCurrentUserName(userProfile.full_name);
-            } else {
-              setCurrentUserName(userProfile.email || 'Unknown');
-            }
-          }
+            .maybeSingle();
+          if (byEmail.data) userProfile = byEmail.data;
+        }
+        if (userProfile) {
+          setCurrentUserId(userProfile.id);
+          setCurrentUserName(userProfile.full_name || userProfile.email || user.email || 'Unknown');
         }
       } catch (error) {
-        console.error('Error fetching user info:', error);
+        if (INFOTAB_DEBUG) console.warn('InfoTab: error fetching user info', error);
       }
     }
     fetchUserInfo();
   }, []);
 
-  // Fetch current user's follow-up: use join data from client when present, else query follow_ups (with fallback)
+  // Fetch current user's follow-up: use join data from client when present (and we have id), else query follow_ups (with fallback)
   useEffect(() => {
     if (!client?.id) {
       setCurrentUserFollowup(null);
@@ -576,14 +581,18 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
 
     const fromClient = client?.next_followup ?? client?.follow_up_date ?? (client as any)?.followup_date;
     const fromClientId = client?.follow_up_id ?? (client as any)?.followup_id;
+    if (fromClient && typeof fromClient === 'string' && fromClientId != null) {
+      const dateStr = fromClient.includes('T') ? fromClient.split('T')[0] : fromClient;
+      setCurrentUserFollowup(dateStr);
+      setFollowupId(Number(fromClientId));
+      return;
+    }
     if (fromClient && typeof fromClient === 'string') {
       const dateStr = fromClient.includes('T') ? fromClient.split('T')[0] : fromClient;
       setCurrentUserFollowup(dateStr);
-      setFollowupId(fromClientId != null ? Number(fromClientId) : null);
-      return;
+    } else {
+      setCurrentUserFollowup(null);
     }
-
-    setCurrentUserFollowup(null);
     setFollowupId(null);
 
     const fetchUserFollowup = async () => {
@@ -848,13 +857,56 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
     }
   };
 
+  const resolveFollowupId = async (): Promise<number | null> => {
+    if (followupId != null) return followupId;
+    if (!currentUserId || !client?.id) return null;
+    const legacy = isLegacyLead(client);
+    const legacyIdNum = legacy ? (() => {
+      const raw = client.id.toString().replace('legacy_', '');
+      return /^\d+$/.test(raw) ? parseInt(raw, 10) : null;
+    })() : null;
+    if (legacy && legacyIdNum != null) {
+      const res = await supabase
+        .from('follow_ups')
+        .select('id')
+        .eq('lead_id', legacyIdNum)
+        .eq('user_id', currentUserId)
+        .order('date', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const id = res.data?.id;
+      if (id != null) setFollowupId(id);
+      return id ?? null;
+    }
+    if (!legacy) {
+      const res = await supabase
+        .from('follow_ups')
+        .select('id')
+        .eq('new_lead_id', client.id)
+        .eq('user_id', currentUserId)
+        .order('date', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const id = res.data?.id;
+      if (id != null) setFollowupId(id);
+      return id ?? null;
+    }
+    return null;
+  };
+
   const handleUpdateFollowup = async () => {
     if (!followupDate) {
       alert('Please select a follow-up date');
       return;
     }
 
-    if (!followupId || !currentUserId) {
+    if (!currentUserId) {
+      alert('User not authenticated');
+      return;
+    }
+
+    const idToUse = await resolveFollowupId();
+    if (idToUse == null) {
       alert('Follow-up not found or user not authenticated');
       return;
     }
@@ -863,19 +915,17 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
       const { error } = await supabase
         .from('follow_ups')
         .update({
-          date: followupDate + 'T00:00:00Z' // Convert to timestamp format
+          date: followupDate + 'T00:00:00Z'
         })
-        .eq('id', followupId)
+        .eq('id', idToUse)
         .eq('user_id', currentUserId);
 
       if (error) throw error;
 
-      // Update local state
       setCurrentUserFollowup(followupDate);
       setIsEditingFollowup(false);
       setFollowupDate('');
 
-      // Refresh client data in parent component
       if (onClientUpdate) {
         await onClientUpdate();
       }
@@ -890,7 +940,13 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
       return;
     }
 
-    if (!followupId || !currentUserId) {
+    if (!currentUserId) {
+      alert('User not authenticated');
+      return;
+    }
+
+    const idToUse = await resolveFollowupId();
+    if (idToUse == null) {
       alert('Follow-up not found or user not authenticated');
       return;
     }
@@ -899,7 +955,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
       const { error } = await supabase
         .from('follow_ups')
         .delete()
-        .eq('id', followupId)
+        .eq('id', idToUse)
         .eq('user_id', currentUserId);
 
       if (error) throw error;
