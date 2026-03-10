@@ -648,9 +648,9 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
         if (item.subItems) {
           return {
             ...item,
-            subItems: item.subItems.filter(subItem =>
+            subItems: item.subItems.filter((subItem) =>
               isSuperUser || subItem.path !== '/new-cases'
-            )
+            ),
           };
         }
         return item;
@@ -670,9 +670,9 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
         if (item.subItems) {
           return {
             ...item,
-but i            subItems: item.subItems.filter(subItem =>
+            subItems: item.subItems.filter((subItem) =>
               isSuperUser || subItem.path !== '/new-cases'
-            )
+            ),
           };
         }
         return item;
