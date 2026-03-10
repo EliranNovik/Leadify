@@ -16,6 +16,21 @@ let cachedRefreshCheckResult: boolean | null = null;
 // so that navigating to another page after a refresh doesn't wipe that page's stored state.
 let pathnameWhenRefreshDetected: string | null = null;
 
+// Capture pathname at reload time as soon as module loads, so we don't depend on which
+// component runs usePersistedState first. If the first hook run happens after client-side
+// navigation (e.g. user refreshed on page A, then navigated to page B), we'd otherwise
+// set pathnameWhenRefreshDetected to B and wrongly clear B's state.
+if (typeof window !== 'undefined') {
+  try {
+    const navEntries = performance.getEntriesByType('navigation') as PerformanceNavigationTiming[];
+    if (navEntries.length > 0 && (navEntries[0] as PerformanceNavigationTiming).type === 'reload') {
+      pathnameWhenRefreshDetected = window.location.pathname;
+    }
+  } catch (_) {
+    // Ignore
+  }
+}
+
 // Set up beforeunload listener to detect page refreshes
 if (typeof window !== 'undefined') {
   // This runs when the page is about to unload (both refresh and navigation)
@@ -73,7 +88,10 @@ function isPageRefresh(): boolean {
       // 'reload' definitely means refresh - clear state only for this route
       if (navigationType === 'reload') {
         console.log(`[usePersistedState] Page refresh detected via Navigation Timing API (reload)`);
-        pathnameWhenRefreshDetected = typeof window !== 'undefined' ? window.location.pathname : null;
+        // Only set if not already set at module load (so we keep the path that was actually refreshed)
+        if (pathnameWhenRefreshDetected === null) {
+          pathnameWhenRefreshDetected = typeof window !== 'undefined' ? window.location.pathname : null;
+        }
         try {
           sessionStorage.removeItem(NAVIGATION_FLAG_KEY);
           sessionStorage.removeItem(PAGE_UNLOADING_KEY);
@@ -444,6 +462,23 @@ export function usePersistedState<T>(
   }, [location.search, syncWithUrl, urlKey, updateStorage]);
 
   return [state, setState, clearState];
+}
+
+/**
+ * Call once when the app mounts (e.g. from App.tsx useEffect) to capture the pathname
+ * that was active at reload time. This ensures we don't clear state for routes the user
+ * navigates to after a refresh (e.g. refresh on /reports, then go to /reports/collection-finances).
+ */
+export function captureRefreshPathnameOnce(): void {
+  if (typeof window === 'undefined' || pathnameWhenRefreshDetected !== null) return;
+  try {
+    const navEntries = performance.getEntriesByType('navigation') as PerformanceNavigationTiming[];
+    if (navEntries.length > 0 && navEntries[0].type === 'reload') {
+      pathnameWhenRefreshDetected = window.location.pathname;
+    }
+  } catch (_) {
+    // Ignore
+  }
 }
 
 /**

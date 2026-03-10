@@ -17,6 +17,7 @@ type Filters = {
   collected: string[]; // Multi-select
   categoryId: string[]; // Changed to array for multi-select
   order: string[]; // Changed to array for multi-select
+  currencyId: string[]; // Multi-select: accounting_currencies.id
   due: 'ignore' | 'due_only';
 };
 
@@ -48,6 +49,8 @@ type PaymentRow = {
   categoryName: string;
   notes: string;
   mainCategoryId?: string;
+  /** Payment row currency (accounting_currencies.id); used for currency filter. */
+  currencyId?: number | null;
   leadType: 'new' | 'legacy';
 };
 
@@ -228,11 +231,13 @@ const CollectionFinancesReport: React.FC = () => {
     collected: [], // Multi-select
     categoryId: [], // Changed to empty array for multi-select
     order: [], // Changed to empty array for multi-select
+    currencyId: [], // Multi-select: accounting_currencies.id
     due: 'ignore',
   }, {
     storage: 'sessionStorage',
   });
   const [categories, setCategories] = useState<MainCategory[]>([]);
+  const [currencies, setCurrencies] = useState<{ id: number; name: string | null; iso_code: string | null }[]>([]);
   const [rows, setRows] = usePersistedFilters<PaymentRow[]>('collectionFinancesReport_results', [], {
     storage: 'sessionStorage',
   });
@@ -249,6 +254,7 @@ const CollectionFinancesReport: React.FC = () => {
   const [showCollectedDropdown, setShowCollectedDropdown] = useState(false);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const [showOrderDropdown, setShowOrderDropdown] = useState(false);
+  const [showCurrencyDropdown, setShowCurrencyDropdown] = useState(false);
   const dropdownTouchHandledRef = useRef(0); // ignore synthetic click after touch (iOS Safari)
 
   // Filter reports based on search query
@@ -295,6 +301,18 @@ const CollectionFinancesReport: React.FC = () => {
       );
     };
     fetchHandlers();
+    const fetchCurrencies = async () => {
+      const { data, error } = await supabase
+        .from('accounting_currencies')
+        .select('id, name, iso_code')
+        .order('order', { ascending: true, nullsFirst: false });
+      if (error) {
+        console.error('Failed to load currencies', error);
+        return;
+      }
+      setCurrencies((data || []).map((c) => ({ id: c.id, name: c.name ?? null, iso_code: c.iso_code ?? null })));
+    };
+    fetchCurrencies();
   }, []);
 
   // Close dropdowns when clicking/touching outside (touch for iOS)
@@ -311,9 +329,12 @@ const CollectionFinancesReport: React.FC = () => {
       if (showOrderDropdown && !target.closest('.dropdown')) {
         setShowOrderDropdown(false);
       }
+      if (showCurrencyDropdown && !target.closest('.dropdown')) {
+        setShowCurrencyDropdown(false);
+      }
     };
 
-    if (showCollectedDropdown || showCategoryDropdown || showOrderDropdown) {
+    if (showCollectedDropdown || showCategoryDropdown || showOrderDropdown || showCurrencyDropdown) {
       document.addEventListener('mousedown', handleClickOutside as (e: MouseEvent) => void);
       document.addEventListener('touchstart', handleClickOutside as (e: TouchEvent) => void, { passive: true });
       return () => {
@@ -321,7 +342,7 @@ const CollectionFinancesReport: React.FC = () => {
         document.removeEventListener('touchstart', handleClickOutside as (e: TouchEvent) => void);
       };
     }
-  }, [showCollectedDropdown, showCategoryDropdown, showOrderDropdown]);
+  }, [showCollectedDropdown, showCategoryDropdown, showOrderDropdown, showCurrencyDropdown]);
 
   const handleFilterChange = (field: keyof Filters, value: string) => {
     setFilters((prev) => ({ ...prev, [field]: value }));
@@ -382,6 +403,24 @@ const CollectionFinancesReport: React.FC = () => {
 
   const handleClearAllOrders = () => {
     setFilters(prev => ({ ...prev, order: [] }));
+  };
+
+  const handleCurrencyToggle = (currencyId: string) => {
+    setFilters(prev => {
+      const current = Array.isArray(prev.currencyId) ? prev.currencyId : [];
+      const newCurrencyId = current.includes(currencyId)
+        ? current.filter(c => c !== currencyId)
+        : [...current, currencyId];
+      return { ...prev, currencyId: newCurrencyId };
+    });
+  };
+
+  const handleSelectAllCurrencies = () => {
+    setFilters(prev => ({ ...prev, currencyId: currencies.map(c => String(c.id)) }));
+  };
+
+  const handleClearAllCurrencies = () => {
+    setFilters(prev => ({ ...prev, currencyId: [] }));
   };
 
 const loadPayments = async () => {
@@ -554,7 +593,13 @@ const loadPayments = async () => {
             return false;
           }
         }
-        
+
+        // Currency filter (multi-select, by payment row currency_id)
+        if (Array.isArray(filters.currencyId) && filters.currencyId.length > 0) {
+          const rowCurrencyId = row.currencyId != null ? String(row.currencyId) : null;
+          if (!rowCurrencyId || !filters.currencyId.includes(rowCurrencyId)) return false;
+        }
+
         // Date range: DB already filtered by the correct column (Ignore: legacy=date, new=due_date; Due included: due_date for both). Use dateInRange so cross-year (e.g. Nov–Mar) is handled.
         if (filters.fromDate || filters.toDate) {
           const dateToCheck = filters.due === 'ignore' && row.leadType === 'legacy' ? row.planDate : row.dueDate;
@@ -1138,6 +1183,80 @@ const loadPayments = async () => {
             </div>
           </div>
           <div className="form-control">
+            <label className="label mb-2"><span className="label-text">Currency:</span></label>
+            <div className={`dropdown dropdown-bottom w-full ${showCurrencyDropdown ? 'dropdown-open' : ''}`}>
+              <button
+                type="button"
+                className="btn btn-outline w-full justify-between touch-manipulation"
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  dropdownTouchHandledRef.current = Date.now();
+                  setShowCurrencyDropdown(prev => !prev);
+                }}
+                onClick={(e) => {
+                  if (Date.now() - dropdownTouchHandledRef.current < 500) {
+                    dropdownTouchHandledRef.current = 0;
+                    return;
+                  }
+                  setShowCurrencyDropdown(prev => !prev);
+                }}
+              >
+                <span>
+                  {Array.isArray(filters.currencyId) && filters.currencyId.length > 0
+                    ? `${filters.currencyId.length} selected`
+                    : 'ALL'}
+                </span>
+                <svg
+                  className={`w-4 h-4 transition-transform ${showCurrencyDropdown ? 'rotate-180' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+              {showCurrencyDropdown && (
+                <div className="dropdown-content bg-base-100 shadow-lg rounded-box w-full z-[9999] border border-gray-200 mt-1" style={{ maxHeight: '240px', overflowY: 'auto', overflowX: 'hidden' }}>
+                  <div className="p-2">
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost w-full justify-start mb-1"
+                      onClick={handleSelectAllCurrencies}
+                    >
+                      Select All
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost w-full justify-start mb-1"
+                      onClick={handleClearAllCurrencies}
+                    >
+                      Clear All
+                    </button>
+                    <div className="divider my-1"></div>
+                    {currencies.map((curr) => {
+                      const idStr = String(curr.id);
+                      const isSelected = Array.isArray(filters.currencyId) && filters.currencyId.includes(idStr);
+                      const label = curr.name || curr.iso_code || `Currency #${curr.id}`;
+                      return (
+                        <div key={curr.id} className="py-1">
+                          <label className="label cursor-pointer justify-start gap-2 py-2 hover:bg-gray-100 rounded w-full">
+                            <input
+                              type="checkbox"
+                              className="checkbox checkbox-sm"
+                              checked={isSelected}
+                              onChange={() => handleCurrencyToggle(idStr)}
+                            />
+                            <span className="label-text flex-1 break-words">{label}</span>
+                          </label>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="form-control">
             <label className="label mb-2"><span className="label-text">Due:</span></label>
             <select className="select select-bordered" value={filters.due} onChange={(e) => handleFilterChange('due', e.target.value as Filters['due'])}>
               {dueOptions.map((opt) => (
@@ -1382,7 +1501,7 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
   console.log(`🔍 [fetchModernPayments] Starting with filters:`, filters);
   let query = supabase
     .from('payment_plans')
-    .select('id, lead_id, value, value_vat, currency, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay');
+    .select('id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay');
 
   // Always filter out cancelled plans
   query = query.is('cancel_date', null);
@@ -1563,6 +1682,7 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
       categoryName: meta?.categoryName || '—',
       notes: plan.notes || '',
       mainCategoryId: meta?.mainCategoryId,
+      currencyId: (plan.currency_id != null ? Number(plan.currency_id) : null) ?? (plan.currency ? currencySymbolToId(plan.currency) : null),
       leadType: 'new',
     };
   });
@@ -1919,6 +2039,7 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
       categoryName: meta?.categoryName || '—',
       notes: plan.notes || '',
       mainCategoryId: meta?.mainCategoryId,
+      currencyId: plan.currency_id != null ? Number(plan.currency_id) : null,
       leadType: 'legacy',
     };
   });
@@ -1935,6 +2056,16 @@ function mapCurrencyId(currencyId?: number | null) {
     default:
       return '₪';
   }
+}
+
+/** Map currency symbol/name from payment_plans.currency to accounting_currencies id when currency_id is null. */
+function currencySymbolToId(currency: string): number | null {
+  const s = (currency || '').trim();
+  if (s === '₪' || s === 'NIS' || s === 'ILS') return 1;
+  if (s === '€' || s === 'EUR') return 2;
+  if (s === '$' || s === 'USD') return 3;
+  if (s === '£' || s === 'GBP') return 4;
+  return null;
 }
 
 function normalizeOrderCode(order: string | number | null | undefined): string {

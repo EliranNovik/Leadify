@@ -1,8 +1,8 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
-import { DocumentArrowUpIcon, XMarkIcon, XCircleIcon, EyeIcon } from '@heroicons/react/24/outline';
+import { DocumentArrowUpIcon, XMarkIcon, XCircleIcon, EyeIcon, PlusCircleIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import DocumentViewerModal from '../components/DocumentViewerModal';
 
 interface EmployeeSalaryData {
@@ -38,6 +38,16 @@ interface SalaryRecord {
             name: string;
         }>;
     };
+}
+
+interface ManualEntryRow {
+    employee_id: number;
+    employee_name: string;
+    department: string;
+    photo_url?: string | null;
+    recordId?: number;
+    gross_salary: number;
+    net_salary: number | null;
 }
 
 // Helper function to get initials from name
@@ -97,6 +107,11 @@ const EmployeeSalariesReport = () => {
     const [isDragOver, setIsDragOver] = useState(false);
     const [selectedDocument, setSelectedDocument] = useState<{ url: string; name: string } | null>(null);
     const [isViewerOpen, setIsViewerOpen] = useState(false);
+    const [isManualEntriesModalOpen, setIsManualEntriesModalOpen] = useState(false);
+    const [manualEntriesRows, setManualEntriesRows] = useState<ManualEntryRow[]>([]);
+    const [manualEntriesLoading, setManualEntriesLoading] = useState(false);
+    const [manualEntriesSaving, setManualEntriesSaving] = useState(false);
+    const [manualEntriesSearch, setManualEntriesSearch] = useState('');
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     // Generate month options (1-12)
@@ -287,6 +302,143 @@ const EmployeeSalariesReport = () => {
             setLoading(false);
         }
     }, [selectedMonth, selectedYear]);
+
+    // Open manual entries modal and fetch all employees + existing salaries for selected month/year
+    const openManualEntriesModal = useCallback(async () => {
+        setIsManualEntriesModalOpen(true);
+        setManualEntriesSearch('');
+        setManualEntriesLoading(true);
+        try {
+            const [employeesRes, salariesRes] = await Promise.all([
+                supabase
+                    .from('tenants_employee')
+                    .select(`
+                        id,
+                        display_name,
+                        photo_url,
+                        tenant_departement!department_id ( name )
+                    `),
+                supabase
+                    .from('employee_salary')
+                    .select('id, employee_id, gross_salary, net_salary')
+                    .eq('salary_month', selectedMonth)
+                    .eq('salary_year', selectedYear)
+            ]);
+
+            if (employeesRes.error) {
+                toast.error('Failed to load employees');
+                setManualEntriesRows([]);
+                return;
+            }
+
+            const allEmployeeIds = (employeesRes.data || []).map((e: any) => e.id);
+            let staffEmployeeIds = new Set<number>();
+            if (allEmployeeIds.length > 0) {
+                const { data: staffUsers } = await supabase
+                    .from('users')
+                    .select('employee_id')
+                    .in('employee_id', allEmployeeIds)
+                    .eq('is_staff', true)
+                    .eq('is_active', true);
+                staffEmployeeIds = new Set((staffUsers || []).map((u: any) => u.employee_id).filter(Boolean));
+            }
+            const employeesFiltered = (employeesRes.data || []).filter((emp: any) => staffEmployeeIds.has(emp.id));
+
+            const salaryByEmployee = new Map<number, { id: number; gross_salary: number; net_salary: number | null }>();
+            salariesRes.data?.forEach((r: any) => {
+                salaryByEmployee.set(r.employee_id, {
+                    id: r.id,
+                    gross_salary: r.gross_salary ?? 0,
+                    net_salary: r.net_salary
+                });
+            });
+
+            const rows: ManualEntryRow[] = employeesFiltered.map((emp: any) => {
+                const dept = Array.isArray(emp.tenant_departement)
+                    ? emp.tenant_departement[0]?.name
+                    : emp.tenant_departement?.name;
+                const existing = salaryByEmployee.get(emp.id);
+                return {
+                    employee_id: emp.id,
+                    employee_name: emp.display_name || 'Unknown',
+                    department: dept || '—',
+                    photo_url: emp.photo_url ?? null,
+                    recordId: existing?.id,
+                    gross_salary: existing?.gross_salary ?? 0,
+                    net_salary: existing?.net_salary ?? null
+                };
+            });
+            setManualEntriesRows(rows);
+        } catch (e) {
+            console.error(e);
+            toast.error('Failed to load data');
+            setManualEntriesRows([]);
+        } finally {
+            setManualEntriesLoading(false);
+        }
+    }, [selectedMonth, selectedYear]);
+
+    const updateManualEntry = useCallback((employeeId: number, field: 'gross_salary' | 'net_salary', value: number | null) => {
+        setManualEntriesRows((prev) =>
+            prev.map((row) =>
+                row.employee_id === employeeId ? { ...row, [field]: value } : row
+            )
+        );
+    }, []);
+
+    const saveManualEntries = useCallback(async () => {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+            toast.error('Not authenticated');
+            return;
+        }
+        setManualEntriesSaving(true);
+        try {
+            const toSave = manualEntriesRows.filter(
+                (r) => r.gross_salary > 0 || (r.net_salary != null && r.net_salary !== 0)
+            );
+            if (toSave.length === 0) {
+                toast.error('Add at least one salary (Gross or Net) to save');
+                setManualEntriesSaving(false);
+                return;
+            }
+            for (const row of toSave) {
+                const payload = {
+                    employee_id: row.employee_id,
+                    salary_month: selectedMonth,
+                    salary_year: selectedYear,
+                    gross_salary: Number(row.gross_salary) || 0,
+                    net_salary: row.net_salary != null ? Number(row.net_salary) : null,
+                    document_url: null,
+                    extracted_data: null,
+                    approved: false,
+                    uploaded_by: user.id
+                };
+                const { error } = await supabase
+                    .from('employee_salary')
+                    .upsert(payload, { onConflict: 'employee_id,salary_month,salary_year' });
+                if (error) throw error;
+            }
+            toast.success(`Saved ${toSave.length} salary entries`);
+            setIsManualEntriesModalOpen(false);
+            await fetchSalaryData();
+        } catch (e: any) {
+            console.error(e);
+            toast.error(e?.message || 'Failed to save');
+        } finally {
+            setManualEntriesSaving(false);
+        }
+    }, [manualEntriesRows, selectedMonth, selectedYear, fetchSalaryData]);
+
+    // Filtered rows for manual entries modal (by employee name)
+    const filteredManualEntriesRows = React.useMemo(() => {
+        if (!manualEntriesSearch.trim()) return manualEntriesRows;
+        const term = manualEntriesSearch.trim().toLowerCase();
+        return manualEntriesRows.filter((r) =>
+            r.employee_name.toLowerCase().includes(term) ||
+            r.department.toLowerCase().includes(term)
+        );
+    }, [manualEntriesRows, manualEntriesSearch]);
 
     // Parse PDF and extract salary data
     const parsePDF = useCallback(async (file: File): Promise<Array<{ workerId: string; grossSalary: number; netSalary: number | null }>> => {
@@ -1139,7 +1291,7 @@ const EmployeeSalariesReport = () => {
                                 </select>
                             </div>
                         </div>
-                        <div className="mt-4">
+                        <div className="mt-4 flex flex-wrap items-center gap-2">
                             <button
                                 className="btn btn-primary"
                                 onClick={fetchSalaryData}
@@ -1153,6 +1305,14 @@ const EmployeeSalariesReport = () => {
                                 ) : (
                                     'Load Salaries'
                                 )}
+                            </button>
+                            <button
+                                type="button"
+                                className="btn btn-outline btn-primary"
+                                onClick={openManualEntriesModal}
+                            >
+                                <PlusCircleIcon className="w-4 h-4" />
+                                Add entries
                             </button>
                         </div>
                     </div>
@@ -1349,6 +1509,157 @@ const EmployeeSalariesReport = () => {
                     </div>
                 )}
             </div>
+
+            {/* Manual salary entries modal */}
+            {isManualEntriesModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center">
+                    <div className="absolute inset-0 bg-black/50" onClick={() => !manualEntriesSaving && setIsManualEntriesModalOpen(false)} aria-hidden />
+                    <div className="relative bg-base-100 rounded-2xl shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] flex flex-col">
+                        <div className="flex items-center justify-between p-4 border-b border-base-300">
+                            <h2 className="text-xl font-bold">
+                                Manual salary entries — {monthOptions.find((m) => m.value === selectedMonth)?.label} {selectedYear}
+                            </h2>
+                            <button
+                                type="button"
+                                className="btn btn-ghost btn-sm btn-circle"
+                                onClick={() => !manualEntriesSaving && setIsManualEntriesModalOpen(false)}
+                                aria-label="Close"
+                            >
+                                <XMarkIcon className="w-5 h-5" />
+                            </button>
+                        </div>
+                        {manualEntriesLoading ? (
+                            <div className="flex items-center justify-center p-12">
+                                <span className="loading loading-spinner loading-lg text-primary"></span>
+                            </div>
+                        ) : (
+                            <>
+                                <div className="p-4 border-b border-base-300">
+                                    <div className="relative">
+                                        <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-base-content/50" />
+                                        <input
+                                            type="text"
+                                            placeholder="Filter by employee name..."
+                                            className="input input-bordered w-full pl-9"
+                                            value={manualEntriesSearch}
+                                            onChange={(e) => setManualEntriesSearch(e.target.value)}
+                                        />
+                                    </div>
+                                </div>
+                                <div className="flex-1 overflow-auto p-4">
+                                    <table className="table w-full">
+                                        <thead>
+                                            <tr>
+                                                <th>Employee</th>
+                                                <th>Department</th>
+                                                <th className="text-right">Salary (net)</th>
+                                                <th className="text-right">Total cost (gross)</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {filteredManualEntriesRows.map((row) => (
+                                                <tr key={row.employee_id}>
+                                                    <td>
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="avatar">
+                                                                <div className="w-10 h-10 rounded-full">
+                                                                    {row.photo_url ? (
+                                                                        <img
+                                                                            src={row.photo_url}
+                                                                            alt=""
+                                                                            className="w-full h-full object-cover rounded-full"
+                                                                            onError={(e) => {
+                                                                                const target = e.target as HTMLImageElement;
+                                                                                target.style.display = 'none';
+                                                                                const parent = target.parentElement;
+                                                                                if (parent) {
+                                                                                    parent.innerHTML = `
+                                                                                        <div class="w-10 h-10 rounded-full flex items-center justify-center bg-primary text-primary-content font-bold text-sm">
+                                                                                            ${getInitials(row.employee_name)}
+                                                                                        </div>
+                                                                                    `;
+                                                                                }
+                                                                            }}
+                                                                        />
+                                                                    ) : (
+                                                                        <div className="w-10 h-10 rounded-full flex items-center justify-center bg-primary text-primary-content font-bold text-sm">
+                                                                            {getInitials(row.employee_name)}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                            <span>{row.employee_name}</span>
+                                                        </div>
+                                                    </td>
+                                                    <td>{row.department}</td>
+                                                    <td className="text-right">
+                                                        <input
+                                                            type="number"
+                                                            min={0}
+                                                            step={0.01}
+                                                            className="input input-bordered input-sm w-28 text-right"
+                                                            placeholder="0"
+                                                            value={row.net_salary ?? ''}
+                                                            onChange={(e) => {
+                                                                const v = e.target.value;
+                                                                updateManualEntry(row.employee_id, 'net_salary', v === '' ? null : Math.max(0, Number(v)));
+                                                            }}
+                                                        />
+                                                    </td>
+                                                    <td className="text-right">
+                                                        <input
+                                                            type="number"
+                                                            min={0}
+                                                            step={0.01}
+                                                            className="input input-bordered input-sm w-28 text-right"
+                                                            placeholder="0"
+                                                            value={row.gross_salary || ''}
+                                                            onChange={(e) => {
+                                                                const v = e.target.value;
+                                                                updateManualEntry(row.employee_id, 'gross_salary', Math.max(0, Number(v) || 0));
+                                                            }}
+                                                        />
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                    {filteredManualEntriesRows.length === 0 && (
+                                        <p className="text-center text-base-content/60 py-8">
+                                            {manualEntriesRows.length === 0 ? 'No employees found.' : 'No employees match the search.'}
+                                        </p>
+                                    )}
+                                </div>
+                                <div className="flex justify-end gap-2 p-4 border-t border-base-300">
+                                    <button
+                                        type="button"
+                                        className="btn btn-ghost"
+                                        onClick={() => !manualEntriesSaving && setIsManualEntriesModalOpen(false)}
+                                        disabled={manualEntriesSaving}
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn btn-primary"
+                                        onClick={saveManualEntries}
+                                        disabled={manualEntriesSaving}
+                                    >
+                                        {manualEntriesSaving ? (
+                                            <>
+                                                <span className="loading loading-spinner loading-sm"></span>
+                                                Saving...
+                                            </>
+                                        ) : (
+                                            'Save'
+                                        )}
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
 
             {/* Document Viewer Modal */}
             {selectedDocument && (

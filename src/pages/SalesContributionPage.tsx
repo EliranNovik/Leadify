@@ -172,6 +172,7 @@ const SalesContributionPage = () => {
   const [isDynamicIslandOpen, setIsDynamicIslandOpen] = useState(false);
   const [isFixedContributionModalOpen, setIsFixedContributionModalOpen] = useState(false);
   const [isDepartmentRolesModalOpen, setIsDepartmentRolesModalOpen] = useState(false);
+  const [useFixedContributionFromDb, setUseFixedContributionFromDb] = useState(false);
   const [savingRolePercentages, setSavingRolePercentages] = useState(false);
   const [loadingRolePercentages, setLoadingRolePercentages] = useState(false);
 
@@ -235,6 +236,14 @@ const SalesContributionPage = () => {
           }
         }
       }
+
+      // Fetch "use fixed contribution from DB" toggle (default false = hardcoded logic)
+      const { data: fixedToggleRow } = await supabase
+        .from('sales_contribution_use_fixed_from_db')
+        .select('use_fixed_contribution_from_db')
+        .eq('id', 1)
+        .maybeSingle();
+      setUseFixedContributionFromDb(!!fixedToggleRow?.use_fixed_contribution_from_db);
     } catch (error) {
       console.error('Error fetching settings:', error);
     } finally {
@@ -3914,6 +3923,31 @@ const SalesContributionPage = () => {
             return newCache;
           });
 
+          // Fetch "use fixed contribution from DB" toggle (when true, use employee_fixed_contribution table instead of hardcoded logic)
+          let useFixedFromDb = false;
+          const fixedContributionFromDbMap = new Map<number, number>();
+          try {
+            const { data: toggleRow } = await supabase
+              .from('sales_contribution_use_fixed_from_db')
+              .select('use_fixed_contribution_from_db')
+              .eq('id', 1)
+              .maybeSingle();
+            useFixedFromDb = !!toggleRow?.use_fixed_contribution_from_db;
+            if (useFixedFromDb && allEmployeeIds.length > 0) {
+              const { data: fixedRows } = await supabase
+                .from('employee_fixed_contribution')
+                .select('employee_id, fixed_contribution_amount')
+                .in('employee_id', allEmployeeIds);
+              (fixedRows || []).forEach((r: any) => {
+                const eid = Number(r.employee_id);
+                const amount = Number(r.fixed_contribution_amount) || 0;
+                fixedContributionFromDbMap.set(eid, (fixedContributionFromDbMap.get(eid) || 0) + amount);
+              });
+            }
+          } catch (e) {
+            console.warn('Error fetching fixed contribution toggle/map:', e);
+          }
+
           // Fetch employee_handlers_sales_contributions to identify employees with Handler/Sales roles (50% of Salary B)
           const employeesWithHalfContribution = new Set<number>();
           try {
@@ -3983,14 +4017,17 @@ const SalesContributionPage = () => {
                   updatedEmp.salaryBrutto = 40000;
                 }
 
-                // Set contributionFixed with priority:
-                // 1. If employee has Handler/Sales role in employee_handlers_sales_contributions: 50% of salaryBrutto
-                // 2. If employee has Marketing/Finance/Partners role in employee_field_assignments: 100% of salaryBrutto
-                // 3. Otherwise: 0
-                if (employeesWithHalfContribution.has(emp.employeeId)) {
-                  updatedEmp.contributionFixed = (updatedEmp.salaryBrutto || 0) * 0.5;
-                } else if (employeesWithFixedContribution.has(emp.employeeId)) {
-                  updatedEmp.contributionFixed = updatedEmp.salaryBrutto || 0;
+                // Set contributionFixed: from DB table (if toggle on) or hardcoded logic
+                if (useFixedFromDb && fixedContributionFromDbMap.has(emp.employeeId)) {
+                  updatedEmp.contributionFixed = fixedContributionFromDbMap.get(emp.employeeId) ?? 0;
+                } else if (!useFixedFromDb) {
+                  if (employeesWithHalfContribution.has(emp.employeeId)) {
+                    updatedEmp.contributionFixed = (updatedEmp.salaryBrutto || 0) * 0.5;
+                  } else if (employeesWithFixedContribution.has(emp.employeeId)) {
+                    updatedEmp.contributionFixed = updatedEmp.salaryBrutto || 0;
+                  } else {
+                    updatedEmp.contributionFixed = 0;
+                  }
                 } else {
                   updatedEmp.contributionFixed = 0;
                 }
@@ -4049,12 +4086,9 @@ const SalesContributionPage = () => {
                   updatedEmp.salaryBudget = contributionTotal * 0.4;
                 }
 
-                // Hardcoded: Employee ID 4 - add (30000 - Salary (B) of employee ID 115) to contributionFixed
-                // This must be done after all salary data is set and contributionFixed is already calculated
-                if (updatedEmp.employeeId === 4) {
-                  // Get Salary (B) of employee ID 115
+                // Hardcoded: Employee ID 4 - add (30000 - Salary (B) of employee ID 115) to contributionFixed (only when not using DB)
+                if (!useFixedFromDb && updatedEmp.employeeId === 4) {
                   let employee115SalaryB = 0;
-                  // Try to find employee ID 115 in any department
                   for (const [deptName, deptData] of updated.entries()) {
                     const emp115 = deptData.employees.find(e => e.employeeId === 115);
                     if (emp115) {
@@ -4062,7 +4096,6 @@ const SalesContributionPage = () => {
                       break;
                     }
                   }
-                  // If not found in updated map, try finalDepartmentData
                   if (employee115SalaryB === 0) {
                     for (const [deptName, deptData] of finalDepartmentData.entries()) {
                       const emp115 = deptData.employees.find(e => e.employeeId === 115);
@@ -4072,16 +4105,12 @@ const SalesContributionPage = () => {
                       }
                     }
                   }
-                  // If still not found, use salaryDataMap directly
                   if (employee115SalaryB === 0) {
                     const emp115SalaryData = salaryDataMap.get(115);
                     employee115SalaryB = emp115SalaryData?.salaryBrutto || 0;
                   }
-                  // Calculate additional amount: 30000 - Salary (B) of employee ID 115
                   const additionalAmount = 30000 - employee115SalaryB;
-                  // Add to existing contributionFixed (don't replace it)
                   updatedEmp.contributionFixed = (updatedEmp.contributionFixed || 0) + additionalAmount;
-                  // Recalculate salaryBudget after updating contributionFixed
                   const contributionTotal = (updatedEmp.contribution || 0) + (updatedEmp.contributionFixed || 0);
                   updatedEmp.salaryBudget = contributionTotal * 0.4;
                   updatedEmp.maxIncentives = (updatedEmp.salaryBudget ?? 0) - (updatedEmp.totalSalaryCost ?? 0);
@@ -4169,8 +4198,32 @@ const SalesContributionPage = () => {
             }
           } catch (error) {
             console.error('Error fetching salary data for cached employees:', error);
-            setContributionFixed(0);
           }
+        }
+
+        // Fetch "use fixed contribution from DB" toggle and map for cached path
+        let useFixedFromDbCached = false;
+        const fixedContributionFromDbMapCached = new Map<number, number>();
+        try {
+          const { data: toggleRow } = await supabase
+            .from('sales_contribution_use_fixed_from_db')
+            .select('use_fixed_contribution_from_db')
+            .eq('id', 1)
+            .maybeSingle();
+          useFixedFromDbCached = !!toggleRow?.use_fixed_contribution_from_db;
+          if (useFixedFromDbCached && allEmployeeIds.length > 0) {
+            const { data: fixedRows } = await supabase
+              .from('employee_fixed_contribution')
+              .select('employee_id, fixed_contribution_amount')
+              .in('employee_id', allEmployeeIds);
+            (fixedRows || []).forEach((r: any) => {
+              const eid = Number(r.employee_id);
+              const amount = Number(r.fixed_contribution_amount) || 0;
+              fixedContributionFromDbMapCached.set(eid, (fixedContributionFromDbMapCached.get(eid) || 0) + amount);
+            });
+          }
+        } catch (e) {
+          console.warn('Error fetching fixed contribution toggle/map (cached):', e);
         }
 
         // Fetch employee_handlers_sales_contributions to identify employees with Handler/Sales roles (50% of Salary B)
@@ -4244,14 +4297,17 @@ const SalesContributionPage = () => {
                     updatedEmp.salaryBrutto = 40000;
                   }
 
-                  // Set contributionFixed with priority:
-                  // 1. If employee has Handler/Sales role in employee_handlers_sales_contributions: 50% of salaryBrutto
-                  // 2. If employee has Marketing/Finance/Partners role in employee_field_assignments: 100% of salaryBrutto
-                  // 3. Otherwise: 0
-                  if (employeesWithHalfContribution.has(emp.employeeId)) {
-                    updatedEmp.contributionFixed = (updatedEmp.salaryBrutto || 0) * 0.5;
-                  } else if (employeesWithFixedContribution.has(emp.employeeId)) {
-                    updatedEmp.contributionFixed = updatedEmp.salaryBrutto || 0;
+                  // Set contributionFixed: from DB (if toggle on) or hardcoded logic
+                  if (useFixedFromDbCached && fixedContributionFromDbMapCached.has(emp.employeeId)) {
+                    updatedEmp.contributionFixed = fixedContributionFromDbMapCached.get(emp.employeeId) ?? 0;
+                  } else if (!useFixedFromDbCached) {
+                    if (employeesWithHalfContribution.has(emp.employeeId)) {
+                      updatedEmp.contributionFixed = (updatedEmp.salaryBrutto || 0) * 0.5;
+                    } else if (employeesWithFixedContribution.has(emp.employeeId)) {
+                      updatedEmp.contributionFixed = updatedEmp.salaryBrutto || 0;
+                    } else {
+                      updatedEmp.contributionFixed = 0;
+                    }
                   } else {
                     updatedEmp.contributionFixed = 0;
                   }
@@ -4260,9 +4316,8 @@ const SalesContributionPage = () => {
                   const contributionTotal = (updatedEmp.contribution || 0) + (updatedEmp.contributionFixed || 0);
                   updatedEmp.salaryBudget = contributionTotal * 0.4;
 
-                  // Hardcoded: Employee ID 4 - add (30000 - Salary (B) of employee ID 115) to contributionFixed
-                  // This must be done after salaryBudget is calculated, then recalculate
-                  if (emp.employeeId === 4) {
+                  // Hardcoded: Employee ID 4 (only when not using DB)
+                  if (!useFixedFromDbCached && emp.employeeId === 4) {
                     // Get Salary (B) of employee ID 115
                     let employee115SalaryB = 0;
                     // Try to find employee ID 115 in any department from prev map
@@ -4299,10 +4354,16 @@ const SalesContributionPage = () => {
                   updatedEmp.salaryBrutto = 40000;
                 }
 
-                if (employeesWithHalfContribution.has(emp.employeeId)) {
-                  updatedEmp.contributionFixed = (updatedEmp.salaryBrutto || 0) * 0.5;
-                } else if (employeesWithFixedContribution.has(emp.employeeId)) {
-                  updatedEmp.contributionFixed = updatedEmp.salaryBrutto || 0;
+                if (useFixedFromDbCached && fixedContributionFromDbMapCached.has(emp.employeeId)) {
+                  updatedEmp.contributionFixed = fixedContributionFromDbMapCached.get(emp.employeeId) ?? 0;
+                } else if (!useFixedFromDbCached) {
+                  if (employeesWithHalfContribution.has(emp.employeeId)) {
+                    updatedEmp.contributionFixed = (updatedEmp.salaryBrutto || 0) * 0.5;
+                  } else if (employeesWithFixedContribution.has(emp.employeeId)) {
+                    updatedEmp.contributionFixed = updatedEmp.salaryBrutto || 0;
+                  } else {
+                    updatedEmp.contributionFixed = 0;
+                  }
                 } else {
                   updatedEmp.contributionFixed = 0;
                 }
@@ -4311,12 +4372,8 @@ const SalesContributionPage = () => {
                 const contributionTotal = (updatedEmp.contribution || 0) + (updatedEmp.contributionFixed || 0);
                 updatedEmp.salaryBudget = contributionTotal * 0.4;
 
-                // Hardcoded: Employee ID 4 - add (30000 - Salary (B) of employee ID 115) to contributionFixed
-                // This must be done after salaryBudget is calculated, then recalculate
-                if (emp.employeeId === 4) {
-                  // Get Salary (B) of employee ID 115
+                if (!useFixedFromDbCached && emp.employeeId === 4) {
                   let employee115SalaryB = 0;
-                  // Try to find employee ID 115 in any department from prev map
                   for (const [deptName, deptData] of prev.entries()) {
                     const emp115 = deptData.employees.find(e => e.employeeId === 115);
                     if (emp115) {
@@ -4324,16 +4381,12 @@ const SalesContributionPage = () => {
                       break;
                     }
                   }
-                  // If not found, use salaryDataMap directly
                   if (employee115SalaryB === 0) {
                     const emp115SalaryData = salaryDataMap.get(115);
                     employee115SalaryB = emp115SalaryData?.salaryBrutto || 0;
                   }
-                  // Calculate additional amount: 30000 - Salary (B) of employee ID 115
                   const additionalAmount = 30000 - employee115SalaryB;
-                  // Add to existing contributionFixed (don't replace it)
                   updatedEmp.contributionFixed = (updatedEmp.contributionFixed || 0) + additionalAmount;
-                  // Recalculate salaryBudget after updating contributionFixed
                   const newContributionTotal = (updatedEmp.contribution || 0) + (updatedEmp.contributionFixed || 0);
                   updatedEmp.salaryBudget = newContributionTotal * 0.4;
                 }
@@ -6827,33 +6880,32 @@ const SalesContributionPage = () => {
                 Fields
               </span>
             </div>
-            <button
-              onClick={async () => {
-                await fetchRolePercentages();
-                setIsDynamicIslandOpen(true);
-              }}
-              className="btn btn-primary btn-sm gap-2"
-              title="Open Dynamic Island"
-            >
-              <Squares2X2Icon className="w-4 h-4" />
-              Dynamic Island
-            </button>
-            <button
-              onClick={() => setIsFixedContributionModalOpen(true)}
-              className="btn btn-primary btn-sm gap-2"
-              title="Fixed contribution per employee by department role"
-            >
-              <CurrencyDollarIcon className="w-4 h-4" />
-              Fixed contribution
-            </button>
-            <button
-              onClick={() => setIsDepartmentRolesModalOpen(true)}
-              className="btn btn-primary btn-sm gap-2"
-              title="Assign or move employees between department roles"
-            >
-              <UserGroupIcon className="w-4 h-4" />
-              Department roles
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={async () => {
+                  await fetchRolePercentages();
+                  setIsDynamicIslandOpen(true);
+                }}
+                className="btn btn-primary btn-md btn-circle"
+                title="Open Dynamic Island"
+              >
+                <Squares2X2Icon className="w-5 h-5" />
+              </button>
+              <button
+                onClick={() => setIsFixedContributionModalOpen(true)}
+                className="btn btn-primary btn-md btn-circle"
+                title="Fixed contribution per employee by department role"
+              >
+                <CurrencyDollarIcon className="w-5 h-5" />
+              </button>
+              <button
+                onClick={() => setIsDepartmentRolesModalOpen(true)}
+                className="btn btn-primary btn-md btn-circle"
+                title="Assign or move employees between department roles"
+              >
+                <UserGroupIcon className="w-5 h-5" />
+              </button>
+            </div>
             {/* Total Signed Value */}
             <div className="flex items-center gap-2">
               <div className="px-4 py-2 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg min-w-[120px] text-right text-white shadow-md">
@@ -6873,6 +6925,16 @@ const SalesContributionPage = () => {
         isOpen={isFixedContributionModalOpen}
         onClose={() => setIsFixedContributionModalOpen(false)}
         formatCurrency={formatCurrency}
+        useFixedContributionFromDb={useFixedContributionFromDb}
+        onSettingChange={async () => {
+          const { data: row } = await supabase
+            .from('sales_contribution_use_fixed_from_db')
+            .select('use_fixed_contribution_from_db')
+            .eq('id', 1)
+            .maybeSingle();
+          setUseFixedContributionFromDb(!!row?.use_fixed_contribution_from_db);
+          handleSearch();
+        }}
       />
 
       <EmployeeDepartmentRolesModal

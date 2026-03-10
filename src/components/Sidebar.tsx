@@ -670,7 +670,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
         if (item.subItems) {
           return {
             ...item,
-            subItems: item.subItems.filter(subItem =>
+but i            subItems: item.subItems.filter(subItem =>
               isSuperUser || subItem.path !== '/new-cases'
             )
           };

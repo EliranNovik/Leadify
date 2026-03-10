@@ -1,9 +1,12 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { XMarkIcon, CurrencyDollarIcon } from '@heroicons/react/24/outline';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { XMarkIcon, CurrencyDollarIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 
-const DEPARTMENT_TABS = ['Partners', 'Marketing', 'Finance'] as const;
+const FIXED_TOGGLE_TABLE = 'sales_contribution_use_fixed_from_db';
+const FIXED_TOGGLE_ROW_ID = 1;
+
+const DEPARTMENT_TABS = ['Sales', 'Handlers', 'Partners', 'Marketing', 'Finance'] as const;
 type DepartmentRole = (typeof DEPARTMENT_TABS)[number];
 
 function getInitials(name: string): string {
@@ -43,18 +46,58 @@ export interface FixedContributionModalProps {
   isOpen: boolean;
   onClose: () => void;
   formatCurrency?: (amount: number) => string;
+  /** When true, page uses fixed contribution from employee_fixed_contribution table; when false, hardcoded logic. */
+  useFixedContributionFromDb?: boolean;
+  /** Called after the "Use saved fixed contribution" toggle is changed so the page can refetch and recalculate. */
+  onSettingChange?: () => void;
 }
 
 const FixedContributionModal: React.FC<FixedContributionModalProps> = ({
   isOpen,
   onClose,
   formatCurrency = (n) => (n == null || Number.isNaN(n) ? '0' : `₪${Number(n).toLocaleString('he-IL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`),
+  useFixedContributionFromDb = false,
+  onSettingChange,
 }) => {
   const [activeTab, setActiveTab] = useState<DepartmentRole>('Partners');
   const [rows, setRows] = useState<EmployeeRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [dirty, setDirty] = useState<Record<number, number>>({});
+  const [useFromDb, setUseFromDb] = useState(false);
+  const [toggleSaving, setToggleSaving] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  const filteredRows = useMemo(() => {
+    if (!searchTerm.trim()) return rows;
+    const term = searchTerm.trim().toLowerCase();
+    return rows.filter((row) => row.employee_name.toLowerCase().includes(term));
+  }, [rows, searchTerm]);
+
+  useEffect(() => {
+    if (isOpen) {
+      setUseFromDb(!!useFixedContributionFromDb);
+    }
+  }, [isOpen, useFixedContributionFromDb]);
+
+  const handleToggleUseFromDb = async () => {
+    const next = !useFromDb;
+    setToggleSaving(true);
+    try {
+      const { error } = await supabase
+        .from(FIXED_TOGGLE_TABLE)
+        .update({ use_fixed_contribution_from_db: next })
+        .eq('id', FIXED_TOGGLE_ROW_ID);
+      if (error) throw error;
+      setUseFromDb(next);
+      toast.success(next ? 'Using saved fixed contribution from table' : 'Using hardcoded Contribution Fixed logic');
+      onSettingChange?.();
+    } catch (e: any) {
+      toast.error(e?.message || 'Failed to update setting');
+    } finally {
+      setToggleSaving(false);
+    }
+  };
 
   const fetchEmployeesAndAmounts = useCallback(async (departmentRole: DepartmentRole) => {
     if (!isOpen) return;
@@ -149,6 +192,10 @@ const FixedContributionModal: React.FC<FixedContributionModalProps> = ({
     }
   }, [isOpen, activeTab, fetchEmployeesAndAmounts]);
 
+  useEffect(() => {
+    setSearchTerm('');
+  }, [activeTab]);
+
   const handleAmountChange = (employeeId: number, value: string) => {
     const num = parseFloat(value.replace(/,/g, '')) || 0;
     setDirty((prev) => ({ ...prev, [employeeId]: num }));
@@ -200,6 +247,25 @@ const FixedContributionModal: React.FC<FixedContributionModalProps> = ({
           </button>
         </div>
 
+        <div className="px-4 py-3 border-b border-base-200 flex-shrink-0 flex items-center justify-between gap-4 flex-wrap">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="toggle toggle-primary"
+              checked={useFromDb}
+              disabled={toggleSaving}
+              onChange={handleToggleUseFromDb}
+            />
+            <span className="text-sm font-medium">
+              Use saved fixed contribution (from this table)
+            </span>
+          </label>
+          {toggleSaving && <span className="loading loading-spinner loading-sm" />}
+          <p className="text-xs text-base-content/60 w-full md:w-auto">
+            {useFromDb ? 'Contribution Fixed on the page is taken from the amounts below.' : 'Default: Contribution Fixed uses hardcoded logic (Handler/Sales 50%, Partners/Marketing/Finance 100%).'}
+          </p>
+        </div>
+
         <div className="tabs tabs-boxed px-4 pt-3 flex-shrink-0 gap-1 bg-base-200/50">
           {DEPARTMENT_TABS.map((tab) => (
             <button
@@ -213,6 +279,21 @@ const FixedContributionModal: React.FC<FixedContributionModalProps> = ({
           ))}
         </div>
 
+        {!loading && rows.length > 0 && (
+          <div className="flex-shrink-0 px-4 pt-2 pb-1">
+            <div className="relative">
+              <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-base-content/50" />
+              <input
+                type="text"
+                placeholder="Filter by employee name..."
+                className="input input-bordered input-sm w-full pl-9"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+          </div>
+        )}
+
         <div className="flex-1 overflow-auto p-4">
           {loading ? (
             <div className="flex justify-center py-12">
@@ -220,8 +301,10 @@ const FixedContributionModal: React.FC<FixedContributionModalProps> = ({
             </div>
           ) : rows.length === 0 ? (
             <p className="text-base-content/70 text-center py-8">No employees in this department role.</p>
+          ) : filteredRows.length === 0 ? (
+            <p className="text-base-content/70 text-center py-8">No employees match &quot;{searchTerm.trim()}&quot;.</p>
           ) : (
-            <table className="table table-zebra w-full">
+            <table className="table w-full">
               <thead>
                 <tr>
                   <th>Employee</th>
@@ -229,7 +312,7 @@ const FixedContributionModal: React.FC<FixedContributionModalProps> = ({
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
+                {filteredRows.map((row) => (
                   <tr key={row.employee_id}>
                     <td>
                       <div className="flex items-center gap-3">
@@ -254,7 +337,7 @@ const FixedContributionModal: React.FC<FixedContributionModalProps> = ({
           )}
         </div>
 
-        {!loading && rows.length > 0 && (
+        {!loading && filteredRows.length > 0 && (
           <div className="flex-shrink-0 p-4 border-t border-base-300 flex justify-end">
             <button
               type="button"

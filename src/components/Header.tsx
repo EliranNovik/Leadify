@@ -4375,7 +4375,22 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   useEffect(() => {
     // Fetch the current user's name and employee data from Supabase
     const fetchUserData = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      // Prefer getSession() first (reads storage); on mobile/deployed getUser() can be null before session is restored
+      let user = (await supabase.auth.getSession()).data?.session?.user ?? null;
+      if (!user) {
+        user = (await supabase.auth.getUser()).data?.user ?? null;
+      }
+      if (!user) {
+        // Retry getSession after short delays so we don't clear name on first paint when session isn't ready yet
+        for (const delayMs of [400, 1200]) {
+          await new Promise(r => setTimeout(r, delayMs));
+          const session = (await supabase.auth.getSession()).data?.session;
+          if (session?.user) {
+            user = session.user;
+            break;
+          }
+        }
+      }
 
       if (!user) {
         setCurrentUser(null);

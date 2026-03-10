@@ -427,17 +427,28 @@ html.dark .table-zebra tbody tr:nth-child(odd) {
   background: rgba(255, 255, 255, 0.03) !important;
 }
 
-/* Table row hover effects */
+/* Table header titles - grey instead of black */
+.table thead th,
+.table th {
+  color: #6b7280 !important;
+}
+
+html.dark .table thead th,
+html.dark .table th {
+  color: #9ca3af !important;
+}
+
+/* Table row hover effects - light grey */
 .table tbody tr {
   transition: background-color 0.2s ease;
 }
 
 .table tbody tr:hover {
-  background-color: rgba(0, 0, 0, 0.02);
+  background-color: #f3f4f6 !important;
 }
 
 html.dark .table tbody tr:hover {
-  background-color: rgba(255, 255, 255, 0.1) !important;
+  background-color: rgba(255, 255, 255, 0.08) !important;
 }
 
 /* Badge styling - exclude stage badges to preserve their colors */
@@ -850,6 +861,17 @@ html.dark .toast {
   border-radius: 12px !important;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3) !important;
   backdrop-filter: blur(8px) !important;
+}
+
+/* Hide number input arrows (spinners) globally */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
 }
 
 input[type="number"].no-arrows::-webkit-inner-spin-button,

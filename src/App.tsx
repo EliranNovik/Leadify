@@ -90,9 +90,16 @@ import MyProfilePage from './pages/MyProfilePage';
 import PublicProfilePage from './pages/PublicProfilePage';
 import BusinessCardPage from './pages/BusinessCardPage';
 import { AuthProvider, useAuthContext } from './contexts/AuthContext';
+import { captureRefreshPathnameOnce } from './hooks/usePersistedState';
+
 const AppContentInner: React.FC = () => {
   const { accounts, instance } = useMsal();
   const location = useLocation();
+
+  // Capture pathname at reload time so persisted state is only cleared for the route that was refreshed
+  useEffect(() => {
+    captureRefreshPathnameOnce();
+  }, []);
 
   // Memoize page flags to prevent unnecessary re-renders of Header/Sidebar
   const isAdminPage = useMemo(() => location.pathname === '/admin', [location.pathname]);

@@ -256,7 +256,7 @@ const EmployeeDepartmentRolesModal: React.FC<EmployeeDepartmentRolesModalProps> 
                 No employees match &quot;{searchTerm.trim()}&quot;.
               </p>
             ) : (
-            <table className="table table-zebra w-full">
+            <table className="table w-full">
               <thead>
                 <tr>
                   <th>Employee</th>

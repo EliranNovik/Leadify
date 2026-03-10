@@ -285,6 +285,20 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     return false;
   };
 
+  // Distribute exact percentages to integers that sum to 100.
+  // Give remainder to rows with smallest fractional part first so e.g. 9.09% rounds up to 10%.
+  const distributePercentagesTo100 = (exactPercents: number[]): number[] => {
+    if (exactPercents.length === 0) return [];
+    const floors = exactPercents.map((p) => Math.floor(p));
+    const sumFloors = floors.reduce((a, b) => a + b, 0);
+    let remainder = Math.round(100 - sumFloors);
+    const withIndex = exactPercents.map((p, i) => ({ i, frac: p - Math.floor(p) }));
+    withIndex.sort((a, b) => a.frac - b.frac); // smallest fractional part first
+    const result = [...floors];
+    for (let j = 0; j < remainder && j < result.length; j++) result[withIndex[j].i]++;
+    return result;
+  };
+
   // Add state for stages dropdown and drawer
   const [showStagesDrawer, setShowStagesDrawer] = useState(false);
   const [autoPlanData, setAutoPlanData] = useState({
@@ -1705,6 +1719,25 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               paymentsByContact.get(contactName)!.push(processed);
             });
 
+            // Per contact: distribute percentages so they sum to 100% (largest-remainder)
+            const contactPercentsMap = new Map<string, Map<number, number>>();
+            paymentsByContact.forEach((contactPayments, contactName) => {
+              const contactTotal = contactPayments.reduce((sum, p) => {
+                const orderText = p.plan.order ? getOrderText(p.plan.order) : 'First Payment';
+                if (isExpenseNoVat(p.plan.order) || isExpenseNoVat(orderText)) return sum;
+                return sum + p.value;
+              }, 0);
+              const eligible = contactPayments.filter((p) => {
+                const orderText = p.plan.order ? getOrderText(p.plan.order) : 'First Payment';
+                return !isExpenseNoVat(p.plan.order) && !isExpenseNoVat(orderText);
+              });
+              const exactPercents = contactTotal > 0 ? eligible.map((p) => (p.value / contactTotal) * 100) : [];
+              const rounded = distributePercentagesTo100(exactPercents);
+              const byPlanId = new Map<number, number>();
+              eligible.forEach((p, i) => byPlanId.set(p.plan.id, rounded[i] ?? 0));
+              contactPercentsMap.set(contactName, byPlanId);
+            });
+
             // Calculate total per contact and then calculate percentages
             payments = processedPayments.map(processed => {
               const { plan, value, valueVat, currency, paymentTotal } = processed;
@@ -1712,23 +1745,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               // Get contact name from client_id
               const contactName = getContactNameFromClientId(plan.client_id, currentContacts);
 
-              // Calculate total for this contact's payments (excluding "Expense (no VAT)" payments)
-              const contactPayments = paymentsByContact.get(contactName) || [];
-              const contactTotal = contactPayments.reduce((sum, p) => {
-                const orderText = p.plan.order ? getOrderText(p.plan.order) : 'First Payment';
-                // Exclude "Expense (no VAT)" from total calculation
-                if (isExpenseNoVat(p.plan.order) || isExpenseNoVat(orderText)) {
-                  return sum;
-                }
-                return sum + p.paymentTotal;
-              }, 0);
-
-              // Calculate percentage based on this contact's total, not the global total
-              // If this payment is "Expense (no VAT)", set duePercent to empty string
               const orderText = plan.order ? getOrderText(plan.order) : 'First Payment';
               const calculatedDuePercent = isExpenseNoVat(plan.order) || isExpenseNoVat(orderText)
                 ? ''
-                : (contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%');
+                : (contactPercentsMap.get(contactName)?.get(plan.id) ?? 0).toString() + '%';
 
               // Debug: Log employee data if available
               if (plan.ready_to_pay && plan.ready_to_pay_by) {
@@ -1817,30 +1837,34 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               paymentsByContact.get(contactName)!.push(processed);
             });
 
+            // Per contact: distribute percentages so they sum to 100% (largest-remainder)
+            const contactPercentsMap = new Map<string, Map<number, number>>();
+            paymentsByContact.forEach((contactPayments, contactName) => {
+              const contactTotal = contactPayments.reduce((sum, p) => {
+                const orderText = typeof p.plan.payment_order === 'number' ? getOrderText(p.plan.payment_order) : (p.plan.payment_order || 'First Payment');
+                if (isExpenseNoVat(p.plan.payment_order) || isExpenseNoVat(orderText)) return sum;
+                return sum + p.value;
+              }, 0);
+              const eligible = contactPayments.filter((p) => {
+                const orderText = typeof p.plan.payment_order === 'number' ? getOrderText(p.plan.payment_order) : (p.plan.payment_order || 'First Payment');
+                return !isExpenseNoVat(p.plan.payment_order) && !isExpenseNoVat(orderText);
+              });
+              const exactPercents = contactTotal > 0 ? eligible.map((p) => (p.value / contactTotal) * 100) : [];
+              const rounded = distributePercentagesTo100(exactPercents);
+              const byPlanId = new Map<number, number>();
+              eligible.forEach((p, i) => byPlanId.set(p.plan.id, rounded[i] ?? 0));
+              contactPercentsMap.set(contactName, byPlanId);
+            });
+
             // Calculate total per contact and then calculate percentages
             payments = processedPayments.map(processed => {
               const { plan, value, valueVat, currency, paymentTotal } = processed;
 
-              // Get contact name
               const contactName = plan.client_name || 'Unknown Contact';
-
-              // Calculate total for this contact's payments (excluding "Expense (no VAT)" payments)
-              const contactPayments = paymentsByContact.get(contactName) || [];
-              const contactTotal = contactPayments.reduce((sum, p) => {
-                const orderText = typeof p.plan.payment_order === 'number' ? getOrderText(p.plan.payment_order) : (p.plan.payment_order || 'First Payment');
-                // Exclude "Expense (no VAT)" from total calculation
-                if (isExpenseNoVat(p.plan.payment_order) || isExpenseNoVat(orderText)) {
-                  return sum;
-                }
-                return sum + p.paymentTotal;
-              }, 0);
-
-              // Calculate percentage based on this contact's total, not the global total
-              // If this payment is "Expense (no VAT)", set duePercent to empty string
               const orderText = typeof plan.payment_order === 'number' ? getOrderText(plan.payment_order) : (plan.payment_order || 'First Payment');
               const duePercentStr = isExpenseNoVat(plan.payment_order) || isExpenseNoVat(orderText)
                 ? ''
-                : (contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%');
+                : (contactPercentsMap.get(contactName)?.get(plan.id) ?? 0).toString() + '%';
 
               return {
                 id: plan.id,
@@ -2261,30 +2285,34 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             paymentsByContact.get(contactName)!.push(processed);
           });
 
+          // Per contact: distribute percentages so they sum to 100% (largest-remainder)
+          const contactPercentsMap = new Map<string, Map<number, number>>();
+          paymentsByContact.forEach((contactPayments, contactName) => {
+            const contactTotal = contactPayments.reduce((sum, p) => {
+              const orderText = p.plan.order ? getOrderText(p.plan.order) : 'First Payment';
+              if (isExpenseNoVat(p.plan.order) || isExpenseNoVat(orderText)) return sum;
+              return sum + p.value;
+            }, 0);
+            const eligible = contactPayments.filter((p) => {
+              const orderText = p.plan.order ? getOrderText(p.plan.order) : 'First Payment';
+              return !isExpenseNoVat(p.plan.order) && !isExpenseNoVat(orderText);
+            });
+            const exactPercents = contactTotal > 0 ? eligible.map((p) => (p.value / contactTotal) * 100) : [];
+            const rounded = distributePercentagesTo100(exactPercents);
+            const byPlanId = new Map<number, number>();
+            eligible.forEach((p, i) => byPlanId.set(p.plan.id, rounded[i] ?? 0));
+            contactPercentsMap.set(contactName, byPlanId);
+          });
+
           // Calculate total per contact and then calculate percentages
           payments = processedPayments.map(processed => {
             const { plan, value, valueVat, currency, paymentTotal } = processed;
 
-            // Get contact name from client_id
             const contactName = getContactNameFromClientId(plan.client_id, currentContacts);
-
-            // Calculate total for this contact's payments (excluding "Expense (no VAT)" payments)
-            const contactPayments = paymentsByContact.get(contactName) || [];
-            const contactTotal = contactPayments.reduce((sum, p) => {
-              const orderText = p.plan.order ? getOrderText(p.plan.order) : 'First Payment';
-              // Exclude "Expense (no VAT)" from total calculation
-              if (isExpenseNoVat(p.plan.order) || isExpenseNoVat(orderText)) {
-                return sum;
-              }
-              return sum + p.paymentTotal;
-            }, 0);
-
-            // Calculate percentage based on this contact's total, not the global total
-            // If this payment is "Expense (no VAT)", set duePercent to empty string
             const orderText = plan.order ? getOrderText(plan.order) : 'First Payment';
             const calculatedDuePercent = isExpenseNoVat(plan.order) || isExpenseNoVat(orderText)
               ? ''
-              : (contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%');
+              : (contactPercentsMap.get(contactName)?.get(plan.id) ?? 0).toString() + '%';
 
             // For legacy leads: if due_date is set (even without due_by_id), treat as ready_to_pay
             // This is because legacy leads use due_date and due_by_id instead of ready_to_pay flag
@@ -2358,30 +2386,34 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             paymentsByContact.get(contactName)!.push(processed);
           });
 
+          // Per contact: distribute percentages so they sum to 100% (largest-remainder)
+          const contactPercentsMap = new Map<string, Map<number, number>>();
+          paymentsByContact.forEach((contactPayments, contactName) => {
+            const contactTotal = contactPayments.reduce((sum, p) => {
+              const orderText = typeof p.plan.payment_order === 'number' ? getOrderText(p.plan.payment_order) : (p.plan.payment_order || 'First Payment');
+              if (isExpenseNoVat(p.plan.payment_order) || isExpenseNoVat(orderText)) return sum;
+              return sum + p.value;
+            }, 0);
+            const eligible = contactPayments.filter((p) => {
+              const orderText = typeof p.plan.payment_order === 'number' ? getOrderText(p.plan.payment_order) : (p.plan.payment_order || 'First Payment');
+              return !isExpenseNoVat(p.plan.payment_order) && !isExpenseNoVat(orderText);
+            });
+            const exactPercents = contactTotal > 0 ? eligible.map((p) => (p.value / contactTotal) * 100) : [];
+            const rounded = distributePercentagesTo100(exactPercents);
+            const byPlanId = new Map<number, number>();
+            eligible.forEach((p, i) => byPlanId.set(p.plan.id, rounded[i] ?? 0));
+            contactPercentsMap.set(contactName, byPlanId);
+          });
+
           // Calculate total per contact and then calculate percentages
           payments = processedPayments.map(processed => {
             const { plan, value, valueVat, currency, paymentTotal } = processed;
 
-            // Get contact name
             const contactName = plan.client_name || 'Unknown Contact';
-
-            // Calculate total for this contact's payments (excluding "Expense (no VAT)" payments)
-            const contactPayments = paymentsByContact.get(contactName) || [];
-            const contactTotal = contactPayments.reduce((sum, p) => {
-              const orderText = typeof p.plan.payment_order === 'number' ? getOrderText(p.plan.payment_order) : (p.plan.payment_order || 'First Payment');
-              // Exclude "Expense (no VAT)" from total calculation
-              if (isExpenseNoVat(p.plan.payment_order) || isExpenseNoVat(orderText)) {
-                return sum;
-              }
-              return sum + p.paymentTotal;
-            }, 0);
-
-            // Calculate percentage based on this contact's total, not the global total
-            // If this payment is "Expense (no VAT)", set duePercent to empty string
             const orderText = typeof plan.payment_order === 'number' ? getOrderText(plan.payment_order) : (plan.payment_order || 'First Payment');
             const duePercentStr = isExpenseNoVat(plan.payment_order) || isExpenseNoVat(orderText)
               ? ''
-              : (contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%');
+              : (contactPercentsMap.get(contactName)?.get(plan.id) ?? 0).toString() + '%';
 
             return {
               id: plan.id,
@@ -3893,7 +3925,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Handler to save new payment from modal
   const handleSaveNewPaymentModal = async (paymentData: any, includeVat: boolean) => {
-    const contactForPayment = paymentData.client || addingPaymentModalContact || client?.name || '';
+    // Prefer the contact that opened the modal (where "Add payment" was clicked), then modal form value, then main client
+    const contactForPayment = addingPaymentModalContact || paymentData.client || client?.name || '';
     if (!paymentData.value || !contactForPayment || !paymentData.duePercent) {
       toast.error('Please fill in all required fields (Value and Due Percentage)');
       return;
@@ -3956,8 +3989,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // Generate a unique numeric ID for the new payment
         const paymentId = Date.now() + Math.floor(Math.random() * 1000000);
 
-        // Get client_id for the contact (from context, as dropdown is removed)
-        const contactForPayment = newPaymentData.client || addingPaymentContact || client?.name || '';
+        // Use the contact passed in from the caller (modal uses addingPaymentModalContact; inline uses newPaymentData/addingPaymentContact)
         const clientIdForContact = getClientIdForContact(contactForPayment);
 
         const paymentData = {
@@ -5533,14 +5565,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                               <table className="min-w-full rounded-xl overflow-hidden">
                                 <thead className="sticky top-0 z-10">
                                   <tr>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due %</th>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due Date</th>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Value</th>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Total</th>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Payment Date</th>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Order</th>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Proforma</th>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Notes</th>
+                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Due %</th>
+                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Due Date</th>
+                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Value</th>
+                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Total</th>
+                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Payment Date</th>
+                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Order</th>
+                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Proforma</th>
+                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Notes</th>
                                     <th className="px-4 py-3 text-center"></th>
                                   </tr>
                                 </thead>
@@ -5555,7 +5587,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           : idx % 2 === 0
                                             ? 'bg-white border-l-4 border-transparent'
                                             : 'bg-base-100 border-l-4 border-transparent'
-                                          } hover:bg-blue-50 rounded-xl shadow-sm`}
+                                          } hover:bg-gray-100 rounded-xl shadow-sm`}
                                         style={{
                                           verticalAlign: 'middle',
                                           position: 'relative',
@@ -6533,17 +6565,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                         <table className="min-w-full rounded-xl overflow-hidden">
                           <thead className="bg-base-200 sticky top-0 z-10">
                             <tr>
-                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due %</th>
-                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due Date</th>
-                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Value</th>
-                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Total</th>
-                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Contact</th>
-                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Payment Date</th>
-                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Order</th>
-                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Proforma</th>
-                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Notes</th>
-                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Deleted Date</th>
-                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Actions</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Due %</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Due Date</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Value</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Total</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Contact</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Payment Date</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Order</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Proforma</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Notes</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Deleted Date</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Actions</th>
                             </tr>
                           </thead>
                           <tbody>

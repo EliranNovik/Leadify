@@ -61,6 +61,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const lastUserIdRef = useRef<string | null>(null);
   /** Set when we restore session from getSession() before INITIAL_SESSION; prevents INITIAL_SESSION(null) from overwriting. */
   const restoredFromStorageRef = useRef(false);
+  /** Set when we restore session from getCachedSession(); prevents INITIAL_SESSION(null) from overwriting and redirecting. */
+  const restoredFromCacheRef = useRef(false);
 
   const fetchUserDetails = useCallback(async (user: any) => {
     if (!user?.id) return;
@@ -189,9 +191,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           fetchUserDetails(session.user);
         }
 
+        // Set temporary display name from email so we never show "User" while details load (fixes mobile/deployed)
+        const tempName = session.user.email || '';
+        const tempInitials = tempName ? tempName[0].toUpperCase() : '';
+
         return {
           ...prev,
           user: session.user,
+          userFullName: prev.userFullName || tempName,
+          userInitials: prev.userInitials || tempInitials,
           isLoading: false,
           isInitialized
         };
@@ -425,6 +433,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let isMounted = true;
     let storageListener: ((e: StorageEvent) => void) | null = null;
     let initHandled = false;
+    let sessionCheckFallbackTimeout: ReturnType<typeof setTimeout> | null = null;
     const storageCheckTimeouts = new Map<string, NodeJS.Timeout>();
 
     const initializeAuth = async () => {
@@ -454,6 +463,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (cachedSession?.user) {
           // INSTANT: Set user immediately from cache
           console.log('[AuthContext] Using cached session for instant initialization');
+          restoredFromCacheRef.current = true;
           updateAuthState(cachedSession, true);
           setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
           // Fetch user details in background (non-blocking)
@@ -503,8 +513,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 updateAuthState(session, true);
                 setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
               } else {
-                // If we already restored user from getSession() (hasStoredTokens path), do not overwrite with null.
-                if (restoredFromStorageRef.current) {
+                // If we already restored user from cache or getSession(), do not overwrite with null.
+                if (restoredFromStorageRef.current || restoredFromCacheRef.current) {
                   setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
                   return;
                 }
@@ -569,15 +579,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
         subscription = authSubscription;
 
-        // Mark as initialized immediately (already done above if cached session exists)
-        if (!initHandled) {
-          initHandled = true;
-          setAuthState(prev => ({
-            ...prev,
-            isLoading: false,
-            isInitialized: true
-          }));
-        }
+        // Do NOT set initHandled here. INITIAL_SESSION must run and set sessionCheckComplete
+        // so that ProtectedRoute can redirect to login when there is no user. If we set
+        // initHandled here, INITIAL_SESSION's handler is skipped and sessionCheckComplete
+        // is never set for unauthenticated users, allowing everyone in.
+
+        // Fallback: if INITIAL_SESSION never fires or is delayed, force session check complete
+        // after a short delay so unauthenticated users are redirected to login.
+        sessionCheckFallbackTimeout = setTimeout(() => {
+          if (!isMounted) return;
+          setAuthState(prev => {
+            if (prev.sessionCheckComplete) return prev; // Already determined
+            return {
+              ...prev,
+              sessionCheckComplete: true,
+              isLoading: false,
+              isInitialized: true,
+              ...(prev.user ? {} : { user: null, userFullName: null, userInitials: null }),
+            };
+          });
+        }, 3500);
 
         // Listen for localStorage changes from other tabs
         // Add debouncing to prevent excessive checks
@@ -641,6 +662,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     return () => {
       isMounted = false;
+      if (sessionCheckFallbackTimeout) clearTimeout(sessionCheckFallbackTimeout);
       if (subscription) {
         subscription.unsubscribe();
       }
