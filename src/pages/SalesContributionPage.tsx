@@ -760,6 +760,58 @@ const SalesContributionPage = () => {
     return () => { cancelled = true; };
   }, [isSalesLinkedModalOpen]);
 
+  // Fetch 50% fixed contribution for Sales link (employee_handlers_sales_contributions) on report load so the −50% deduction shows in Handlers/Partners/Finance tables without opening the Sales modal
+  useEffect(() => {
+    if (!filters.fromDate || !filters.toDate || !searchPerformed) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: salesContribData, error: salesContribErr } = await supabase
+          .from('employee_handlers_sales_contributions')
+          .select('employee_id')
+          .eq('department_role', 'Sales')
+          .eq('is_active', true);
+        if (salesContribErr || !salesContribData?.length) {
+          if (!cancelled) setSalesLinkedModalFixedMap(new Map());
+          return;
+        }
+        const salesEmployeeIds = [...new Set((salesContribData as any[]).map((r: any) => Number(r.employee_id)).filter(Boolean))];
+        if (salesEmployeeIds.length === 0) {
+          if (!cancelled) setSalesLinkedModalFixedMap(new Map());
+          return;
+        }
+        const { data: fixedData, error: fixedErr } = await supabase
+          .from('employee_fixed_contribution')
+          .select('employee_id, department_role, fixed_contribution_amount')
+          .in('employee_id', salesEmployeeIds);
+        if (fixedErr || !fixedData) {
+          if (!cancelled) setSalesLinkedModalFixedMap(new Map());
+          return;
+        }
+        const fixedMap = new Map<number, number>();
+        const order = ['Sales', 'Handlers', 'Partners', 'Finance'];
+        const byEmployee = new Map<number, Array<{ role: string; amount: number }>>();
+        (fixedData as any[]).forEach((r: any) => {
+          const eid = Number(r.employee_id);
+          const amount = Number(r.fixed_contribution_amount) || 0;
+          const role = (r.department_role || '').toString();
+          if (!byEmployee.has(eid)) byEmployee.set(eid, []);
+          byEmployee.get(eid)!.push({ role, amount });
+        });
+        byEmployee.forEach((rows, eid) => {
+          const sorted = rows.sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role));
+          const amount = sorted.length > 0 ? sorted[0].amount : 0;
+          if (amount > 0) fixedMap.set(eid, amount * 0.5);
+        });
+        if (!cancelled) setSalesLinkedModalFixedMap(fixedMap);
+      } catch (e) {
+        console.error('Fetch Sales link fixed map on load:', e);
+        if (!cancelled) setSalesLinkedModalFixedMap(new Map());
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [searchPerformed, filters.fromDate, filters.toDate]);
+
   // Fetch all Sales + Partners + Finance employees from DB when Handlers linked modal opens
   useEffect(() => {
     if (!isHandlersLinkedModalOpen) return;
@@ -1232,13 +1284,14 @@ const SalesContributionPage = () => {
     }
   }, [filters.fromDate, filters.toDate]);
 
-  // Auto-run search once when report is first entered so all calculations run with the default (last 30 days) or current date range. Total signed, department data, and linked modals are computed automatically; date changes after that require clicking Search.
+  // Auto-run search once when report is entered or refreshed so all calculations use the default date range (last 30 days) or restored filters. Correction amounts, fixed contribution, orange (marketing) amounts, and all link modals (Sales, Handlers, Marketing) are driven by this run; date changes after that require clicking Search.
   const hasAutoRunInitialRef = useRef(false);
   useEffect(() => {
     if (categoriesLoaded && filters.fromDate && filters.toDate && !hasAutoRunInitialRef.current) {
       hasAutoRunInitialRef.current = true;
-      handleSearch();
-      fetchTotalSignedValue();
+      (async () => {
+        await handleSearch();
+      })();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [categoriesLoaded, filters.fromDate, filters.toDate]);
@@ -6192,9 +6245,27 @@ const SalesContributionPage = () => {
         <h2 className="text-2xl font-bold mb-4 flex items-center gap-3 flex-wrap">
             <span>{deptData.departmentName}</span>
             {contributionAmount > 0 && (
-              <span className="text-lg font-semibold text-green-800 dark:text-green-600 tabular-nums">
-                {formatCurrency(contributionAmount)}
-              </span>
+              <>
+                <span className="text-lg font-semibold text-green-800 dark:text-green-600 tabular-nums">
+                  {formatCurrency(contributionAmount)}
+                </span>
+                {!isFieldView && contributionAmount > 0 && (
+                  <span
+                    className="text-sm font-medium tabular-nums"
+                    title={contributionDiff > 0 ? 'Total from rows was below target; this amount was added (spread across employees).' : contributionDiff < 0 ? 'Total from rows was above target; this amount was deducted (spread across employees).' : 'Rows match target.'}
+                  >
+                    {contributionDiff > 0 && (
+                      <span className="text-green-600 dark:text-green-400">(+{formatCurrency(contributionDiff)})</span>
+                    )}
+                    {contributionDiff < 0 && (
+                      <span className="text-red-600 dark:text-red-400">(−{formatCurrency(Math.abs(contributionDiff))})</span>
+                    )}
+                    {contributionDiff === 0 && (
+                      <span className="text-gray-500">(0)</span>
+                    )}
+                  </span>
+                )}
+              </>
             )}
             {deptData.departmentName === 'Sales' && (
               <button
