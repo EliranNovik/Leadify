@@ -1,16 +1,19 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { convertToNIS } from '../lib/currencyConversion';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
-import { ChevronDownIcon, ChevronRightIcon, EyeIcon, ChartBarIcon, UserGroupIcon, BuildingOfficeIcon, SpeakerWaveIcon, CurrencyDollarIcon, PencilIcon, CheckIcon, XMarkIcon, GlobeAltIcon, FlagIcon, BriefcaseIcon, HomeIcon, AcademicCapIcon, RocketLaunchIcon, MapPinIcon, DocumentTextIcon, ScaleIcon, ShieldCheckIcon, BanknotesIcon, CogIcon, HeartIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, UsersIcon, Squares2X2Icon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import { ChevronDownIcon, ChevronRightIcon, EyeIcon, ChartBarIcon, UserGroupIcon, BuildingOfficeIcon, SpeakerWaveIcon, CurrencyDollarIcon, PencilIcon, CheckIcon, XMarkIcon, GlobeAltIcon, FlagIcon, BriefcaseIcon, HomeIcon, AcademicCapIcon, RocketLaunchIcon, MapPinIcon, DocumentTextIcon, ScaleIcon, ShieldCheckIcon, BanknotesIcon, CogIcon, HeartIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, UsersIcon, Squares2X2Icon, MagnifyingGlassIcon, LinkIcon, InformationCircleIcon } from '@heroicons/react/24/outline';
 import EmployeeRoleLeadsModal from '../components/EmployeeRoleLeadsModal';
 import EmployeeFieldAssignmentsModal from '../components/EmployeeFieldAssignmentsModal';
 import DynamicIsland from '../components/DynamicIsland';
 import DynamicTab from '../components/DynamicTab';
 import FixedContributionModal from '../components/FixedContributionModal';
 import EmployeeDepartmentRolesModal from '../components/EmployeeDepartmentRolesModal';
+import SalesLinkedContributionModal, { type SalesLinkedContributionRow } from '../components/SalesLinkedContributionModal';
+import HandlersLinkedContributionModal, { type HandlersLinkedContributionRow } from '../components/HandlersLinkedContributionModal';
+import MarketingLinkedContributionModal, { type MarketingLinkedContributionRow } from '../components/MarketingLinkedContributionModal';
 import { calculateSignedPortionAmount } from '../utils/rolePercentageCalculator';
 import {
   calculateEmployeeMetrics,
@@ -116,6 +119,10 @@ const SalesContributionPage = () => {
   const today = new Date();
   const firstDayOfMonth = formatDateLocal(new Date(today.getFullYear(), today.getMonth(), 1));
   const lastDayOfMonth = formatDateLocal(new Date(today.getFullYear(), today.getMonth() + 1, 0));
+  const thirtyDaysAgo = new Date(today);
+  thirtyDaysAgo.setDate(today.getDate() - 30);
+  const last30DaysFrom = formatDateLocal(thirtyDaysAgo);
+  const last30DaysTo = formatDateLocal(today);
 
   // Calculate previous month and year for salary filter default
   const previousMonthDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
@@ -123,8 +130,8 @@ const SalesContributionPage = () => {
   const previousYear = previousMonthDate.getFullYear();
 
   const [filters, setFilters] = usePersistedFilters('salesContribution_filters', {
-    fromDate: firstDayOfMonth,
-    toDate: lastDayOfMonth,
+    fromDate: last30DaysFrom,
+    toDate: last30DaysTo,
   }, {
     storage: 'sessionStorage',
   });
@@ -172,6 +179,14 @@ const SalesContributionPage = () => {
   const [isDynamicIslandOpen, setIsDynamicIslandOpen] = useState(false);
   const [isFixedContributionModalOpen, setIsFixedContributionModalOpen] = useState(false);
   const [isDepartmentRolesModalOpen, setIsDepartmentRolesModalOpen] = useState(false);
+  const [isSalesLinkedModalOpen, setIsSalesLinkedModalOpen] = useState(false);
+  const [salesLinkedModalFixedMap, setSalesLinkedModalFixedMap] = useState<Map<number, number>>(new Map());
+  const [handlersPartnersFinanceForLinkedModal, setHandlersPartnersFinanceForLinkedModal] = useState<Array<{ employeeId: number; employeeName: string; departmentName: 'Handlers' | 'Partners' | 'Finance'; photoUrl?: string | null }>>([]);
+  const [isHandlersLinkedModalOpen, setIsHandlersLinkedModalOpen] = useState(false);
+  const [salesPartnersFinanceForHandlersModal, setSalesPartnersFinanceForHandlersModal] = useState<Array<{ employeeId: number; employeeName: string; departmentName: 'Sales' | 'Partners' | 'Finance'; photoUrl?: string | null }>>([]);
+  const [isMarketingLinkedModalOpen, setIsMarketingLinkedModalOpen] = useState(false);
+  const [isCorrectionInfoModalOpen, setIsCorrectionInfoModalOpen] = useState(false);
+
   const [useFixedContributionFromDb, setUseFixedContributionFromDb] = useState(false);
   const [savingRolePercentages, setSavingRolePercentages] = useState(false);
   const [loadingRolePercentages, setLoadingRolePercentages] = useState(false);
@@ -636,6 +651,382 @@ const SalesContributionPage = () => {
   const [employeeMap, setEmployeeMap] = useState<Map<number, { display_name: string; department: string; photo_url?: string | null }>>(new Map());
   const imageErrorCache = useRef<Map<number, boolean>>(new Map());
 
+  // Fetch all Handlers + Partners employees from DB when modal opens (so modal shows everyone with those roles in leads, not just those in current report)
+  useEffect(() => {
+    if (!isSalesLinkedModalOpen) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: assignments, error: assignErr } = await supabase
+          .from('employee_field_assignments')
+          .select('employee_id, department_role')
+          .in('department_role', ['Handlers', 'Partners', 'Finance'])
+          .eq('is_active', true);
+        if (assignErr) throw assignErr;
+        const byEmployee = new Map<number, 'Handlers' | 'Partners' | 'Finance'>();
+        (assignments || []).forEach((a: any) => {
+          const id = Number(a.employee_id);
+          if (!byEmployee.has(id)) {
+            const role = a.department_role;
+            byEmployee.set(id, role === 'Partners' ? 'Partners' : role === 'Finance' ? 'Finance' : 'Handlers');
+          }
+        });
+        let employeeIds = Array.from(byEmployee.keys());
+        if (employeeIds.length === 0) {
+          if (!cancelled) setHandlersPartnersFinanceForLinkedModal([]);
+          return;
+        }
+        const { data: staffUsers, error: staffErr } = await supabase
+          .from('users')
+          .select('employee_id')
+          .in('employee_id', employeeIds)
+          .eq('is_staff', true)
+          .eq('is_active', true);
+        if (!staffErr && staffUsers?.length) {
+          const staffIds = new Set((staffUsers as any[]).map((u: any) => u.employee_id).filter(Boolean));
+          employeeIds = employeeIds.filter((id) => staffIds.has(id));
+        }
+        if (employeeIds.length === 0) {
+          if (!cancelled) setHandlersPartnersFinanceForLinkedModal([]);
+          return;
+        }
+        const { data: employees, error: empErr } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name, photo_url, photo')
+          .in('id', employeeIds);
+        if (empErr) throw empErr;
+        const empMap = new Map<number, { display_name?: string; photo_url?: string | null }>();
+        (employees || []).forEach((e: any) => {
+          empMap.set(Number(e.id), {
+            display_name: e.display_name,
+            photo_url: e.photo_url || e.photo || null,
+          });
+        });
+        const list = employeeIds.map((id) => {
+          const emp = empMap.get(Number(id));
+          const departmentName = byEmployee.get(Number(id))!;
+          return {
+            employeeId: Number(id),
+            employeeName: (emp?.display_name || '').trim() || `Employee ${id}`,
+            departmentName,
+            photoUrl: emp?.photo_url ?? null,
+          };
+        });
+        list.sort((a, b) => a.employeeName.localeCompare(b.employeeName));
+        if (!cancelled) setHandlersPartnersFinanceForLinkedModal(list);
+
+        // Fetch 50% fixed contribution for employees in employee_handlers_sales_contributions with department_role Sales
+        // Use fixed from any department (Sales, Handlers, Partners, Finance) so Handlers/Partners/Finance employees get their saved amount
+        const { data: salesContribData, error: salesContribErr } = await supabase
+          .from('employee_handlers_sales_contributions')
+          .select('employee_id')
+          .eq('department_role', 'Sales')
+          .eq('is_active', true);
+        if (!salesContribErr && salesContribData?.length) {
+          const salesEmployeeIds = [...new Set((salesContribData as any[]).map((r: any) => Number(r.employee_id)).filter(Boolean))];
+          if (salesEmployeeIds.length > 0) {
+            const { data: fixedData, error: fixedErr } = await supabase
+              .from('employee_fixed_contribution')
+              .select('employee_id, department_role, fixed_contribution_amount')
+              .in('employee_id', salesEmployeeIds);
+            if (!fixedErr && fixedData) {
+              const fixedMap = new Map<number, number>();
+              const order = ['Sales', 'Handlers', 'Partners', 'Finance'];
+              const byEmployee = new Map<number, Array<{ role: string; amount: number }>>();
+              (fixedData as any[]).forEach((r: any) => {
+                const eid = Number(r.employee_id);
+                const amount = Number(r.fixed_contribution_amount) || 0;
+                const role = (r.department_role || '').toString();
+                if (!byEmployee.has(eid)) byEmployee.set(eid, []);
+                byEmployee.get(eid)!.push({ role, amount });
+              });
+              byEmployee.forEach((rows, eid) => {
+                const sorted = rows.sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role));
+                const amount = sorted.length > 0 ? sorted[0].amount : 0;
+                if (amount > 0) fixedMap.set(eid, amount * 0.5);
+              });
+              if (!cancelled) setSalesLinkedModalFixedMap(fixedMap);
+            }
+          }
+        }
+        if (cancelled) return;
+        if (!salesContribData?.length) setSalesLinkedModalFixedMap(new Map());
+      } catch (e) {
+        console.error('Fetch Handlers/Partners/Finance for linked modal:', e);
+        if (!cancelled) setHandlersPartnersFinanceForLinkedModal([]);
+        if (!cancelled) setSalesLinkedModalFixedMap(new Map());
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isSalesLinkedModalOpen]);
+
+  // Fetch all Sales + Partners + Finance employees from DB when Handlers linked modal opens
+  useEffect(() => {
+    if (!isHandlersLinkedModalOpen) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: assignments, error: assignErr } = await supabase
+          .from('employee_field_assignments')
+          .select('employee_id, department_role')
+          .in('department_role', ['Sales', 'Partners', 'Finance'])
+          .eq('is_active', true);
+        if (assignErr) throw assignErr;
+        const byEmployee = new Map<number, 'Sales' | 'Partners' | 'Finance'>();
+        (assignments || []).forEach((a: any) => {
+          const id = Number(a.employee_id);
+          if (!byEmployee.has(id)) {
+            const role = a.department_role;
+            byEmployee.set(id, role === 'Partners' ? 'Partners' : role === 'Finance' ? 'Finance' : 'Sales');
+          }
+        });
+        let employeeIds = Array.from(byEmployee.keys());
+        if (employeeIds.length === 0) {
+          if (!cancelled) setSalesPartnersFinanceForHandlersModal([]);
+          return;
+        }
+        const { data: staffUsers, error: staffErr } = await supabase
+          .from('users')
+          .select('employee_id')
+          .in('employee_id', employeeIds)
+          .eq('is_staff', true)
+          .eq('is_active', true);
+        if (!staffErr && staffUsers?.length) {
+          const staffIds = new Set((staffUsers as any[]).map((u: any) => u.employee_id).filter(Boolean));
+          employeeIds = employeeIds.filter((id) => staffIds.has(id));
+        }
+        if (employeeIds.length === 0) {
+          if (!cancelled) setSalesPartnersFinanceForHandlersModal([]);
+          return;
+        }
+        const { data: employees, error: empErr } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name, photo_url, photo')
+          .in('id', employeeIds);
+        if (empErr) throw empErr;
+        const empMap = new Map<number, { display_name?: string; photo_url?: string | null }>();
+        (employees || []).forEach((e: any) => {
+          empMap.set(Number(e.id), {
+            display_name: e.display_name,
+            photo_url: e.photo_url || e.photo || null,
+          });
+        });
+        const list = employeeIds.map((id) => {
+          const emp = empMap.get(Number(id));
+          const departmentName = byEmployee.get(Number(id))!;
+          return {
+            employeeId: Number(id),
+            employeeName: (emp?.display_name || '').trim() || `Employee ${id}`,
+            departmentName,
+            photoUrl: emp?.photo_url ?? null,
+          };
+        });
+        list.sort((a, b) => a.employeeName.localeCompare(b.employeeName));
+        if (!cancelled) setSalesPartnersFinanceForHandlersModal(list);
+      } catch (e) {
+        console.error('Fetch Sales/Partners/Finance for Handlers linked modal:', e);
+        if (!cancelled) setSalesPartnersFinanceForHandlersModal([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isHandlersLinkedModalOpen]);
+
+  // Rows for Sales Linked Contribution modal: Handlers + Partners + Finance employees with contribution from Closer, Helper Closer, Meeting Manager, Scheduler only
+  const salesLinkedModalRows = useMemo((): SalesLinkedContributionRow[] => {
+    const fromFetch = handlersPartnersFinanceForLinkedModal.length > 0 ? handlersPartnersFinanceForLinkedModal : null;
+    const fromDept = !fromFetch ? (() => {
+      const h = departmentData.get('Handlers')?.employees ?? [];
+      const p = departmentData.get('Partners')?.employees ?? [];
+      const f = departmentData.get('Finance')?.employees ?? [];
+      return [
+        ...h.map((e) => ({ employeeId: e.employeeId, employeeName: e.employeeName, departmentName: 'Handlers' as const, photoUrl: e.photoUrl })),
+        ...p.map((e) => ({ employeeId: e.employeeId, employeeName: e.employeeName, departmentName: 'Partners' as const, photoUrl: e.photoUrl })),
+        ...f.map((e) => ({ employeeId: e.employeeId, employeeName: e.employeeName, departmentName: 'Finance' as const, photoUrl: e.photoUrl })),
+      ];
+    })() : [];
+    const employees = fromFetch ?? fromDept;
+    const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
+    const incomeKey = totalIncome || 0;
+    const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
+    const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
+    let normalizationRatio = 1;
+    if (totalIncome != null && totalIncome > 0 && totalSignedValue != null && totalSignedValue > 0 && totalIncome < totalSignedValue) {
+      normalizationRatio = totalIncome / totalSignedValue;
+    }
+    // Signed total in cache is sum of lead amounts per role combination; we need only the portion from Closer, Helper Closer, Meeting Manager, Scheduler (using role %)
+    const getPctForSalesLinkRolesOnly = (roleNames: string[], pctMap: Map<string, number>): number => {
+      if (!roleNames || roleNames.length === 0) return 0;
+      const hasCloser = roleNames.includes('Closer');
+      const hasHelperCloser = roleNames.includes('Helper Closer');
+      const hasManager = roleNames.includes('Meeting Manager');
+      const hasScheduler = roleNames.includes('Scheduler');
+      let pct = 0;
+      if (hasCloser) pct += (hasHelperCloser ? (pctMap.get('CLOSER_WITH_HELPER') ?? 20) : (pctMap.get('CLOSER') ?? 40));
+      if (hasHelperCloser) pct += (pctMap.get('HELPER_CLOSER') ?? 20);
+      if (hasManager) pct += (pctMap.get('MANAGER') ?? 20);
+      if (hasScheduler) pct += (pctMap.get('SCHEDULER') ?? 30);
+      return pct;
+    };
+    const parseRoleString = (s: string): string[] => {
+      if (!s || typeof s !== 'string') return [];
+      return s.split(',').map((r) => r.trim()).filter(Boolean);
+    };
+    const SALES_LINK_ROLE_NAMES = ['Closer', 'Helper Closer', 'Meeting Manager', 'Scheduler'];
+    const rows: SalesLinkedContributionRow[] = [];
+    for (const emp of employees) {
+      const cacheKey = `${emp.employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
+      const roleData = roleDataCache.get(cacheKey) || [];
+      let signedFromThreeRoles = 0;
+      for (const r of roleData) {
+        const roleStr = r.role;
+        const rolesInRow: string[] = Array.isArray(r.roles) && r.roles.length > 0 ? r.roles : parseRoleString(roleStr || '');
+        const hasAnyOfSalesLinkRoles = SALES_LINK_ROLE_NAMES.some((name) => rolesInRow.includes(name));
+        if (!hasAnyOfSalesLinkRoles || !(r.signedTotal != null && r.signedTotal > 0)) continue;
+        const pctSalesLink = getPctForSalesLinkRolesOnly(rolesInRow, rolePercentages);
+        if (pctSalesLink <= 0) continue;
+        signedFromThreeRoles += (pctSalesLink / 100) * (r.signedTotal ?? 0);
+      }
+      const contributionFromThreeRoles = signedFromThreeRoles * normalizationRatio * 0.35;
+      if (contributionFromThreeRoles <= 0) continue;
+      const contributionFixedFromModal = salesLinkedModalFixedMap.get(emp.employeeId) ?? 0;
+      rows.push({
+        employeeId: emp.employeeId,
+        employeeName: emp.employeeName,
+        departmentName: emp.departmentName,
+        signedFromThreeRoles,
+        contributionFromThreeRoles,
+        contributionFixedFromModal,
+        photoUrl: emp.photoUrl,
+      });
+    }
+    return rows.sort((a, b) => a.employeeName.localeCompare(b.employeeName));
+  }, [handlersPartnersFinanceForLinkedModal, departmentData, roleDataCache, salesLinkedModalFixedMap, filters.fromDate, filters.toDate, totalIncome, totalSignedValue, dueNormalizedPercentage, rolePercentages, getRolePercentagesHash]);
+
+  // Derived linked totals (same render as modal rows so they apply on initial load without needing to click Search)
+  const linkedContributionForSales = useMemo(() =>
+    salesLinkedModalRows.length > 0 ? salesLinkedModalRows.reduce((sum, r) => sum + r.contributionFromThreeRoles, 0) : null,
+  [salesLinkedModalRows]);
+  const linkedContributionFixedForSales = useMemo(() =>
+    salesLinkedModalRows.reduce((sum, r) => sum + r.contributionFixedFromModal, 0),
+  [salesLinkedModalRows]);
+
+  // Rows for Handlers Linked Contribution modal: Sales + Partners + Finance employees with Handler role only (Due + Contribution from Handler)
+  const handlersLinkedModalRows = useMemo((): HandlersLinkedContributionRow[] => {
+    const fromFetch = salesPartnersFinanceForHandlersModal.length > 0 ? salesPartnersFinanceForHandlersModal : null;
+    const fromDept = !fromFetch ? (() => {
+      const s = departmentData.get('Sales')?.employees ?? [];
+      const p = departmentData.get('Partners')?.employees ?? [];
+      const f = departmentData.get('Finance')?.employees ?? [];
+      return [
+        ...s.map((e) => ({ employeeId: e.employeeId, employeeName: e.employeeName, departmentName: 'Sales' as const, photoUrl: e.photoUrl })),
+        ...p.map((e) => ({ employeeId: e.employeeId, employeeName: e.employeeName, departmentName: 'Partners' as const, photoUrl: e.photoUrl })),
+        ...f.map((e) => ({ employeeId: e.employeeId, employeeName: e.employeeName, departmentName: 'Finance' as const, photoUrl: e.photoUrl })),
+      ];
+    })() : [];
+    const employees = fromFetch ?? fromDept;
+    const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
+    const incomeKey = totalIncome || 0;
+    const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
+    const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
+    const handlerPct = (rolePercentages.get('HANDLER') ?? 0) / 100;
+    const dueNormPct = (dueNormalizedPercentage ?? 0) / 100;
+    const rows: HandlersLinkedContributionRow[] = [];
+    for (const emp of employees) {
+      const cacheKey = `${emp.employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
+      const roleData = roleDataCache.get(cacheKey) || [];
+      let signedFromHandler = 0;
+      let dueFromHandler = 0;
+      for (const r of roleData) {
+        const rolesInRow: string[] = Array.isArray(r.roles) && r.roles.length > 0 ? r.roles : (typeof r.role === 'string' ? r.role.split(',').map((x: string) => x.trim()).filter(Boolean) : []);
+        if (!rolesInRow.includes('Handler')) continue;
+        signedFromHandler += r.signedTotal ?? 0;
+        dueFromHandler += r.dueTotal ?? 0;
+      }
+      if (dueFromHandler <= 0 && signedFromHandler <= 0) continue;
+      const contributionFromHandler = dueFromHandler * handlerPct * dueNormPct * 0.35;
+      rows.push({
+        employeeId: emp.employeeId,
+        employeeName: emp.employeeName,
+        departmentName: emp.departmentName,
+        signedFromHandler,
+        dueFromHandler,
+        contributionFromHandler,
+        photoUrl: emp.photoUrl,
+      });
+    }
+    return rows.sort((a, b) => a.employeeName.localeCompare(b.employeeName));
+  }, [salesPartnersFinanceForHandlersModal, departmentData, roleDataCache, filters.fromDate, filters.toDate, totalIncome, dueNormalizedPercentage, rolePercentages, getRolePercentagesHash]);
+
+  const linkedContributionForHandlers = useMemo(() =>
+    handlersLinkedModalRows.length > 0 ? handlersLinkedModalRows.reduce((sum, r) => sum + r.contributionFromHandler, 0) : null,
+  [handlersLinkedModalRows]);
+
+  // Maps: contribution reallocated to Sales (from H/P/F) and to Handlers (from S/P/F) per employee — used to deduct from main table Contribution column display (salary budget still uses full amounts).
+  const contributionToSalesByEmployee = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const r of salesLinkedModalRows) m.set(r.employeeId, (m.get(r.employeeId) ?? 0) + r.contributionFromThreeRoles);
+    return m;
+  }, [salesLinkedModalRows]);
+  const contributionToHandlersByEmployee = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const r of handlersLinkedModalRows) m.set(r.employeeId, (m.get(r.employeeId) ?? 0) + r.contributionFromHandler);
+    return m;
+  }, [handlersLinkedModalRows]);
+
+  // Marketing link modal (hardcoded): F = single Marketing employee's contribution fixed. Deduct F from Marketing title amount; split F for employee 1 and 4, take from their rows and show in modal.
+  const marketingOneEmployeeFixed = useMemo(() => {
+    const marketingDept = departmentData.get('Marketing');
+    const employees = marketingDept?.employees ?? [];
+    const withFixed = employees.find((e) => (e.contributionFixed ?? 0) > 0);
+    return withFixed ? (withFixed.contributionFixed ?? 0) : (employees[0]?.contributionFixed ?? 0);
+  }, [departmentData]);
+
+  const marketingLinkedModalRows = useMemo((): MarketingLinkedContributionRow[] => {
+    const F = marketingOneEmployeeFixed;
+    if (F <= 0) return [];
+    const amountEach = F / 2;
+    const employeeIds = [1, 4] as const;
+    const seen = new Set<number>();
+    const rows: MarketingLinkedContributionRow[] = [];
+    for (const deptName of departmentNames) {
+      const dept = departmentData.get(deptName);
+      if (!dept) continue;
+      for (const emp of dept.employees) {
+        if (employeeIds.includes(emp.employeeId as 1 | 4) && !seen.has(emp.employeeId)) {
+          seen.add(emp.employeeId);
+          rows.push({
+            employeeId: emp.employeeId,
+            employeeName: emp.employeeName ?? employeeMap.get(emp.employeeId)?.display_name ?? `Employee ${emp.employeeId}`,
+            amount: amountEach,
+            photoUrl: emp.photoUrl ?? undefined,
+          });
+          if (rows.length >= 2) return rows.sort((a, b) => a.employeeId - b.employeeId);
+        }
+      }
+    }
+    for (const id of employeeIds) {
+      if (seen.has(id)) continue;
+      rows.push({
+        employeeId: id,
+        employeeName: employeeMap.get(id)?.display_name ?? `Employee ${id}`,
+        amount: amountEach,
+        photoUrl: undefined,
+      });
+    }
+    return rows.sort((a, b) => a.employeeId - b.employeeId);
+  }, [departmentData, departmentNames, marketingOneEmployeeFixed, employeeMap]);
+
+  const marketingFixedDeductedByEmployee = useMemo(() => {
+    const F = marketingOneEmployeeFixed;
+    if (F <= 0) return new Map<number, number>();
+    const m = new Map<number, number>();
+    m.set(1, F / 2);
+    m.set(4, F / 2);
+    return m;
+  }, [marketingOneEmployeeFixed]);
+
+  const linkedContributionForMarketing = marketingOneEmployeeFixed;
+
   // Helper function to get employee initials
   const getEmployeeInitials = (name: string) => {
     if (!name) return '--';
@@ -841,14 +1232,16 @@ const SalesContributionPage = () => {
     }
   }, [filters.fromDate, filters.toDate]);
 
-  // Auto-run search on mount to load data by default - but wait for categories to load first
+  // Auto-run search once when report is first entered so all calculations run with the default (last 30 days) or current date range. Total signed, department data, and linked modals are computed automatically; date changes after that require clicking Search.
+  const hasAutoRunInitialRef = useRef(false);
   useEffect(() => {
-    if (filters.fromDate && filters.toDate && categoriesLoaded) {
+    if (categoriesLoaded && filters.fromDate && filters.toDate && !hasAutoRunInitialRef.current) {
+      hasAutoRunInitialRef.current = true;
       handleSearch();
       fetchTotalSignedValue();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [categoriesLoaded]); // Run when categories are loaded
+  }, [categoriesLoaded, filters.fromDate, filters.toDate]);
 
   // Fetch total signed value when date filters change
   useEffect(() => {
@@ -5440,8 +5833,21 @@ const SalesContributionPage = () => {
     const baseAmount = (totalIncome || 0) * 0.4;
     const summaryAmount = baseAmount * (percentage / 100);
 
+    // Amount from saved department % of total income (for glassy strip)
+    const directAmountFromIncome = totalIncome && totalIncome > 0 ? (percentage / 100) * totalIncome : 0;
+
     return (
-      <div className={`flex-shrink-0 rounded-2xl transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl ${gradientClasses} text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-36 md:h-32 min-h-[144px] ${departmentName === 'Sales' ? 'ml-4 md:ml-0' : ''}`}>
+      <div className={`flex-shrink-0 rounded-2xl transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl ${gradientClasses} text-white relative overflow-hidden w-[calc(50vw-0.75rem)] md:w-auto h-36 md:h-32 min-h-[144px] ${departmentName === 'Sales' ? 'ml-4 md:ml-0' : ''}`}>
+        {/* Glassy attachment on top: Contribution amount = saved % of income */}
+        {totalIncome && totalIncome > 0 && percentage != null && (
+          <div className="absolute top-0 left-0 right-0 py-2 px-3 rounded-t-2xl border-b border-white/20 bg-white/20 backdrop-blur-md flex items-center gap-2">
+            <span className="hidden md:inline text-xs font-medium text-white/90">Contribution</span>
+            <span className="text-base md:text-lg font-bold text-white tabular-nums">
+              {formatCurrency(directAmountFromIncome)}
+            </span>
+          </div>
+        )}
+        <div className="relative p-4 md:p-6 pt-10 md:pt-10">
         {/* Edit button - top right */}
         <div className="absolute top-2 right-2 z-10">
           {isEditing ? (
@@ -5512,6 +5918,7 @@ const SalesContributionPage = () => {
         </div>
         {/* SVG Placeholder - adjust position to not overlap with percentage */}
         <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-16 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
+        </div>
       </div>
     );
   };
@@ -5646,20 +6053,181 @@ const SalesContributionPage = () => {
     const isFieldView = hideTitle === true;
     const colSpanValue = isFieldView ? 9 : 12; // Updated for field view: 9 columns
 
-    // Calculate summary box amount for this department
+    // Contribution amount: saved department % of total income (e.g. 35% → 0.35 * income)
     const departmentPercentage = departmentPercentages.get(deptData.departmentName) || 0;
-    const baseAmount = (totalIncome || 0) * 0.4;
-    const summaryAmount = baseAmount * (departmentPercentage / 100);
+    const contributionAmount = totalIncome && totalIncome > 0 ? (departmentPercentage / 100) * totalIncome : 0;
+
+    // For Handlers/Partners/Finance: amount of contribution fixed "moved" to Sales modal (50% for employees in employee_handlers_sales_contributions).
+    // Subtract from this department's total so correction and Total row reflect the deduction.
+    const linkedFixedDeductedForThisDept =
+      (deptData.departmentName === 'Handlers' || deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance')
+        ? deptData.employees.reduce((s, emp) => s + (salesLinkedModalFixedMap.get(emp.employeeId) ?? 0), 0)
+        : 0;
+
+    // Per-employee: variable contribution reallocated to Sales or Handlers (deducted from Contribution column display only; salary budget uses full amounts).
+    const getLinkedContributionDeducted = (employeeId: number): number => {
+      const toSales = contributionToSalesByEmployee.get(employeeId) ?? 0;
+      const toHandlers = contributionToHandlersByEmployee.get(employeeId) ?? 0;
+      if (deptData.departmentName === 'Sales') return toHandlers;
+      if (deptData.departmentName === 'Handlers') return toSales;
+      if (deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance') return toSales + toHandlers;
+      return 0;
+    };
+    const linkedContributionVariableDeductedForThisDept = deptData.employees.reduce(
+      (s, emp) => s + getLinkedContributionDeducted(emp.employeeId),
+      0
+    );
+    // Amount of contribution fixed relocated to Marketing (employees 1 and 4) in this department — subtract from total so correction and Contribution total reflect it.
+    const linkedMarketingFixedDeductedForThisDept = deptData.employees.reduce(
+      (s, emp) => s + (marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0),
+      0
+    );
+
+    // Correction: spread difference between top contribution and sum(contribution + contributionFixed) across employees (employee view only).
+    // For Sales, add linked contribution and linked contribution fixed from modal. For Handlers, add linked from Sales/Partners/Finance (Handler role).
+    // For Handlers/Partners/Finance, subtract the fixed and variable amounts reallocated to Sales/Handlers.
+    const totalFromEmployees =
+      (deptData.totals.contribution ?? 0) + (deptData.totals.contributionFixed ?? 0) -
+      linkedFixedDeductedForThisDept -
+      linkedContributionVariableDeductedForThisDept +
+      (deptData.departmentName === 'Sales' && linkedContributionForSales != null && linkedContributionForSales > 0 ? linkedContributionForSales : 0) +
+      (deptData.departmentName === 'Sales' ? linkedContributionFixedForSales : 0) +
+      (deptData.departmentName === 'Handlers' && linkedContributionForHandlers != null && linkedContributionForHandlers > 0 ? linkedContributionForHandlers : 0);
+    // For departments with employees 1 or 4: their fixed relocated to Marketing reduces effective total, so correction and Contribution total account for it.
+    const contributionDiff = contributionAmount - (totalFromEmployees - linkedMarketingFixedDeductedForThisDept);
+    const employeeCount = deptData.employees.length;
+    // Marketing: do not add any correction to the Contribution column; the gap is filled by the reallocated contribution fixed from employees 1 and 4 (link modal), shown in Contribution fixed total only.
+    const perEmployeeCorrection =
+      deptData.departmentName === 'Marketing'
+        ? 0
+        : !isFieldView && contributionAmount > 0 && employeeCount > 0
+          ? contributionDiff / employeeCount
+          : 0;
+
+    const filteredEmployeesForCorrection = isFieldView ? [] : deptData.employees.filter((emp) => {
+      if (!employeeSearchTerm.trim()) return true;
+      const searchLower = employeeSearchTerm.toLowerCase().trim();
+      return emp.employeeName.toLowerCase().includes(searchLower) || emp.department.toLowerCase().includes(searchLower);
+    });
+
+    // Amount of contribution fixed deducted (moved to Sales) for displayed employees in this department (Handlers/Partners/Finance only).
+    const linkedFixedDeductedForDisplayed =
+      (deptData.departmentName === 'Handlers' || deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance')
+        ? filteredEmployeesForCorrection.reduce((s, emp) => s + (salesLinkedModalFixedMap.get(emp.employeeId) ?? 0), 0)
+        : 0;
+    // Amount of contribution fixed deducted (moved to Marketing) for displayed employees 1 and 4 in this department.
+    const linkedMarketingFixedDeductedForDisplayed = filteredEmployeesForCorrection.reduce(
+      (s, emp) => s + (marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0),
+      0
+    );
+
+    // Totals from displayed rows only (sum of corrected amounts so Total row is not faked). Contribution column shows full minus reallocated (to Sales/Handlers).
+    // Use capped deduction per employee so we never relocate more than their original contribution (total row matches displayed cells)
+    const totalContributionColDisplayed = filteredEmployeesForCorrection.reduce(
+      (s, emp) => {
+        const orig = emp.contribution ?? 0;
+        const deducted = getLinkedContributionDeducted(emp.employeeId);
+        const effectiveRelocated = Math.min(deducted, orig);
+        return s + (orig - effectiveRelocated) + perEmployeeCorrection;
+      },
+      0
+    );
+    // Total contribution fixed: sum of per-row net (full fixed − relocated to Sales − relocated to Marketing) so total row matches displayed rows.
+    const totalContributionFixedDisplayed = filteredEmployeesForCorrection.reduce(
+      (s, emp) => {
+        const fullFixed = emp.contributionFixed ?? 0;
+        const toSales = (deptData.departmentName === 'Handlers' || deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance')
+          ? (salesLinkedModalFixedMap.get(emp.employeeId) ?? 0)
+          : 0;
+        const toMarketing = marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0;
+        return s + (fullFixed - toSales - toMarketing);
+      },
+      0
+    );
+    // For Marketing, add the linked amount from the modal (from employees 1 and 4). For Sales, we add linked fixed from modal later in totalRowContributionFixed.
+    const totalContributionFixedDisplayedAdjusted =
+      totalContributionFixedDisplayed
+        + (deptData.departmentName === 'Marketing' ? linkedContributionForMarketing : 0);
+    const totalSalaryBudgetDisplayed =
+      perEmployeeCorrection !== 0
+        ? filteredEmployeesForCorrection.reduce(
+            (s, emp) =>
+              s + ((emp.contribution ?? 0) + (emp.contributionFixed ?? 0) + perEmployeeCorrection) * 0.4,
+            0
+          )
+        : filteredEmployeesForCorrection.reduce((s, emp) => s + (emp.salaryBudget ?? 0), 0);
+    const totalSalaryCostDisplayed = filteredEmployeesForCorrection.reduce(
+      (s, emp) => s + (emp.totalSalaryCost ?? 0),
+      0
+    );
+    const totalMaxIncentivesDisplayed = totalSalaryBudgetDisplayed - totalSalaryCostDisplayed;
+    const totalSalaryBruttoDisplayed = filteredEmployeesForCorrection.reduce(
+      (s, emp) => s + (emp.salaryBrutto ?? 0),
+      0
+    );
+    // Total row Contribution = sum of (displayed contribution per row) + linked for Sales/Handlers. Marketing link adds to contribution fixed only.
+    const totalRowContribution =
+      totalContributionColDisplayed +
+      (deptData.departmentName === 'Sales' ? (linkedContributionForSales ?? 0) : 0) +
+      (deptData.departmentName === 'Handlers' ? (linkedContributionForHandlers ?? 0) : 0);
+    // Total row (Contribution + Contribution fixed) must equal the amount next to the table title for every department. Set contribution fixed total so the sum matches.
+    const totalRowContributionFixed =
+      contributionAmount > 0
+        ? Math.max(0, contributionAmount - totalRowContribution)
+        : totalContributionFixedDisplayedAdjusted + (deptData.departmentName === 'Sales' ? linkedContributionFixedForSales : 0);
+    const contributionTotalForPercentages =
+      perEmployeeCorrection !== 0
+        ? (deptData.departmentName === 'Marketing' ? contributionAmount : totalContributionColDisplayed +
+          totalContributionFixedDisplayedAdjusted +
+          (deptData.departmentName === 'Sales' && linkedContributionForSales != null ? linkedContributionForSales : 0) +
+          (deptData.departmentName === 'Sales' ? linkedContributionFixedForSales : 0) +
+          (deptData.departmentName === 'Handlers' && linkedContributionForHandlers != null ? linkedContributionForHandlers : 0))
+        : (deptData.totals.contribution ?? 0) + (deptData.totals.contributionFixed ?? 0) -
+          (deptData.departmentName === 'Handlers' || deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance' ? linkedFixedDeductedForThisDept : 0) -
+          linkedContributionVariableDeductedForThisDept;
 
     return (
       <div key={deptData.departmentName} className="mb-8">
-        {!hideTitle && (
-          <h2 className="text-2xl font-bold mb-4 flex items-center gap-3">
+{!hideTitle && (
+        <h2 className="text-2xl font-bold mb-4 flex items-center gap-3 flex-wrap">
             <span>{deptData.departmentName}</span>
-            {summaryAmount > 0 && (
-              <span className="text-lg font-normal text-gray-500">
-                ({formatCurrency(summaryAmount)})
+            {contributionAmount > 0 && (
+              <span className="text-lg font-semibold text-green-800 dark:text-green-600 tabular-nums">
+                {formatCurrency(contributionAmount)}
               </span>
+            )}
+            {deptData.departmentName === 'Sales' && (
+              <button
+                type="button"
+                onClick={() => setIsSalesLinkedModalOpen(true)}
+                className="btn btn-ghost btn-sm gap-1"
+                title="Link Handlers/Partners/Finance contribution (Closer, Helper Closer, Manager, Scheduler) to Sales"
+              >
+                <LinkIcon className="w-4 h-4" />
+                Link contribution
+              </button>
+            )}
+            {deptData.departmentName === 'Handlers' && (
+              <button
+                type="button"
+                onClick={() => setIsHandlersLinkedModalOpen(true)}
+                className="btn btn-ghost btn-sm gap-1"
+                title="Link Sales/Partners/Finance contribution (Handler role) to Handlers"
+              >
+                <LinkIcon className="w-4 h-4" />
+                Link contribution
+              </button>
+            )}
+            {deptData.departmentName === 'Marketing' && (
+              <button
+                type="button"
+                onClick={() => setIsMarketingLinkedModalOpen(true)}
+                className="btn btn-ghost btn-sm gap-1"
+                title="Link contribution fixed from employees Irina and Joshua to Marketing"
+              >
+                <LinkIcon className="w-4 h-4" />
+                Link contribution
+              </button>
             )}
           </h2>
         )}
@@ -5669,58 +6237,58 @@ const SalesContributionPage = () => {
               <tr>
                 {isFieldView ? (
                   <>
-                    <th className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">Field (Category)</th>
-                    <th className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap">Signed</th>
-                    <th className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap">Due</th>
-                    <th className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap">Due Norm</th>
-                    <th className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">Field Salary Budget</th>
-                    <th className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">Actual Salary Budget</th>
-                    <th className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                    <th className="w-[20%] text-xs md:text-sm whitespace-nowrap">Field (Category)</th>
+                    <th className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">Signed</th>
+                    <th className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">Due</th>
+                    <th className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">Due Norm</th>
+                    <th className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">Field Salary Budget</th>
+                    <th className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">Actual Salary Budget</th>
+                    <th className="text-right w-[10.5%] text-xs md:text-sm whitespace-nowrap">
                       Salary (B)
                       {salaryFilter?.month && salaryFilter?.year && (
-                        <div className="text-[9px] md:text-xs font-normal text-gray-500 mt-1">
+                        <div className="text-xs font-normal text-gray-500 mt-1">
                           {new Date(2000, (salaryFilter.month || 1) - 1, 1).toLocaleString('default', { month: 'short' })} {salaryFilter.year}
                         </div>
                       )}
                     </th>
-                    <th className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">Field %</th>
-                    <th className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">Other %</th>
+                    <th className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap">Field %</th>
+                    <th className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap">Other %</th>
                   </>
                 ) : (
                   <>
-                    <th className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">Employee</th>
-                    <th className="w-[12%] min-w-[100px] text-[10px] md:text-sm px-2">
+                    <th className="w-[20%] text-xs md:text-sm whitespace-nowrap">Employee</th>
+                    <th className="w-[12%] min-w-[100px] text-xs md:text-sm px-2">
                       <div className="whitespace-normal leading-tight">Department</div>
                     </th>
-                    <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Signed</th>
-                    <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Due</th>
-                    <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Signed Norm</th>
-                    <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Due Norm</th>
-                    <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Contribution</th>
-                    <th className="text-right w-[10%] text-[10px] md:text-sm">
+                    <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Signed</th>
+                    <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Due</th>
+                    <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Signed Norm</th>
+                    <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Due Norm</th>
+                    <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Contribution</th>
+                    <th className="text-right w-[10%] text-xs md:text-sm">
                       <div className="flex flex-col items-end">
                         <span>Contribution</span>
                         <span>Fixed</span>
                       </div>
                     </th>
-                    <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Salary Budget</th>
-                    <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">
+                    <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Salary Budget</th>
+                    <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
                       Salary (B)
                       {salaryFilter?.month && salaryFilter?.year && (
-                        <div className="text-[9px] md:text-xs font-normal text-gray-500 mt-1">
+                        <div className="text-xs font-normal text-gray-500 mt-1">
                           {new Date(2000, (salaryFilter.month || 1) - 1, 1).toLocaleString('default', { month: 'short' })} {salaryFilter.year}
                         </div>
                       )}
                     </th>
-                    <th className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm whitespace-nowrap">
+                    <th className="text-right w-[10%] bg-gray-100 text-xs md:text-sm whitespace-nowrap">
                       Total Cost
                       {salaryFilter?.month && salaryFilter?.year && (
-                        <div className="text-[9px] md:text-xs font-normal text-gray-500 mt-1">
+                        <div className="text-xs font-normal text-gray-500 mt-1">
                           {new Date(2000, (salaryFilter.month || 1) - 1, 1).toLocaleString('default', { month: 'short' })} {salaryFilter.year}
                         </div>
                       )}
                     </th>
-                    <th className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">Max Incentives</th>
+                    <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Max Incentives</th>
                   </>
                 )}
               </tr>
@@ -5755,7 +6323,7 @@ const SalesContributionPage = () => {
                       >
                         {isFieldView ? (
                           <>
-                            <td className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">
+                            <td className="w-[20%] text-xs md:text-sm whitespace-nowrap">
                               <div className="flex items-center gap-1 md:gap-2">
                                 {isExpanded ? (
                                   <ChevronDownIcon className="w-3 h-3 md:w-4 md:h-4 text-gray-500 flex-shrink-0" />
@@ -5765,21 +6333,21 @@ const SalesContributionPage = () => {
                                 <div className="flex items-center justify-center w-6 h-6 md:w-10 md:h-10 rounded-full bg-base-200 flex-shrink-0">
                                   {getCategoryIcon(emp.employeeName)}
                                 </div>
-                                <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{emp.employeeName}</span>
+                                <span className="truncate max-w-[80px] md:max-w-none text-xs md:text-sm">{emp.employeeName}</span>
                               </div>
                             </td>
-                            <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.signed)}</td>
-                            <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.due || 0)}</td>
-                            <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.dueNormalized || 0)}</td>
-                            <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency((emp.dueNormalized || 0) * 0.4)}</td>
-                            <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                            <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                            <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                            <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                            <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(emp.signed)}</td>
+                            <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(emp.due || 0)}</td>
+                            <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(emp.dueNormalized || 0)}</td>
+                            <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">{formatCurrency((emp.dueNormalized || 0) * 0.4)}</td>
+                            <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
+                            <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
+                            <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
+                            <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
                           </>
                         ) : (
                           <>
-                            <td className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">
+                            <td className="w-[20%] text-xs md:text-sm whitespace-nowrap">
                               <div className="flex items-center gap-1 md:gap-2">
                                 {isExpanded ? (
                                   <ChevronDownIcon className="w-3 h-3 md:w-4 md:h-4 text-gray-500 flex-shrink-0" />
@@ -5789,10 +6357,10 @@ const SalesContributionPage = () => {
                                 <div className="flex-shrink-0">
                                   <EmployeeAvatar employeeId={emp.employeeId} size="lg" />
                                 </div>
-                                <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{emp.employeeName}</span>
+                                <span className="truncate max-w-[80px] md:max-w-none text-xs md:text-sm">{emp.employeeName}</span>
                               </div>
                             </td>
-                            <td className="w-[12%] min-w-[100px] text-[10px] md:text-sm px-2 align-top py-2">
+                            <td className="w-[12%] min-w-[100px] text-xs md:text-sm px-2 align-top py-2">
                               <div className="break-words leading-tight" style={{
                                 wordBreak: 'break-word',
                                 overflowWrap: 'break-word',
@@ -5803,51 +6371,115 @@ const SalesContributionPage = () => {
                                 {emp.department}
                               </div>
                             </td>
-                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.signed)}</td>
-                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.due || 0)}</td>
-                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.signedNormalized || 0)}</td>
-                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.dueNormalized || 0)}</td>
-                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.contribution || 0)}</td>
-                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">{formatCurrency(emp.contributionFixed || 0)}</td>
-                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">
+                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(emp.signed)}</td>
+                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(emp.due || 0)}</td>
+                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(emp.signedNormalized || 0)}</td>
+                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(emp.dueNormalized || 0)}</td>
+                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
+                              {(() => {
+                                const originalContribution = emp.contribution ?? 0;
+                                const linkedDeducted = getLinkedContributionDeducted(emp.employeeId);
+                                const effectiveRelocated = Math.min(linkedDeducted, originalContribution);
+                                const wasCapped = linkedDeducted > originalContribution;
+                                return (
+                                  <div className="flex flex-col items-end gap-0.5">
+                                    <span>{formatCurrency(originalContribution)}</span>
+                                    {perEmployeeCorrection !== 0 && (
+                                      <span className={`text-xs font-medium tabular-nums ${perEmployeeCorrection > 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                                        {perEmployeeCorrection > 0 ? '+' : ''}{formatCurrency(perEmployeeCorrection)}
+                                      </span>
+                                    )}
+                                    {effectiveRelocated > 0 && (
+                                      <span
+                                        className="tooltip tooltip-top text-xs font-medium tabular-nums text-blue-600 dark:text-blue-400 cursor-help"
+                                        data-tip={wasCapped
+                                          ? `Contribution relocated to link modal(s). Display capped to original contribution (calculated relocated was ${formatCurrency(linkedDeducted)}).`
+                                          : 'Contribution relocated to Sales or Handlers link modal(s).'}
+                                      >
+                                        −{formatCurrency(effectiveRelocated)} relocated
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                            </td>
+                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
+                              {(() => {
+                                // Amount reallocated to Sales modal (50% of their fixed); shown under contribution fixed in main table row.
+                                const deductedFixed = (deptData.departmentName === 'Handlers' || deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance')
+                                  ? (salesLinkedModalFixedMap.get(emp.employeeId) ?? 0)
+                                  : 0;
+                                const marketingDeducted = marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0;
+                                const fullFixed = emp.contributionFixed ?? 0;
+                                return (
+                                  <div className="flex flex-col items-end gap-0.5">
+                                    <span>{formatCurrency(fullFixed)}</span>
+                                    {deductedFixed > 0 && (
+                                      <span
+                                        className="tooltip tooltip-top text-xs text-amber-600 dark:text-amber-400 font-medium cursor-help"
+                                        data-tip="50% of this employee's fixed contribution is reallocated to the Sales table (Link contribution to Sales)."
+                                      >
+                                        −{formatCurrency(deductedFixed)} (50%)
+                                      </span>
+                                    )}
+                                    {marketingDeducted > 0 && (
+                                      <span
+                                        className="tooltip tooltip-top text-xs text-amber-600 dark:text-amber-400 font-medium cursor-help"
+                                        data-tip="Part of this employee's fixed contribution is reallocated to Marketing (Link contribution to Marketing)."
+                                      >
+                                        −{formatCurrency(marketingDeducted)}
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                            </td>
+                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
                               <div className="flex flex-col items-end">
-                                <span>{formatCurrency(emp.salaryBudget || 0)}</span>
-                                <span className="text-[9px] md:text-xs text-gray-500">40%</span>
+                                <span>
+                                  {perEmployeeCorrection !== 0
+                                    ? formatCurrency(((emp.contribution || 0) + (emp.contributionFixed || 0) + perEmployeeCorrection) * 0.4)
+                                    : formatCurrency(emp.salaryBudget || 0)}
+                                </span>
+                                <span className="text-xs text-gray-500">40%</span>
                               </div>
                             </td>
-                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">
+                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
                               <div className="flex flex-col items-end">
                                 <span>{formatCurrency(emp.salaryBrutto || 0)}</span>
                                 {(() => {
                                   const contributionTotal = (emp.contribution || 0) + (emp.contributionFixed || 0);
                                   return contributionTotal > 0 ? (
-                                    <span className={`text-[9px] md:text-xs ${((emp.salaryBrutto || 0) / contributionTotal * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                                    <span className={`text-xs ${((emp.salaryBrutto || 0) / contributionTotal * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
                                       {((emp.salaryBrutto || 0) / contributionTotal * 100).toFixed(1)}%
                                     </span>
                                   ) : (
-                                    <span className="text-[9px] md:text-xs text-gray-500">-</span>
+                                    <span className="text-xs text-gray-500">-</span>
                                   );
                                 })()}
                               </div>
                             </td>
-                            <td className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm whitespace-nowrap">
+                            <td className="text-right w-[10%] bg-gray-100 text-xs md:text-sm whitespace-nowrap">
                               <div className="flex flex-col items-end">
                                 <span>{formatCurrency(emp.totalSalaryCost || 0)}</span>
                                 {(() => {
                                   const contributionTotal = (emp.contribution || 0) + (emp.contributionFixed || 0);
                                   return contributionTotal > 0 ? (
-                                    <span className={`text-[9px] md:text-xs ${((emp.totalSalaryCost || 0) / contributionTotal * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                                    <span className={`text-xs ${((emp.totalSalaryCost || 0) / contributionTotal * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
                                       {((emp.totalSalaryCost || 0) / contributionTotal * 100).toFixed(1)}%
                                     </span>
                                   ) : (
-                                    <span className="text-[9px] md:text-xs text-gray-500">-</span>
+                                    <span className="text-xs text-gray-500">-</span>
                                   );
                                 })()}
                               </div>
                             </td>
-                            <td className="text-right w-[10%] text-[10px] md:text-sm whitespace-nowrap">
+                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
                               {(() => {
-                                const salaryBudget = emp.salaryBudget ?? 0;
+                                const salaryBudget =
+                                  perEmployeeCorrection !== 0
+                                    ? ((emp.contribution || 0) + (emp.contributionFixed || 0) + perEmployeeCorrection) * 0.4
+                                    : (emp.salaryBudget ?? 0);
                                 const totalSalaryCost = emp.totalSalaryCost ?? 0;
                                 const maxIncentives = salaryBudget - totalSalaryCost;
                                 return (
@@ -6037,22 +6669,22 @@ const SalesContributionPage = () => {
                                             {isExpanded ? '▼' : '▶'} Sales
                                           </span>
                                         </td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                           {!isExpanded && formatCurrency(totalActualSalaryBudget)}
                                         </td>
-                                        <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                        <td className="text-right w-[10.5%] text-xs md:text-sm whitespace-nowrap">
                                           {!isExpanded && formatCurrency(totalSalaryB)}
                                         </td>
-                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap"></td>
                                       </tr>
                                       {isExpanded && salesEmployees.map((employee: any, empIndex: number) => (
                                         <tr key={`sales-${empIndex}`} className="bg-base-50 hover:bg-base-100">
-                                          <td className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="w-[20%] text-xs md:text-sm whitespace-nowrap">
                                             <div className="flex items-center gap-2 pl-6">
                                               {employee.photo_url ? (
                                                 <img
@@ -6090,14 +6722,14 @@ const SalesContributionPage = () => {
                                               >
                                                 {employee.display_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase()}
                                               </div>
-                                              <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{employee.display_name}</span>
+                                              <span className="truncate max-w-[80px] md:max-w-none text-xs md:text-sm">{employee.display_name}</span>
                                             </div>
                                           </td>
-                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                             {(() => {
                                               const effectivePercentage = getEffectivePercentage(employee, 'Sales');
                                               const salaryBrutto = employee.salaryBrutto || 0;
@@ -6105,13 +6737,13 @@ const SalesContributionPage = () => {
                                               return formatCurrency(actualSalaryBudget);
                                             })()}
                                           </td>
-                                          <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[10.5%] text-xs md:text-sm whitespace-nowrap">
                                             {formatCurrency(employee.salaryBrutto || 0)}
                                           </td>
-                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap">
                                             {getFieldPercentage(employee, 'Sales')}
                                           </td>
-                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap">
                                             {getOtherPercentage(employee, 'Sales')}
                                           </td>
                                         </tr>
@@ -6142,22 +6774,22 @@ const SalesContributionPage = () => {
                                             {isExpanded ? '▼' : '▶'} Handlers
                                           </span>
                                         </td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                           {!isExpanded && formatCurrency(totalActualSalaryBudget)}
                                         </td>
-                                        <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                        <td className="text-right w-[10.5%] text-xs md:text-sm whitespace-nowrap">
                                           {!isExpanded && formatCurrency(totalSalaryB)}
                                         </td>
-                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap"></td>
                                       </tr>
                                       {isExpanded && handlersEmployees.map((employee: any, empIndex: number) => (
                                         <tr key={`handlers-${empIndex}`} className="bg-base-50 hover:bg-base-100">
-                                          <td className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="w-[20%] text-xs md:text-sm whitespace-nowrap">
                                             <div className="flex items-center gap-2 pl-6">
                                               {employee.photo_url ? (
                                                 <img
@@ -6195,14 +6827,14 @@ const SalesContributionPage = () => {
                                               >
                                                 {employee.display_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase()}
                                               </div>
-                                              <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{employee.display_name}</span>
+                                              <span className="truncate max-w-[80px] md:max-w-none text-xs md:text-sm">{employee.display_name}</span>
                                             </div>
                                           </td>
-                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                             {(() => {
                                               const effectivePercentage = getEffectivePercentage(employee, 'Handlers');
                                               const salaryBrutto = employee.salaryBrutto || 0;
@@ -6210,13 +6842,13 @@ const SalesContributionPage = () => {
                                               return formatCurrency(actualSalaryBudget);
                                             })()}
                                           </td>
-                                          <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[10.5%] text-xs md:text-sm whitespace-nowrap">
                                             {formatCurrency(employee.salaryBrutto || 0)}
                                           </td>
-                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap">
                                             {getFieldPercentage(employee, 'Handlers')}
                                           </td>
-                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap">
                                             {getOtherPercentage(employee, 'Handlers')}
                                           </td>
                                         </tr>
@@ -6247,22 +6879,22 @@ const SalesContributionPage = () => {
                                             {isExpanded ? '▼' : '▶'} Partners
                                           </span>
                                         </td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                           {!isExpanded && formatCurrency(totalActualSalaryBudget)}
                                         </td>
-                                        <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                        <td className="text-right w-[10.5%] text-xs md:text-sm whitespace-nowrap">
                                           {!isExpanded && formatCurrency(totalSalaryB)}
                                         </td>
-                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap"></td>
                                       </tr>
                                       {isExpanded && partnersEmployees.map((employee: any, empIndex: number) => (
                                         <tr key={`partners-${empIndex}`} className="bg-base-50 hover:bg-base-100">
-                                          <td className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="w-[20%] text-xs md:text-sm whitespace-nowrap">
                                             <div className="flex items-center gap-2 pl-6">
                                               {employee.photo_url ? (
                                                 <img
@@ -6300,14 +6932,14 @@ const SalesContributionPage = () => {
                                               >
                                                 {employee.display_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase()}
                                               </div>
-                                              <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{employee.display_name}</span>
+                                              <span className="truncate max-w-[80px] md:max-w-none text-xs md:text-sm">{employee.display_name}</span>
                                             </div>
                                           </td>
-                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                             {(() => {
                                               const effectivePercentage = getEffectivePercentage(employee, 'Partners');
                                               const salaryBrutto = employee.salaryBrutto || 0;
@@ -6315,13 +6947,13 @@ const SalesContributionPage = () => {
                                               return formatCurrency(actualSalaryBudget);
                                             })()}
                                           </td>
-                                          <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[10.5%] text-xs md:text-sm whitespace-nowrap">
                                             {formatCurrency(employee.salaryBrutto || 0)}
                                           </td>
-                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap">
                                             {getFieldPercentage(employee, 'Partners')}
                                           </td>
-                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap">
                                             {getOtherPercentage(employee, 'Partners')}
                                           </td>
                                         </tr>
@@ -6352,22 +6984,22 @@ const SalesContributionPage = () => {
                                             {isExpanded ? '▼' : '▶'} Marketing
                                           </span>
                                         </td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                           {!isExpanded && formatCurrency(totalActualSalaryBudget)}
                                         </td>
-                                        <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                        <td className="text-right w-[10.5%] text-xs md:text-sm whitespace-nowrap">
                                           {!isExpanded && formatCurrency(totalSalaryB)}
                                         </td>
-                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap"></td>
                                       </tr>
                                       {isExpanded && marketingEmployees.map((employee: any, empIndex: number) => (
                                         <tr key={`marketing-${empIndex}`} className="bg-base-50 hover:bg-base-100">
-                                          <td className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="w-[20%] text-xs md:text-sm whitespace-nowrap">
                                             <div className="flex items-center gap-2 pl-6">
                                               {employee.photo_url ? (
                                                 <img
@@ -6405,14 +7037,14 @@ const SalesContributionPage = () => {
                                               >
                                                 {employee.display_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase()}
                                               </div>
-                                              <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{employee.display_name}</span>
+                                              <span className="truncate max-w-[80px] md:max-w-none text-xs md:text-sm">{employee.display_name}</span>
                                             </div>
                                           </td>
-                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                             {(() => {
                                               const effectivePercentage = getEffectivePercentage(employee, 'Marketing');
                                               const salaryBrutto = employee.salaryBrutto || 0;
@@ -6420,13 +7052,13 @@ const SalesContributionPage = () => {
                                               return formatCurrency(actualSalaryBudget);
                                             })()}
                                           </td>
-                                          <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[10.5%] text-xs md:text-sm whitespace-nowrap">
                                             {formatCurrency(employee.salaryBrutto || 0)}
                                           </td>
-                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap">
                                             {getFieldPercentage(employee, 'Marketing')}
                                           </td>
-                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap">
                                             {getOtherPercentage(employee, 'Marketing')}
                                           </td>
                                         </tr>
@@ -6457,22 +7089,22 @@ const SalesContributionPage = () => {
                                             {isExpanded ? '▼' : '▶'} Finance
                                           </span>
                                         </td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                           {!isExpanded && formatCurrency(totalActualSalaryBudget)}
                                         </td>
-                                        <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                        <td className="text-right w-[10.5%] text-xs md:text-sm whitespace-nowrap">
                                           {!isExpanded && formatCurrency(totalSalaryB)}
                                         </td>
-                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap"></td>
                                       </tr>
                                       {isExpanded && financeEmployees.map((employee: any, empIndex: number) => (
                                         <tr key={`finance-${empIndex}`} className="bg-base-50 hover:bg-base-100">
-                                          <td className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="w-[20%] text-xs md:text-sm whitespace-nowrap">
                                             <div className="flex items-center gap-2 pl-6">
                                               {employee.photo_url ? (
                                                 <img
@@ -6510,14 +7142,14 @@ const SalesContributionPage = () => {
                                               >
                                                 {employee.display_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase()}
                                               </div>
-                                              <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{employee.display_name}</span>
+                                              <span className="truncate max-w-[80px] md:max-w-none text-xs md:text-sm">{employee.display_name}</span>
                                             </div>
                                           </td>
-                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
+                                          <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                             {(() => {
                                               const effectivePercentage = getEffectivePercentage(employee, 'Finance');
                                               const salaryBrutto = employee.salaryBrutto || 0;
@@ -6525,13 +7157,13 @@ const SalesContributionPage = () => {
                                               return formatCurrency(actualSalaryBudget);
                                             })()}
                                           </td>
-                                          <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[10.5%] text-xs md:text-sm whitespace-nowrap">
                                             {formatCurrency(employee.salaryBrutto || 0)}
                                           </td>
-                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap">
                                             {getFieldPercentage(employee, 'Finance')}
                                           </td>
-                                          <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                          <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap">
                                             {getOtherPercentage(employee, 'Finance')}
                                           </td>
                                         </tr>
@@ -6545,7 +7177,7 @@ const SalesContributionPage = () => {
                                   <>
                                     {otherEmployees.map((employee: any, empIndex: number) => (
                                       <tr key={`other-${empIndex}`} className="bg-base-50 hover:bg-base-100">
-                                        <td className="w-[20%] text-[10px] md:text-sm whitespace-nowrap">
+                                        <td className="w-[20%] text-xs md:text-sm whitespace-nowrap">
                                           <div className="flex items-center gap-2 pl-6">
                                             {employee.photo_url ? (
                                               <img
@@ -6583,14 +7215,14 @@ const SalesContributionPage = () => {
                                             >
                                               {employee.display_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase()}
                                             </div>
-                                            <span className="truncate max-w-[80px] md:max-w-none text-[10px] md:text-sm">{employee.display_name}</span>
+                                            <span className="truncate max-w-[80px] md:max-w-none text-xs md:text-sm">{employee.display_name}</span>
                                           </div>
                                         </td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[12%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[11%] text-[10px] md:text-sm whitespace-nowrap">
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
+                                        <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                           {(() => {
                                             const fieldPercentage = employee.field_percentage || 0;
                                             const salaryBrutto = employee.salaryBrutto || 0;
@@ -6598,10 +7230,10 @@ const SalesContributionPage = () => {
                                             return formatCurrency(actualSalaryBudget);
                                           })()}
                                         </td>
-                                        <td className="text-right w-[10.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                        <td className="text-right w-[10.5%] text-xs md:text-sm whitespace-nowrap">
                                           {formatCurrency(employee.salaryBrutto || 0)}
                                         </td>
-                                        <td className="text-right w-[9.5%] text-[10px] md:text-sm whitespace-nowrap">
+                                        <td className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap">
                                           {employee.field_percentage !== undefined && employee.field_percentage !== null && employee.field_percentage > 0
                                             ? `${employee.field_percentage.toFixed(2)}%`
                                             : '—'}
@@ -6688,17 +7320,17 @@ const SalesContributionPage = () => {
               <tr className="font-bold bg-base-200">
                 {isFieldView ? (
                   <>
-                    <td className="w-[20%] text-[10px] md:text-sm">Total</td>
-                    <td className="text-right w-[12%] text-[10px] md:text-sm"></td>
-                    <td className="text-right w-[12%] text-[10px] md:text-sm"></td>
-                    <td className="text-right w-[12%] text-[10px] md:text-sm"></td>
-                    <td className="text-right w-[11%] text-[10px] md:text-sm">
+                    <td className="w-[20%] text-xs md:text-sm">Total</td>
+                    <td className="text-right w-[12%] text-xs md:text-sm"></td>
+                    <td className="text-right w-[12%] text-xs md:text-sm"></td>
+                    <td className="text-right w-[12%] text-xs md:text-sm"></td>
+                    <td className="text-right w-[11%] text-xs md:text-sm">
                       {(() => {
                         // Calculate total Field Salary Budget (40% of Due Norm)
                         return formatCurrency((deptData.totals.dueNormalized || 0) * 0.4);
                       })()}
                     </td>
-                    <td className="text-right w-[11%] text-[10px] md:text-sm">
+                    <td className="text-right w-[11%] text-xs md:text-sm">
                       {(() => {
                         // Calculate total Actual Salary Budget from all employees in this field
                         const fieldName = deptData.departmentName;
@@ -6763,14 +7395,14 @@ const SalesContributionPage = () => {
                             <span className={isGreen ? 'text-green-600' : 'text-red-600'}>
                               {formatCurrency(totalActualSalaryBudget)}
                             </span>
-                            <span className={`text-[9px] md:text-xs ${isGreen ? 'text-green-500' : 'text-red-500'}`}>
+                            <span className={`text-xs ${isGreen ? 'text-green-500' : 'text-red-500'}`}>
                               {percentageDiff >= 0 ? '+' : ''}{percentageDiff.toFixed(1)}%
                             </span>
                           </div>
                         );
                       })()}
                     </td>
-                    <td className="text-right w-[11%] text-[10px] md:text-sm">
+                    <td className="text-right w-[11%] text-xs md:text-sm">
                       {(() => {
                         // Calculate total Salary (B) from all employees in this field
                         const fieldName = deptData.departmentName;
@@ -6781,66 +7413,107 @@ const SalesContributionPage = () => {
                         return formatCurrency(totalSalaryBrutto);
                       })()}
                     </td>
-                    <td className="text-right w-[11%] text-[10px] md:text-sm"></td>
-                    <td className="text-right w-[11%] text-[10px] md:text-sm"></td>
+                    <td className="text-right w-[11%] text-xs md:text-sm"></td>
+                    <td className="text-right w-[11%] text-xs md:text-sm"></td>
                   </>
                 ) : (
                   <>
-                    <td className="w-[25%] text-[10px] md:text-sm">Total</td>
-                    <td className="w-[15%] text-[10px] md:text-sm"></td>
-                    <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
-                    <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
-                    <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
-                    <td className="text-right w-[10%] text-[10px] md:text-sm"></td>
-                    <td className="text-right w-[10%] text-[10px] md:text-sm">{formatCurrency(deptData.totals.contribution || 0)}</td>
-                    <td className="text-right w-[10%] text-[10px] md:text-sm">{formatCurrency(deptData.totals.contributionFixed || 0)}</td>
-                    <td className="text-right w-[10%] text-[10px] md:text-sm">
+                    <td className="w-[25%] text-xs md:text-sm">Total</td>
+                    <td className="w-[15%] text-xs md:text-sm"></td>
+                    <td className="text-right w-[10%] text-xs md:text-sm"></td>
+                    <td className="text-right w-[10%] text-xs md:text-sm"></td>
+                    <td className="text-right w-[10%] text-xs md:text-sm"></td>
+                    <td className="text-right w-[10%] text-xs md:text-sm"></td>
+                    <td className="text-right w-[10%] text-xs md:text-sm">
                       <div className="flex flex-col items-end">
-                        <span>{formatCurrency(deptData.totals.salaryBudget || 0)}</span>
-                        <span className="text-[9px] md:text-xs text-gray-500">40%</span>
-                      </div>
-                    </td>
-                    <td className="text-right w-[10%] text-[10px] md:text-sm">
-                      <div className="flex flex-col items-end">
-                        <span>{formatCurrency(deptData.totals.salaryBrutto || 0)}</span>
-                        {(() => {
-                          const contributionTotal = (deptData.totals.contribution || 0) + (deptData.totals.contributionFixed || 0);
-                          return contributionTotal > 0 ? (
-                            <span className={`text-[9px] md:text-xs ${((deptData.totals.salaryBrutto || 0) / contributionTotal * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
-                              {((deptData.totals.salaryBrutto || 0) / contributionTotal * 100).toFixed(1)}%
-                            </span>
-                          ) : (
-                            <span className="text-[9px] md:text-xs text-gray-500">-</span>
-                          );
-                        })()}
-                      </div>
-                    </td>
-                    <td className="text-right w-[10%] bg-gray-100 text-[10px] md:text-sm">
-                      <div className="flex flex-col items-end">
-                        <span>{formatCurrency(deptData.totals.totalSalaryCost || 0)}</span>
-                        {(() => {
-                          const contributionTotal = (deptData.totals.contribution || 0) + (deptData.totals.contributionFixed || 0);
-                          return contributionTotal > 0 ? (
-                            <span className={`text-[9px] md:text-xs ${((deptData.totals.totalSalaryCost || 0) / contributionTotal * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
-                              {((deptData.totals.totalSalaryCost || 0) / contributionTotal * 100).toFixed(1)}%
-                            </span>
-                          ) : (
-                            <span className="text-[9px] md:text-xs text-gray-500">-</span>
-                          );
-                        })()}
-                      </div>
-                    </td>
-                    <td className="text-right w-[10%] text-[10px] md:text-sm">
-                      {(() => {
-                        const salaryBudget = deptData.totals.salaryBudget ?? 0;
-                        const totalSalaryCost = deptData.totals.totalSalaryCost ?? 0;
-                        const maxIncentives = salaryBudget - totalSalaryCost;
-                        return (
-                          <span className={maxIncentives >= 0 ? 'text-green-500' : 'text-red-500'}>
-                            {formatCurrency(maxIncentives)}
+                        <span>
+                          {formatCurrency(totalRowContribution)}
+                        </span>
+                        {(deptData.departmentName === 'Sales' && linkedContributionForSales != null && linkedContributionForSales > 0) || (deptData.departmentName === 'Handlers' && linkedContributionForHandlers != null && linkedContributionForHandlers > 0) ? (
+                          <span
+                            className="tooltip tooltip-top text-xs text-green-600 dark:text-green-400 font-medium cursor-help"
+                            data-tip={deptData.departmentName === 'Sales'
+                              ? 'Contribution from employees in Handlers, Partners and Finance who have Closer / Helper Closer / Meeting Manager / Scheduler roles (Link contribution to Sales).'
+                              : 'Contribution from employees in Sales, Partners and Finance who have the Handler role (Link contribution to Handlers).'}
+                          >
+                            +{formatCurrency(deptData.departmentName === 'Sales' ? (linkedContributionForSales ?? 0) : (linkedContributionForHandlers ?? 0))} from link
                           </span>
-                        );
-                      })()}
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="text-right w-[10%] text-xs md:text-sm">
+                      <div className="flex flex-col items-end">
+                        <span>
+                          {formatCurrency(totalRowContributionFixed)}
+                        </span>
+                        {deptData.departmentName === 'Sales' && linkedContributionFixedForSales > 0 ? (
+                          <span
+                            className="tooltip tooltip-top text-xs text-green-600 dark:text-green-400 font-medium cursor-help"
+                            data-tip="50% of fixed contribution from linked Handlers/Partners/Finance employees (Link contribution to Sales)."
+                          >
+                            +{formatCurrency(linkedContributionFixedForSales)} from link
+                          </span>
+                        ) : null}
+                        {deptData.departmentName === 'Marketing' && linkedContributionForMarketing > 0 ? (
+                          <span
+                            className="tooltip tooltip-top text-xs text-orange-600 dark:text-orange-400 font-medium cursor-help"
+                            data-tip="Contribution fixed from employees Irina and Joshua (Link contribution to Marketing)."
+                          >
+                            +{formatCurrency(linkedContributionForMarketing)} from link
+                          </span>
+                        ) : null}
+                        {(deptData.departmentName === 'Handlers' || deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance') && linkedFixedDeductedForDisplayed > 0 ? (
+                          <span
+                            className="tooltip tooltip-top text-xs text-amber-600 dark:text-amber-400 font-medium cursor-help"
+                            data-tip="50% of fixed contribution from employees in this table reallocated to the Sales table (Link contribution to Sales)."
+                          >
+                            −{formatCurrency(linkedFixedDeductedForDisplayed)}
+                          </span>
+                        ) : null}
+                        {linkedMarketingFixedDeductedForDisplayed > 0 ? (
+                          <span
+                            className="tooltip tooltip-top text-xs text-amber-600 dark:text-amber-400 font-medium cursor-help"
+                            data-tip="Part of fixed contribution from employees reallocated to Marketing (Link contribution to Marketing)."
+                          >
+                            −{formatCurrency(linkedMarketingFixedDeductedForDisplayed)}
+                          </span>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="text-right w-[10%] text-xs md:text-sm">
+                      <div className="flex flex-col items-end">
+                        <span>{formatCurrency(totalSalaryBudgetDisplayed)}</span>
+                        <span className="text-xs text-gray-500">40%</span>
+                      </div>
+                    </td>
+                    <td className="text-right w-[10%] text-xs md:text-sm">
+                      <div className="flex flex-col items-end">
+                        <span>{formatCurrency(totalSalaryBruttoDisplayed)}</span>
+                        {contributionTotalForPercentages > 0 ? (
+                          <span className={`text-xs ${(totalSalaryBruttoDisplayed / contributionTotalForPercentages * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                            {(totalSalaryBruttoDisplayed / contributionTotalForPercentages * 100).toFixed(1)}%
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-500">-</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="text-right w-[10%] bg-gray-100 text-xs md:text-sm">
+                      <div className="flex flex-col items-end">
+                        <span>{formatCurrency(totalSalaryCostDisplayed)}</span>
+                        {contributionTotalForPercentages > 0 ? (
+                          <span className={`text-xs ${(totalSalaryCostDisplayed / contributionTotalForPercentages * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                            {(totalSalaryCostDisplayed / contributionTotalForPercentages * 100).toFixed(1)}%
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-500">-</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="text-right w-[10%] text-xs md:text-sm">
+                      <span className={totalMaxIncentivesDisplayed >= 0 ? 'text-green-500' : 'text-red-500'}>
+                        {formatCurrency(totalMaxIncentivesDisplayed)}
+                      </span>
                     </td>
                   </>
                 )}
@@ -6855,17 +7528,27 @@ const SalesContributionPage = () => {
   return (
     <div className="w-full px-4 py-6">
       <div className="mb-2">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-4">
-          <div className="flex items-center gap-4">
-            <h1 className="text-3xl font-bold">Micro/Macro Contribution</h1>
+        {/* Row 1: Title top left, toggle + 3 buttons on the same line */}
+        <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl md:text-3xl font-bold">M&M Contribution</h1>
             <button
               onClick={() => navigate('/reports')}
               className="btn btn-ghost btn-sm"
             >
               ← Back to Reports
             </button>
+            <button
+              type="button"
+              onClick={() => setIsCorrectionInfoModalOpen(true)}
+              className="btn btn-ghost btn-sm btn-circle"
+              title="Contribution correction amounts explained"
+              aria-label="Contribution correction amounts explained"
+            >
+              <InformationCircleIcon className="w-6 h-6 text-primary" />
+            </button>
           </div>
-          <div className="flex flex-col md:flex-row gap-4 items-center">
+          <div className="flex flex-wrap items-center gap-4 md:gap-6">
             <div className="flex items-center gap-3">
               <span className={`text-sm font-medium transition-colors ${viewMode === 'employee' ? 'text-primary' : 'text-gray-500'}`}>
                 Employee
@@ -6906,15 +7589,25 @@ const SalesContributionPage = () => {
                 <UserGroupIcon className="w-5 h-5" />
               </button>
             </div>
-            {/* Total Signed Value */}
-            <div className="flex items-center gap-2">
-              <div className="px-4 py-2 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg min-w-[120px] text-right text-white shadow-md">
-                {loadingSignedValue ? (
-                  <span className="loading loading-spinner loading-sm text-white"></span>
-                ) : (
-                  <span className="font-semibold text-white">{formatCurrency(totalSignedValue)}</span>
-                )}
-              </div>
+          </div>
+        </div>
+
+        {/* Row 2: Total signed + Total income badges, centered below */}
+        <div className="flex justify-center gap-4 md:gap-6 mb-4">
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-xs font-medium text-base-content/70">Total signed</span>
+            <div className="px-4 py-2 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg min-w-[140px] text-center text-white shadow-md">
+              {loadingSignedValue ? (
+                <span className="loading loading-spinner loading-sm text-white"></span>
+              ) : (
+                <span className="font-semibold text-white">{formatCurrency(totalSignedValue)}</span>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-xs font-medium text-base-content/70">Total income</span>
+            <div className="px-4 py-2 bg-gradient-to-tr from-teal-500 via-green-500 to-emerald-500 rounded-lg min-w-[140px] text-center text-white shadow-md">
+              <span className="font-semibold text-white">{formatCurrency(totalIncome || 0)}</span>
             </div>
           </div>
         </div>
@@ -6941,6 +7634,52 @@ const SalesContributionPage = () => {
         isOpen={isDepartmentRolesModalOpen}
         onClose={() => setIsDepartmentRolesModalOpen(false)}
       />
+
+      <SalesLinkedContributionModal
+        isOpen={isSalesLinkedModalOpen}
+        onClose={() => setIsSalesLinkedModalOpen(false)}
+        rows={salesLinkedModalRows}
+        formatCurrency={formatCurrency}
+      />
+
+      <HandlersLinkedContributionModal
+        isOpen={isHandlersLinkedModalOpen}
+        onClose={() => setIsHandlersLinkedModalOpen(false)}
+        rows={handlersLinkedModalRows}
+        formatCurrency={formatCurrency}
+      />
+
+      <MarketingLinkedContributionModal
+        isOpen={isMarketingLinkedModalOpen}
+        onClose={() => setIsMarketingLinkedModalOpen(false)}
+        rows={marketingLinkedModalRows}
+        formatCurrency={formatCurrency}
+      />
+
+      {/* Correction amounts explanation modal */}
+      <dialog open={isCorrectionInfoModalOpen} className="modal">
+        <div className="modal-box max-w-lg">
+          <div className="flex items-start gap-3">
+            <InformationCircleIcon className="w-6 h-6 text-primary flex-shrink-0 mt-0.5" aria-hidden />
+            <div className="text-sm text-base-content/90">
+              <h3 className="font-semibold text-base-content mb-2">Contribution column — correction amounts</h3>
+              <ul className="list-disc list-inside space-y-1">
+                <li><span className="text-green-600 dark:text-green-400 font-medium">Green (+amount)</span> — added so the table total matches the department target when the sum of rows is below target.</li>
+                <li><span className="text-red-600 dark:text-red-400 font-medium">Red (−amount)</span> — deducted so the total matches the target when the sum of rows is above target.</li>
+                <li><span className="text-blue-600 dark:text-blue-400 font-medium">Blue (−amount relocated)</span> — part of this employee’s contribution was reallocated to the Sales or Handlers link modal; the total row already reflects this.</li>
+                <li><span className="text-orange-600 dark:text-orange-400 font-medium">Orange</span> — contribution fixed reallocated to Marketing (from the Marketing link modal). In employee rows: amount deducted from this employee’s fixed contribution and moved to Marketing. In the Marketing table total: amount added from the link.</li>
+              </ul>
+              <p className="mt-3 text-base-content/70">The main number in each row is the original contribution; the total row shows the actual total after corrections and reallocations.</p>
+            </div>
+          </div>
+          <div className="modal-action">
+            <button type="button" className="btn btn-primary" onClick={() => setIsCorrectionInfoModalOpen(false)}>Close</button>
+          </div>
+        </div>
+        <form method="dialog" className="modal-backdrop" onClick={() => setIsCorrectionInfoModalOpen(false)}>
+          <button type="submit">close</button>
+        </form>
+      </dialog>
 
       {/* Dynamic Island Modal */}
       <DynamicIsland

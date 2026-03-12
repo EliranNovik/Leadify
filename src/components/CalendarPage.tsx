@@ -485,6 +485,10 @@ const CalendarPage: React.FC = () => {
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [allCategories, setAllCategories] = useState<any[]>([]);
   const [currentEmployeeId, setCurrentEmployeeId] = useState<number | null>(null);
+  // On-demand display name cache when allEmployees not yet loaded (avoids console spam and shows names after fetch)
+  const [employeeNameCache, setEmployeeNameCache] = useState<Record<string, string>>({});
+  const emptyEmployeesLoggedRef = useRef(false);
+  const pendingNameFetchesRef = useRef<Set<string>>(new Set());
   const [currentEmployeeName, setCurrentEmployeeName] = useState<string>('');
   const [meetingConfirmationLoadingId, setMeetingConfirmationLoadingId] = useState<string | number | null>(null);
 
@@ -552,29 +556,46 @@ const CalendarPage: React.FC = () => {
   const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
     if (!employeeId || employeeId === '---' || employeeId === '--') return '--';
 
-    // If allEmployees is empty, log a warning and try to fetch
+    const idStr = String(employeeId).trim();
+    if (!idStr || idStr === '') return '--';
+
+    // When allEmployees not yet loaded: use cache or trigger on-demand fetch (avoids console spam)
     if (allEmployees.length === 0) {
-      console.warn('⚠️ CalendarPage - getEmployeeDisplayName called but allEmployees is empty. Employee ID:', employeeId);
-      // Don't fetch here as it would cause infinite loops - just return the ID
-      // The useEffect should handle fetching
-      return employeeId.toString();
+      if (employeeNameCache[idStr]) return employeeNameCache[idStr];
+      if (!emptyEmployeesLoggedRef.current) {
+        emptyEmployeesLoggedRef.current = true;
+        console.warn('⚠️ CalendarPage - getEmployeeDisplayName called while allEmployees is empty. Fetching names on demand.');
+      }
+      const numericId = Number(idStr);
+      if (!pendingNameFetchesRef.current.has(idStr) && !isNaN(numericId) && numericId > 0) {
+        pendingNameFetchesRef.current.add(idStr);
+        void supabase
+          .from('tenants_employee')
+          .select('id, display_name')
+          .eq('id', numericId)
+          .maybeSingle()
+          .then(
+            ({ data }) => {
+              pendingNameFetchesRef.current.delete(idStr);
+              if (data?.display_name) {
+                setEmployeeNameCache((prev) => ({ ...prev, [idStr]: data.display_name }));
+              }
+            },
+            () => { pendingNameFetchesRef.current.delete(idStr); }
+          );
+      }
+      return employeeNameCache[idStr] ?? idStr;
     }
 
     // Find employee in the loaded employees array
-    // Convert both to string for comparison since employeeId might be bigint
     const employee = allEmployees.find((emp: any) => {
-      // Try multiple comparison methods to handle type mismatches
-      return emp.id.toString() === employeeId.toString() ||
+      return emp.id.toString() === idStr ||
         emp.id === employeeId ||
-        String(emp.id) === String(employeeId) ||
+        String(emp.id) === idStr ||
         Number(emp.id) === Number(employeeId);
     });
 
-    if (!employee) {
-      console.warn('⚠️ CalendarPage - Employee not found in allEmployees. ID:', employeeId, 'Total employees:', allEmployees.length);
-    }
-
-    return employee ? employee.display_name : employeeId.toString(); // Fallback to ID if not found
+    return employee ? employee.display_name : (employeeNameCache[idStr] ?? idStr);
   };
 
   // Helper function to get employee object by ID or display name
@@ -1637,7 +1658,7 @@ const CalendarPage: React.FC = () => {
   // Cache employees and categories data to prevent refetches when navigating back
   // Changed cache key to force refresh with new photo_url fetching
   const { data: employeesAndCategoriesData } = useCachedFetch(
-    'calendar-employees-categories-v2',
+    'calendar-employees-categories-v3',
     async () => {
       // Fetch employees directly from tenants_employee table (like CallsLedgerPage does)
       // This ensures we get photo_url and photo fields correctly
@@ -1679,12 +1700,13 @@ const CalendarPage: React.FC = () => {
         return { employees: [], categories: [] };
       }
 
-      // Fetch active users by employee_id to filter employees
+      // Fetch active staff users by employee_id to filter employees (is_staff = true for attendees dropdown)
       const { data: activeUsers, error: usersError } = await supabase
         .from('users')
-        .select('employee_id, is_active')
+        .select('employee_id, is_active, is_staff')
         .in('employee_id', employeeIds)
-        .eq('is_active', true);
+        .eq('is_active', true)
+        .eq('is_staff', true);
 
       let uniqueEmployees;
 
@@ -1705,8 +1727,7 @@ const CalendarPage: React.FC = () => {
         const activeEmployeeIds = new Set(
           (activeUsers || []).map((user: any) => user.employee_id?.toString())
         );
-
-        // Filter employees to only those with active users
+        // Filter employees to only those with active staff users (is_staff = true)
         const activeEmployees = allEmployeesData
           .filter((emp: any) => activeEmployeeIds.has(emp.id.toString()))
           .map((emp: any) => ({
@@ -1717,7 +1738,7 @@ const CalendarPage: React.FC = () => {
             photo: emp.photo || null
           }));
 
-        console.log('✅ CalendarPage - Active employees:', activeEmployees.length);
+        console.log('✅ CalendarPage - Active staff employees:', activeEmployees.length);
         console.log('🔍 CalendarPage - Employees with photos:', activeEmployees.filter(e => e.photo_url || e.photo).length);
         if (activeEmployees.length > 0) {
           console.log('🔍 CalendarPage - Sample active employee:', activeEmployees[0]);
@@ -1761,6 +1782,11 @@ const CalendarPage: React.FC = () => {
     }
   );
 
+  // Reset "empty" log flag when employees load so we can log again if list becomes empty later
+  useEffect(() => {
+    if (allEmployees.length > 0) emptyEmployeesLoggedRef.current = false;
+  }, [allEmployees.length]);
+
   // Update state when cached data is available
   useEffect(() => {
     if (employeesAndCategoriesData) {
@@ -1784,14 +1810,24 @@ const CalendarPage: React.FC = () => {
           }
 
           if (allEmployeesData && allEmployeesData.length > 0) {
-            const employees = allEmployeesData.map((emp: any) => ({
-              id: emp.id,
-              display_name: emp.display_name,
-              bonuses_role: emp.bonuses_role,
-              photo_url: emp.photo_url || null,
-              photo: emp.photo || null
-            }));
-            console.log('✅ CalendarPage - Fetched employees (fallback):', employees.length);
+            const employeeIds = allEmployeesData.map((e: any) => e.id).filter((id: any) => id != null);
+            const { data: staffUsers } = await supabase
+              .from('users')
+              .select('employee_id')
+              .in('employee_id', employeeIds)
+              .eq('is_active', true)
+              .eq('is_staff', true);
+            const staffEmployeeIds = new Set((staffUsers || []).map((u: any) => u.employee_id?.toString()));
+            const employees = allEmployeesData
+              .filter((emp: any) => staffEmployeeIds.has(emp.id?.toString()))
+              .map((emp: any) => ({
+                id: emp.id,
+                display_name: emp.display_name,
+                bonuses_role: emp.bonuses_role,
+                photo_url: emp.photo_url || null,
+                photo: emp.photo || null
+              }));
+            console.log('✅ CalendarPage - Fetched staff employees (fallback):', employees.length);
             setAllEmployees(employees);
           }
         } catch (error) {
@@ -7343,6 +7379,7 @@ const CalendarPage: React.FC = () => {
         }}
         selectedDate={selectedDateForMeeting || undefined}
         selectedTime={selectedTimeForMeeting}
+        staffEmployees={allEmployees}
       />
 
       {/* Staff Meeting Edit Modal */}

@@ -8,11 +8,20 @@ import { toast } from 'react-hot-toast';
 import { saveOutlookTeamsMeeting, type OutlookTeamsMeeting } from '../lib/outlookTeamsMeetingsApi';
 import { supabase } from '../lib/supabase';
 
+export interface StaffEmployeeForModal {
+  id: number;
+  display_name: string;
+  photo_url?: string | null;
+  photo?: string | null;
+}
+
 interface TeamsMeetingModalProps {
   isOpen: boolean;
   onClose: () => void;
   selectedDate?: Date;
   selectedTime?: string;
+  /** When provided (e.g. from CalendarPage allEmployees), use this list for the dropdown (staff only). Emails are fetched on open. */
+  staffEmployees?: StaffEmployeeForModal[];
 }
 
 interface MeetingFormData {
@@ -32,20 +41,32 @@ interface MeetingFormData {
 // Staff calendar email
 const STAFF_CALENDAR_EMAIL = 'shared-staffcalendar@lawoffice.org.il';
 
+const getInitials = (name: string) => {
+  if (!name) return '--';
+  return name
+    .split(' ')
+    .map((n) => n[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2);
+};
+
 const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
   isOpen,
   onClose,
   selectedDate,
-  selectedTime
+  selectedTime,
+  staffEmployees: staffEmployeesProp
 }) => {
   const { instance, accounts } = useMsal();
   const [isLoading, setIsLoading] = useState(false);
-  const [employees, setEmployees] = useState<any[]>([]);
-  const [filteredEmployees, setFilteredEmployees] = useState<any[]>([]);
+  const [employees, setEmployees] = useState<Array<{ id: number; display_name: string; email?: string | null; photo_url?: string | null; photo?: string | null }>>([]);
+  const [filteredEmployees, setFilteredEmployees] = useState<typeof employees>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [showEmployeeSearch, setShowEmployeeSearch] = useState(false);
   const [allStaffSelected, setAllStaffSelected] = useState(false);
   const employeeDropdownRef = useRef<HTMLDivElement | null>(null);
+  const [avatarImageErrors, setAvatarImageErrors] = useState<Set<number>>(new Set());
   const [formData, setFormData] = useState<MeetingFormData>({
     subject: '',
     date: selectedDate ? selectedDate.toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
@@ -75,12 +96,49 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
     }
   }, [selectedDate, selectedTime]);
 
-  // Fetch employees when modal opens
   useEffect(() => {
-    if (isOpen) {
+    if (!isOpen) setAvatarImageErrors(new Set());
+  }, [isOpen]);
+
+  // When modal opens: use staffEmployees prop (from CalendarPage) or fetch with is_staff = true
+  useEffect(() => {
+    if (!isOpen) return;
+    if (staffEmployeesProp && staffEmployeesProp.length > 0) {
+      const ids = staffEmployeesProp.map((e) => e.id);
+      supabase
+        .from('users')
+        .select('employee_id, email')
+        .in('employee_id', ids)
+        .eq('is_staff', true)
+        .not('email', 'is', null)
+        .then(({ data: usersData, error: usersError }) => {
+          if (usersError) {
+            toast.error('Failed to load staff emails');
+            setEmployees([]);
+            setFilteredEmployees([]);
+            return;
+          }
+          const emailMap = new Map<number, string>();
+          (usersData || []).forEach((u: { employee_id: number; email: string }) => {
+            emailMap.set(u.employee_id, u.email);
+          });
+          const merged = staffEmployeesProp
+            .filter((e) => emailMap.has(e.id))
+            .map((e) => ({
+              id: e.id,
+              display_name: e.display_name,
+              email: emailMap.get(e.id) ?? null,
+              photo_url: e.photo_url ?? null,
+              photo: e.photo ?? null
+            }))
+            .sort((a, b) => a.display_name.localeCompare(b.display_name));
+          setEmployees(merged);
+          setFilteredEmployees(merged);
+        });
+    } else {
       fetchEmployees();
     }
-  }, [isOpen]);
+  }, [isOpen, staffEmployeesProp?.length]);
 
   // Filter employees based on search term
   useEffect(() => {
@@ -114,11 +172,11 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
   // Check if all staff are selected
   useEffect(() => {
     if (employees.length > 0 && formData.attendees.length > 0) {
-      const allEmails = employees.map(emp => emp.email).filter(Boolean);
+      const allEmails = employees.map((emp) => emp.email).filter((e): e is string => Boolean(e));
       const allSelected =
-        formData.attendees.length === allEmails.length &&
         allEmails.length > 0 &&
-        allEmails.every(email => formData.attendees.includes(email));
+        formData.attendees.length === allEmails.length &&
+        allEmails.every((email) => formData.attendees.includes(email));
       setAllStaffSelected(allSelected);
     } else if (formData.attendees.length === 0) {
       setAllStaffSelected(false);
@@ -127,56 +185,52 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
 
   const fetchEmployees = async () => {
     try {
-      
-      // First, let's try a simpler approach - fetch employees and users separately
       const { data: employeesData, error: employeesError } = await supabase
         .from('tenants_employee')
-        .select('id, display_name')
+        .select('id, display_name, photo_url, photo')
         .not('display_name', 'is', null)
         .order('display_name');
-      
+
       if (employeesError) {
         toast.error('Failed to load employees');
         return;
       }
-      
-      // Get all employee IDs
-      const employeeIds = employeesData?.map(emp => emp.id) || [];
-      
+
+      const employeeIds = employeesData?.map((emp) => emp.id).filter(Boolean) || [];
       if (employeeIds.length === 0) {
         setEmployees([]);
         setFilteredEmployees([]);
         return;
       }
-      
-      // Fetch emails from users table
+
       const { data: usersData, error: usersError } = await supabase
         .from('users')
         .select('employee_id, email')
         .in('employee_id', employeeIds)
+        .eq('is_staff', true)
+        .eq('is_active', true)
         .not('email', 'is', null);
-      
+
       if (usersError) {
-        toast.error('Failed to load employee emails');
+        toast.error('Failed to load staff emails');
         return;
       }
-      
-      // Create a map of employee_id to email
-      const emailMap = new Map();
-      usersData?.forEach(user => {
-        emailMap.set(user.employee_id, user.email);
+
+      const emailMap = new Map<number, string>();
+      (usersData || []).forEach((u: { employee_id: number; email: string }) => {
+        emailMap.set(u.employee_id, u.email);
       });
-      
-      // Combine employee data with emails
-      const processedEmployees = employeesData
-        ?.filter(emp => emailMap.has(emp.id)) // Only include employees with emails
-        .map(emp => ({
+
+      const processedEmployees = (employeesData || [])
+        .filter((emp) => emailMap.has(emp.id))
+        .map((emp) => ({
           id: emp.id,
           display_name: emp.display_name,
-          email: emailMap.get(emp.id)
-        })) || [];
-      
-      
+          email: emailMap.get(emp.id) ?? null,
+          photo_url: emp.photo_url ?? null,
+          photo: emp.photo ?? null
+        }));
+
       setEmployees(processedEmployees);
       setFilteredEmployees(processedEmployees);
     } catch (error) {
@@ -215,8 +269,8 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
       toast.error('No employees available to select', { duration: 3000 });
       return;
     }
-    const allEmails = employees.map(emp => emp.email); // Use actual emails from database
-    setFormData(prev => ({
+    const allEmails = employees.map((emp) => emp.email).filter((e): e is string => Boolean(e));
+    setFormData((prev) => ({
       ...prev,
       attendees: allEmails
     }));
@@ -587,40 +641,31 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
 
           {/* Attendees */}
           <div className="form-control">
-            <label className="label">
-              <span className="label-text font-semibold">
-              <UserIcon className="h-4 w-4 inline mr-1" />
-              Attendees
+            <div className="flex flex-wrap items-center gap-3 gap-y-2">
+              <span className="label-text font-semibold flex items-center gap-1">
+                <UserIcon className="h-4 w-4" />
+                Attendees
               </span>
-            </label>
-            <div className="space-y-3">
-              {/* Quick Actions */}
-              <div className="flex gap-2 flex-wrap items-center">
-                <button
-                  type="button"
-                  onClick={selectAllEmployees}
-                  className="btn btn-sm btn-outline btn-primary"
-                >
-                  Select All Staff
-                </button>
-                <button
-                  type="button"
-                  onClick={clearAllAttendees}
-                  className="btn btn-sm btn-ghost btn-circle"
-                  title="Clear All"
-                >
-                  <TrashIcon className="w-4 h-4" />
-                </button>
-              </div>
-
-              {/* Employee Dropdown Input (similar to CalendarPage) */}
-              <div className="flex items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
-                <UserIcon className="w-5 h-5 text-gray-500" />
-                <div className="relative flex-1" ref={employeeDropdownRef}>
-                    <input
-                      type="text"
-                    className="input input-bordered w-full"
-                    placeholder="Search staff..."
+              <button
+                type="button"
+                onClick={selectAllEmployees}
+                className="btn btn-sm btn-outline btn-primary h-9 min-h-9"
+              >
+                Select All Staff
+              </button>
+              <button
+                type="button"
+                onClick={clearAllAttendees}
+                className="btn btn-sm btn-ghost btn-circle h-9 min-h-9 w-9"
+                title="Clear All"
+              >
+                <TrashIcon className="w-4 h-4" />
+              </button>
+              <div className="flex-1 min-w-[180px] flex items-center gap-2 h-9 relative" ref={employeeDropdownRef}>
+                <input
+                  type="text"
+                  className="input input-bordered input-sm h-9 min-h-9 flex-1 w-full"
+                  placeholder="Search staff..."
                     value={allStaffSelected ? 'All staff selected' : searchTerm}
                     onFocus={() => {
                       setShowEmployeeSearch(true);
@@ -641,14 +686,17 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
                       {filteredEmployees.length > 0 ? (
                         filteredEmployees.map((employee) => {
                           const email = employee.email;
-                      const isSelected = formData.attendees.includes(email);
-                      return (
+                          const isSelected = email ? formData.attendees.includes(email) : false;
+                          const photoUrl = employee.photo_url || employee.photo;
+                          const showPhoto = photoUrl && !avatarImageErrors.has(employee.id);
+                          const initials = getInitials(employee.display_name);
+                          return (
                             <button
-                          key={employee.id}
+                              key={employee.id}
                               type="button"
-                              className={`w-full text-left px-4 py-2 text-sm hover:bg-gray-100 ${isSelected ? 'bg-primary/10 text-primary' : ''
-                                }`}
+                              className={`w-full text-left px-4 py-2.5 text-sm hover:bg-gray-100 flex items-center gap-3 ${isSelected ? 'bg-primary/10 text-primary' : ''}`}
                               onClick={() => {
+                                if (!email) return;
                                 if (isSelected) {
                                   removeEmployeeFromAttendees(email);
                                 } else {
@@ -658,24 +706,35 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
                                 setSearchTerm('');
                               }}
                             >
-                            <div className="font-medium">{employee.display_name}</div>
-                            <div className="text-xs text-gray-500">{email}</div>
+                              <div className="flex-shrink-0 w-11 h-11 rounded-full overflow-hidden bg-green-100 text-green-700 flex items-center justify-center text-base font-semibold ring-1 ring-green-200">
+                                {showPhoto ? (
+                                  <img
+                                    src={photoUrl}
+                                    alt=""
+                                    className="w-full h-full object-cover"
+                                    onError={() => {
+                                      setAvatarImageErrors((prev) => new Set(prev).add(employee.id));
+                                    }}
+                                  />
+                                ) : (
+                                  initials
+                                )}
+                              </div>
+                              <span className="font-medium truncate">{employee.display_name}</span>
                             </button>
                           );
                         })
                       ) : (
-                        <div className="px-4 py-3 text-sm text-gray-500">
-                          No matches
-                          </div>
+                        <div className="px-4 py-3 text-sm text-gray-500">No matches</div>
                       )}
-                            </div>
-                          )}
+                    </div>
+                  )}
                         </div>
-                  </div>
+              </div>
 
-              {/* Selected Attendees */}
-              {formData.attendees.length > 0 && (
-                <div>
+            {/* Selected Attendees */}
+            {formData.attendees.length > 0 && (
+                <div className="mt-3">
                   {allStaffSelected ? (
                     <div className="p-3 bg-primary/10 border border-primary/20 rounded-lg">
                       <p className="text-sm font-semibold text-primary">All staff selected ({formData.attendees.length} staff members)</p>
@@ -707,7 +766,6 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
                   )}
                 </div>
               )}
-            </div>
           </div>
 
           {/* Description */}
