@@ -35,6 +35,10 @@ export interface CombinedLead {
   contactName?: string;
   isMainContact?: boolean;
   status?: number | string | null;
+  /** Set when lead is a sublead (new: UUID, legacy: numeric master id) */
+  master_id?: string | number | null;
+  /** Set when lead is linked to a master via linked_master_lead column */
+  linked_master_lead?: string | number | null;
 }
 
 type SearchIntent =
@@ -194,7 +198,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
 
 async function searchNewLeads(intent: SearchIntent, opts: Required<SearchOptions>): Promise<any[]> {
   const queryStartTime = performance.now();
-  const selectFields = "id, lead_number, name, email, phone, mobile, topic, stage, created_at, status";
+  const selectFields = "id, lead_number, name, email, phone, mobile, topic, stage, created_at, status, master_id, linked_master_lead";
 
   let qb = supabase.from("leads").select(selectFields);
 
@@ -384,7 +388,7 @@ async function findContactsForLeadSearch(
     const { data: subleads } = await withTimeout(
       supabase
         .from("leads_lead")
-        .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status")
+        .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, linked_master_lead")
         .eq("master_id", leadIntent.master)
         .not("master_id", "is", null)
         .order("id", { ascending: true }),
@@ -415,7 +419,7 @@ async function findContactsForLeadSearch(
       const { data: prefixData } = await withTimeout(
         supabase
           .from("leads_lead")
-          .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, lead_number")
+          .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, lead_number, linked_master_lead")
           .ilike("lead_number", `${searchDigits}%`)
           .limit(20), // Limit to avoid too many results
         opts.timeoutMs,
@@ -431,7 +435,7 @@ async function findContactsForLeadSearch(
       const { data: exactLeadNumberData } = await withTimeout(
         supabase
           .from("leads_lead")
-          .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, lead_number")
+          .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, lead_number, linked_master_lead")
           .or(`lead_number.eq.${searchDigits},lead_number.eq.L${searchDigits},lead_number.eq.C${searchDigits}`)
           .limit(20),
         opts.timeoutMs,
@@ -447,7 +451,7 @@ async function findContactsForLeadSearch(
     const { data } = await withTimeout(
       supabase
         .from("leads_lead")
-        .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status")
+        .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, linked_master_lead")
         .eq("id", legacyExactId)
         .limit(1),
       opts.timeoutMs,
@@ -528,7 +532,7 @@ async function fetchNewLeadsByIds(ids: string[], opts: Required<SearchOptions>):
   const { data, error } = await withTimeout(
     supabase
       .from("leads")
-      .select("id, lead_number, topic, stage, created_at, status")
+      .select("id, lead_number, topic, stage, created_at, status, master_id, linked_master_lead")
       .in("id", ids)
       .limit(opts.leadsLimit),
     opts.timeoutMs,
@@ -556,7 +560,7 @@ async function fetchLegacyLeadsByIds(ids: number[], opts: Required<SearchOptions
   const { data, error } = await withTimeout(
     supabase
       .from("leads_lead")
-      .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status")
+      .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, linked_master_lead")
       .in("id", ids)
       .limit(opts.legacyLimit),
     opts.timeoutMs,
@@ -607,6 +611,8 @@ function mapNewLeadRow(row: any): CombinedLead {
     deactivate_note: null,
     isFuzzyMatch: false,
     status: row.status ?? null,
+    master_id: row.master_id ?? null,
+    linked_master_lead: row.linked_master_lead ?? null,
   };
 }
 
@@ -638,6 +644,8 @@ function mapLegacyLeadRow(row: any, formattedLeadNumber?: string): CombinedLead 
     deactivate_note: null,
     isFuzzyMatch: false,
     status: row.status ?? null,
+    master_id: row.master_id ?? null,
+    linked_master_lead: row.linked_master_lead ?? null,
   };
 }
 

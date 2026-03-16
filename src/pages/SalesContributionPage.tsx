@@ -901,58 +901,41 @@ const SalesContributionPage = () => {
     const incomeKey = totalIncome || 0;
     const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
     const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
-    let normalizationRatio = 1;
-    if (totalIncome != null && totalIncome > 0 && totalSignedValue != null && totalSignedValue > 0 && totalIncome < totalSignedValue) {
-      normalizationRatio = totalIncome / totalSignedValue;
-    }
-    // Signed total in cache is sum of lead amounts per role combination; we need only the portion from Closer, Helper Closer, Meeting Manager, Scheduler (using role %)
-    const getPctForSalesLinkRolesOnly = (roleNames: string[], pctMap: Map<string, number>): number => {
-      if (!roleNames || roleNames.length === 0) return 0;
-      const hasCloser = roleNames.includes('Closer');
-      const hasHelperCloser = roleNames.includes('Helper Closer');
-      const hasManager = roleNames.includes('Meeting Manager');
-      const hasScheduler = roleNames.includes('Scheduler');
-      let pct = 0;
-      if (hasCloser) pct += (hasHelperCloser ? (pctMap.get('CLOSER_WITH_HELPER') ?? 20) : (pctMap.get('CLOSER') ?? 40));
-      if (hasHelperCloser) pct += (pctMap.get('HELPER_CLOSER') ?? 20);
-      if (hasManager) pct += (pctMap.get('MANAGER') ?? 20);
-      if (hasScheduler) pct += (pctMap.get('SCHEDULER') ?? 30);
-      return pct;
-    };
     const parseRoleString = (s: string): string[] => {
       if (!s || typeof s !== 'string') return [];
       return s.split(',').map((r) => r.trim()).filter(Boolean);
     };
-    const SALES_LINK_ROLE_NAMES = ['Closer', 'Helper Closer', 'Meeting Manager', 'Scheduler'];
     const rows: SalesLinkedContributionRow[] = [];
     for (const emp of employees) {
+      const homeDept = departmentData.get(emp.departmentName);
+      const fullEmp = homeDept?.employees.find((e) => e.employeeId === emp.employeeId);
+      const signedPortion = fullEmp?.signedPortion ?? 0;
+      if (signedPortion <= 0) continue;
+      const homeDeptPct = (departmentPercentages.get(emp.departmentName) ?? 35) / 100;
+      const contributionFromThreeRoles = signedPortion * homeDeptPct;
       const cacheKey = `${emp.employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
       const roleData = roleDataCache.get(cacheKey) || [];
-      let signedFromThreeRoles = 0;
+      let signedFromAllNonHandler = 0;
       for (const r of roleData) {
-        const roleStr = r.role;
-        const rolesInRow: string[] = Array.isArray(r.roles) && r.roles.length > 0 ? r.roles : parseRoleString(roleStr || '');
-        const hasAnyOfSalesLinkRoles = SALES_LINK_ROLE_NAMES.some((name) => rolesInRow.includes(name));
-        if (!hasAnyOfSalesLinkRoles || !(r.signedTotal != null && r.signedTotal > 0)) continue;
-        const pctSalesLink = getPctForSalesLinkRolesOnly(rolesInRow, rolePercentages);
-        if (pctSalesLink <= 0) continue;
-        signedFromThreeRoles += (pctSalesLink / 100) * (r.signedTotal ?? 0);
+        const rolesInRow: string[] = Array.isArray(r.roles) && r.roles.length > 0 ? r.roles : parseRoleString(r.role || '');
+        const isHandlerOnly = rolesInRow.length === 1 && rolesInRow[0] === 'Handler';
+        if (!isHandlerOnly && (r.signedTotal != null && r.signedTotal > 0)) {
+          signedFromAllNonHandler += r.signedTotal ?? 0;
+        }
       }
-      const contributionFromThreeRoles = signedFromThreeRoles * normalizationRatio * 0.35;
-      if (contributionFromThreeRoles <= 0) continue;
       const contributionFixedFromModal = salesLinkedModalFixedMap.get(emp.employeeId) ?? 0;
       rows.push({
         employeeId: emp.employeeId,
         employeeName: emp.employeeName,
         departmentName: emp.departmentName,
-        signedFromThreeRoles,
+        signedFromThreeRoles: signedFromAllNonHandler,
         contributionFromThreeRoles,
         contributionFixedFromModal,
         photoUrl: emp.photoUrl,
       });
     }
     return rows.sort((a, b) => a.employeeName.localeCompare(b.employeeName));
-  }, [handlersPartnersFinanceForLinkedModal, departmentData, roleDataCache, salesLinkedModalFixedMap, filters.fromDate, filters.toDate, totalIncome, totalSignedValue, dueNormalizedPercentage, rolePercentages, getRolePercentagesHash]);
+  }, [handlersPartnersFinanceForLinkedModal, departmentData, roleDataCache, salesLinkedModalFixedMap, departmentPercentages, filters.fromDate, filters.toDate, totalIncome, dueNormalizedPercentage, rolePercentages, getRolePercentagesHash]);
 
   // Derived linked totals (same render as modal rows so they apply on initial load without needing to click Search)
   const linkedContributionForSales = useMemo(() =>
@@ -962,7 +945,7 @@ const SalesContributionPage = () => {
     salesLinkedModalRows.reduce((sum, r) => sum + r.contributionFixedFromModal, 0),
   [salesLinkedModalRows]);
 
-  // Rows for Handlers Linked Contribution modal: Sales + Partners + Finance employees with Handler role only (Due + Contribution from Handler)
+  // Rows for Handlers Linked Contribution modal: take only contribution from due (duePortion * homeDeptPct) and full due amount per employee from S/P/F
   const handlersLinkedModalRows = useMemo((): HandlersLinkedContributionRow[] => {
     const fromFetch = salesPartnersFinanceForHandlersModal.length > 0 ? salesPartnersFinanceForHandlersModal : null;
     const fromDept = !fromFetch ? (() => {
@@ -976,38 +959,27 @@ const SalesContributionPage = () => {
       ];
     })() : [];
     const employees = fromFetch ?? fromDept;
-    const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
-    const incomeKey = totalIncome || 0;
-    const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
-    const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
-    const handlerPct = (rolePercentages.get('HANDLER') ?? 0) / 100;
-    const dueNormPct = (dueNormalizedPercentage ?? 0) / 100;
     const rows: HandlersLinkedContributionRow[] = [];
     for (const emp of employees) {
-      const cacheKey = `${emp.employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
-      const roleData = roleDataCache.get(cacheKey) || [];
-      let signedFromHandler = 0;
-      let dueFromHandler = 0;
-      for (const r of roleData) {
-        const rolesInRow: string[] = Array.isArray(r.roles) && r.roles.length > 0 ? r.roles : (typeof r.role === 'string' ? r.role.split(',').map((x: string) => x.trim()).filter(Boolean) : []);
-        if (!rolesInRow.includes('Handler')) continue;
-        signedFromHandler += r.signedTotal ?? 0;
-        dueFromHandler += r.dueTotal ?? 0;
-      }
-      if (dueFromHandler <= 0 && signedFromHandler <= 0) continue;
-      const contributionFromHandler = dueFromHandler * handlerPct * dueNormPct * 0.35;
+      const homeDept = departmentData.get(emp.departmentName);
+      const fullEmp = homeDept?.employees.find((e) => e.employeeId === emp.employeeId);
+      const duePortion = fullEmp?.duePortion ?? 0;
+      const fullDue = fullEmp?.due ?? 0;
+      if (duePortion <= 0 && fullDue <= 0) continue;
+      const homeDeptPct = (departmentPercentages.get(emp.departmentName) ?? 35) / 100;
+      const contributionFromHandler = duePortion * homeDeptPct;
       rows.push({
         employeeId: emp.employeeId,
         employeeName: emp.employeeName,
         departmentName: emp.departmentName,
-        signedFromHandler,
-        dueFromHandler,
+        signedFromHandler: 0,
+        dueFromHandler: fullDue,
         contributionFromHandler,
         photoUrl: emp.photoUrl,
       });
     }
     return rows.sort((a, b) => a.employeeName.localeCompare(b.employeeName));
-  }, [salesPartnersFinanceForHandlersModal, departmentData, roleDataCache, filters.fromDate, filters.toDate, totalIncome, dueNormalizedPercentage, rolePercentages, getRolePercentagesHash]);
+  }, [salesPartnersFinanceForHandlersModal, departmentData, departmentPercentages]);
 
   const linkedContributionForHandlers = useMemo(() =>
     handlersLinkedModalRows.length > 0 ? handlersLinkedModalRows.reduce((sum, r) => sum + r.contributionFromHandler, 0) : null,
@@ -1025,59 +997,84 @@ const SalesContributionPage = () => {
     return m;
   }, [handlersLinkedModalRows]);
 
-  // Marketing link modal (hardcoded): F = single Marketing employee's contribution fixed. Deduct F from Marketing title amount; split F for employee 1 and 4, take from their rows and show in modal.
-  const marketingOneEmployeeFixed = useMemo(() => {
-    const marketingDept = departmentData.get('Marketing');
-    const employees = marketingDept?.employees ?? [];
-    const withFixed = employees.find((e) => (e.contributionFixed ?? 0) > 0);
-    return withFixed ? (withFixed.contributionFixed ?? 0) : (employees[0]?.contributionFixed ?? 0);
+  // Marketing link: relocate fixed contribution from employee 4 (50%) and employee 1 (30%) to Marketing table.
+  const marketingFixedDeductedByEmployee = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const dept of departmentData.values()) {
+      for (const emp of dept.employees) {
+        if (emp.employeeId === 4) {
+          m.set(4, (emp.contributionFixed ?? 0) * 0.5);
+        } else if (emp.employeeId === 1) {
+          m.set(1, (emp.contributionFixed ?? 0) * 0.3);
+        }
+      }
+    }
+    return m;
+  }, [departmentData]);
+
+  const linkedContributionForMarketing = useMemo(() => {
+    return (marketingFixedDeductedByEmployee.get(4) ?? 0) + (marketingFixedDeductedByEmployee.get(1) ?? 0);
+  }, [marketingFixedDeductedByEmployee]);
+
+  // Sum of total cost (totalSalaryCost) across all employees in all departments
+  const totalCostAllEmployees = useMemo(() => {
+    let sum = 0;
+    for (const dept of departmentData.values()) {
+      for (const emp of dept.employees) {
+        sum += emp.totalSalaryCost ?? 0;
+      }
+    }
+    return sum;
+  }, [departmentData]);
+
+  // Sum of salary budget across all employees in all departments
+  const totalSalaryBudgetAllEmployees = useMemo(() => {
+    let sum = 0;
+    for (const dept of departmentData.values()) {
+      for (const emp of dept.employees) {
+        sum += emp.salaryBudget ?? 0;
+      }
+    }
+    return sum;
   }, [departmentData]);
 
   const marketingLinkedModalRows = useMemo((): MarketingLinkedContributionRow[] => {
-    const F = marketingOneEmployeeFixed;
-    if (F <= 0) return [];
-    const amountEach = F / 2;
+    const amount1 = marketingFixedDeductedByEmployee.get(1) ?? 0;
+    const amount4 = marketingFixedDeductedByEmployee.get(4) ?? 0;
+    if (amount1 <= 0 && amount4 <= 0) return [];
+    const rows: MarketingLinkedContributionRow[] = [];
     const employeeIds = [1, 4] as const;
     const seen = new Set<number>();
-    const rows: MarketingLinkedContributionRow[] = [];
     for (const deptName of departmentNames) {
       const dept = departmentData.get(deptName);
       if (!dept) continue;
       for (const emp of dept.employees) {
-        if (employeeIds.includes(emp.employeeId as 1 | 4) && !seen.has(emp.employeeId)) {
+        if ((emp.employeeId === 1 || emp.employeeId === 4) && !seen.has(emp.employeeId)) {
           seen.add(emp.employeeId);
+          const amount = emp.employeeId === 1 ? amount1 : amount4;
+          if (amount <= 0) continue;
           rows.push({
             employeeId: emp.employeeId,
             employeeName: emp.employeeName ?? employeeMap.get(emp.employeeId)?.display_name ?? `Employee ${emp.employeeId}`,
-            amount: amountEach,
+            amount,
             photoUrl: emp.photoUrl ?? undefined,
           });
-          if (rows.length >= 2) return rows.sort((a, b) => a.employeeId - b.employeeId);
         }
       }
     }
     for (const id of employeeIds) {
       if (seen.has(id)) continue;
+      const amount = id === 1 ? amount1 : amount4;
+      if (amount <= 0) continue;
       rows.push({
         employeeId: id,
         employeeName: employeeMap.get(id)?.display_name ?? `Employee ${id}`,
-        amount: amountEach,
+        amount,
         photoUrl: undefined,
       });
     }
     return rows.sort((a, b) => a.employeeId - b.employeeId);
-  }, [departmentData, departmentNames, marketingOneEmployeeFixed, employeeMap]);
-
-  const marketingFixedDeductedByEmployee = useMemo(() => {
-    const F = marketingOneEmployeeFixed;
-    if (F <= 0) return new Map<number, number>();
-    const m = new Map<number, number>();
-    m.set(1, F / 2);
-    m.set(4, F / 2);
-    return m;
-  }, [marketingOneEmployeeFixed]);
-
-  const linkedContributionForMarketing = marketingOneEmployeeFixed;
+  }, [departmentData, departmentNames, marketingFixedDeductedByEmployee, employeeMap]);
 
   // Helper function to get employee initials
   const getEmployeeInitials = (name: string) => {
@@ -2231,8 +2228,10 @@ const SalesContributionPage = () => {
       // Calculate base contribution: combine normalized signed portion + normalized due portion
       const baseContribution = signedPortionNormalized + duePortionNormalized;
 
-      // Apply 35% to get final contribution amount (consistent with salesContributionCalculator)
-      const contribution = baseContribution * 0.35;
+      // Apply department % from sales_contribution_settings for this employee's table
+      const deptNameForEmployee = Array.from(departmentData.entries()).find(([, d]) => d.employees.some((e: { employeeId: number }) => e.employeeId === employeeId))?.[0] ?? 'Sales';
+      const deptPctForRoleCache = (departmentPercentages.get(deptNameForEmployee) ?? 35) / 100;
+      const contribution = baseContribution * deptPctForRoleCache;
 
       // Calculate Salary Budget from Contribution
       const salaryBudget = contribution * 0.4;
@@ -3974,6 +3973,12 @@ const SalesContributionPage = () => {
           const calculationInputs: EmployeeCalculationInput[] = [];
           const totalSignedOverall = totalSignedValueRef.current || 0;
 
+          // Map employeeId -> department name (for department % from sales_contribution_settings)
+          const employeeIdToDepartment = new Map<number, string>();
+          finalDepartmentData.forEach((data, deptName) => {
+            data.employees.forEach(emp => employeeIdToDepartment.set(emp.employeeId, deptName));
+          });
+
           // DEBUG: Check if "Adi" is in the employees list and what their ID is
           const adiEmployee = employeesToFetch.find(e =>
             e.name?.toLowerCase().includes('adi') ||
@@ -4263,6 +4268,9 @@ const SalesContributionPage = () => {
               });
             }
 
+            const deptName = employeeIdToDepartment.get(employeeId) ?? 'Sales';
+            // Use department % from sales_contribution_settings for this table; fallback 35 only when not in DB
+            const departmentPercentage = departmentPercentages.get(deptName) ?? 35;
             calculationInputs.push({
               employeeId,
               employeeName,
@@ -4279,6 +4287,8 @@ const SalesContributionPage = () => {
               totalIncome,
               dueNormalizedPercentage,
               rolePercentages,
+              departmentPercentage,
+              departmentName: deptName,
             });
           });
 
@@ -4463,14 +4473,19 @@ const SalesContributionPage = () => {
                   updatedEmp.salaryBrutto = 40000;
                 }
 
-                // Set contributionFixed: from DB table (if toggle on) or hardcoded logic
+                // Set contributionFixed: from DB (if toggle on) or 60% of Salary (B) for Marketing/Finance and Partners (without employee_handlers_sales_contributions), else existing logic
                 if (useFixedFromDb && fixedContributionFromDbMap.has(emp.employeeId)) {
                   updatedEmp.contributionFixed = fixedContributionFromDbMap.get(emp.employeeId) ?? 0;
                 } else if (!useFixedFromDb) {
-                  if (employeesWithHalfContribution.has(emp.employeeId)) {
-                    updatedEmp.contributionFixed = (updatedEmp.salaryBrutto || 0) * 0.5;
+                  const salaryB = updatedEmp.salaryBrutto || 0;
+                  if (deptName === 'Marketing' || deptName === 'Finance') {
+                    updatedEmp.contributionFixed = salaryB * 0.6;
+                  } else if (deptName === 'Partners' && !employeesWithHalfContribution.has(emp.employeeId)) {
+                    updatedEmp.contributionFixed = salaryB * 0.6;
+                  } else if (employeesWithHalfContribution.has(emp.employeeId)) {
+                    updatedEmp.contributionFixed = salaryB * 0.5;
                   } else if (employeesWithFixedContribution.has(emp.employeeId)) {
-                    updatedEmp.contributionFixed = updatedEmp.salaryBrutto || 0;
+                    updatedEmp.contributionFixed = salaryB;
                   } else {
                     updatedEmp.contributionFixed = 0;
                   }
@@ -4486,6 +4501,7 @@ const SalesContributionPage = () => {
                   updatedEmp.dueNormalized = result.dueNormalized;
                   // All departments calculate contribution the same way from leads
                   updatedEmp.signedPortion = result.signedPortion || 0;
+                  updatedEmp.duePortion = result.duePortion || 0;
                   updatedEmp.contribution = result.contribution || 0;
                   // Total is calculated from signedPortion + duePortion
                   updatedEmp.total = updatedEmp.signedPortion + (result.duePortion || 0);
@@ -4598,6 +4614,64 @@ const SalesContributionPage = () => {
                 },
               });
             });
+
+            // Scale only contribution (not contribution fixed) in Sales and Handlers so total (contribution + fixed) = income.
+            // Handlers: reduce contribution for all employees except 175, 176, 174, 61.
+            // Sales: reduce contribution for all employees except 32.
+            const incomeAmount = totalIncome || 0;
+            let totalBasis = 0;
+            let reducibleContribution = 0;
+            const handlersExcludedIds = new Set([175, 176, 174, 61]);
+            const salesExcludedId = 32;
+            updated.forEach((deptData, deptName) => {
+              deptData.employees.forEach((emp) => {
+                const contrib = emp.contribution ?? 0;
+                const fixed = emp.contributionFixed ?? 0;
+                totalBasis += contrib + fixed;
+                if (deptName === 'Handlers' && !handlersExcludedIds.has(emp.employeeId)) {
+                  reducibleContribution += contrib;
+                } else if (deptName === 'Sales' && emp.employeeId !== salesExcludedId) {
+                  reducibleContribution += contrib;
+                }
+              });
+            });
+            const reductionNeeded = totalBasis - incomeAmount;
+            if (incomeAmount > 0 && reductionNeeded > 0 && reducibleContribution > 0) {
+              const contributionScale = Math.max(0, Math.min(1, 1 - reductionNeeded / reducibleContribution));
+              updated.forEach((deptData, deptName) => {
+                if (deptName !== 'Sales' && deptName !== 'Handlers') return;
+                const scaledEmployees = deptData.employees.map((emp) => {
+                  let contrib = emp.contribution ?? 0;
+                  if (deptName === 'Handlers' && !handlersExcludedIds.has(emp.employeeId)) {
+                    contrib = Math.round(contrib * contributionScale * 100) / 100;
+                  } else if (deptName === 'Sales' && emp.employeeId !== salesExcludedId) {
+                    contrib = Math.round(contrib * contributionScale * 100) / 100;
+                  }
+                  const contributionTotal = contrib + (emp.contributionFixed ?? 0);
+                  const salaryBudget = Math.round(contributionTotal * 0.4 * 100) / 100;
+                  const totalSalaryCost = emp.totalSalaryCost ?? 0;
+                  return {
+                    ...emp,
+                    contribution: contrib,
+                    salaryBudget,
+                    maxIncentives: salaryBudget - totalSalaryCost,
+                  };
+                });
+                const deptContribution = scaledEmployees.reduce((sum, emp) => sum + (emp.contribution ?? 0), 0);
+                const deptSalaryBudget = scaledEmployees.reduce((sum, emp) => sum + (emp.salaryBudget ?? 0), 0);
+                const deptMaxIncentives = scaledEmployees.reduce((sum, emp) => sum + (emp.maxIncentives ?? 0), 0);
+                updated.set(deptName, {
+                  ...deptData,
+                  employees: scaledEmployees,
+                  totals: {
+                    ...deptData.totals,
+                    contribution: deptContribution,
+                    salaryBudget: deptSalaryBudget,
+                    maxIncentives: deptMaxIncentives,
+                  },
+                });
+              });
+            }
 
             return updated;
           });
@@ -4743,14 +4817,19 @@ const SalesContributionPage = () => {
                     updatedEmp.salaryBrutto = 40000;
                   }
 
-                  // Set contributionFixed: from DB (if toggle on) or hardcoded logic
+                  // Set contributionFixed: from DB (if toggle on) or 60% of Salary (B) for Marketing/Finance and Partners (without employee_handlers_sales_contributions), else existing logic
                   if (useFixedFromDbCached && fixedContributionFromDbMapCached.has(emp.employeeId)) {
                     updatedEmp.contributionFixed = fixedContributionFromDbMapCached.get(emp.employeeId) ?? 0;
                   } else if (!useFixedFromDbCached) {
-                    if (employeesWithHalfContribution.has(emp.employeeId)) {
-                      updatedEmp.contributionFixed = (updatedEmp.salaryBrutto || 0) * 0.5;
+                    const salaryB = updatedEmp.salaryBrutto || 0;
+                    if (deptName === 'Marketing' || deptName === 'Finance') {
+                      updatedEmp.contributionFixed = salaryB * 0.6;
+                    } else if (deptName === 'Partners' && !employeesWithHalfContribution.has(emp.employeeId)) {
+                      updatedEmp.contributionFixed = salaryB * 0.6;
+                    } else if (employeesWithHalfContribution.has(emp.employeeId)) {
+                      updatedEmp.contributionFixed = salaryB * 0.5;
                     } else if (employeesWithFixedContribution.has(emp.employeeId)) {
-                      updatedEmp.contributionFixed = updatedEmp.salaryBrutto || 0;
+                      updatedEmp.contributionFixed = salaryB;
                     } else {
                       updatedEmp.contributionFixed = 0;
                     }
@@ -4803,10 +4882,15 @@ const SalesContributionPage = () => {
                 if (useFixedFromDbCached && fixedContributionFromDbMapCached.has(emp.employeeId)) {
                   updatedEmp.contributionFixed = fixedContributionFromDbMapCached.get(emp.employeeId) ?? 0;
                 } else if (!useFixedFromDbCached) {
-                  if (employeesWithHalfContribution.has(emp.employeeId)) {
-                    updatedEmp.contributionFixed = (updatedEmp.salaryBrutto || 0) * 0.5;
+                  const salaryB = updatedEmp.salaryBrutto || 0;
+                  if (deptName === 'Marketing' || deptName === 'Finance') {
+                    updatedEmp.contributionFixed = salaryB * 0.6;
+                  } else if (deptName === 'Partners' && !employeesWithHalfContribution.has(emp.employeeId)) {
+                    updatedEmp.contributionFixed = salaryB * 0.6;
+                  } else if (employeesWithHalfContribution.has(emp.employeeId)) {
+                    updatedEmp.contributionFixed = salaryB * 0.5;
                   } else if (employeesWithFixedContribution.has(emp.employeeId)) {
-                    updatedEmp.contributionFixed = updatedEmp.salaryBrutto || 0;
+                    updatedEmp.contributionFixed = salaryB;
                   } else {
                     updatedEmp.contributionFixed = 0;
                   }
@@ -6117,12 +6201,38 @@ const SalesContributionPage = () => {
         ? deptData.employees.reduce((s, emp) => s + (salesLinkedModalFixedMap.get(emp.employeeId) ?? 0), 0)
         : 0;
 
+    // Handlers only: per-employee share of linked contribution (from S/P/F modal) to deduct from contribution column so total row stays correct.
+    const linkedToHandlersShareByEmployee = (() => {
+      const map = new Map<number, number>();
+      if (deptData.departmentName !== 'Handlers' || (linkedContributionForHandlers ?? 0) <= 0) return map;
+      const employees = isFieldView ? [] : deptData.employees.filter((emp) => {
+        if (!employeeSearchTerm.trim()) return true;
+        const searchLower = employeeSearchTerm.toLowerCase().trim();
+        return emp.employeeName.toLowerCase().includes(searchLower) || emp.department.toLowerCase().includes(searchLower);
+      });
+      const totalBase = employees.reduce((s, emp) => {
+        const orig = emp.contribution ?? 0;
+        const toSales = contributionToSalesByEmployee.get(emp.employeeId) ?? 0;
+        return s + Math.max(0, orig - toSales);
+      }, 0);
+      if (totalBase <= 0) return map;
+      employees.forEach((emp) => {
+        const orig = emp.contribution ?? 0;
+        const toSales = contributionToSalesByEmployee.get(emp.employeeId) ?? 0;
+        const base = Math.max(0, orig - toSales);
+        const share = (linkedContributionForHandlers ?? 0) * base / totalBase;
+        map.set(emp.employeeId, share);
+      });
+      return map;
+    })();
+
     // Per-employee: variable contribution reallocated to Sales or Handlers (deducted from Contribution column display only; salary budget uses full amounts).
+    // In Handlers table we also deduct each employee's share of the linked amount (from S/P/F).
     const getLinkedContributionDeducted = (employeeId: number): number => {
       const toSales = contributionToSalesByEmployee.get(employeeId) ?? 0;
       const toHandlers = contributionToHandlersByEmployee.get(employeeId) ?? 0;
       if (deptData.departmentName === 'Sales') return toHandlers;
-      if (deptData.departmentName === 'Handlers') return toSales;
+      if (deptData.departmentName === 'Handlers') return toSales + (linkedToHandlersShareByEmployee.get(employeeId) ?? 0);
       if (deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance') return toSales + toHandlers;
       return 0;
     };
@@ -6136,26 +6246,9 @@ const SalesContributionPage = () => {
       0
     );
 
-    // Correction: spread difference between top contribution and sum(contribution + contributionFixed) across employees (employee view only).
-    // For Sales, add linked contribution and linked contribution fixed from modal. For Handlers, add linked from Sales/Partners/Finance (Handler role).
-    // For Handlers/Partners/Finance, subtract the fixed and variable amounts reallocated to Sales/Handlers.
-    const totalFromEmployees =
-      (deptData.totals.contribution ?? 0) + (deptData.totals.contributionFixed ?? 0) -
-      linkedFixedDeductedForThisDept -
-      linkedContributionVariableDeductedForThisDept +
-      (deptData.departmentName === 'Sales' && linkedContributionForSales != null && linkedContributionForSales > 0 ? linkedContributionForSales : 0) +
-      (deptData.departmentName === 'Sales' ? linkedContributionFixedForSales : 0) +
-      (deptData.departmentName === 'Handlers' && linkedContributionForHandlers != null && linkedContributionForHandlers > 0 ? linkedContributionForHandlers : 0);
-    // For departments with employees 1 or 4: their fixed relocated to Marketing reduces effective total, so correction and Contribution total account for it.
-    const contributionDiff = contributionAmount - (totalFromEmployees - linkedMarketingFixedDeductedForThisDept);
     const employeeCount = deptData.employees.length;
-    // Marketing: do not add any correction to the Contribution column; the gap is filled by the reallocated contribution fixed from employees 1 and 4 (link modal), shown in Contribution fixed total only.
-    const perEmployeeCorrection =
-      deptData.departmentName === 'Marketing'
-        ? 0
-        : !isFieldView && contributionAmount > 0 && employeeCount > 0
-          ? contributionDiff / employeeCount
-          : 0;
+    // No per-employee correction in the contribution column; header still shows contributionDiff so user sees gap/surplus.
+    const perEmployeeCorrection = 0;
 
     const filteredEmployeesForCorrection = isFieldView ? [] : deptData.employees.filter((emp) => {
       if (!employeeSearchTerm.trim()) return true;
@@ -6174,14 +6267,13 @@ const SalesContributionPage = () => {
       0
     );
 
-    // Totals from displayed rows only (sum of corrected amounts so Total row is not faked). Contribution column shows full minus reallocated (to Sales/Handlers).
-    // Use capped deduction per employee so we never relocate more than their original contribution (total row matches displayed cells)
+    // Totals from displayed rows only: actual sum of contribution column (no correction). Contribution column shows full minus reallocated (to Sales/Handlers).
     const totalContributionColDisplayed = filteredEmployeesForCorrection.reduce(
       (s, emp) => {
         const orig = emp.contribution ?? 0;
         const deducted = getLinkedContributionDeducted(emp.employeeId);
         const effectiveRelocated = Math.min(deducted, orig);
-        return s + (orig - effectiveRelocated) + perEmployeeCorrection;
+        return s + (orig - effectiveRelocated);
       },
       0
     );
@@ -6201,14 +6293,7 @@ const SalesContributionPage = () => {
     const totalContributionFixedDisplayedAdjusted =
       totalContributionFixedDisplayed
         + (deptData.departmentName === 'Marketing' ? linkedContributionForMarketing : 0);
-    const totalSalaryBudgetDisplayed =
-      perEmployeeCorrection !== 0
-        ? filteredEmployeesForCorrection.reduce(
-            (s, emp) =>
-              s + ((emp.contribution ?? 0) + (emp.contributionFixed ?? 0) + perEmployeeCorrection) * 0.4,
-            0
-          )
-        : filteredEmployeesForCorrection.reduce((s, emp) => s + (emp.salaryBudget ?? 0), 0);
+    const totalSalaryBudgetDisplayed = filteredEmployeesForCorrection.reduce((s, emp) => s + (emp.salaryBudget ?? 0), 0);
     const totalSalaryCostDisplayed = filteredEmployeesForCorrection.reduce(
       (s, emp) => s + (emp.totalSalaryCost ?? 0),
       0
@@ -6218,26 +6303,18 @@ const SalesContributionPage = () => {
       (s, emp) => s + (emp.salaryBrutto ?? 0),
       0
     );
-    // Total row Contribution = sum of (displayed contribution per row) + linked for Sales/Handlers. Marketing link adds to contribution fixed only.
+    // Total row Contribution = actual sum of contribution column (displayed per row) + linked for Sales/Handlers.
     const totalRowContribution =
       totalContributionColDisplayed +
       (deptData.departmentName === 'Sales' ? (linkedContributionForSales ?? 0) : 0) +
       (deptData.departmentName === 'Handlers' ? (linkedContributionForHandlers ?? 0) : 0);
-    // Total row (Contribution + Contribution fixed) must equal the amount next to the table title for every department. Set contribution fixed total so the sum matches.
+    // Total row Contribution fixed = actual sum of contribution fixed column (no balancing to target).
     const totalRowContributionFixed =
-      contributionAmount > 0
-        ? Math.max(0, contributionAmount - totalRowContribution)
-        : totalContributionFixedDisplayedAdjusted + (deptData.departmentName === 'Sales' ? linkedContributionFixedForSales : 0);
+      totalContributionFixedDisplayedAdjusted + (deptData.departmentName === 'Sales' ? linkedContributionFixedForSales : 0);
+    // Header correction = target minus actual total row (so Marketing includes linked fixed from modal; no false shortfall).
+    const contributionDiff = contributionAmount - (totalRowContribution + totalRowContributionFixed);
     const contributionTotalForPercentages =
-      perEmployeeCorrection !== 0
-        ? (deptData.departmentName === 'Marketing' ? contributionAmount : totalContributionColDisplayed +
-          totalContributionFixedDisplayedAdjusted +
-          (deptData.departmentName === 'Sales' && linkedContributionForSales != null ? linkedContributionForSales : 0) +
-          (deptData.departmentName === 'Sales' ? linkedContributionFixedForSales : 0) +
-          (deptData.departmentName === 'Handlers' && linkedContributionForHandlers != null ? linkedContributionForHandlers : 0))
-        : (deptData.totals.contribution ?? 0) + (deptData.totals.contributionFixed ?? 0) -
-          (deptData.departmentName === 'Handlers' || deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance' ? linkedFixedDeductedForThisDept : 0) -
-          linkedContributionVariableDeductedForThisDept;
+      totalRowContribution + totalRowContributionFixed;
 
     return (
       <div key={deptData.departmentName} className="mb-8">
@@ -6252,7 +6329,7 @@ const SalesContributionPage = () => {
                 {!isFieldView && contributionAmount > 0 && (
                   <span
                     className="text-sm font-medium tabular-nums"
-                    title={contributionDiff > 0 ? 'Total from rows was below target; this amount was added (spread across employees).' : contributionDiff < 0 ? 'Total from rows was above target; this amount was deducted (spread across employees).' : 'Rows match target.'}
+                    title={contributionDiff > 0 ? 'Total from rows is below target; this is the shortfall.' : contributionDiff < 0 ? 'Total from rows is above target; this is the surplus.' : 'Rows match target.'}
                   >
                     {contributionDiff > 0 && (
                       <span className="text-green-600 dark:text-green-400">(+{formatCurrency(contributionDiff)})</span>
@@ -6455,11 +6532,6 @@ const SalesContributionPage = () => {
                                 return (
                                   <div className="flex flex-col items-end gap-0.5">
                                     <span>{formatCurrency(originalContribution)}</span>
-                                    {perEmployeeCorrection !== 0 && (
-                                      <span className={`text-xs font-medium tabular-nums ${perEmployeeCorrection > 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                                        {perEmployeeCorrection > 0 ? '+' : ''}{formatCurrency(perEmployeeCorrection)}
-                                      </span>
-                                    )}
                                     {effectiveRelocated > 0 && (
                                       <span
                                         className="tooltip tooltip-top text-xs font-medium tabular-nums text-blue-600 dark:text-blue-400 cursor-help"
@@ -6490,7 +6562,7 @@ const SalesContributionPage = () => {
                                         className="tooltip tooltip-top text-xs text-amber-600 dark:text-amber-400 font-medium cursor-help"
                                         data-tip="50% of this employee's fixed contribution is reallocated to the Sales table (Link contribution to Sales)."
                                       >
-                                        −{formatCurrency(deductedFixed)} (50%)
+                                        −{formatCurrency(deductedFixed)}
                                       </span>
                                     )}
                                     {marketingDeducted > 0 && (
@@ -6507,11 +6579,7 @@ const SalesContributionPage = () => {
                             </td>
                             <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
                               <div className="flex flex-col items-end">
-                                <span>
-                                  {perEmployeeCorrection !== 0
-                                    ? formatCurrency(((emp.contribution || 0) + (emp.contributionFixed || 0) + perEmployeeCorrection) * 0.4)
-                                    : formatCurrency(emp.salaryBudget || 0)}
-                                </span>
+                                <span>{formatCurrency(emp.salaryBudget || 0)}</span>
                                 <span className="text-xs text-gray-500">40%</span>
                               </div>
                             </td>
@@ -6547,10 +6615,7 @@ const SalesContributionPage = () => {
                             </td>
                             <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
                               {(() => {
-                                const salaryBudget =
-                                  perEmployeeCorrection !== 0
-                                    ? ((emp.contribution || 0) + (emp.contributionFixed || 0) + perEmployeeCorrection) * 0.4
-                                    : (emp.salaryBudget ?? 0);
+                                const salaryBudget = emp.salaryBudget ?? 0;
                                 const totalSalaryCost = emp.totalSalaryCost ?? 0;
                                 const maxIncentives = salaryBudget - totalSalaryCost;
                                 return (
@@ -7663,22 +7728,48 @@ const SalesContributionPage = () => {
           </div>
         </div>
 
-        {/* Row 2: Total signed + Total income badges, centered below */}
-        <div className="flex justify-center gap-4 md:gap-6 mb-4">
-          <div className="flex flex-col items-center gap-1">
-            <span className="text-xs font-medium text-base-content/70">Total signed</span>
-            <div className="px-4 py-2 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg min-w-[140px] text-center text-white shadow-md">
+        {/* Row 2: Total signed + Total income + Total cost badges, centered below */}
+        <div className="flex justify-center gap-5 md:gap-8 mb-4 flex-wrap">
+          <div className="flex flex-col items-center gap-1.5">
+            <span className="text-sm font-medium text-base-content/70">Total signed</span>
+            <div className="px-5 py-2.5 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg min-w-[160px] text-center text-white shadow-md">
               {loadingSignedValue ? (
                 <span className="loading loading-spinner loading-sm text-white"></span>
               ) : (
-                <span className="font-semibold text-white">{formatCurrency(totalSignedValue)}</span>
+                <span className="font-semibold text-white text-lg">{formatCurrency(totalSignedValue)}</span>
               )}
             </div>
           </div>
-          <div className="flex flex-col items-center gap-1">
-            <span className="text-xs font-medium text-base-content/70">Total income</span>
-            <div className="px-4 py-2 bg-gradient-to-tr from-teal-500 via-green-500 to-emerald-500 rounded-lg min-w-[140px] text-center text-white shadow-md">
-              <span className="font-semibold text-white">{formatCurrency(totalIncome || 0)}</span>
+          <div className="flex flex-col items-center gap-1.5">
+            <span className="text-sm font-medium text-base-content/70">Total income</span>
+            <div className="px-5 py-2.5 bg-gradient-to-tr from-teal-500 via-green-500 to-emerald-500 rounded-lg min-w-[160px] text-center text-white shadow-md">
+              <span className="font-semibold text-white text-lg">{formatCurrency(totalIncome || 0)}</span>
+            </div>
+          </div>
+          <div className="flex flex-col items-center gap-1.5">
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm font-medium text-base-content/70">Total salary budget</span>
+              {totalIncome != null && totalIncome > 0 && (
+                <span className="badge badge-sm bg-sky-500/90 text-white border-0">
+                  {((totalSalaryBudgetAllEmployees / totalIncome) * 100).toFixed(1)}%
+                </span>
+              )}
+            </div>
+            <div className="px-5 py-2.5 bg-gradient-to-tr from-sky-500 via-blue-500 to-indigo-600 rounded-lg min-w-[160px] text-center text-white shadow-md">
+              <span className="font-semibold text-white text-lg">{formatCurrency(totalSalaryBudgetAllEmployees)}</span>
+            </div>
+          </div>
+          <div className="flex flex-col items-center gap-1.5">
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm font-medium text-base-content/70">Total cost</span>
+              {totalIncome != null && totalIncome > 0 && (
+                <span className="badge badge-sm bg-amber-500/90 text-white border-0">
+                  {((totalCostAllEmployees / totalIncome) * 100).toFixed(1)}%
+                </span>
+              )}
+            </div>
+            <div className="px-5 py-2.5 bg-gradient-to-tr from-amber-500 via-orange-500 to-orange-600 rounded-lg min-w-[160px] text-center text-white shadow-md">
+              <span className="font-semibold text-white text-lg">{formatCurrency(totalCostAllEmployees)}</span>
             </div>
           </div>
         </div>

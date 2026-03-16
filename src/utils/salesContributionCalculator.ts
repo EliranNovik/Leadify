@@ -19,6 +19,9 @@ export interface EmployeeCalculationInput {
     rolePercentages: Map<string, number>;
     departmentSummaryAmount?: number; // For Marketing/Finance: use summary box amount instead of calculating from leads
     departmentEmployeeCount?: number; // Number of employees in department (for distributing summary amount)
+    /** Department % from sales_contribution_settings (e.g. 35 for Sales). Used to scale contribution per table. */
+    departmentPercentage?: number;
+    departmentName?: string;
 }
 
 export interface EmployeeCalculationResult {
@@ -769,8 +772,9 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
         const employeeCount = input.departmentEmployeeCount || 1;
         contribution = input.departmentSummaryAmount / employeeCount;
     } else {
-        // For other departments: Apply 35% to get final contribution amount
-        contribution = baseContribution * 0.35;
+        // Department % from sales_contribution_settings (per table), passed from page; fallback 35 only when not in DB
+        const deptPct = (input.departmentPercentage ?? 35) / 100;
+        contribution = baseContribution * deptPct;
     }
 
     // Debug logging for employees with 0 contribution but should have data

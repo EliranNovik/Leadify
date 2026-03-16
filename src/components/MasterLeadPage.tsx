@@ -8,9 +8,12 @@ import {
   CurrencyDollarIcon,
   TagIcon,
   LinkIcon,
+  LinkSlashIcon,
   ExclamationTriangleIcon,
   XMarkIcon,
-  DocumentTextIcon
+  DocumentTextIcon,
+  PlusCircleIcon,
+  MagnifyingGlassIcon
 } from '@heroicons/react/24/outline';
 import { createPortal } from 'react-dom';
 import { toast } from 'react-hot-toast';
@@ -21,9 +24,13 @@ import {
   fetchLegacyMasterLead,
   extractNumericId,
   formatLegacyLeadNumber,
+  linkLeadToChain,
+  breakLinkedLeads,
   type SubLead,
   type ContractData
 } from '../lib/masterLeadApi';
+import { searchLeads } from '../lib/legacyLeadsApi';
+import type { CombinedLead } from '../lib/legacyLeadsApi';
 
 // Helper function to process HTML for editing with consistent styling
 const processHtmlForEditing = (html: string): string => {
@@ -296,6 +303,18 @@ const MasterLeadPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [viewingContract, setViewingContract] = useState<{ id: string; mode: 'view' | 'edit'; contractHtml?: string; signedContractHtml?: string; status?: string; public_token?: string; signed_at?: string } | null>(null);
 
+  const [addLeadModalOpen, setAddLeadModalOpen] = useState(false);
+  const [addLeadSearchQuery, setAddLeadSearchQuery] = useState('');
+  const [addLeadSearchResults, setAddLeadSearchResults] = useState<CombinedLead[]>([]);
+  const [addLeadSearching, setAddLeadSearching] = useState(false);
+  const [addLeadSelected, setAddLeadSelected] = useState<CombinedLead | null>(null);
+  const [addLeadConfirming, setAddLeadConfirming] = useState(false);
+  const addLeadSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [breakLinkModalOpen, setBreakLinkModalOpen] = useState(false);
+  const [breakLinkSelectedIds, setBreakLinkSelectedIds] = useState<Set<string>>(new Set());
+  const [breakLinkConfirming, setBreakLinkConfirming] = useState(false);
+
   // Add compact table styles
   const compactTableStyles = `
     .compact-table th,
@@ -357,6 +376,39 @@ const MasterLeadPage: React.FC = () => {
           color: textColor,
           borderColor: backgroundColor,
         }}
+      >
+        {stageName}
+      </span>
+    );
+  };
+
+  const isInactiveLead = (lead: CombinedLead) => {
+    if (lead.lead_type === 'legacy') {
+      return lead.status === 10;
+    }
+    return lead.status === 'inactive' || String(lead.stage) === '91';
+  };
+
+  const getStageBadgeForSearchLead = (lead: CombinedLead) => {
+    const stageStr = lead.stage != null ? String(lead.stage).trim() : '';
+    const stageName = stageStr ? (/^\d+$/.test(stageStr) ? getStageName(stageStr) : stageStr) : '—';
+    const useInactiveStyle = isInactiveLead(lead);
+    if (useInactiveStyle) {
+      return (
+        <span className="badge badge-sm px-2 py-0.5 bg-gray-300 text-black border border-gray-400">
+          {stageName}
+        </span>
+      );
+    }
+    const backgroundColor =
+      (lead.stage_colour && lead.stage_colour.trim()) ||
+      (/^\d+$/.test(stageStr) ? getStageColour(stageStr) : '') ||
+      '#3b28c7';
+    const textColor = getContrastingTextColor(backgroundColor);
+    return (
+      <span
+        className="badge badge-sm text-xs px-2 py-0.5"
+        style={{ backgroundColor, color: textColor, borderColor: backgroundColor }}
       >
         {stageName}
       </span>
@@ -684,6 +736,82 @@ const MasterLeadPage: React.FC = () => {
     }
   }, [contractsDataArray]); // Depend on contractsDataArray to trigger when contracts change
 
+  const chainMemberIds = useMemo(() => {
+    const ids = new Set<string>();
+    subLeads.forEach((s) => ids.add(String(s.id)));
+    if (masterLeadInfo?.id != null) ids.add(String(masterLeadInfo.id));
+    return ids;
+  }, [subLeads, masterLeadInfo]);
+
+  useEffect(() => {
+    if (!addLeadModalOpen) return;
+    if (!addLeadSearchQuery.trim()) {
+      setAddLeadSearchResults([]);
+      setAddLeadSearching(false);
+      return;
+    }
+    if (addLeadSearchTimeoutRef.current) clearTimeout(addLeadSearchTimeoutRef.current);
+    setAddLeadSearching(true);
+    addLeadSearchTimeoutRef.current = setTimeout(async () => {
+      try {
+        const results = await searchLeads(addLeadSearchQuery.trim(), { limit: 20 });
+        setAddLeadSearchResults(
+          results.filter((r) => {
+            const id = String(r.id);
+            const legacyId = r.lead_type === 'legacy' ? `legacy_${id}` : id;
+            if (chainMemberIds.has(id) || chainMemberIds.has(legacyId)) return false;
+            // Exclude subleads: has master_id or (new lead) lead_number contains /
+            if (r.master_id != null && r.master_id !== '') return false;
+            if (r.lead_type === 'new' && (r.lead_number || '').includes('/')) return false;
+            // Exclude leads already linked to a master via linked_master_lead
+            if (r.linked_master_lead != null && r.linked_master_lead !== '') return false;
+            return true;
+          })
+        );
+      } catch (e) {
+        setAddLeadSearchResults([]);
+      } finally {
+        setAddLeadSearching(false);
+      }
+    }, 300);
+    return () => {
+      if (addLeadSearchTimeoutRef.current) clearTimeout(addLeadSearchTimeoutRef.current);
+    };
+  }, [addLeadModalOpen, addLeadSearchQuery, chainMemberIds]);
+
+  const handleAddLeadConfirm = useCallback(async () => {
+    if (!addLeadSelected || !lead_number || !masterLeadInfo) return;
+    const decodedLeadNumber = decodeURIComponent(lead_number);
+    const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
+    const isLegacyChain = subLeads.some((s) => String(s.id).startsWith('legacy_'));
+    if (!baseLeadNumber) return;
+    setAddLeadConfirming(true);
+    try {
+      const leadId = addLeadSelected.lead_type === 'legacy' ? addLeadSelected.id.replace(/^legacy_/, '') : addLeadSelected.id;
+      const result = await linkLeadToChain(
+        addLeadSelected.lead_type === 'legacy' ? `legacy_${leadId}` : leadId,
+        addLeadSelected.lead_type,
+        baseLeadNumber,
+        !!isLegacyChain,
+        masterLeadInfo
+      );
+      if (result.success) {
+        toast.success('Lead linked to master chain successfully');
+        setAddLeadModalOpen(false);
+        setAddLeadSearchQuery('');
+        setAddLeadSearchResults([]);
+        setAddLeadSelected(null);
+        fetchSubLeads();
+      } else {
+        toast.error(result.error || 'Failed to add lead to chain');
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to add lead to chain');
+    } finally {
+      setAddLeadConfirming(false);
+    }
+  }, [addLeadSelected, lead_number, masterLeadInfo, subLeads, fetchSubLeads]);
+
   useEffect(() => {
     // #region agent log
     fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:306', message: 'Main useEffect triggered', data: { lead_number, currentLoading: loading, hasMasterLeadInfo: !!masterLeadInfo, subLeadsCount: subLeads.length, prevLeadNumber: prevLeadNumberRef.current, hasChecked: hasCheckedPersistedDataRef.current }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
@@ -897,6 +1025,7 @@ const MasterLeadPage: React.FC = () => {
 
   // Filter subLeads to only show ones that match the current lead_number
   // This prevents showing old data when navigating to a different master lead
+  // Linked-only subleads (isLinkedOnly) show actual lead number and are always included for current master
   const filteredSubLeads = useMemo(() => {
     if (!lead_number) return [];
 
@@ -904,12 +1033,18 @@ const MasterLeadPage: React.FC = () => {
     const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
 
     return subLeads.filter(subLead => {
+      if (subLead.isLinkedOnly) return true;
       const subLeadNumber = String(subLead.lead_number || subLead.id || '');
       const subLeadBase = subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber;
-      // Match if base numbers match or if the subLead number exactly matches the base
       return subLeadBase === baseLeadNumber || subLeadNumber === baseLeadNumber;
     });
   }, [subLeads, lead_number]);
+
+  // Linked-only leads (break-link applies only to these, not traditional subleads)
+  const linkedOnlyLeads = useMemo(
+    () => filteredSubLeads.filter((s): s is SubLead => !!s.isLinkedOnly),
+    [filteredSubLeads]
+  );
 
   const handleSubLeadClick = (subLead: SubLead, event?: React.MouseEvent) => {
     const isNewTab = event?.metaKey || event?.ctrlKey;
@@ -979,12 +1114,44 @@ const MasterLeadPage: React.FC = () => {
                     return displayNumber;
                   })()}
                 </h1>
-                <p className="text-sm text-gray-500">
-                  {filteredSubLeads.length} lead{filteredSubLeads.length !== 1 ? 's' : ''} found (including master lead)
-                  {filteredSubLeads.length === 1 && (
-                    <span className="ml-2 text-orange-600">
-                      • Sub-leads temporarily unavailable due to database performance
-                    </span>
+                <p className="text-sm text-gray-500 flex items-center gap-3 flex-wrap">
+                  <span>
+                    {filteredSubLeads.length} lead{filteredSubLeads.length !== 1 ? 's' : ''} found (including master lead)
+                    {filteredSubLeads.length === 1 && (
+                      <span className="ml-2 text-orange-600">
+                        • Sub-leads temporarily unavailable due to database performance
+                      </span>
+                    )}
+                  </span>
+                  {masterLeadInfo && filteredSubLeads.length > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAddLeadModalOpen(true);
+                          setAddLeadSearchQuery('');
+                          setAddLeadSearchResults([]);
+                          setAddLeadSelected(null);
+                        }}
+                        className="btn btn-sm btn-outline btn-primary inline-flex items-center gap-1.5"
+                      >
+                        <PlusCircleIcon className="w-4 h-4" />
+                        Add lead to chain
+                      </button>
+                      {linkedOnlyLeads.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBreakLinkModalOpen(true);
+                            setBreakLinkSelectedIds(new Set());
+                          }}
+                          className="btn btn-sm btn-outline btn-secondary inline-flex items-center gap-1.5"
+                        >
+                          <LinkSlashIcon className="w-4 h-4" />
+                          Break link
+                        </button>
+                      )}
+                    </>
                   )}
                 </p>
               </div>
@@ -1783,6 +1950,273 @@ const MasterLeadPage: React.FC = () => {
           </div>
         </div>,
         document.body
+      )}
+
+      {/* Add lead to chain modal */}
+      {addLeadModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-base-100 rounded-xl shadow-xl border border-base-300 w-full max-w-lg max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b border-base-300">
+              <h2 className="text-lg font-semibold">Add lead to chain</h2>
+              <button
+                type="button"
+                onClick={() => {
+                  setAddLeadModalOpen(false);
+                  setAddLeadSelected(null);
+                  setAddLeadSearchQuery('');
+                }}
+                className="btn btn-ghost btn-sm btn-circle"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 flex flex-col gap-3 flex-1 min-h-0">
+              {!addLeadSelected ? (
+                <>
+                  <p className="text-sm text-base-content/70">
+                    Search for a lead (new or legacy) to add as the next sublead in this chain.
+                  </p>
+                  <div className="relative">
+                    <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-base-content/40" />
+                    <input
+                      type="text"
+                      placeholder="Search by lead number, name, email..."
+                      className="input input-bordered w-full pl-10"
+                      value={addLeadSearchQuery}
+                      onChange={(e) => setAddLeadSearchQuery(e.target.value)}
+                      autoFocus
+                    />
+                  </div>
+                  <div className="flex-1 overflow-auto min-h-[200px] border border-base-300 rounded-lg">
+                    {addLeadSearching ? (
+                      <div className="p-6 text-center text-base-content/60">
+                        <span className="loading loading-spinner loading-sm" />
+                        <span className="ml-2">Searching...</span>
+                      </div>
+                    ) : addLeadSearchResults.length > 0 ? (
+                      <ul className="divide-y divide-base-200">
+                        {addLeadSearchResults.map((lead) => {
+                          const inactive = isInactiveLead(lead);
+                          return (
+                            <li key={lead.lead_type === 'legacy' ? `legacy_${lead.id}` : lead.id}>
+                              <button
+                                type="button"
+                                onClick={() => setAddLeadSelected(lead)}
+                                className={`w-full px-4 py-3 text-left transition-colors rounded-lg border relative ${inactive ? 'bg-gray-100 hover:bg-gray-200 border-gray-200 text-black' : 'hover:bg-base-200 border-base-300 border-transparent'}`}
+                              >
+                                {inactive && (
+                                  <div className="absolute top-1.5 left-1/2 -translate-x-1/2 text-xs font-medium text-black z-10">
+                                    Inactive
+                                  </div>
+                                )}
+                                <div className="absolute top-1.5 right-2 z-10">
+                                  {getStageBadgeForSearchLead(lead)}
+                                </div>
+                                <div className={`flex flex-col gap-0.5 pr-20 ${inactive ? 'text-black' : ''}`}>
+                                  <p className={`font-medium ${inactive ? 'text-black' : 'text-base-content'}`}>
+                                    {lead.contactName || lead.name || '—'}
+                                  </p>
+                                  <p className={`text-sm font-mono ${inactive ? 'text-black/80' : 'text-base-content/70'}`}>
+                                    #{lead.lead_number || lead.id}
+                                  </p>
+                                </div>
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : addLeadSearchQuery.trim() ? (
+                      <div className="p-6 text-center text-base-content/60 text-sm">
+                        No leads found. Try a different search.
+                      </div>
+                    ) : (
+                      <div className="p-6 text-center text-base-content/50 text-sm">
+                        Type to search for leads.
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-base-content/70">
+                    Add this lead to the chain?
+                  </p>
+                  <div className="p-3 bg-base-200 rounded-lg flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="font-medium">{addLeadSelected.contactName || addLeadSelected.name || '—'}</p>
+                      <p className="text-sm font-mono text-base-content/70">
+                        #{addLeadSelected.lead_number || addLeadSelected.id}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {getStageBadgeForSearchLead(addLeadSelected)}
+                      {isInactiveLead(addLeadSelected) && (
+                        <span className="badge badge-sm bg-gray-300 text-black border border-gray-400">Inactive</span>
+                      )}
+                    </div>
+                  </div>
+                  <p className="text-sm text-base-content/70">
+                    It will be added as the next sublead in this chain.
+                  </p>
+                  <div className="flex gap-2 justify-end pt-2">
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => setAddLeadSelected(null)}
+                      disabled={addLeadConfirming}
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={handleAddLeadConfirm}
+                      disabled={addLeadConfirming}
+                    >
+                      {addLeadConfirming ? (
+                        <>
+                          <span className="loading loading-spinner loading-sm" />
+                          Adding...
+                        </>
+                      ) : (
+                        'Confirm add'
+                      )}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Break link modal – choose which linked-only leads to unlink */}
+      {breakLinkModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-base-100 rounded-xl shadow-xl border border-base-300 w-full max-w-lg max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b border-base-300">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <LinkSlashIcon className="w-5 h-5" />
+                Break link
+              </h2>
+              <button
+                type="button"
+                onClick={() => {
+                  setBreakLinkModalOpen(false);
+                  setBreakLinkSelectedIds(new Set());
+                }}
+                className="btn btn-ghost btn-sm btn-circle"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 flex flex-col gap-3 flex-1 min-h-0 overflow-hidden">
+              <p className="text-sm text-base-content/70">
+                Select which linked leads to unlink from this master. This only affects leads that were added via “Add lead to chain” or “Combine leads” (linked_master_lead). Traditional subleads are not changed.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setBreakLinkSelectedIds(new Set(linkedOnlyLeads.map((s) => s.id)))}
+                >
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setBreakLinkSelectedIds(new Set())}
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="flex-1 overflow-auto border border-base-300 rounded-lg divide-y divide-base-200">
+                {linkedOnlyLeads.map((subLead) => {
+                  const isChecked = breakLinkSelectedIds.has(subLead.id);
+                  return (
+                    <label
+                      key={subLead.id}
+                      className="flex items-center gap-3 px-4 py-3 hover:bg-base-200 cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() => {
+                          setBreakLinkSelectedIds((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(subLead.id)) next.delete(subLead.id);
+                            else next.add(subLead.id);
+                            return next;
+                          });
+                        }}
+                        className="checkbox checkbox-sm"
+                      />
+                      <span className="font-medium">{subLead.name || '—'}</span>
+                      <span className="text-sm font-mono text-base-content/70">
+                        #{subLead.lead_number ?? subLead.id}
+                      </span>
+                      {subLead.stage != null && (
+                        <span className="badge badge-sm badge-ghost">{getStageName(String(subLead.stage))}</span>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="flex gap-2 justify-end pt-2 border-t border-base-300">
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setBreakLinkModalOpen(false);
+                    setBreakLinkSelectedIds(new Set());
+                  }}
+                  disabled={breakLinkConfirming}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={breakLinkSelectedIds.size === 0 || breakLinkConfirming}
+                  onClick={async () => {
+                    if (breakLinkSelectedIds.size === 0) return;
+                    setBreakLinkConfirming(true);
+                    try {
+                      const items = linkedOnlyLeads
+                        .filter((s) => breakLinkSelectedIds.has(s.id))
+                        .map((s) => ({
+                          id: s.id.startsWith('legacy_') ? s.id : s.id,
+                          type: s.id.startsWith('legacy_') ? 'legacy' as const : 'new' as const,
+                        }));
+                      const result = await breakLinkedLeads(items);
+                      if (result.success) {
+                        toast.success('Link(s) removed. Leads are no longer linked to this master.');
+                        setBreakLinkModalOpen(false);
+                        setBreakLinkSelectedIds(new Set());
+                        fetchSubLeads();
+                      } else {
+                        toast.error(result.error || 'Failed to break link');
+                      }
+                    } catch (err) {
+                      toast.error(err instanceof Error ? err.message : 'Failed to break link');
+                    } finally {
+                      setBreakLinkConfirming(false);
+                    }
+                  }}
+                >
+                  {breakLinkConfirming ? (
+                    <>
+                      <span className="loading loading-spinner loading-sm" />
+                      Breaking link...
+                    </>
+                  ) : (
+                    `Break link (${breakLinkSelectedIds.size})`
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

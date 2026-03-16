@@ -108,6 +108,8 @@ interface ClientHeaderProps {
     hideTotalValueBadge?: boolean;
     /** When true, category is display-only and does not open the category modal on click (e.g. external user modal) */
     disableCategoryModal?: boolean;
+    /** Opens the Combine leads modal (this lead as master, link another lead to it) */
+    onCombineLeads?: () => void;
 }
 
 const ClientHeader: React.FC<ClientHeaderProps> = ({
@@ -153,6 +155,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     hideActionsDropdown = false,
     hideTotalValueBadge = false,
     disableCategoryModal = false,
+    onCombineLeads,
 }) => {
     const navigate = useNavigate();
     const [isEditingCategory, setIsEditingCategory] = useState(false);
@@ -776,6 +779,26 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     // Lead Number
     const renderLeadNumber = () => {
         if (!selectedClient) return '---';
+        // Linked-only subleads (linked_master_lead): show actual lead number only, no "/" or suffix, no "legacy_" prefix
+        const hasLinkedMasterLead = selectedClient.linked_master_lead != null && (typeof selectedClient.linked_master_lead === 'number' || (typeof selectedClient.linked_master_lead === 'string' && String(selectedClient.linked_master_lead).trim() !== ''));
+        if (hasLinkedMasterLead) {
+            let raw = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id || '---';
+            let rawStr = raw.toString();
+            // Remove legacy_ prefix so we show e.g. 193599 not legacy_193599
+            if (rawStr.startsWith('legacy_')) rawStr = rawStr.replace(/^legacy_/, '');
+            // For linked leads never show "/" and suffix - use actual lead id if stored value looks like master/suffix
+            if (rawStr.includes('/')) {
+                const idStr = (selectedClient.id ?? '').toString().replace(/^legacy_/, '');
+                if (idStr && idStr !== '---') rawStr = idStr;
+                else rawStr = rawStr.split('/')[0];
+            }
+            const isSuccessStage = selectedClient.stage === '100' || selectedClient.stage === 100;
+            if (isSuccessStage && rawStr && !rawStr.startsWith('C')) {
+                return rawStr.replace(/^L/, 'C');
+            }
+            return rawStr;
+        }
+
         let displayNumber = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id || '---';
         const displayStr = displayNumber.toString();
         const hasExistingSuffix = displayStr.includes('/');
@@ -919,6 +942,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     {/* Edit / Sub-Lead */}
                                     <li><a onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-4 h-4" /> Edit Details</a></li>
                                     <li><a onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-4 h-4" /> Create Sub-Lead</a></li>
+                                    {onCombineLeads && (
+                                        <li><a onClick={() => { onCombineLeads(); (document.activeElement as HTMLElement)?.blur(); }}><LinkIcon className="w-4 h-4" /> Combine leads</a></li>
+                                    )}
 
                                     {/* Delete (Superuser only) */}
                                     {isSuperuser && (
@@ -1120,6 +1146,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {/* Edit / Sub-Lead */}
                                         <li><a onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-4 h-4" /> Edit Details</a></li>
                                         <li><a onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-4 h-4" /> Create Sub-Lead</a></li>
+                                        {onCombineLeads && (
+                                            <li><a onClick={() => { onCombineLeads(); (document.activeElement as HTMLElement)?.blur(); }}><LinkIcon className="w-4 h-4" /> Combine leads</a></li>
+                                        )}
 
                                         {/* Delete (Superuser only) */}
                                         {isSuperuser && (

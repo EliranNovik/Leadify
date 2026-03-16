@@ -74,7 +74,7 @@ import InteractionsTab from './client-tabs/InteractionsTab';
 import FinancesTab from './client-tabs/FinancesTab';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
-import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee } from '../lib/graph';
+import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee, getAccessTokenWithFallback, AuthPopupBlockedError, triggerTokenRedirect } from '../lib/graph';
 import { generateICSFromDateTime } from '../lib/icsGenerator';
 import { sendEmailViaBackend } from '../lib/mailboxApi';
 import { useAuthContext } from '../contexts/AuthContext';
@@ -91,6 +91,7 @@ import TimePicker from './TimePicker';
 import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
 import ClientHeader from './ClientHeader';
+import CombineLeadsModal from './CombineLeadsModal';
 import SendPriceOfferModal from './SendPriceOfferModal';
 import { addToHighlights, removeFromHighlights, isInHighlights } from '../lib/highlightsUtils';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
@@ -1358,6 +1359,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [isStagesOpen, setIsStagesOpen] = useState(false);
   const [isActionsOpen, setIsActionsOpen] = useState(false);
   const [isBalanceModalOpen, setIsBalanceModalOpen] = useState(false);
+  const [combineLeadsModalOpen, setCombineLeadsModalOpen] = useState(false);
   // Track the last route to detect route changes and force refetch
   const lastRouteRef = useRef<string>('');
   // Default to collapsed on mobile, expanded on desktop
@@ -1398,6 +1400,8 @@ const Clients: React.FC<ClientsProps> = ({
   const [isDuplicateDropdownOpen, setIsDuplicateDropdownOpen] = useState(false);
   const [copyingContactId, setCopyingContactId] = useState<number | null>(null);
   const { instance } = useMsal();
+  const [showAuthRedirectOption, setShowAuthRedirectOption] = useState(false);
+  const authRedirectParamsRef = useRef<{ request: any; account: any } | null>(null);
   const { isAdmin, isLoading: isAdminLoading } = useAdminRole();
   const [isSchedulingMeeting, setIsSchedulingMeeting] = useState(false);
   const [isCreatingMeeting, setIsCreatingMeeting] = useState(false);
@@ -2974,6 +2978,7 @@ const Clients: React.FC<ClientsProps> = ({
             lead_number,
             manual_id,
             master_id,
+            linked_master_lead,
             name,
             email,
             phone,
@@ -3094,7 +3099,9 @@ const Clients: React.FC<ClientsProps> = ({
             phone: data.phone || '',
             mobile: data.mobile || '',
             topic: data.topic || '',
-            lead_number: formatLegacyLeadNumber(data, subLeadSuffix), // Format lead number with /1 for master, /X for sub-leads
+            lead_number: (data.linked_master_lead != null && (!data.master_id || String(data.master_id).trim() === ''))
+              ? String(data.id)
+              : formatLegacyLeadNumber(data, subLeadSuffix), // Linked-only: actual id; else format with /1 or /X
             stage: legacyStageId ?? (typeof data.stage === 'number' ? data.stage : null),
             stage_name: stageNameFromJoin || undefined,
             stage_colour: stageColourFromJoin || undefined,
@@ -3157,6 +3164,7 @@ const Clients: React.FC<ClientsProps> = ({
             vat: (data as any).vat || null, // Include vat column for legacy leads
             manual_id: data.manual_id || null,
             master_id: data.master_id || null,
+            linked_master_lead: (data as any).linked_master_lead ?? null,
             eligibile: data.eligibile || null,
             no_of_applicants: data.no_of_applicants || null,
             meeting_scheduler_id: data.meeting_scheduler_id || null,
@@ -3588,10 +3596,35 @@ const Clients: React.FC<ClientsProps> = ({
 
           const isManualIdCandidate = /^\d+$/.test(effectiveLeadNumber);
           const isLegacyLeadId = /^\d+$/.test(effectiveLeadNumber);
+          const isUuidParam = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(effectiveLeadNumber);
 
           type LeadQueryResult = { type: string; data: any; error: any };
           // Run all possible queries in parallel to find the lead faster
           const queries: Array<PromiseLike<LeadQueryResult>> = [];
+
+          // New lead by UUID (e.g. from Combine leads or direct link)
+          if (isUuidParam) {
+            queries.push(
+              supabase
+                .from('leads')
+                .select(`
+                  *,
+                  accounting_currencies!leads_currency_id_fkey ( id, name, iso_code ),
+                  misc_category!fk_leads_category_id (
+                    id,
+                    name,
+                    parent_id,
+                    misc_maincategory!parent_id ( id, name )
+                  ),
+                  misc_leadsource!fk_leads_source_id ( id, name ),
+                  misc_language!fk_leads_language_id ( id, name ),
+                  leads_lead_tags ( misc_leadtag ( name ) )
+                `)
+                .eq('id', effectiveLeadNumber)
+                .single()
+                .then(({ data, error }) => ({ type: 'lead_number', data, error }))
+            );
+          }
 
           if (isManualIdCandidate) {
             queries.push(
@@ -3860,7 +3893,9 @@ const Clients: React.FC<ClientsProps> = ({
                   phone: legacyLead.phone || '',
                   mobile: legacyLead.mobile || '',
                   topic: legacyLead.topic || '',
-                  lead_number: formatLegacyLeadNumber(legacyLead, subLeadSuffix),
+                  lead_number: (legacyLead.linked_master_lead != null && (!legacyLead.master_id || String(legacyLead.master_id).trim() === ''))
+                    ? String(legacyLead.id)
+                    : formatLegacyLeadNumber(legacyLead, subLeadSuffix),
                   stage: legacyStageId ?? (typeof legacyLead.stage === 'number' ? legacyLead.stage : null),
                   stage_name: stageNameFromJoin || undefined,
                   stage_colour: stageColourFromJoin || undefined,
@@ -3902,6 +3937,7 @@ const Clients: React.FC<ClientsProps> = ({
                   reason_id: legacyLead.reason_id || null,
                   manual_id: legacyLead.manual_id || null,
                   master_id: legacyLead.master_id || null,
+                  linked_master_lead: (legacyLead as any).linked_master_lead ?? null,
                   eligibile: legacyLead.eligibile || null,
                   no_of_applicants: legacyLead.no_of_applicants || null,
                   meeting_scheduler_id: legacyLead.meeting_scheduler_id || null,
@@ -3934,6 +3970,8 @@ const Clients: React.FC<ClientsProps> = ({
 
                 clientData = {
                   ...newLead,
+                  lead_type: 'new',
+                  linked_master_lead: (newLead as any).linked_master_lead ?? null,
                   category: categoryName,
                   source: getSourceDisplayFromJoin(newLead) ?? String(newLead.source_id ?? ''),
                   language: getLanguageDisplayFromJoin(newLead) ?? newLead.language ?? '',
@@ -3995,6 +4033,8 @@ const Clients: React.FC<ClientsProps> = ({
 
                 clientData = {
                   ...leadByManualId,
+                  lead_type: 'new',
+                  linked_master_lead: (leadByManualId as any).linked_master_lead ?? null,
                   category: categoryName,
                   source: getSourceDisplayFromJoin(leadByManualId) ?? String(leadByManualId.source_id ?? ''),
                   language: getLanguageDisplayFromJoin(leadByManualId) ?? leadByManualId.language ?? '',
@@ -4055,24 +4095,29 @@ const Clients: React.FC<ClientsProps> = ({
             // This ensures the master lead button appears while overlay is still showing
             const isLegacyForCalc = normalizedClient.lead_type === 'legacy' || normalizedClient.id?.toString().startsWith('legacy_');
             const clientLeadNumberForCalc = normalizedClient.lead_number ?? '';
+            const hasLinkedMasterLead = normalizedClient.linked_master_lead != null && (typeof normalizedClient.linked_master_lead === 'number' || (typeof normalizedClient.linked_master_lead === 'string' && String(normalizedClient.linked_master_lead).trim() !== ''));
             const calculatedIsSubLead = isLegacyForCalc
-              ? (!!clientLeadNumberForCalc && clientLeadNumberForCalc.includes('/')) || (!!normalizedClient.master_id && String(normalizedClient.master_id).trim() !== '')
-              : (!!normalizedClient.master_id && String(normalizedClient.master_id).trim() !== '');
+              ? (!!clientLeadNumberForCalc && clientLeadNumberForCalc.includes('/')) || (!!normalizedClient.master_id && String(normalizedClient.master_id).trim() !== '') || hasLinkedMasterLead
+              : (!!normalizedClient.master_id && String(normalizedClient.master_id).trim() !== '') || hasLinkedMasterLead;
 
             // Calculate masterLeadNumber immediately if possible
             let calculatedMasterLeadNumber: string | null = null;
             if (calculatedIsSubLead) {
               if (isLegacyForCalc) {
-                // For legacy leads, extract from lead_number pattern or use master_id
+                // For legacy leads, extract from lead_number pattern or use master_id or linked_master_lead
                 if (clientLeadNumberForCalc.includes('/')) {
                   calculatedMasterLeadNumber = clientLeadNumberForCalc.split('/')[0];
                 } else if (normalizedClient.master_id) {
                   calculatedMasterLeadNumber = String(normalizedClient.master_id);
+                } else if (hasLinkedMasterLead) {
+                  calculatedMasterLeadNumber = String(normalizedClient.linked_master_lead);
                 }
               } else {
-                // For new leads, extract from lead_number pattern first (fastest)
+                // For new leads, extract from lead_number pattern first, or use linked_master_lead
                 if (clientLeadNumberForCalc.includes('/')) {
                   calculatedMasterLeadNumber = clientLeadNumberForCalc.split('/')[0];
+                } else if (hasLinkedMasterLead) {
+                  calculatedMasterLeadNumber = String(normalizedClient.linked_master_lead);
                 }
                 // If not in pattern, will be fetched in useEffect (but button can show with pattern-based value)
               }
@@ -5328,6 +5373,8 @@ const Clients: React.FC<ClientsProps> = ({
   };
 
   const closeSchedulePanel = () => {
+    setShowAuthRedirectOption(false);
+    authRedirectParamsRef.current = null;
     setShowScheduleMeetingPanel(false);
     setMeetingFormData({
       date: '',
@@ -5662,21 +5709,29 @@ const Clients: React.FC<ClientsProps> = ({
       // Otherwise, if the chosen location has a default_link, use that as the join URL.
       if (meetingFormData.location === 'Teams') {
         // Create calendar event for all locations in potential clients calendar
-        let accessToken;
+        let accessToken: string | null = null;
         try {
-          const response = await instance.acquireTokenSilent({
-            ...loginRequest,
+          const request = { ...loginRequest, account };
+          accessToken = await getAccessTokenWithFallback(
+            instance,
+            request,
             account,
-          });
-          accessToken = response.accessToken;
-        } catch (error) {
-          if (error instanceof InteractionRequiredAuthError) {
-            // If silent acquisition fails, prompt the user to log in
-            const response = await instance.loginPopup(loginRequest);
-            accessToken = response.accessToken;
-          } else {
-            throw error; // Rethrow other errors
+            () => toast.loading('Signing in to Microsoft...', { duration: 3000 })
+          );
+          if (!accessToken) {
+            toast.error('Redirecting to sign in… If the page did not redirect, use "Sign in (this tab)" when the option appears.', { duration: 8000 });
+            setIsCreatingMeeting(false);
+            return;
           }
+        } catch (error) {
+          if (error instanceof AuthPopupBlockedError) {
+            authRedirectParamsRef.current = { request: { ...loginRequest, account }, account };
+            setShowAuthRedirectOption(true);
+            toast.error((error as Error).message, { duration: 10000 });
+            setIsCreatingMeeting(false);
+            return;
+          }
+          throw error;
         }
 
         // Convert date and time to start/end times
@@ -9128,19 +9183,31 @@ const Clients: React.FC<ClientsProps> = ({
           if (!account) {
             console.warn('⚠️ No Microsoft account found for Teams meeting creation');
           } else {
-            let accessToken;
+            const request = { ...loginRequest, account };
+            let accessToken: string | null = null;
             try {
-              const response = await instance.acquireTokenSilent({ ...loginRequest, account });
-              accessToken = response.accessToken;
-            } catch (error) {
-              if (error instanceof InteractionRequiredAuthError) {
-                const response = await instance.loginPopup(loginRequest);
-                accessToken = response.accessToken;
+              accessToken = await getAccessTokenWithFallback(
+                instance,
+                request,
+                account,
+                () => toast.loading('Signing in to Microsoft...', { duration: 3000 })
+              );
+              if (!accessToken) {
+                toast.error('Redirecting to sign in… Use "Sign in (this tab)" in the drawer if the option appears.', { duration: 8000 });
+                teamsMeetingUrl = '';
+              }
+            } catch (tokenError) {
+              if (tokenError instanceof AuthPopupBlockedError) {
+                authRedirectParamsRef.current = { request, account };
+                setShowAuthRedirectOption(true);
+                toast.error((tokenError as Error).message, { duration: 10000 });
+                teamsMeetingUrl = '';
               } else {
-                throw error;
+                throw tokenError;
               }
             }
 
+            if (accessToken) {
             // Convert date and time to start/end times
             const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
             const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
@@ -9181,6 +9248,7 @@ const Clients: React.FC<ClientsProps> = ({
             // #region agent log
             fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:8390', message: 'Reschedule: Teams meeting URL assigned', data: { teamsMeetingUrl }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'H' }) }).catch(() => { });
             // #endregion
+            }
           }
         } catch (teamsError) {
           console.error('❌ Reschedule: Failed to create Teams meeting URL before insert:', teamsError);
@@ -10678,18 +10746,33 @@ const Clients: React.FC<ClientsProps> = ({
   const clientLeadNumber = useMemo(() => selectedClient?.lead_number ?? '', [selectedClient?.lead_number]);
 
   // Check if it's a sub-lead based on lead type
-  // For legacy leads: check both lead_number pattern AND master_id
-  // For new leads: check master_id (memoized to prevent recalculation)
+  // For legacy leads: check lead_number pattern, master_id, or linked_master_lead
+  // For new leads: check master_id or linked_master_lead
+  const hasLinkedMasterLead = selectedClient?.linked_master_lead != null && (typeof selectedClient.linked_master_lead === 'number' || (typeof selectedClient.linked_master_lead === 'string' && String(selectedClient.linked_master_lead).trim() !== ''));
   const isSubLead = useMemo(() => {
     return isLegacyLead
-      ? (!!clientLeadNumber && clientLeadNumber.includes('/')) || (!!selectedClient?.master_id && String(selectedClient.master_id).trim() !== '')
-      : (!!selectedClient?.master_id && String(selectedClient.master_id).trim() !== '');
-  }, [isLegacyLead, clientLeadNumber, selectedClient?.master_id]);
+      ? (!!clientLeadNumber && clientLeadNumber.includes('/')) || (!!selectedClient?.master_id && String(selectedClient.master_id).trim() !== '') || !!hasLinkedMasterLead
+      : (!!selectedClient?.master_id && String(selectedClient.master_id).trim() !== '') || !!hasLinkedMasterLead;
+  }, [isLegacyLead, clientLeadNumber, selectedClient?.master_id, hasLinkedMasterLead]);
 
   // Fetch master lead number for new leads
   useEffect(() => {
-    if (!isSubLead || isLegacyLead || !selectedClient?.master_id) {
-      // Only clear if we haven't already set it from pattern extraction
+    if (!isSubLead || isLegacyLead) {
+      const clientLeadNum = selectedClient?.lead_number ?? '';
+      if (!clientLeadNum.includes('/')) {
+        setMasterLeadNumberForNewLead(null);
+      }
+      return;
+    }
+
+    // New lead sublead with linked_master_lead only (no master_id): use it as master lead number
+    const hasLinked = selectedClient?.linked_master_lead != null && (typeof selectedClient.linked_master_lead === 'string' ? String(selectedClient.linked_master_lead).trim() !== '' : true);
+    if (hasLinked && (!selectedClient?.master_id || String(selectedClient.master_id).trim() === '')) {
+      setMasterLeadNumberForNewLead(String(selectedClient.linked_master_lead));
+      return;
+    }
+
+    if (!selectedClient?.master_id) {
       const clientLeadNum = selectedClient?.lead_number ?? '';
       if (!clientLeadNum.includes('/')) {
         setMasterLeadNumberForNewLead(null);
@@ -10780,12 +10863,11 @@ const Clients: React.FC<ClientsProps> = ({
     };
 
     fetchMasterLeadNumber();
-  }, [isSubLead, isLegacyLead, selectedClient?.master_id]);
+  }, [isSubLead, isLegacyLead, selectedClient?.master_id, selectedClient?.linked_master_lead]);
 
-  // Fetch master lead number for legacy leads with master_id (not lead_number pattern)
+  // Fetch master lead number for legacy leads with master_id or linked_master_lead (not lead_number pattern)
   useEffect(() => {
-    if (!isSubLead || !isLegacyLead || !selectedClient?.master_id) {
-      // Only clear if we haven't already set it from pattern extraction
+    if (!isSubLead || !isLegacyLead) {
       const clientLeadNum = selectedClient?.lead_number ?? '';
       if (!clientLeadNum.includes('/')) {
         setMasterLeadNumberForLegacy(null);
@@ -10793,14 +10875,21 @@ const Clients: React.FC<ClientsProps> = ({
       return;
     }
 
-    // If we already have a value from pattern extraction, skip fetching
     const clientLeadNum = selectedClient?.lead_number ?? '';
     if (clientLeadNum.includes('/')) {
-      // Pattern-based value already set in fetchEssentialData, skip database fetch
+      setMasterLeadNumberForLegacy(clientLeadNum.split('/')[0]);
       return;
     }
 
-    // If lead_number doesn't contain '/', we need to fetch the master lead's lead_number
+    // Linked-only sublead (linked_master_lead set, no master_id): use it directly as master lead number
+    if (selectedClient?.linked_master_lead != null && (!selectedClient?.master_id || String(selectedClient.master_id).trim() === '')) {
+      setMasterLeadNumberForLegacy(String(selectedClient.linked_master_lead));
+      return;
+    }
+
+    if (!selectedClient?.master_id) return;
+
+    // If lead_number doesn't contain '/', fetch the master lead number (master_id is set)
     if (!clientLeadNumber.includes('/')) {
       const fetchMasterLeadNumber = async () => {
         try {
@@ -10824,7 +10913,7 @@ const Clients: React.FC<ClientsProps> = ({
       // If lead_number contains '/', extract it from the pattern
       setMasterLeadNumberForLegacy(clientLeadNumber.split('/')[0]);
     }
-  }, [isSubLead, isLegacyLead, selectedClient?.master_id, clientLeadNumber]);
+  }, [isSubLead, isLegacyLead, selectedClient?.master_id, selectedClient?.linked_master_lead, clientLeadNumber]);
 
   // Memoize master lead number calculation
   const masterLeadNumber = useMemo(() => {
@@ -10974,8 +11063,47 @@ const Clients: React.FC<ClientsProps> = ({
     const allSubLeads: any[] = [];
 
     try {
+      // For legacy leads: fetch subleads by master_id and by linked_master_lead
+      if (isLegacyLead && baseLeadId) {
+        const masterNumericId = parseInt(baseLeadId, 10);
+        if (!Number.isNaN(masterNumericId)) {
+          // Subleads with master_id = this legacy lead
+          const { data: byMasterId, error: err1 } = await supabase
+            .from('leads_lead')
+            .select('id, name, stage, manual_id, master_id')
+            .eq('master_id', masterNumericId)
+            .not('master_id', 'is', null)
+            .order('id', { ascending: true });
+          if (!err1 && byMasterId?.length) {
+            allSubLeads.push(...byMasterId);
+          }
+          // Subleads linked only via linked_master_lead (no master_id or different)
+          const { data: byLinkedMaster, error: err2 } = await supabase
+            .from('leads_lead')
+            .select('id, name, stage, manual_id, master_id, linked_master_lead')
+            .eq('linked_master_lead', masterNumericId)
+            .order('id', { ascending: true });
+          if (!err2 && byLinkedMaster?.length) {
+            const existingIds = new Set(allSubLeads.map((s: any) => s.id));
+            byLinkedMaster.forEach((row: any) => {
+              if (!existingIds.has(row.id)) {
+                existingIds.add(row.id);
+                allSubLeads.push(row);
+              }
+            });
+          }
+          if (allSubLeads.length > 0) {
+            setSubLeads(allSubLeads);
+            setIsMasterLead(true);
+            return allSubLeads;
+          }
+        }
+        setSubLeads([]);
+        setIsMasterLead(false);
+        return [];
+      }
+
       // For new leads, use the baseLeadId we already found (UUID) or try to find it
-      // For legacy leads, we'll query by master_id (numeric)
       if (!isLegacyLead) {
         let masterLeadId: string | null = baseLeadId;
 
@@ -11055,6 +11183,25 @@ const Clients: React.FC<ClientsProps> = ({
           }
         } else {
           console.log('🔍 Clients.tsx - masterLeadId is null, cannot query subleads');
+        }
+
+        // New leads linked only via linked_master_lead (no master_id)
+        const linkedBaseValues = [normalizedBase.replace(/^[LC]/i, ''), normalizedBase].filter((v, i, a) => v && a.indexOf(v) === i);
+        if (linkedBaseValues.length > 0) {
+          const { data: byLinkedNew, error: errLinked } = await supabase
+            .from('leads')
+            .select('id, name, stage, manual_id, master_id, lead_number')
+            .in('linked_master_lead', linkedBaseValues)
+            .order('lead_number', { ascending: true });
+          if (!errLinked && byLinkedNew?.length) {
+            const existingIds = new Set(allSubLeads.map((s: any) => s.id));
+            byLinkedNew.forEach((row: any) => {
+              if (!existingIds.has(row.id)) {
+                existingIds.add(row.id);
+                allSubLeads.push(row);
+              }
+            });
+          }
         }
 
         // Also fetch new leads with pattern matching (for backward compatibility)
@@ -11281,46 +11428,55 @@ const Clients: React.FC<ClientsProps> = ({
         let count = 0;
 
         if (isLegacyLead) {
-          // For legacy leads, count sub-leads in leads_lead table
+          // For legacy leads, count sub-leads (master_id) + linked-only (linked_master_lead) in leads_lead
           const masterId = parseInt(masterLeadNumber.replace(/^C/, ''), 10);
           if (!isNaN(masterId)) {
-            const { count: subLeadsCount, error } = await supabase
-              .from('leads_lead')
-              .select('id', { count: 'exact', head: true })
-              .eq('master_id', masterId)
-              .not('master_id', 'is', null);
-
-            if (error) {
-              console.error('Error counting legacy sub-leads:', error);
-            } else {
-              count = subLeadsCount || 0;
-              if (CLIENTS_DEBUG) console.log('🔍 Master sub-leads count (legacy):', { masterId, count });
-            }
+            const [{ count: subLeadsCount, error: err1 }, { count: linkedCount, error: err2 }] = await Promise.all([
+              supabase
+                .from('leads_lead')
+                .select('id', { count: 'exact', head: true })
+                .eq('master_id', masterId)
+                .not('master_id', 'is', null),
+              supabase
+                .from('leads_lead')
+                .select('id', { count: 'exact', head: true })
+                .eq('linked_master_lead', masterId),
+            ]);
+            if (!err1) count += subLeadsCount || 0;
+            if (!err2) count += linkedCount || 0;
+            if (err1) console.error('Error counting legacy sub-leads:', err1);
+            if (err2) console.error('Error counting legacy linked_master_lead:', err2);
+            if (CLIENTS_DEBUG) console.log('🔍 Master sub-leads count (legacy):', { masterId, count });
           }
         } else {
-          // For new leads, count sub-leads in leads table
-          // Use master_id directly from selectedClient (most reliable approach)
+          // For new leads, count sub-leads (master_id) + linked-only (linked_master_lead) in leads table
+          const normalizedBase = (masterLeadNumber || '').replace(/^[LC]/i, '').trim();
           if (selectedClient?.master_id) {
             const masterId = selectedClient.master_id.toString();
             // Check if it's a UUID (new lead) or numeric ID (legacy)
             if (masterId && !masterId.startsWith('legacy_')) {
-              // Directly count sub-leads using master_id
-              const { count: subLeadsCount, error } = await supabase
-                .from('leads')
-                .select('id', { count: 'exact', head: true })
-                .eq('master_id', masterId);
-
-              if (error) {
-                console.error('Error counting new sub-leads:', error);
-              } else {
-                count = subLeadsCount || 0;
-                if (CLIENTS_DEBUG) console.log('🔍 Master sub-leads count (new, using master_id):', {
-                  masterId,
-                  masterLeadNumber,
-                  count,
-                  selectedClientId: selectedClient?.id
-                });
-              }
+              const [{ count: subLeadsCount, error: err1 }, { count: linkedCount, error: err2 }] = await Promise.all([
+                supabase
+                  .from('leads')
+                  .select('id', { count: 'exact', head: true })
+                  .eq('master_id', masterId),
+                normalizedBase
+                  ? supabase
+                      .from('leads')
+                      .select('id', { count: 'exact', head: true })
+                      .eq('linked_master_lead', normalizedBase)
+                  : { count: 0, error: null as any },
+              ]);
+              if (!err1) count += subLeadsCount || 0;
+              if (normalizedBase && !err2) count += linkedCount || 0;
+              if (err1) console.error('Error counting new sub-leads:', err1);
+              if (err2) console.error('Error counting new linked_master_lead:', err2);
+              if (CLIENTS_DEBUG) console.log('🔍 Master sub-leads count (new, using master_id):', {
+                masterId,
+                masterLeadNumber,
+                count,
+                selectedClientId: selectedClient?.id
+              });
             } else {
               console.warn('🔍 Master ID is legacy or invalid:', masterId);
             }
@@ -11363,21 +11519,28 @@ const Clients: React.FC<ClientsProps> = ({
             }
 
             if (masterLead?.id) {
-              const { count: subLeadsCount, error } = await supabase
-                .from('leads')
-                .select('id', { count: 'exact', head: true })
-                .eq('master_id', masterLead.id);
-
-              if (error) {
-                console.error('Error counting new sub-leads (fallback):', error);
-              } else {
-                count = subLeadsCount || 0;
-                if (CLIENTS_DEBUG) console.log('🔍 Master sub-leads count (new, fallback):', {
-                  masterLeadId: masterLead.id,
-                  masterLeadNumber,
-                  count
-                });
-              }
+              const baseForLinked = (masterLeadNumber || '').replace(/^[LC]/i, '').trim();
+              const [{ count: subLeadsCount, error: err1 }, { count: linkedCount, error: err2 }] = await Promise.all([
+                supabase
+                  .from('leads')
+                  .select('id', { count: 'exact', head: true })
+                  .eq('master_id', masterLead.id),
+                baseForLinked
+                  ? supabase
+                      .from('leads')
+                      .select('id', { count: 'exact', head: true })
+                      .eq('linked_master_lead', baseForLinked)
+                  : { count: 0, error: null as any },
+              ]);
+              if (!err1) count += subLeadsCount || 0;
+              if (baseForLinked && !err2) count += linkedCount || 0;
+              if (err1) console.error('Error counting new sub-leads (fallback):', err1);
+              if (err2) console.error('Error counting new linked_master_lead (fallback):', err2);
+              if (CLIENTS_DEBUG) console.log('🔍 Master sub-leads count (new, fallback):', {
+                masterLeadId: masterLead.id,
+                masterLeadNumber,
+                count
+              });
             } else {
               console.warn('🔍 Could not find master lead for:', {
                 masterLeadNumber,
@@ -11396,7 +11559,7 @@ const Clients: React.FC<ClientsProps> = ({
     };
 
     fetchMasterSubLeadsCount();
-  }, [isSubLead, masterLeadNumber, selectedClient?.id, selectedClient?.lead_type, selectedClient?.master_id]);
+  }, [isSubLead, masterLeadNumber, selectedClient?.id, selectedClient?.lead_type, selectedClient?.master_id, selectedClient?.linked_master_lead]);
 
   // Fetch sub-leads when client changes
   useEffect(() => {
@@ -14246,6 +14409,7 @@ const Clients: React.FC<ClientsProps> = ({
             getEmployeeDisplayName={getEmployeeDisplayName}
             allEmployees={allEmployees}
             dropdownItems={dropdownItems}
+            onCombineLeads={(!isSubLead && !isMasterLead && !hasLinkedMasterLead) ? () => setCombineLeadsModalOpen(true) : undefined}
             handlePaymentReceivedNewClient={handlePaymentReceivedNewClient}
             handleScheduleMenuClick={handleScheduleMenuClick}
             handleStageUpdate={handleStageUpdate}
@@ -14852,6 +15016,25 @@ const Clients: React.FC<ClientsProps> = ({
               />
               {/* Panel */}
               <div className="ml-auto w-full md:max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
+                {showAuthRedirectOption && (
+                  <div className="bg-amber-50 border-b border-amber-200 px-4 py-3 flex flex-col gap-2">
+                    <p className="text-sm text-amber-800">Sign-in was blocked. Use the button below to sign in in this tab, then try again.</p>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-warning"
+                      onClick={async () => {
+                        const params = authRedirectParamsRef.current;
+                        if (!params) return;
+                        setShowAuthRedirectOption(false);
+                        authRedirectParamsRef.current = null;
+                        toast.loading('Redirecting to Microsoft sign-in… Create the meeting again after you return.', { duration: 5000 });
+                        await triggerTokenRedirect(instance, params.request, params.account);
+                      }}
+                    >
+                      Sign in (this tab)
+                    </button>
+                  </div>
+                )}
                 {/* Fixed Header */}
                 <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
                   <h3 className="text-2xl font-bold">Schedule Meeting</h3>
@@ -16127,6 +16310,25 @@ const Clients: React.FC<ClientsProps> = ({
             loginRequest={loginRequest}
             onOfferSent={onClientUpdate}
           />
+          <CombineLeadsModal
+            isOpen={combineLeadsModalOpen}
+            onClose={() => setCombineLeadsModalOpen(false)}
+            currentLead={
+              selectedClient
+                ? {
+                    id: String(selectedClient.id ?? ''),
+                    lead_number: selectedClient.lead_number ?? undefined,
+                    lead_type:
+                      selectedClient.lead_type === 'legacy' || String(selectedClient.id ?? '').startsWith('legacy_')
+                        ? 'legacy'
+                        : 'new',
+                  }
+                : null
+            }
+            onSuccess={() => {
+              if (selectedClient?.id) refreshClientData(selectedClient.id);
+            }}
+          />
           {showSubLeadDrawer && (
             <div className="fixed inset-0 z-50 flex">
               <div
@@ -17028,6 +17230,8 @@ const Clients: React.FC<ClientsProps> = ({
               <div
                 className="fixed inset-0 bg-black/30"
                 onClick={() => {
+                  setShowAuthRedirectOption(false);
+                  authRedirectParamsRef.current = null;
                   setShowRescheduleDrawer(false);
                   setNotifyClientOnReschedule(false); // Reset to default
                   setMeetingToDelete(null);
@@ -17037,12 +17241,33 @@ const Clients: React.FC<ClientsProps> = ({
                 }}
               />
               <div className="ml-auto w-full md:max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
+                {showAuthRedirectOption && (
+                  <div className="bg-amber-50 border-b border-amber-200 px-4 py-3 flex flex-col gap-2">
+                    <p className="text-sm text-amber-800">Sign-in was blocked. Use the button below to sign in in this tab, then try again.</p>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-warning"
+                      onClick={async () => {
+                        const params = authRedirectParamsRef.current;
+                        if (!params) return;
+                        setShowAuthRedirectOption(false);
+                        authRedirectParamsRef.current = null;
+                        toast.loading('Redirecting to Microsoft sign-in… Complete reschedule again after you return.', { duration: 5000 });
+                        await triggerTokenRedirect(instance, params.request, params.account);
+                      }}
+                    >
+                      Sign in (this tab)
+                    </button>
+                  </div>
+                )}
                 {/* Fixed Header */}
                 <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
                   <h3 className="text-2xl font-bold">Reschedule Meeting</h3>
                   <button
                     className="btn btn-ghost btn-sm"
                     onClick={() => {
+                      setShowAuthRedirectOption(false);
+                      authRedirectParamsRef.current = null;
                       setShowRescheduleDrawer(false);
                       setNotifyClientOnReschedule(false); // Reset to default
                       setMeetingToDelete(null);

@@ -27,6 +27,8 @@ export interface SubLead {
   master_id?: string;
   isMaster?: boolean;
   route?: string;
+  /** True when lead is in chain only via linked_master_lead (display actual lead number, not master/suffix) */
+  isLinkedOnly?: boolean;
 }
 
 export interface ContractData {
@@ -171,6 +173,9 @@ export const fetchNewMasterLead = async (
   setContractsDataMap: (updater: (prev: Map<string, ContractData>) => Map<string, ContractData>) => void
 ): Promise<{ success: boolean; masterLead?: any; subLeads?: SubLead[]; error?: string }> => {
   try {
+    // Normalized base for linked_master_lead (we save without L/C prefix in linkLeadToChain)
+    const normalizedBaseForLinked = normalizeBaseLeadNumber(baseLeadNumber);
+
     // First, try to find master lead with exact match
     let { data: masterLead, error: masterError } = await supabase
       .from('leads')
@@ -213,11 +218,29 @@ export const fetchNewMasterLead = async (
     }
 
     // Filter out the master lead itself from sub-leads if it appears (shouldn't happen, but just in case)
-    const filteredSubLeads = subLeadsData?.filter(lead => {
+    const filteredSubLeadsFromPattern = subLeadsData?.filter(lead => {
       const leadNum = String(lead.lead_number || '');
       // Exclude the exact baseLeadNumber match (master lead)
       return leadNum !== baseLeadNumber;
     }) || [];
+
+    // Also include new leads and legacy leads that point to this master via linked_master_lead (text: "L210292" or "210292").
+    const linkedMasterValues = [normalizedBaseForLinked, baseLeadNumber].filter(Boolean);
+    const [
+      { data: linkedSubLeadsData },
+      { data: linkedLegacyToNewData }
+    ] = await Promise.all([
+      supabase.from('leads').select('*').in('linked_master_lead', linkedMasterValues),
+      supabase.from('leads_lead').select('*, accounting_currencies!leads_lead_currency_id_fkey (name, iso_code)').in('linked_master_lead', linkedMasterValues)
+    ]);
+
+    const linkedSubLeads = (linkedSubLeadsData || []).filter((lead: any) => {
+      if (!lead || !lead.id) return false;
+      if (masterLead?.id && String(lead.id) === String(masterLead.id)) return false;
+      return !filteredSubLeadsFromPattern.some((existing: any) => String(existing.id) === String(lead.id));
+    });
+
+    const filteredSubLeads = [...filteredSubLeadsFromPattern, ...linkedSubLeads];
 
     const leadIdsForContacts = [
       masterLead?.id,
@@ -427,10 +450,14 @@ export const fetchNewMasterLead = async (
 
     const processedSubLeads: SubLead[] = [];
 
-    const formatNewLead = (lead: any, isMaster: boolean, hasSubLeads: boolean = false): SubLead => {
+    const formatNewLead = (lead: any, isMaster: boolean, hasSubLeads: boolean = false, isLinkedOnly: boolean = false): SubLead => {
       let leadNumberValue = lead.lead_number || baseLeadNumber;
       if (isMaster && hasSubLeads && !leadNumberValue.includes('/')) {
         leadNumberValue = `${leadNumberValue}/1`;
+      }
+      // Linked-only leads: show actual lead number (no master/suffix)
+      if (isLinkedOnly && lead.lead_number) {
+        leadNumberValue = lead.lead_number;
       }
       const manualValue = lead.manual_id ? String(lead.manual_id) : undefined;
       // For new leads: use balance first, then proposal_total (same logic as Clients.tsx)
@@ -557,17 +584,57 @@ export const fetchNewMasterLead = async (
         handler_id: finalHandlerId,
         master_id: lead.master_id || baseLeadNumber,
         isMaster,
+        isLinkedOnly: isLinkedOnly || undefined,
         route: buildClientRoute(manualValue, routeLeadNumber),
       };
     };
 
     const hasSubLeads = filteredSubLeads && filteredSubLeads.length > 0;
-    processedSubLeads.push(formatNewLead(masterLead, true, hasSubLeads));
-    filteredSubLeads.forEach((lead: any) => processedSubLeads.push(formatNewLead(lead, false, false)));
+    processedSubLeads.push(formatNewLead(masterLead, true, hasSubLeads, false));
+    filteredSubLeads.forEach((lead: any) => {
+      const linkedOnly = !!(lead.linked_master_lead != null && String(lead.linked_master_lead).trim() !== '');
+      processedSubLeads.push(formatNewLead(lead, false, false, linkedOnly));
+    });
 
+    // Legacy leads linked to this new master (cross-save: legacy sublead → new master)
+    (linkedLegacyToNewData || []).forEach((lead: any) => {
+      if (!lead || lead.id == null) return;
+      const currencyInfo = getCurrencyInfo(lead);
+      processedSubLeads.push({
+        id: `legacy_${lead.id}`,
+        lead_number: String(lead.id),
+        actual_lead_id: String(lead.id),
+        isLinkedOnly: true,
+        manual_id: lead.manual_id,
+        name: lead.name || 'Unknown',
+        total: getLegacyLeadTotal(lead),
+        currency: currencyInfo.currency,
+        currency_symbol: currencyInfo.symbol,
+        category: getCategoryName(lead.category_id, categories || []),
+        topic: lead.topic || null,
+        stage: String(lead.stage ?? ''),
+        contact: lead.name || '---',
+        applicants: parseInt(lead.no_of_applicants) || 0,
+        agreement: null,
+        scheduler: '---',
+        scheduler_id: lead.meeting_scheduler_id,
+        closer: '---',
+        closer_id: lead.closer_id,
+        handler: '---',
+        handler_id: lead.case_handler_id,
+        master_id: lead.master_id,
+        isMaster: false,
+        route: `/clients/${lead.id}`,
+      });
+    });
+
+    // Order: master first, then traditional subleads (6/1, 6/2, ...), then linked-only leads at the bottom
     processedSubLeads.sort((a, b) => {
       if (a.isMaster && !b.isMaster) return -1;
       if (!a.isMaster && b.isMaster) return 1;
+      if (a.isLinkedOnly && !b.isLinkedOnly) return 1;
+      if (!a.isLinkedOnly && b.isLinkedOnly) return -1;
+      if (a.isLinkedOnly && b.isLinkedOnly) return String(a.lead_number).localeCompare(String(b.lead_number));
       const extractOrder = (leadNumber: string) => {
         const parts = leadNumber.split('/');
         const lastPart = parts[parts.length - 1];
@@ -681,7 +748,51 @@ export const fetchLegacyMasterLead = async (
         .select('id, display_name')
     ]);
 
-    const allLeadIds = [masterLead?.id, ...(subLeadsData?.map(lead => lead.id) || [])].filter(Boolean);
+    // Also include legacy leads linked via linked_master_lead (column is text: legacy id or new lead number)
+    const masterLegacyId = masterLead?.id != null ? Number(masterLead.id) : Number(legacyId);
+    const masterLegacyIdStr = String(masterLegacyId);
+    const { data: linkedLegacyData, error: linkedLegacyError } = await supabase
+      .from('leads_lead')
+      .select(`
+          id, name, total, total_base, stage, manual_id, master_id, linked_master_lead,
+          category_id,
+          topic,
+          meeting_scheduler_id,
+          closer_id,
+          case_handler_id,
+          retainer_handler_id,
+          docs_url,
+          currency_id,
+          no_of_applicants,
+          accounting_currencies!leads_lead_currency_id_fkey (
+            name,
+            iso_code
+          ),
+          scheduler:tenants_employee!meeting_scheduler_id (
+            display_name
+          ),
+          closer:tenants_employee!closer_id (
+            display_name
+          ),
+          handler:tenants_employee!case_handler_id (
+            display_name
+          )
+        `)
+      .eq('linked_master_lead', masterLegacyIdStr);
+
+    // New leads linked to this legacy master (linked_master_lead = legacy id as text)
+    const { data: linkedNewToLegacyData } = await supabase
+      .from('leads')
+      .select('*')
+      .eq('linked_master_lead', masterLegacyIdStr);
+
+    const existingIds = new Set((subLeadsData || []).map((l: any) => l.id));
+    const linkedLegacySubLeads = (linkedLegacyData || []).filter(
+      (l: any) => l?.id != null && !existingIds.has(l.id)
+    );
+    const allLegacySubLeads = [...(subLeadsData || []), ...linkedLegacySubLeads];
+
+    const allLeadIds = [masterLead?.id, ...allLegacySubLeads.map(lead => lead.id)].filter(Boolean);
 
     // Fetch main contacts for legacy leads
     const legacyMainContactsMap = new Map<number, number>(); // leadId -> mainContactId
@@ -885,7 +996,7 @@ export const fetchLegacyMasterLead = async (
     const processedSubLeads: SubLead[] = [];
 
     if (masterLead) {
-      const hasSubLeads = subLeadsData && subLeadsData.length > 0;
+      const hasSubLeads = allLegacySubLeads.length > 0;
       const formattedLeadNumber = formatLegacyLeadNumber(masterLead, undefined, hasSubLeads);
       const displayNumber = masterLead.stage === 100 ? `C${formattedLeadNumber}` : formattedLeadNumber;
       const currencyInfo = getCurrencyInfo(masterLead);
@@ -926,20 +1037,29 @@ export const fetchLegacyMasterLead = async (
       });
     }
 
-    if (subLeadsData) {
-      const subLeadsWithSuffix = subLeadsData.map((lead) => {
+    if (allLegacySubLeads.length > 0) {
+      const masterIdSubLeadsCount = (subLeadsData || []).length;
+      let linkedOnlySuffix = masterIdSubLeadsCount + 2;
+
+      const subLeadsWithSuffix = allLegacySubLeads.map((lead: any) => {
+        const isLinkedOnly = lead.linked_master_lead != null && (lead.master_id == null || String(lead.master_id).trim() === '');
+        if (isLinkedOnly) {
+          const suffix = linkedOnlySuffix++;
+          return { lead, subLeadSuffix: suffix, displayAsId: false };
+        }
         let subLeadSuffix: number | undefined;
         if (lead.master_id) {
-          const sameMasterLeads = subLeadsData.filter(l => l.master_id === lead.master_id);
-          const sortedSameMaster = [...sameMasterLeads].sort((a, b) => a.id - b.id);
-          const currentIndex = sortedSameMaster.findIndex(l => l.id === lead.id);
+          const sameMasterLeads = allLegacySubLeads.filter((l: any) => l.master_id === lead.master_id);
+          const sortedSameMaster = [...sameMasterLeads].sort((a: any, b: any) => a.id - b.id);
+          const currentIndex = sortedSameMaster.findIndex((l: any) => l.id === lead.id);
           subLeadSuffix = currentIndex >= 0 ? currentIndex + 2 : sameMasterLeads.length + 2;
         }
-        return { lead, subLeadSuffix };
+        return { lead, subLeadSuffix, displayAsId: false };
       });
 
-      subLeadsWithSuffix.forEach(({ lead, subLeadSuffix }) => {
-        const formattedLeadNumber = formatLegacyLeadNumber(lead, subLeadSuffix, false);
+      subLeadsWithSuffix.forEach(({ lead, subLeadSuffix, displayAsId }: { lead: any; subLeadSuffix?: number; displayAsId: boolean }) => {
+        const isLinkedOnly = lead.linked_master_lead != null && (lead.master_id == null || String(lead.master_id).trim() === '');
+        const formattedLeadNumber = isLinkedOnly ? String(lead.id) : formatLegacyLeadNumber(lead, subLeadSuffix, false);
         const displayNumber = lead.stage === 100 ? `C${formattedLeadNumber}` : formattedLeadNumber;
         const currencyInfo = getCurrencyInfo(lead);
 
@@ -947,6 +1067,7 @@ export const fetchLegacyMasterLead = async (
           id: `legacy_${lead.id}`,
           lead_number: displayNumber,
           actual_lead_id: String(lead.id),
+          isLinkedOnly: isLinkedOnly || undefined,
           manual_id: lead.manual_id,
           name: lead.name || 'Unknown',
           total: getLegacyLeadTotal(lead),
@@ -980,9 +1101,48 @@ export const fetchLegacyMasterLead = async (
       });
     }
 
+    // New leads linked to this legacy master (cross-save: new sublead → legacy master)
+    (linkedNewToLegacyData || []).forEach((lead: any) => {
+      if (!lead?.id) return;
+      const totalRaw = lead.balance ?? lead.proposal_total ?? 0;
+      const totalValue = typeof totalRaw === 'number' ? totalRaw : parseFloat(String(totalRaw)) || 0;
+      const currencyCode = (lead.balance_currency || lead.currency || 'NIS') as string;
+      const leadNum = lead.lead_number || String(lead.id);
+      processedSubLeads.push({
+        id: String(lead.id),
+        lead_number: leadNum,
+        actual_lead_id: leadNum,
+        manual_id: lead.manual_id,
+        name: lead.name || 'Unknown',
+        total: totalValue,
+        currency: currencyCode,
+        currency_symbol: getCurrencySymbol(currencyCode),
+        category: getCategoryName(lead.category_id, categories || []),
+        topic: lead.topic || null,
+        stage: String(lead.stage ?? ''),
+        contact: lead.name || '---',
+        applicants: Number(lead.number_of_applicants_meeting ?? lead.number_of_applicants ?? lead.applicants ?? 0) || 0,
+        agreement: null,
+        scheduler: '---',
+        scheduler_id: undefined,
+        closer: '---',
+        closer_id: undefined,
+        handler: '---',
+        handler_id: undefined,
+        master_id: undefined,
+        isMaster: false,
+        isLinkedOnly: true,
+        route: `/clients/${lead.lead_number || lead.id}`,
+      });
+    });
+
+    // Order: master first, then traditional subleads (by suffix), then linked-only leads at the bottom
     processedSubLeads.sort((a, b) => {
       if (a.isMaster && !b.isMaster) return -1;
       if (!a.isMaster && b.isMaster) return 1;
+      if (a.isLinkedOnly && !b.isLinkedOnly) return 1;
+      if (!a.isLinkedOnly && b.isLinkedOnly) return -1;
+      if (a.isLinkedOnly && b.isLinkedOnly) return String(a.lead_number).localeCompare(String(b.lead_number));
       const getNumericPart = (leadNumber: string) => {
         const cleanNumber = leadNumber.replace(/^C/, '');
         const parts = cleanNumber.split('/');
@@ -998,3 +1158,149 @@ export const fetchLegacyMasterLead = async (
     return { success: false, error: 'An unexpected error occurred while fetching data' };
   }
 };
+
+/**
+ * Normalize base lead number to the numeric base only (e.g. "6/1" or "L6/1" -> "6")
+ * so that "existing" query matches all subleads (6/1, 6/2, ...) and nextSuffix is correct.
+ */
+function normalizeBaseLeadNumber(baseLeadNumber: string): string {
+  const trimmed = (baseLeadNumber || '').trim().replace(/^[LC]/i, '');
+  const firstSegment = trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
+  return firstSegment || baseLeadNumber;
+}
+
+/**
+ * Link an existing lead (new or legacy) to a master-lead chain using the linked_master_lead column.
+ * Both leads and leads_lead use linked_master_lead as TEXT so we can cross-save:
+ * - Legacy master: store master id as string (e.g. "191799").
+ * - New master: store master lead_number as string (e.g. "L210292").
+ */
+export async function linkLeadToChain(
+  leadId: string,
+  leadType: 'new' | 'legacy',
+  baseLeadNumber: string,
+  isLegacyChain: boolean,
+  masterLeadInfo?: { id?: number | string } | null
+): Promise<{ success: boolean; nextSuffix?: number; error?: string }> {
+  try {
+    const base = normalizeBaseLeadNumber(baseLeadNumber);
+    if (!base) {
+      return { success: false, error: 'Invalid base lead number' };
+    }
+
+    // Value to save in linked_master_lead (always text): legacy master id as string, or new master lead_number
+    const legacyMasterId = isLegacyChain && (masterLeadInfo?.id != null ? Number(masterLeadInfo.id) : parseInt(base, 10));
+    const legacyMasterValue = !Number.isNaN(legacyMasterId) ? String(legacyMasterId) : null;
+    const newMasterLeadNumber = (baseLeadNumber || '').trim();
+
+    if (leadType === 'legacy') {
+      // Sublead is legacy: update leads_lead. linked_master_lead is text (legacy id or new lead number).
+      const legacyLeadId = leadId.replace(/^legacy_/, '');
+      const numericLeadId = parseInt(legacyLeadId, 10);
+      if (Number.isNaN(numericLeadId)) {
+        return { success: false, error: 'Invalid legacy lead id' };
+      }
+      const valueToSave = isLegacyChain ? legacyMasterValue : newMasterLeadNumber;
+      if (valueToSave == null || valueToSave === '') {
+        return { success: false, error: isLegacyChain ? 'Invalid master lead id' : 'Invalid master lead number' };
+      }
+      const { error } = await supabase
+        .from('leads_lead')
+        .update({ linked_master_lead: valueToSave })
+        .eq('id', numericLeadId);
+      if (error) {
+        console.error('Error linking legacy lead to chain via linked_master_lead:', error);
+        return { success: false, error: error.message };
+      }
+      return { success: true };
+    }
+
+    // Sublead is new: update leads table. linked_master_lead is text (legacy id or new lead number).
+    const valueToSave = isLegacyChain ? legacyMasterValue : newMasterLeadNumber;
+    if (valueToSave == null || valueToSave === '') {
+      return { success: false, error: isLegacyChain ? 'Invalid master lead id' : 'Invalid master lead number' };
+    }
+    const { error: subError } = await supabase
+      .from('leads')
+      .update({ linked_master_lead: valueToSave })
+      .eq('id', leadId);
+    if (subError) {
+      console.error('Error linking new lead to chain via linked_master_lead:', subError);
+      return { success: false, error: subError.message };
+    }
+
+    // If master is new: set master row's linked_master_lead to its own lead number (chain root).
+    if (!isLegacyChain) {
+      const masterIdRaw = masterLeadInfo?.id;
+      const isUuid = typeof masterIdRaw === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(masterIdRaw);
+      let masterRowId: string | null = isUuid && masterIdRaw ? String(masterIdRaw) : null;
+      if (!masterRowId) {
+        const linkedMasterValues = [newMasterLeadNumber, base, `${newMasterLeadNumber}/1`, `${base}/1`].filter(Boolean);
+        const uniqueValues = [...new Set(linkedMasterValues)];
+        const { data: masterRows } = await supabase
+          .from('leads')
+          .select('id')
+          .in('lead_number', uniqueValues)
+          .limit(1);
+        masterRowId = masterRows?.[0]?.id ? String(masterRows[0].id) : null;
+      }
+      if (masterRowId) {
+        const { error: masterError } = await supabase
+          .from('leads')
+          .update({ linked_master_lead: newMasterLeadNumber })
+          .eq('id', masterRowId);
+        if (masterError) {
+          console.error('Error setting master linked_master_lead:', masterError);
+        }
+      }
+    }
+    return { success: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to link lead to chain';
+    console.error('linkLeadToChain error:', err);
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Break the link for one or more linked-only leads (clear linked_master_lead).
+ * Only affects leads that were linked via linked_master_lead; does not change sublead (master_id) logic.
+ */
+export async function breakLinkedLeads(
+  items: { id: string; type: 'new' | 'legacy' }[]
+): Promise<{ success: boolean; error?: string }> {
+  if (!items.length) {
+    return { success: true };
+  }
+  try {
+    for (const item of items) {
+      if (item.type === 'legacy') {
+        const legacyId = item.id.replace(/^legacy_/, '');
+        const numericId = parseInt(legacyId, 10);
+        if (Number.isNaN(numericId)) continue;
+        const { error } = await supabase
+          .from('leads_lead')
+          .update({ linked_master_lead: null })
+          .eq('id', numericId);
+        if (error) {
+          console.error('Error breaking legacy link:', error);
+          return { success: false, error: error.message };
+        }
+      } else {
+        const { error } = await supabase
+          .from('leads')
+          .update({ linked_master_lead: null })
+          .eq('id', item.id);
+        if (error) {
+          console.error('Error breaking new lead link:', error);
+          return { success: false, error: error.message };
+        }
+      }
+    }
+    return { success: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to break link';
+    console.error('breakLinkedLeads error:', err);
+    return { success: false, error: message };
+  }
+}

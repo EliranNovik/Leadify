@@ -3,6 +3,44 @@
 
 import { IPublicClientApplication, InteractionRequiredAuthError } from '@azure/msal-browser';
 
+/** Thrown when popup auth fails (blocked, iframe, mobile) so UI can offer redirect. */
+export class AuthPopupBlockedError extends Error {
+  constructor(message: string = 'Popup sign-in was blocked or unavailable.') {
+    super(message);
+    this.name = 'AuthPopupBlockedError';
+  }
+}
+
+/** True when popup is often blocked: embedded in iframe or mobile. */
+export function isPopupUnreliable(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const inIframe = window.self !== window.top;
+    const isMobile = /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    return inIframe || isMobile;
+  } catch {
+    return true; // e.g. same-origin check throws in some contexts
+  }
+}
+
+/** Returns true if the error indicates popup was blocked or failed to open. */
+function isPopupBlockedError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    /popup_window_error|empty_window_error|popup.*blocked|window\.open.*null/i.test(msg) ||
+    /Error opening popup window/i.test(msg)
+  );
+}
+
+/** Trigger redirect-based sign-in (page will navigate away; user creates meeting again after return). */
+export async function triggerTokenRedirect(
+  instance: IPublicClientApplication,
+  loginRequest: any,
+  account: any
+): Promise<void> {
+  await instance.acquireTokenRedirect({ ...loginRequest, account });
+}
+
 // Utility function to get access token with fallback
 export async function getAccessTokenWithFallback(
   instance: IPublicClientApplication,
@@ -19,12 +57,19 @@ export async function getAccessTokenWithFallback(
     return response.accessToken;
   } catch (error) {
     console.log('Silent token acquisition failed, trying interactive:', error);
+    const requestWithAccount = { ...loginRequest, account };
+
+    // In iframe or on mobile, popup is unreliable; use redirect so user can sign in and return
+    if (isPopupUnreliable()) {
+      console.log('Using redirect flow (iframe or mobile).');
+      if (onInteractiveAuth) onInteractiveAuth();
+      await instance.acquireTokenRedirect(requestWithAccount);
+      return null; // Page is navigating away
+    }
+
     try {
-      // If silent acquisition fails, try interactive popup
       console.log('Opening Microsoft authentication popup...');
-      if (onInteractiveAuth) {
-        onInteractiveAuth();
-      }
+      if (onInteractiveAuth) onInteractiveAuth();
       const response = await instance.acquireTokenPopup(loginRequest);
       console.log('Interactive authentication successful');
       return response.accessToken;
@@ -32,6 +77,11 @@ export async function getAccessTokenWithFallback(
       console.error('Interactive token acquisition also failed:', popupError);
       if (popupError instanceof Error) {
         console.error('Error details:', popupError.message);
+      }
+      if (isPopupBlockedError(popupError)) {
+        throw new AuthPopupBlockedError(
+          'Sign-in window was blocked or could not open. Please allow popups for this site, or use "Sign in (this tab)" below.'
+        );
       }
       return null;
     }

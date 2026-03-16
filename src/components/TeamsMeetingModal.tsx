@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { XMarkIcon, CalendarIcon, ClockIcon, UserIcon, VideoCameraIcon, ArrowPathIcon, MagnifyingGlassIcon, TrashIcon } from '@heroicons/react/24/outline';
-import { createStaffTeamsMeeting, getAccessTokenWithFallback } from '../lib/graph';
+import { createStaffTeamsMeeting, getAccessTokenWithFallback, AuthPopupBlockedError, triggerTokenRedirect } from '../lib/graph';
 import { useMsal } from '@azure/msal-react';
 import { InteractionRequiredAuthError } from '@azure/msal-browser';
 import { loginRequest } from '../msalConfig';
@@ -67,6 +67,8 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
   const [allStaffSelected, setAllStaffSelected] = useState(false);
   const employeeDropdownRef = useRef<HTMLDivElement | null>(null);
   const [avatarImageErrors, setAvatarImageErrors] = useState<Set<number>>(new Set());
+  const [showAuthRedirectOption, setShowAuthRedirectOption] = useState(false);
+  const authRedirectParamsRef = useRef<{ request: any; account: any } | null>(null);
   const [formData, setFormData] = useState<MeetingFormData>({
     subject: '',
     date: selectedDate ? selectedDate.toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
@@ -352,28 +354,26 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
         return;
       }
 
-      // Use the shared staff calendar account for creating meetings
-      
+      const staffCalendarRequest = {
+        ...loginRequest,
+        scopes: ['https://graph.microsoft.com/Calendars.ReadWrite', 'https://graph.microsoft.com/OnlineMeetings.ReadWrite'],
+        extraQueryParameters: { login_hint: STAFF_CALENDAR_EMAIL }
+      };
+      setShowAuthRedirectOption(false);
+      authRedirectParamsRef.current = { request: staffCalendarRequest, account };
+
       const accessToken = await getAccessTokenWithFallback(
-        instance, 
-        {
-          ...loginRequest,
-          // Override the login request to use the shared calendar account
-          scopes: ['https://graph.microsoft.com/Calendars.ReadWrite', 'https://graph.microsoft.com/OnlineMeetings.ReadWrite'],
-          extraQueryParameters: {
-            // Force authentication for the shared calendar
-            login_hint: STAFF_CALENDAR_EMAIL
-          }
-        }, 
+        instance,
+        staffCalendarRequest,
         account,
         () => toast.loading('Authenticating with shared calendar...', { duration: 3000 })
       );
-      
+
       if (!accessToken) {
-        const errorMessage = userEmail
-          ? `Failed to authenticate with Microsoft. Please ensure you are signed in with the account: ${userEmail}`
-          : 'Failed to authenticate with Microsoft. Please sign in and try again.';
-        toast.error(errorMessage, { duration: 8000 });
+        toast.error(
+          'Redirecting to sign in… If the page did not redirect, allow popups or use "Sign in (this tab)" when the option appears.',
+          { duration: 8000 }
+        );
         setIsLoading(false);
         return;
       }
@@ -502,9 +502,11 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
       
     } catch (error) {
       console.error('Teams meeting creation error:', error);
-      
-      if (error instanceof Error) {
-        // Check for specific error types
+
+      if (error instanceof AuthPopupBlockedError) {
+        setShowAuthRedirectOption(true);
+        toast.error(error.message, { duration: 10000 });
+      } else if (error instanceof Error) {
         if (error.message.includes('insufficient privileges') || error.message.includes('permission') || error.message.includes('Access Denied')) {
           toast.error('Permission denied: You do not have access to create meetings in the shared calendar. Please contact your administrator to grant you permissions.', { duration: 8000 });
         } else if (error.message.includes('authentication') || error.message.includes('token') || error.message.includes('login')) {
@@ -533,7 +535,22 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
     { value: '240', label: '4 hours' }
   ];
 
+  useEffect(() => {
+    if (!isOpen) {
+      setShowAuthRedirectOption(false);
+      authRedirectParamsRef.current = null;
+    }
+  }, [isOpen]);
+
   if (!isOpen) return null;
+
+  const handleSignInThisTab = async () => {
+    const params = authRedirectParamsRef.current;
+    if (!params) return;
+    setShowAuthRedirectOption(false);
+    toast.loading('Redirecting to Microsoft sign-in… Create the meeting again after you return.', { duration: 5000 });
+    await triggerTokenRedirect(instance, params.request, params.account);
+  };
 
   return (
     <div className={`fixed inset-0 z-50 flex items-center justify-center ${isOpen ? '' : 'hidden'}`}>
@@ -562,6 +579,31 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
             <XMarkIcon className="w-6 h-6" />
           </button>
         </div>
+
+        {/* Popup blocked / redirect option */}
+        {showAuthRedirectOption && (
+          <div className="mx-6 mt-4 p-4 bg-amber-50 border border-amber-200 rounded-lg flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-amber-900">
+              Sign-in window was blocked or could not open. Use the button to sign in in this tab (you can create the meeting again after you return).
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowAuthRedirectOption(false)}
+                className="btn btn-ghost btn-sm"
+              >
+                Dismiss
+              </button>
+              <button
+                type="button"
+                onClick={handleSignInThisTab}
+                className="btn btn-primary btn-sm"
+              >
+                Sign in (this tab)
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="p-6 space-y-6">

@@ -29,7 +29,7 @@ import { useAuthContext } from '../../contexts/AuthContext';
 import { useMsal } from '@azure/msal-react';
 import { InteractionRequiredAuthError } from '@azure/msal-browser';
 import { loginRequest } from '../../msalConfig';
-import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee } from '../../lib/graph';
+import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee, getAccessTokenWithFallback, AuthPopupBlockedError, triggerTokenRedirect } from '../../lib/graph';
 import { generateICSFromDateTime } from '../../lib/icsGenerator';
 import { meetingInvitationEmailTemplate } from '../Meetings';
 import MeetingSummaryComponent from '../MeetingSummary';
@@ -106,6 +106,8 @@ interface Meeting {
 
 const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const { instance } = useMsal();
+  const [showAuthRedirectOption, setShowAuthRedirectOption] = useState(false);
+  const authRedirectParamsRef = useRef<{ request: any; account: any } | null>(null);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [isCreatingMeeting, setIsCreatingMeeting] = useState(false);
@@ -2883,20 +2885,29 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       // If this is a Teams meeting, create an online event via Graph
       if (scheduleMeetingFormData.location === 'Teams') {
-        let accessToken;
+        let accessToken: string | null = null;
         try {
-          const response = await instance.acquireTokenSilent({
-            ...loginRequest,
+          const request = { ...loginRequest, account };
+          accessToken = await getAccessTokenWithFallback(
+            instance,
+            request,
             account,
-          });
-          accessToken = response.accessToken;
-        } catch (error) {
-          if (error instanceof InteractionRequiredAuthError) {
-            const response = await instance.loginPopup(loginRequest);
-            accessToken = response.accessToken;
-          } else {
-            throw error;
+            () => toast.loading('Signing in to Microsoft...', { duration: 3000 })
+          );
+          if (!accessToken) {
+            toast.error('Redirecting to sign in… If the page did not redirect, use "Sign in (this tab)" when the option appears.', { duration: 8000 });
+            setIsSchedulingMeeting(false);
+            return;
           }
+        } catch (error) {
+          if (error instanceof AuthPopupBlockedError) {
+            authRedirectParamsRef.current = { request: { ...loginRequest, account }, account };
+            setShowAuthRedirectOption(true);
+            toast.error(error.message, { duration: 10000 });
+            setIsSchedulingMeeting(false);
+            return;
+          }
+          throw error;
         }
 
         const [year, month, day] = scheduleMeetingFormData.date.split('-').map(Number);
@@ -3548,17 +3559,29 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       // If this is a Teams meeting, create an online event via Graph
       if (rescheduleFormData.location === 'Teams') {
-        let accessToken;
+        let accessToken: string | null = null;
         try {
-          const response = await instance.acquireTokenSilent({ ...loginRequest, account });
-          accessToken = response.accessToken;
-        } catch (error) {
-          if (error instanceof InteractionRequiredAuthError) {
-            const response = await instance.loginPopup(loginRequest);
-            accessToken = response.accessToken;
-          } else {
-            throw error;
+          const request = { ...loginRequest, account };
+          accessToken = await getAccessTokenWithFallback(
+            instance,
+            request,
+            account,
+            () => toast.loading('Signing in to Microsoft...', { duration: 3000 })
+          );
+          if (!accessToken) {
+            toast.error('Redirecting to sign in… If the page did not redirect, use "Sign in (this tab)" when the option appears.', { duration: 8000 });
+            setIsReschedulingMeeting(false);
+            return;
           }
+        } catch (error) {
+          if (error instanceof AuthPopupBlockedError) {
+            authRedirectParamsRef.current = { request: { ...loginRequest, account }, account };
+            setShowAuthRedirectOption(true);
+            toast.error(error.message, { duration: 10000 });
+            setIsReschedulingMeeting(false);
+            return;
+          }
+          throw error;
         }
 
         const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
@@ -3644,17 +3667,29 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       // Send notification email to client (only if notify toggle is on)
       if (notifyClientOnReschedule && client.email) {
-        let accessToken;
+        let accessToken: string | null = null;
         try {
-          const response = await instance.acquireTokenSilent({ ...loginRequest, account });
-          accessToken = response.accessToken;
-        } catch (error) {
-          if (error instanceof InteractionRequiredAuthError) {
-            const response = await instance.loginPopup(loginRequest);
-            accessToken = response.accessToken;
-          } else {
-            throw error;
+          const request = { ...loginRequest, account };
+          accessToken = await getAccessTokenWithFallback(
+            instance,
+            request,
+            account,
+            () => toast.loading('Signing in to Microsoft...', { duration: 3000 })
+          );
+          if (!accessToken) {
+            toast.error('Redirecting to sign in… Use "Sign in (this tab)" if the option appears.');
+            setIsReschedulingMeeting(false);
+            return;
           }
+        } catch (error) {
+          if (error instanceof AuthPopupBlockedError) {
+            authRedirectParamsRef.current = { request: { ...loginRequest, account }, account };
+            setShowAuthRedirectOption(true);
+            toast.error(error.message, { duration: 10000 });
+            setIsReschedulingMeeting(false);
+            return;
+          }
+          throw error;
         }
 
         const userName = account?.name || 'Staff';
@@ -5604,6 +5639,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           <div
             className="fixed inset-0 bg-black/30"
             onClick={() => {
+              setShowAuthRedirectOption(false);
+              authRedirectParamsRef.current = null;
               setShowScheduleDrawer(false);
               setScheduleMeetingFormData({
                 date: '',
@@ -5621,10 +5658,31 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           />
           {/* Panel */}
           <div className="ml-auto w-full max-w-md bg-base-100 h-screen shadow-2xl flex flex-col animate-slideInRight z-50">
+            {showAuthRedirectOption && (
+              <div className="bg-amber-50 border-b border-amber-200 px-4 py-3 flex flex-col gap-2">
+                <p className="text-sm text-amber-800">Sign-in was blocked. Use the button below to sign in in this tab, then try again.</p>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-warning"
+                  onClick={async () => {
+                    const params = authRedirectParamsRef.current;
+                    if (!params) return;
+                    setShowAuthRedirectOption(false);
+                    authRedirectParamsRef.current = null;
+                    toast.loading('Redirecting to Microsoft sign-in… Create the meeting again after you return.', { duration: 5000 });
+                    await triggerTokenRedirect(instance, params.request, params.account);
+                  }}
+                >
+                  Sign in (this tab)
+                </button>
+              </div>
+            )}
             {/* Fixed Header */}
             <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
               <h3 className="text-2xl font-bold">Schedule Meeting</h3>
               <button className="btn btn-ghost btn-sm" onClick={() => {
+                setShowAuthRedirectOption(false);
+                authRedirectParamsRef.current = null;
                 setShowScheduleDrawer(false);
                 setScheduleMeetingFormData({
                   date: '',
@@ -5952,6 +6010,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             className="fixed top-0 left-0 right-0 bottom-0 bg-black/30"
             style={{ margin: 0, padding: 0 }}
             onClick={() => {
+              setShowAuthRedirectOption(false);
+              authRedirectParamsRef.current = null;
               setShowRescheduleDrawer(false);
               setMeetingToDelete(null);
               setNotifyClientOnReschedule(false); // Reset to default
@@ -5972,10 +6032,31 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           />
           {/* Panel */}
           <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50" style={{ marginLeft: 'auto', marginRight: 0, padding: 0, top: 0, right: 0 }}>
+            {showAuthRedirectOption && (
+              <div className="bg-amber-50 border-b border-amber-200 px-4 py-3 flex flex-col gap-2">
+                <p className="text-sm text-amber-800">Sign-in was blocked. Use the button below to sign in in this tab, then try again.</p>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-warning"
+                  onClick={async () => {
+                    const params = authRedirectParamsRef.current;
+                    if (!params) return;
+                    setShowAuthRedirectOption(false);
+                    authRedirectParamsRef.current = null;
+                    toast.loading('Redirecting to Microsoft sign-in… Complete reschedule again after you return.', { duration: 5000 });
+                    await triggerTokenRedirect(instance, params.request, params.account);
+                  }}
+                >
+                  Sign in (this tab)
+                </button>
+              </div>
+            )}
             {/* Fixed Header */}
             <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
               <h3 className="text-2xl font-bold">Reschedule Meeting</h3>
               <button className="btn btn-ghost btn-sm" onClick={() => {
+                setShowAuthRedirectOption(false);
+                authRedirectParamsRef.current = null;
                 setShowRescheduleDrawer(false);
                 setMeetingToDelete(null);
                 setNotifyClientOnReschedule(false); // Reset to default
