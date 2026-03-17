@@ -158,8 +158,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     return hebrewRegex.test(text) ? 'rtl' : 'ltr';
   };
 
-  // Helper function to calculate VAT rate based on date for legacy leads
-  // 17% VAT for dates before 2025-01-01, 18% VAT for dates on or after 2025-01-01
+  // Helper: VAT rate by date. Use plan.date for legacy, plan.due_date for new leads.
+  // 17% for dates before 2025-01-01, 18% on or after 2025-01-01. Saves correctly to vat_value / value_vat.
   const getVatRateForLegacyLead = (dateString: string | null | undefined): number => {
     if (!dateString) {
       // If no date provided, default to 18% (current rate)
@@ -2249,7 +2249,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             }
 
             // For NIS (currency_id = 1), ensure VAT calculation is correct
-            // Use 17% VAT for dates before 2026-01-01, 18% VAT for dates on or after 2026-01-01
+            // Use 17% VAT for dates before 2025-01-01, 18% VAT for dates on or after 2025-01-01
             if (currencyId === 1 && (valueVat === 0 || !plan.vat_value)) {
               const paymentDate = plan.date || plan.due_date;
               const vatRate = getVatRateForLegacyLead(paymentDate);
@@ -2356,9 +2356,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             let valueVat = Number(plan.value_vat || 0);
             const currency = plan.currency || '₪';
 
-            // For NIS currency, calculate VAT if not set
+            // For NIS currency, calculate VAT if not set (17% before 2025-01-01, 18% on or after; new leads use due_date)
             if (currency === '₪' && (!valueVat || valueVat === 0)) {
-              valueVat = Math.round(value * 0.18 * 100) / 100;
+              const vatRate = getVatRateForLegacyLead(plan.due_date);
+              valueVat = Math.round(value * vatRate * 100) / 100;
             }
 
             const paymentTotal = value + valueVat;
@@ -2670,11 +2671,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     // Only apply VAT for Israeli Shekels (₪), not for other currencies like USD ($)
     const shouldApplyVat = currency === '₪';
 
+    const vatRate = getVatRateForLegacyLead(newPaymentData?.dueDate);
     setNewPaymentData((prev: any) => ({
       ...prev,
       value: calculatedValue,
       duePercent: calculatedPercent,
-      valueVat: shouldApplyVat ? Math.round(calculatedValue * 0.18 * 100) / 100 : 0
+      valueVat: shouldApplyVat ? Math.round(calculatedValue * vatRate * 100) / 100 : 0
     }));
 
     setShowPercentageModal(false);
@@ -2705,15 +2707,16 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       currency = financePlan?.payments[0]?.currency || client?.balance_currency || '₪';
     }
 
-    // Only apply VAT for Israeli Shekels (₪), not for other currencies like USD ($)
+    // Only apply VAT for Israeli Shekels (₪), not for other currencies like USD ($); 17% before 2025-01-01, 18% on or after
     const shouldApplyVat = currency === '₪';
+    const vatRate = getVatRateForLegacyLead(newPaymentData?.dueDate);
 
     // Set the values in the new payment form
     setNewPaymentData((prev: any) => ({
       ...prev,
       value: amount,
       duePercent: percentage,
-      valueVat: shouldApplyVat ? Math.round(amount * 0.18 * 100) / 100 : 0
+      valueVat: shouldApplyVat ? Math.round(amount * vatRate * 100) / 100 : 0
     }));
   };
 
@@ -3388,6 +3391,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           }
         }
 
+        // Recalculate VAT for legacy on save (17% before 2025-01-01, 18% on or after; legacy uses date column)
+        const legacyVatValue = !includeVatToUse
+          ? 0
+          : Math.round(Number(paymentDataToUse.value || 0) * getVatRateForLegacyLead(paymentDataToUse.dueDate) * 100) / 100;
+
         const { error: legacyError } = await supabase
           .from('finances_paymentplanrow')
           .update({
@@ -3395,7 +3403,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             date: dueDateValue,
             // Removed due_date: dueDateValue - do not update due_date when editing payment plan
             value: paymentDataToUse.value,
-            vat_value: paymentDataToUse.valueVat,
+            vat_value: legacyVatValue,
             order: orderValue,
             currency_id: currencyId,
             notes: paymentDataToUse.notes,
@@ -3407,12 +3415,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // Parse due_percent to remove % sign if present
         const duePercentValue = parseDuePercent(paymentDataToUse.duePercent);
 
-        // Calculate VAT based on checkbox state at save time
-        // If checkbox is unchecked, VAT must be 0
-        // If checkbox is checked, calculate 18% of the value
+        // Calculate VAT based on checkbox state at save time (17% before 2025-01-01, 18% on or after; use due_date for new leads)
         const vatValue = !includeVatToUse
           ? 0
-          : Math.round(Number(paymentDataToUse.value || 0) * 0.18 * 100) / 100;
+          : Math.round(Number(paymentDataToUse.value || 0) * getVatRateForLegacyLead(paymentDataToUse.dueDate) * 100) / 100;
 
         console.log('💾 Saving payment - VAT calculation:', {
           includeVatToUse,
@@ -3998,7 +4004,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           udate: new Date().toISOString().split('T')[0], // Current date
           date: dataToSave.dueDate || null, // Set to null if empty
           value: Number(dataToSave.value),
-          vat_value: (currency === '₪' && dataToSave.includeVat !== false) ? Math.round(Number(dataToSave.value) * 0.18 * 100) / 100 : 0,
+          vat_value: (currency === '₪' && dataToSave.includeVat !== false) ? Math.round(Number(dataToSave.value) * getVatRateForLegacyLead(dataToSave.dueDate) * 100) / 100 : 0,
           lead_id: legacyId, // Use numeric lead_id to ensure correct matching for subleads
           notes: dataToSave.notes || '',
           due_date: null, // MUST be null for legacy leads - only set when marking as ready to pay
@@ -4023,10 +4029,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // Get client_id for the contact
         const clientIdForContact = getClientIdForContact(contactForPayment);
 
-        // Calculate VAT based on checkbox state (includeVat)
-        // If checkbox is checked, calculate VAT; if unchecked, VAT is 0
+        // Calculate VAT based on checkbox state (includeVat); 17% before 2025-01-01, 18% on or after (due_date for new leads)
         const vatValue = dataToSave.includeVat !== false
-          ? Math.round(Number(dataToSave.value) * 0.18 * 100) / 100
+          ? Math.round(Number(dataToSave.value) * getVatRateForLegacyLead(dataToSave.dueDate) * 100) / 100
           : 0;
 
         // Ensure we're using the correct lead_id for this specific lead/sublead
@@ -4269,7 +4274,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             date: dueDateStr, // Keep the calculated date
             value,
             vat_value: autoPlanData.includeVat
-              ? Math.round(value * 0.18 * 100) / 100
+              ? Math.round(value * getVatRateForLegacyLead(dueDateStr) * 100) / 100
               : 0,
             lead_id: legacyId, // Convert to number (bigint)
             notes: '',
@@ -4366,10 +4371,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           dueDate.setMonth(dueDate.getMonth() + (i * 3));
           const dueDateStr = dueDate.toISOString().split('T')[0];
 
-          // Calculate VAT based on checkbox state (includeVat)
-          // If checkbox is checked, calculate VAT; if unchecked, VAT is 0
+          // Calculate VAT based on checkbox state (includeVat); 17% before 2025-01-01, 18% on or after (due_date for new leads)
           const vatValue = autoPlanData.includeVat
-            ? Math.round(value * 0.18 * 100) / 100
+            ? Math.round(value * getVatRateForLegacyLead(dueDateStr) * 100) / 100
             : 0;
 
           // Use custom order from paymentOrders array, or fallback to default based on position
@@ -5850,24 +5854,28 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           />
                                         </td>
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          <input type="date" className="input input-bordered w-48 text-right" value={newPaymentData.dueDate} onChange={e => setNewPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))} />
+                                          <input type="date" className="input input-bordered w-48 text-right" value={newPaymentData.dueDate} onChange={e => {
+                                            const newDueDate = e.target.value;
+                                            setNewPaymentData((d: any) => {
+                                              const vatRate = getVatRateForLegacyLead(newDueDate);
+                                              const vat = (d.currency === '₪' && d.includeVat !== false) ? Math.round(Number(d.value || 0) * vatRate * 100) / 100 : 0;
+                                              return { ...d, dueDate: newDueDate, valueVat: vat };
+                                            });
+                                          }} />
                                         </td>
                                         <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
                                           <div className="flex items-center gap-2 justify-center">
                                             <input type="number" className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows" value={newPaymentData.value} onChange={e => {
                                               const value = e.target.value;
                                               let vat = 0;
-                                              // Calculate VAT based on currency and includeVat flag
                                               const currency = newPaymentData.currency || '₪';
-                                              const includeVat = newPaymentData.includeVat !== false; // Default to true if not set
+                                              const includeVat = newPaymentData.includeVat !== false;
                                               if (currency === '₪' && includeVat) {
-                                                vat = Math.round(Number(value) * 0.18 * 100) / 100;
+                                                const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
+                                                vat = Math.round(Number(value) * vatRate * 100) / 100;
                                               }
-
-                                              // Calculate due percentage based on value vs total column
                                               const totalAmount = getTotalAmount();
                                               const duePercent = totalAmount > 0 ? Math.round((Number(value) / totalAmount) * 100) : 0;
-
                                               setNewPaymentData((d: any) => ({ ...d, value, valueVat: vat, duePercent }));
                                             }} />
                                             <span className='text-gray-500 font-bold'>+</span>
@@ -5907,7 +5915,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                   let vat = 0;
                                                   const includeVat = newPaymentData.includeVat !== false && selectedCurrency === '₪';
                                                   if (selectedCurrency === '₪' && includeVat) {
-                                                    vat = Math.round(Number(newPaymentData.value || 0) * 0.18 * 100) / 100;
+                                                    const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
+                                                    vat = Math.round(Number(newPaymentData.value || 0) * vatRate * 100) / 100;
                                                   }
                                                   setNewPaymentData((d: any) => ({
                                                     ...d,
@@ -5941,7 +5950,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                     const includeVat = e.target.checked;
                                                     let vat = 0;
                                                     if (includeVat && (newPaymentData.currency || '₪') === '₪') {
-                                                      vat = Math.round(Number(newPaymentData.value || 0) * 0.18 * 100) / 100;
+                                                      const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
+                                                      vat = Math.round(Number(newPaymentData.value || 0) * vatRate * 100) / 100;
                                                     }
                                                     setNewPaymentData((d: any) => ({ ...d, includeVat, valueVat: vat }));
                                                   }}
@@ -5977,7 +5987,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                 type="date"
                                                 className="input input-bordered w-48 text-right"
                                                 value={newPaymentData.dueDate}
-                                                onChange={e => setNewPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))}
+                                                onChange={e => {
+                                                  const newDueDate = e.target.value;
+                                                  setNewPaymentData((d: any) => {
+                                                    const vatRate = getVatRateForLegacyLead(newDueDate);
+                                                    const vat = (d.currency === '₪' && d.includeVat !== false) ? Math.round(Number(d.value || 0) * vatRate * 100) / 100 : 0;
+                                                    return { ...d, dueDate: newDueDate, valueVat: vat };
+                                                  });
+                                                }}
                                               />
                                             ) : (
                                               <input
@@ -5993,17 +6010,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <input type="number" className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows" value={newPaymentData.value} onChange={e => {
                                               const value = e.target.value;
                                               let vat = 0;
-                                              // Calculate VAT based on currency and includeVat flag
                                               const currency = newPaymentData.currency || '₪';
-                                              const includeVat = newPaymentData.includeVat !== false; // Default to true if not set
+                                              const includeVat = newPaymentData.includeVat !== false;
                                               if (currency === '₪' && includeVat) {
-                                                vat = Math.round(Number(value) * 0.18 * 100) / 100;
+                                                const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
+                                                vat = Math.round(Number(value) * vatRate * 100) / 100;
                                               }
-
-                                              // Calculate due percentage based on value vs total column
                                               const totalAmount = getTotalAmount();
                                               const duePercent = totalAmount > 0 ? Math.round((Number(value) / totalAmount) * 100) : 0;
-
                                               setNewPaymentData((d: any) => ({ ...d, value, valueVat: vat, duePercent }));
                                             }} />
                                           </div>
@@ -6022,7 +6036,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                 let vat = 0;
                                                 const includeVat = newPaymentData.includeVat !== false && selectedCurrency === '₪';
                                                 if (selectedCurrency === '₪' && includeVat) {
-                                                  vat = Math.round(Number(newPaymentData.value || 0) * 0.18 * 100) / 100;
+                                                  const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
+                                                  vat = Math.round(Number(newPaymentData.value || 0) * vatRate * 100) / 100;
                                                 }
                                                 setNewPaymentData((d: any) => ({
                                                   ...d,
@@ -6059,7 +6074,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                   const includeVat = e.target.checked;
                                                   let vat = 0;
                                                   if (includeVat && (newPaymentData.currency || '₪') === '₪') {
-                                                    vat = Math.round(Number(newPaymentData.value || 0) * 0.18 * 100) / 100;
+                                                    const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
+                                                    vat = Math.round(Number(newPaymentData.value || 0) * vatRate * 100) / 100;
                                                   }
                                                   setNewPaymentData((d: any) => ({ ...d, includeVat, valueVat: vat }));
                                                 }}

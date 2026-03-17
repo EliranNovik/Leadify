@@ -186,6 +186,7 @@ const SalesContributionPage = () => {
   const [salesPartnersFinanceForHandlersModal, setSalesPartnersFinanceForHandlersModal] = useState<Array<{ employeeId: number; employeeName: string; departmentName: 'Sales' | 'Partners' | 'Finance'; photoUrl?: string | null }>>([]);
   const [isMarketingLinkedModalOpen, setIsMarketingLinkedModalOpen] = useState(false);
   const [isCorrectionInfoModalOpen, setIsCorrectionInfoModalOpen] = useState(false);
+  const salaryBudgetAdjustmentIterationsRef = useRef(0);
 
   const [useFixedContributionFromDb, setUseFixedContributionFromDb] = useState(false);
   const [savingRolePercentages, setSavingRolePercentages] = useState(false);
@@ -911,7 +912,8 @@ const SalesContributionPage = () => {
       const fullEmp = homeDept?.employees.find((e) => e.employeeId === emp.employeeId);
       const signedPortion = fullEmp?.signedPortion ?? 0;
       if (signedPortion <= 0) continue;
-      const homeDeptPct = (departmentPercentages.get(emp.departmentName) ?? 35) / 100;
+      const pctDept = ['Partners', 'Marketing', 'Finance'].includes(emp.departmentName) ? 'Sales' : emp.departmentName;
+      const homeDeptPct = (departmentPercentages.get(pctDept) ?? 35) / 100;
       const contributionFromThreeRoles = signedPortion * homeDeptPct;
       const cacheKey = `${emp.employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
       const roleData = roleDataCache.get(cacheKey) || [];
@@ -966,7 +968,8 @@ const SalesContributionPage = () => {
       const duePortion = fullEmp?.duePortion ?? 0;
       const fullDue = fullEmp?.due ?? 0;
       if (duePortion <= 0 && fullDue <= 0) continue;
-      const homeDeptPct = (departmentPercentages.get(emp.departmentName) ?? 35) / 100;
+      const pctDept = ['Partners', 'Marketing', 'Finance'].includes(emp.departmentName) ? 'Sales' : emp.departmentName;
+      const homeDeptPct = (departmentPercentages.get(pctDept) ?? 35) / 100;
       const contributionFromHandler = duePortion * homeDeptPct;
       rows.push({
         employeeId: emp.employeeId,
@@ -1037,6 +1040,177 @@ const SalesContributionPage = () => {
     }
     return sum;
   }, [departmentData]);
+
+  // Per-department total row salary budget (same formula as table total row: 40% of (contribution + contribution fixed including link amounts))
+  const totalRowSalaryBudgetByDepartment = useMemo(() => {
+    const map = new Map<string, number>();
+    // Precompute Handlers share per employee (used only when deptName === 'Handlers')
+    const handlersDept = departmentData.get('Handlers');
+    const linkedToHandlersShare = new Map<number, number>();
+    if (handlersDept && (linkedContributionForHandlers ?? 0) > 0) {
+      const totalBase = handlersDept.employees.reduce((s, emp) => {
+        const orig = emp.contribution ?? 0;
+        const toSales = contributionToSalesByEmployee.get(emp.employeeId) ?? 0;
+        return s + Math.max(0, orig - toSales);
+      }, 0);
+      if (totalBase > 0) {
+        handlersDept.employees.forEach((emp) => {
+          const orig = emp.contribution ?? 0;
+          const toSales = contributionToSalesByEmployee.get(emp.employeeId) ?? 0;
+          const base = Math.max(0, orig - toSales);
+          const share = (linkedContributionForHandlers ?? 0) * base / totalBase;
+          linkedToHandlersShare.set(emp.employeeId, share);
+        });
+      }
+    }
+    for (const deptName of departmentNames) {
+      const deptData = departmentData.get(deptName);
+      if (!deptData) {
+        map.set(deptName, 0);
+        continue;
+      }
+      const employees = deptData.employees;
+      const getLinkedContributionDeducted = (employeeId: number): number => {
+        const toSales = contributionToSalesByEmployee.get(employeeId) ?? 0;
+        const toHandlers = contributionToHandlersByEmployee.get(employeeId) ?? 0;
+        if (deptName === 'Sales') return toHandlers;
+        if (deptName === 'Handlers') return toSales + (linkedToHandlersShare.get(employeeId) ?? 0);
+        if (deptName === 'Partners' || deptName === 'Finance') return toSales + toHandlers;
+        return 0;
+      };
+      const totalContributionColDisplayed = employees.reduce((s, emp) => {
+        const orig = emp.contribution ?? 0;
+        const deducted = getLinkedContributionDeducted(emp.employeeId);
+        const effectiveRelocated = Math.min(deducted, orig);
+        return s + (orig - effectiveRelocated);
+      }, 0);
+      const totalContributionFixedDisplayed = employees.reduce((s, emp) => {
+        const fullFixed = emp.contributionFixed ?? 0;
+        const toSales = (deptName === 'Handlers' || deptName === 'Partners' || deptName === 'Finance')
+          ? (salesLinkedModalFixedMap.get(emp.employeeId) ?? 0)
+          : 0;
+        const toMarketing = marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0;
+        return s + (fullFixed - toSales - toMarketing);
+      }, 0);
+      const totalContributionFixedDisplayedAdjusted =
+        totalContributionFixedDisplayed + (deptName === 'Marketing' ? linkedContributionForMarketing : 0);
+      const totalRowContribution =
+        totalContributionColDisplayed +
+        (deptName === 'Sales' ? (linkedContributionForSales ?? 0) : 0) +
+        (deptName === 'Handlers' ? (linkedContributionForHandlers ?? 0) : 0);
+      const totalRowContributionFixed =
+        totalContributionFixedDisplayedAdjusted + (deptName === 'Sales' ? linkedContributionFixedForSales : 0);
+      const contributionTotalForPercentages = totalRowContribution + totalRowContributionFixed;
+      const totalRowSalaryBudget = Math.round(contributionTotalForPercentages * 0.4 * 100) / 100;
+      map.set(deptName, totalRowSalaryBudget);
+    }
+    return map;
+  }, [departmentData, departmentNames, linkedContributionForSales, linkedContributionForHandlers, linkedContributionFixedForSales, linkedContributionForMarketing, salesLinkedModalFixedMap, marketingFixedDeductedByEmployee, contributionToSalesByEmployee, contributionToHandlersByEmployee]);
+
+  // Sum of total row salary budget across all departments — use this for the top badge so it matches the sum of the 5 summary boxes and table total rows
+  const totalSalaryBudgetFromTotalRows = useMemo(() => {
+    let sum = 0;
+    totalRowSalaryBudgetByDepartment.forEach((v) => { sum += v; });
+    return sum;
+  }, [totalRowSalaryBudgetByDepartment]);
+
+  // Scale contribution for adjustable employees (Sales except 32, Handlers except 175,176,174,61) so that sum of total row salary budgets = 40% of income
+  const applyContributionScaleToMatchTarget = useCallback((prev: Map<string, DepartmentData>, factor: number): Map<string, DepartmentData> => {
+    const handlersExcluded = new Set([175, 176, 174, 61]);
+    const salesExcludedId = 32;
+    const next = new Map(prev);
+    for (const deptName of ['Sales', 'Handlers']) {
+      const dept = next.get(deptName);
+      if (!dept) continue;
+      const scaled = dept.employees.map((emp) => {
+        let contrib = emp.contribution ?? 0;
+        if (deptName === 'Handlers' && !handlersExcluded.has(emp.employeeId)) {
+          contrib = Math.round(contrib * factor * 100) / 100;
+        } else if (deptName === 'Sales' && emp.employeeId !== salesExcludedId) {
+          contrib = Math.round(contrib * factor * 100) / 100;
+        }
+        const total = contrib + (emp.contributionFixed ?? 0);
+        const salaryBudget = Math.round(total * 0.4 * 100) / 100;
+        const totalSalaryCost = emp.totalSalaryCost ?? 0;
+        return {
+          ...emp,
+          contribution: contrib,
+          salaryBudget,
+          maxIncentives: salaryBudget - totalSalaryCost,
+        };
+      });
+      const deptContribution = scaled.reduce((s, e) => s + (e.contribution ?? 0), 0);
+      const deptSalaryBudget = scaled.reduce((s, e) => s + (e.salaryBudget ?? 0), 0);
+      const deptMaxIncentives = scaled.reduce((s, e) => s + (e.maxIncentives ?? 0), 0);
+      next.set(deptName, {
+        ...dept,
+        employees: scaled,
+        totals: {
+          ...dept.totals,
+          contribution: deptContribution,
+          salaryBudget: deptSalaryBudget,
+          maxIncentives: deptMaxIncentives,
+        },
+      });
+    }
+    return next;
+  }, []);
+
+  // Add a small gap to one adjustable employee's contribution so sum of total row salary budgets hits target exactly (for rounding residuals)
+  const applyGapFixToHitTarget = useCallback((prev: Map<string, DepartmentData>, gap: number): Map<string, DepartmentData> => {
+    if (Math.abs(gap) < 0.01) return prev;
+    const handlersExcluded = new Set([175, 176, 174, 61]);
+    const salesExcludedId = 32;
+    // Need to increase total row sum by gap; total row = 0.4 * (contribution + fixed), so add (gap/0.4) to one employee's contribution
+    const contributionDelta = Math.round((gap / 0.4) * 100) / 100;
+    const next = new Map(prev);
+    for (const deptName of ['Sales', 'Handlers']) {
+      const dept = next.get(deptName);
+      if (!dept) continue;
+      const idx = dept.employees.findIndex(
+        (emp) =>
+          (deptName === 'Sales' && emp.employeeId !== salesExcludedId) ||
+          (deptName === 'Handlers' && !handlersExcluded.has(emp.employeeId))
+      );
+      if (idx < 0) continue;
+      const emp = dept.employees[idx];
+      const newContrib = Math.round(((emp.contribution ?? 0) + contributionDelta) * 100) / 100;
+      const total = newContrib + (emp.contributionFixed ?? 0);
+      const salaryBudget = Math.round(total * 0.4 * 100) / 100;
+      const totalSalaryCost = emp.totalSalaryCost ?? 0;
+      const updated = [...dept.employees];
+      updated[idx] = { ...emp, contribution: newContrib, salaryBudget, maxIncentives: salaryBudget - totalSalaryCost };
+      const deptContribution = updated.reduce((s, e) => s + (e.contribution ?? 0), 0);
+      const deptSalaryBudget = updated.reduce((s, e) => s + (e.salaryBudget ?? 0), 0);
+      const deptMaxIncentives = updated.reduce((s, e) => s + (e.maxIncentives ?? 0), 0);
+      next.set(deptName, {
+        ...dept,
+        employees: updated,
+        totals: { ...dept.totals, contribution: deptContribution, salaryBudget: deptSalaryBudget, maxIncentives: deptMaxIncentives },
+      });
+      break; // apply to first adjustable employee only
+    }
+    return next;
+  }, []);
+
+  // After departmentData updates, if sum of total row salary budgets is not 40% of income, scale adjustable contributions (max 15 iterations; require within 1 NIS). If still off by a small amount, apply gap fix.
+  useEffect(() => {
+    const target = (totalIncome || 0) * 0.4;
+    if (target <= 0 || !departmentData.size) return;
+    const current = totalSalaryBudgetFromTotalRows;
+    const epsilon = 1; // require within 1 NIS of target for "perfect" 40%
+    if (Math.abs(current - target) <= epsilon) return;
+    if (salaryBudgetAdjustmentIterationsRef.current >= 15) return;
+    // When within 2000 NIS but not exact (e.g. rounding left 569 short), add the gap to one adjustable employee so total is exactly 40%
+    if (Math.abs(current - target) <= 2000 && salaryBudgetAdjustmentIterationsRef.current > 0) {
+      salaryBudgetAdjustmentIterationsRef.current += 1;
+      setDepartmentData((prev) => applyGapFixToHitTarget(prev, target - current));
+      return;
+    }
+    const factor = target / current;
+    salaryBudgetAdjustmentIterationsRef.current += 1;
+    setDepartmentData((prev) => applyContributionScaleToMatchTarget(prev, factor));
+  }, [departmentData, totalIncome, totalSalaryBudgetFromTotalRows, applyContributionScaleToMatchTarget, applyGapFixToHitTarget]);
 
   const marketingLinkedModalRows = useMemo((): MarketingLinkedContributionRow[] => {
     const amount1 = marketingFixedDeductedByEmployee.get(1) ?? 0;
@@ -2228,9 +2402,10 @@ const SalesContributionPage = () => {
       // Calculate base contribution: combine normalized signed portion + normalized due portion
       const baseContribution = signedPortionNormalized + duePortionNormalized;
 
-      // Apply department % from sales_contribution_settings for this employee's table
+      // Apply department % from sales_contribution_settings: use Sales % for Partners, Marketing, Finance; own % for Sales and Handlers
       const deptNameForEmployee = Array.from(departmentData.entries()).find(([, d]) => d.employees.some((e: { employeeId: number }) => e.employeeId === employeeId))?.[0] ?? 'Sales';
-      const deptPctForRoleCache = (departmentPercentages.get(deptNameForEmployee) ?? 35) / 100;
+      const pctDept = ['Partners', 'Marketing', 'Finance'].includes(deptNameForEmployee) ? 'Sales' : deptNameForEmployee;
+      const deptPctForRoleCache = (departmentPercentages.get(pctDept) ?? 35) / 100;
       const contribution = baseContribution * deptPctForRoleCache;
 
       // Calculate Salary Budget from Contribution
@@ -3356,6 +3531,7 @@ const SalesContributionPage = () => {
 
     setLoading(true);
     setSearchPerformed(true);
+    salaryBudgetAdjustmentIterationsRef.current = 0;
     // Fetch total signed value when search is triggered - MUST complete before calculating portions
     await fetchTotalSignedValue();
     try {
@@ -3559,6 +3735,7 @@ const SalesContributionPage = () => {
               dueNormalized: 0,
               signedPortion: 0,
               contribution: 0,
+              contributionFixed: 0,
               salaryBudget: 0,
               salaryBrutto: 0,
               totalSalaryCost: 0,
@@ -4269,8 +4446,8 @@ const SalesContributionPage = () => {
             }
 
             const deptName = employeeIdToDepartment.get(employeeId) ?? 'Sales';
-            // Use department % from sales_contribution_settings for this table; fallback 35 only when not in DB
-            const departmentPercentage = departmentPercentages.get(deptName) ?? 35;
+            // Use Sales % for Partners, Marketing, Finance; own department % for Sales and Handlers (from sales_contribution_settings)
+            const departmentPercentage = (['Partners', 'Marketing', 'Finance'].includes(deptName) ? departmentPercentages.get('Sales') : departmentPercentages.get(deptName)) ?? 35;
             calculationInputs.push({
               employeeId,
               employeeName,
@@ -5771,6 +5948,7 @@ const SalesContributionPage = () => {
               dueNormalized: fieldData.dueNormalized,
               signedPortion: signedPortion,
               contribution: signedPortion, // For field view, contribution equals signedPortion
+              contributionFixed: 0,
               salaryBudget: salaryBudget,
               salaryBrutto: 0,
               totalSalaryCost: 0,
@@ -5797,6 +5975,8 @@ const SalesContributionPage = () => {
               signedNormalized: combinedGermanyAustria.signedNormalized,
               dueNormalized: combinedGermanyAustria.dueNormalized,
               signedPortion: combinedGermanyAustria.signedPortion,
+              contribution: combinedGermanyAustria.signedPortion,
+              contributionFixed: 0,
               salaryBudget: combinedGermanyAustria.salaryBudget,
               salaryBrutto: 0,
               totalSalaryCost: 0,
@@ -5814,6 +5994,7 @@ const SalesContributionPage = () => {
               dueNormalized: combinedGermanyAustria.dueNormalized,
               signedPortion: combinedGermanyAustria.signedPortion,
               contribution: combinedGermanyAustria.signedPortion,
+              contributionFixed: 0,
               salaryBudget: combinedGermanyAustria.salaryBudget,
               salaryBrutto: 0,
               totalSalaryCost: 0,
@@ -5845,6 +6026,8 @@ const SalesContributionPage = () => {
               signedNormalized: signedNormalized,
               dueNormalized: generalData.dueNormalized,
               signedPortion: signedPortion,
+              contribution: signedPortion,
+              contributionFixed: 0,
               salaryBudget: salaryBudget,
               salaryBrutto: 0,
               totalSalaryCost: 0,
@@ -5862,6 +6045,7 @@ const SalesContributionPage = () => {
               dueNormalized: generalData.dueNormalized,
               signedPortion: signedPortion,
               contribution: signedPortion,
+              contributionFixed: 0,
               salaryBudget: salaryBudget,
               salaryBrutto: 0,
               totalSalaryCost: 0,
@@ -5960,11 +6144,14 @@ const SalesContributionPage = () => {
     }
   };
 
-  // Render summary box with percentage and edit functionality
+  // Render summary box with percentage and edit functionality; includes total salary budget (from total row) and total cost from table
   const renderSummaryBox = (departmentName: string, icon: React.ReactNode, gradientClasses: string) => {
-    const deptTotal = departmentData.get(departmentName)?.totals.total || 0;
+    const deptData = departmentData.get(departmentName);
+    const deptTotal = deptData?.totals?.total || 0;
     const percentage = departmentPercentages.get(departmentName) || 0;
     const isEditing = editingPercentage === departmentName;
+    const totalSalaryBudget = totalRowSalaryBudgetByDepartment.get(departmentName) ?? 0;
+    const totalCost = deptData?.totals?.totalSalaryCost ?? 0;
 
     // Calculate summary box amount: 40% of income * department percentage
     const baseAmount = (totalIncome || 0) * 0.4;
@@ -5974,17 +6161,17 @@ const SalesContributionPage = () => {
     const directAmountFromIncome = totalIncome && totalIncome > 0 ? (percentage / 100) * totalIncome : 0;
 
     return (
-      <div className={`flex-shrink-0 rounded-2xl transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl ${gradientClasses} text-white relative overflow-hidden w-[calc(50vw-0.75rem)] md:w-auto h-36 md:h-32 min-h-[144px] ${departmentName === 'Sales' ? 'ml-4 md:ml-0' : ''}`}>
+      <div className={`flex-shrink-0 rounded-2xl transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl ${gradientClasses} text-white relative overflow-hidden w-[calc(50vw-0.75rem)] md:w-auto min-h-[160px] md:min-h-[168px] ${departmentName === 'Sales' ? 'ml-4 md:ml-0' : ''}`}>
         {/* Glassy attachment on top: Contribution amount = saved % of income */}
         {totalIncome && totalIncome > 0 && percentage != null && (
-          <div className="absolute top-0 left-0 right-0 py-2 px-3 rounded-t-2xl border-b border-white/20 bg-white/20 backdrop-blur-md flex items-center gap-2">
+          <div className="absolute top-0 left-0 right-0 py-1.5 px-2 md:py-2 md:px-3 rounded-t-2xl border-b border-white/20 bg-white/20 backdrop-blur-md flex items-center gap-2">
             <span className="hidden md:inline text-xs font-medium text-white/90">Contribution</span>
-            <span className="text-base md:text-lg font-bold text-white tabular-nums">
+            <span className="text-sm md:text-base font-bold text-white tabular-nums">
               {formatCurrency(directAmountFromIncome)}
             </span>
           </div>
         )}
-        <div className="relative p-4 md:p-6 pt-10 md:pt-10">
+        <div className="relative p-3 md:p-4 pt-9 md:pt-10">
         {/* Edit button - top right */}
         <div className="absolute top-2 right-2 z-10">
           {isEditing ? (
@@ -6042,19 +6229,35 @@ const SalesContributionPage = () => {
           </div>
         )}
 
-        <div className="flex items-center gap-2 md:gap-4 pt-8 md:pt-6">
-          <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
-            {icon}
-          </div>
-          <div>
-            <div className="text-3xl md:text-4xl font-extrabold text-white leading-tight">
+        <div className="flex flex-col justify-center pt-4 md:pt-5 flex-1 min-h-0">
+          {/* Icon and main amount on one line, vertically centered in content area */}
+          <div className="flex items-center gap-2 md:gap-3">
+            <div className="flex items-center justify-center w-10 h-10 md:w-12 md:h-12 rounded-full bg-white/20 shadow flex-shrink-0">
+              {icon}
+            </div>
+            <div className="text-xl md:text-2xl font-extrabold text-white leading-tight tabular-nums">
               {formatCurrency(summaryAmount)}
             </div>
-            <div className="text-white/80 text-sm md:text-sm font-medium mt-1">{departmentName}</div>
+          </div>
+          <div className="mt-2 flex flex-col items-end gap-1.5 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="text-white/90 font-medium">Salary budget</span>
+                <span className="px-2 py-0.5 rounded-lg bg-white/25 backdrop-blur-sm border border-white/30 font-semibold tabular-nums text-white">
+                  {formatCurrency(totalSalaryBudget)}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-white/90 font-medium">Total cost</span>
+                <span className="px-2 py-0.5 rounded-lg bg-white/25 backdrop-blur-sm border border-white/30 font-semibold tabular-nums text-white">
+                  {formatCurrency(totalCost)}
+                </span>
+              </div>
           </div>
         </div>
-        {/* SVG Placeholder - adjust position to not overlap with percentage */}
-        <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-16 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
+        {/* Department name - bottom left */}
+        <div className="absolute bottom-2 left-2 md:bottom-3 md:left-3 text-white/90 text-sm md:text-base font-semibold">
+          {departmentName}
+        </div>
         </div>
       </div>
     );
@@ -6225,6 +6428,25 @@ const SalesContributionPage = () => {
       });
       return map;
     })();
+    // Handlers only: same share map but over all employees (for header correction so it does not change when filtering).
+    const linkedToHandlersShareByEmployeeFull = (() => {
+      const map = new Map<number, number>();
+      if (deptData.departmentName !== 'Handlers' || (linkedContributionForHandlers ?? 0) <= 0) return map;
+      const totalBase = deptData.employees.reduce((s, emp) => {
+        const orig = emp.contribution ?? 0;
+        const toSales = contributionToSalesByEmployee.get(emp.employeeId) ?? 0;
+        return s + Math.max(0, orig - toSales);
+      }, 0);
+      if (totalBase <= 0) return map;
+      deptData.employees.forEach((emp) => {
+        const orig = emp.contribution ?? 0;
+        const toSales = contributionToSalesByEmployee.get(emp.employeeId) ?? 0;
+        const base = Math.max(0, orig - toSales);
+        const share = (linkedContributionForHandlers ?? 0) * base / totalBase;
+        map.set(emp.employeeId, share);
+      });
+      return map;
+    })();
 
     // Per-employee: variable contribution reallocated to Sales or Handlers (deducted from Contribution column display only; salary budget uses full amounts).
     // In Handlers table we also deduct each employee's share of the linked amount (from S/P/F).
@@ -6293,16 +6515,6 @@ const SalesContributionPage = () => {
     const totalContributionFixedDisplayedAdjusted =
       totalContributionFixedDisplayed
         + (deptData.departmentName === 'Marketing' ? linkedContributionForMarketing : 0);
-    const totalSalaryBudgetDisplayed = filteredEmployeesForCorrection.reduce((s, emp) => s + (emp.salaryBudget ?? 0), 0);
-    const totalSalaryCostDisplayed = filteredEmployeesForCorrection.reduce(
-      (s, emp) => s + (emp.totalSalaryCost ?? 0),
-      0
-    );
-    const totalMaxIncentivesDisplayed = totalSalaryBudgetDisplayed - totalSalaryCostDisplayed;
-    const totalSalaryBruttoDisplayed = filteredEmployeesForCorrection.reduce(
-      (s, emp) => s + (emp.salaryBrutto ?? 0),
-      0
-    );
     // Total row Contribution = actual sum of contribution column (displayed per row) + linked for Sales/Handlers.
     const totalRowContribution =
       totalContributionColDisplayed +
@@ -6311,10 +6523,60 @@ const SalesContributionPage = () => {
     // Total row Contribution fixed = actual sum of contribution fixed column (no balancing to target).
     const totalRowContributionFixed =
       totalContributionFixedDisplayedAdjusted + (deptData.departmentName === 'Sales' ? linkedContributionFixedForSales : 0);
-    // Header correction = target minus actual total row (so Marketing includes linked fixed from modal; no false shortfall).
-    const contributionDiff = contributionAmount - (totalRowContribution + totalRowContributionFixed);
+    // Basis for total row: contribution + contribution fixed including amounts added from link (used for salary budget and percentages).
     const contributionTotalForPercentages =
       totalRowContribution + totalRowContributionFixed;
+    // Full-table totals (all employees, ignore search filter) for header correction so the (+/−) amount next to Link contribution stays fixed when filtering by employee.
+    const getLinkedContributionDeductedFull = (employeeId: number): number => {
+      const toSales = contributionToSalesByEmployee.get(employeeId) ?? 0;
+      const toHandlers = contributionToHandlersByEmployee.get(employeeId) ?? 0;
+      if (deptData.departmentName === 'Sales') return toHandlers;
+      if (deptData.departmentName === 'Handlers') return toSales + (linkedToHandlersShareByEmployeeFull.get(employeeId) ?? 0);
+      if (deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance') return toSales + toHandlers;
+      return 0;
+    };
+    const fullTotalContributionCol = deptData.employees.reduce(
+      (s, emp) => {
+        const orig = emp.contribution ?? 0;
+        const deducted = getLinkedContributionDeductedFull(emp.employeeId);
+        const effectiveRelocated = Math.min(deducted, orig);
+        return s + (orig - effectiveRelocated);
+      },
+      0
+    );
+    const fullTotalContributionFixed = deptData.employees.reduce(
+      (s, emp) => {
+        const fullFixed = emp.contributionFixed ?? 0;
+        const toSales = (deptData.departmentName === 'Handlers' || deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance')
+          ? (salesLinkedModalFixedMap.get(emp.employeeId) ?? 0)
+          : 0;
+        const toMarketing = marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0;
+        return s + (fullFixed - toSales - toMarketing);
+      },
+      0
+    );
+    const fullTotalContributionFixedAdjusted =
+      fullTotalContributionFixed + (deptData.departmentName === 'Marketing' ? linkedContributionForMarketing : 0);
+    const fullTotalRowContribution =
+      fullTotalContributionCol +
+      (deptData.departmentName === 'Sales' ? (linkedContributionForSales ?? 0) : 0) +
+      (deptData.departmentName === 'Handlers' ? (linkedContributionForHandlers ?? 0) : 0);
+    const fullTotalRowContributionFixed =
+      fullTotalContributionFixedAdjusted + (deptData.departmentName === 'Sales' ? linkedContributionFixedForSales : 0);
+    const fullContributionTotal = fullTotalRowContribution + fullTotalRowContributionFixed;
+    // Header correction = target minus full-table total (all employees); not updated when filtering by employee.
+    const contributionDiff = contributionAmount - fullContributionTotal;
+    // Total row salary budget = 40% of (total contribution + total contribution fixed with link).
+    const totalRowSalaryBudget = Math.round(contributionTotalForPercentages * 0.4 * 100) / 100;
+    const totalSalaryCostDisplayed = filteredEmployeesForCorrection.reduce(
+      (s, emp) => s + (emp.totalSalaryCost ?? 0),
+      0
+    );
+    const totalMaxIncentivesDisplayed = totalRowSalaryBudget - totalSalaryCostDisplayed;
+    const totalSalaryBruttoDisplayed = filteredEmployeesForCorrection.reduce(
+      (s, emp) => s + (emp.salaryBrutto ?? 0),
+      0
+    );
 
     return (
       <div key={deptData.departmentName} className="mb-8">
@@ -7618,7 +7880,7 @@ const SalesContributionPage = () => {
                     </td>
                     <td className="text-right w-[10%] text-xs md:text-sm">
                       <div className="flex flex-col items-end">
-                        <span>{formatCurrency(totalSalaryBudgetDisplayed)}</span>
+                        <span>{formatCurrency(totalRowSalaryBudget)}</span>
                         <span className="text-xs text-gray-500">40%</span>
                       </div>
                     </td>
@@ -7751,12 +8013,12 @@ const SalesContributionPage = () => {
               <span className="text-sm font-medium text-base-content/70">Total salary budget</span>
               {totalIncome != null && totalIncome > 0 && (
                 <span className="badge badge-sm bg-sky-500/90 text-white border-0">
-                  {((totalSalaryBudgetAllEmployees / totalIncome) * 100).toFixed(1)}%
+                  {((totalSalaryBudgetFromTotalRows / totalIncome) * 100).toFixed(1)}%
                 </span>
               )}
             </div>
             <div className="px-5 py-2.5 bg-gradient-to-tr from-sky-500 via-blue-500 to-indigo-600 rounded-lg min-w-[160px] text-center text-white shadow-md">
-              <span className="font-semibold text-white text-lg">{formatCurrency(totalSalaryBudgetAllEmployees)}</span>
+              <span className="font-semibold text-white text-lg">{formatCurrency(totalSalaryBudgetFromTotalRows)}</span>
             </div>
           </div>
           <div className="flex flex-col items-center gap-1.5">
