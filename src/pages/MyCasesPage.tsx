@@ -327,9 +327,9 @@ const MyCasesPage: React.FC = () => {
               : `handler.eq.${employeeId},case_handler_id.eq.${employeeId}`
           )
           .order('created_at', { ascending: false })
-          .limit(200),
+          .limit(1000),
 
-        // Legacy leads: check case_handler_id (numeric)
+        // Legacy leads: check case_handler_id (numeric); limit 1000 so older leads are not cut off
         supabase
           .from('leads_lead')
           .select(`
@@ -353,7 +353,7 @@ const MyCasesPage: React.FC = () => {
           `)
           .eq('case_handler_id', employeeId)
           .order('cdate', { ascending: false })
-          .limit(200),
+          .limit(1000),
 
         // Fetch countries with timezone data (static data)
         supabase
@@ -429,10 +429,10 @@ const MyCasesPage: React.FC = () => {
       if (newLeadsResult.error) throw newLeadsResult.error;
       if (legacyLeadsResult.error) throw legacyLeadsResult.error;
 
-      // Extract lead IDs for parallel queries
+      const legacyData = legacyLeadsResult.data || [];
       const newLeadIds = (newLeadsResult.data || []).map(lead => lead.id);
-      const legacyLeadIds = (legacyLeadsResult.data || []).map(lead => String(lead.id));
-      const legacyLeadIdsForQueries = (legacyLeadsResult.data || []).map(lead => lead.id);
+      const legacyLeadIds = legacyData.map((lead: any) => String(lead.id));
+      const legacyLeadIdsForQueries = legacyData.map((lead: any) => lead.id);
 
       // Fetch all dependent data in parallel
       const [
