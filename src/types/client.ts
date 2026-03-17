@@ -36,6 +36,7 @@ export interface Client extends Lead {
   // Legacy lead support
   lead_type?: 'legacy' | 'new';
   handler?: string;
+  file_id?: string | null;
   // Legacy lead role fields
   meeting_scheduler_id?: string;
   meeting_manager_id?: string;

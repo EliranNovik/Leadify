@@ -233,8 +233,10 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
       }
 
       if (data) {
-        setLegacyFileId(data.file_id || '');
-        if (INFOTAB_DEBUG) console.log('✅ InfoTab - Legacy file_id loaded:', data.file_id);
+        const raw = data.file_id != null ? String(data.file_id).trim() : '';
+        const normalized = (raw === '' || raw === '0000') ? '' : raw;
+        setLegacyFileId(normalized);
+        if (INFOTAB_DEBUG) console.log('✅ InfoTab - Legacy file_id loaded:', data.file_id, '-> normalized:', normalized);
       }
     } catch (error) {
       console.error('Error in fetchLegacyFileId:', error);
@@ -291,14 +293,15 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
     }
   };
 
-  // Fetch eligibility data and file_id for legacy leads on mount
+  // Fetch eligibility data and file_id for legacy leads on mount; reset legacy file_id when client changes to avoid showing/saving stale value (e.g. 0000)
   useEffect(() => {
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
     if (isLegacyLead) {
+      setLegacyFileId(''); // Clear immediately so we don't show or save previous lead's file_id
       fetchLegacyEligibilityData();
       fetchLegacyFileId();
     } else {
-      // For new leads, use client data
+      setLegacyFileId('');
       setEligibilityStatus(getFieldValue(client, 'eligibility_status') || '');
       setSectionEligibility(getFieldValue(client, 'section_eligibility') || '');
     }
@@ -1306,6 +1309,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                     try {
                       const userName = currentUserName;
                       const tableName = isLegacy ? 'leads_lead' : 'leads';
+                      // Normalize: treat empty or placeholder "0000" as null so we don't persist 0000
+                      const raw = (editedFileId || '').trim();
+                      const valueToSave = (raw === '' || raw === '0000') ? null : raw;
 
                       if (isLegacy) {
                         // For legacy leads, convert ID to integer
@@ -1320,7 +1326,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                         const { data, error } = await supabase
                           .from(tableName)
                           .update({
-                            file_id: editedFileId.trim() || null,
+                            file_id: valueToSave,
                           })
                           .eq('id', legacyId)
                           .select('file_id')
@@ -1328,7 +1334,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
 
                         if (error) throw error;
 
-                        const savedFileId = editedFileId.trim();
+                        const savedFileId = valueToSave ?? '';
                         setFileId(savedFileId);
                         setLegacyFileId(savedFileId); // Update legacy state
                         setIsEditingFileId(false);
@@ -1337,7 +1343,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                         const { data, error } = await supabase
                           .from(tableName)
                           .update({
-                            file_id: editedFileId.trim() || null,
+                            file_id: valueToSave,
                           })
                           .eq('id', client.id)
                           .select('file_id')
@@ -1345,7 +1351,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
 
                         if (error) throw error;
 
-                        setFileId(editedFileId.trim());
+                        setFileId(valueToSave ?? '');
                         setIsEditingFileId(false);
                       }
 

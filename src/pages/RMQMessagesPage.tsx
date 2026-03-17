@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, startTransition } from 'react';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import websocketService, { MessageData, TypingData } from '../lib/websocket';
@@ -300,6 +300,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const mobileMessageInputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastTypingSentAtRef = useRef<number>(0);
+  const TYPING_INDICATOR_THROTTLE_MS = 500;
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const desktopMessagesContainerRef = useRef<HTMLDivElement>(null);
   const mobileMessagesContainerRef = useRef<HTMLDivElement>(null);
@@ -309,7 +311,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Auto-scroll state
   const [isUserScrolling, setIsUserScrolling] = useState(false);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
-  const [newMessagesCount, setNewMessagesCount] = useState(0);
   const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const initialLoadRef = useRef<number | null>(null);
   const firstUnreadMessageIdRef = useRef<number | null>(null);
@@ -1814,6 +1815,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             setShowBusinessCardModal(true);
           }
         };
+        const sizeClass = size === 'xlarge' ? 'w-14 h-14' : size === 'large' ? 'w-11 h-11' : 'w-10 h-10';
+        const textClass = size === 'xlarge' ? 'text-lg' : size === 'large' ? 'text-base' : 'text-sm';
         return (
           <button
             onClick={handleAvatarClick}
@@ -1824,9 +1827,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               userId: avatarKey,
               name,
               photoUrl,
-              sizeClass: 'w-14 h-14',
+              sizeClass,
               borderClass: '',
-              textClass: 'text-lg',
+              textClass,
             })}
           </button>
         );
@@ -1855,8 +1858,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
     // Render group icon - use custom image if available, otherwise default gradient
     const renderGroupIcon = () => {
-      const iconSize = size === 'xlarge' ? 'w-16 h-16' : size === 'large' ? 'w-14 h-14' : 'w-10 h-10';
-      const iconInnerSize = size === 'xlarge' ? 'w-8 h-8' : size === 'large' ? 'w-7 h-7' : 'w-5 h-5';
+      const iconSize = size === 'xlarge' ? 'w-14 h-14' : size === 'large' ? 'w-11 h-11' : 'w-10 h-10';
+      const iconInnerSize = size === 'xlarge' ? 'w-7 h-7' : size === 'large' ? 'w-6 h-6' : 'w-5 h-5';
 
       if (conversation.icon_url) {
         return (
@@ -1990,17 +1993,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
           // Typing indicator handler
           websocketService.onTyping((data) => {
-            console.log('⌨️ Typing event received:', data);
             const { conversation_id, user_id, user_name, is_typing } = data;
-
-            // Don't show typing indicator for own messages
-            if (user_id === currentUser?.id) {
-              console.log('⌨️ Ignoring own typing event');
-              return;
-            }
+            if (user_id === currentUser?.id) return;
 
             if (is_typing) {
-              console.log('⌨️ User is typing:', user_name);
               setTypingUsers(prev => {
                 const newMap = new Map(prev);
                 newMap.set(conversation_id, { userId: user_id, userName: user_name });
@@ -2018,7 +2014,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 });
               }, 3000);
             } else {
-              console.log('⌨️ User stopped typing:', user_name);
               setTypingUsers(prev => {
                 const newMap = new Map(prev);
                 if (newMap.get(conversation_id)?.userId === user_id) {
@@ -2650,6 +2645,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         setIsLoadingMessages(false);
         console.log(`[RMQ] Restored ${cachedData.messages.length} messages from cache for conversation ${conversationId}`);
 
+        // Mark as read when entering chat (even when using cache) so read status and unread badge stay in sync
+        const cachedMessageIds = cachedData.messages.map((m: Message) => m.id).filter((id: number) => id != null);
+        if (cachedMessageIds.length > 0 && currentUser) {
+          markMessagesAsRead(cachedMessageIds, conversationId).catch(console.error);
+        }
+
         // Check for new messages in background (non-blocking)
         setTimeout(async () => {
           try {
@@ -2928,7 +2929,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       isUserScrollingRef.current = false;
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
-      setNewMessagesCount(0);
     } catch (error) {
       toast.error('Failed to load messages');
       setIsLoadingMessages(false);
@@ -4798,7 +4798,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       isUserScrollingRef.current = false;
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
-      setNewMessagesCount(0);
       userJustScrolledToBottomRef.current = true;
       if (scrollPositionCheckRef.current) {
         clearTimeout(scrollPositionCheckRef.current);
@@ -4852,9 +4851,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     const shouldScroll = ((shouldAutoScrollRef.current && userIsNearBottom && !isUserScrollingRef.current) || isNewMessageFromMe) && hasNewMessages;
 
     if (shouldScroll && messages.length > 0 && selectedConversation && !isScrollingRef.current) {
-      // Reset new messages count when auto-scrolling
-      setNewMessagesCount(0);
-
       // Delayed scroll for subsequent message updates to allow rendering
       isScrollingRef.current = true;
 
@@ -4867,15 +4863,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       });
 
     } else if (shouldAutoScroll && !userIsNearBottom && hasNewMessages && selectedConversation) {
-      // User is scrolled up and new messages arrived - disable auto-scroll and increment count
+      // User is scrolled up and new messages arrived - disable auto-scroll
       shouldAutoScrollRef.current = false;
       setShouldAutoScroll(false);
-      const newCount = messages.length - prevMessageCountRef.current;
-      setNewMessagesCount(prev => prev + newCount);
-    } else if (!shouldAutoScroll && messages.length > prevMessageCountRef.current && selectedConversation) {
-      // User is scrolled up and new messages arrived - increment count
-      const newCount = messages.length - prevMessageCountRef.current;
-      setNewMessagesCount(prev => prev + newCount);
     }
 
     // Update previous message count
@@ -4971,7 +4961,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       isUserScrollingRef.current = false;
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
-      setNewMessagesCount(0);
 
       // Single scroll to bottom after one delay; stabilization period prevents further programmatic scroll when media loads
       if (!isLoadingMessages && !isPreloadingImages) {
@@ -5153,7 +5142,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         isUserScrollingRef.current = false;
         setShouldAutoScroll(true);
         setIsUserScrolling(false);
-        setNewMessagesCount(0);
 
         // Wait a bit for DOM to settle after images load
         requestAnimationFrame(() => {
@@ -5212,7 +5200,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const adjustTextareaHeight = (textarea: HTMLTextAreaElement | null, maxHeight = 200) => {
     if (!textarea) return;
     textarea.style.height = 'auto';
-    const minHeight = 48; // Match button height (h-12 = 48px)
+    const minHeight = 40; // Match compact button height
     const newHeight = Math.max(minHeight, Math.min(textarea.scrollHeight, maxHeight));
     textarea.style.height = `${newHeight}px`;
   };
@@ -5224,10 +5212,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     });
   };
 
-  // Handle message input change
+  // Handle message input change — keep state update non-blocking and throttle typing indicator for fast typing
   const handleMessageInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
-    setNewMessage(value);
+    // Defer state update so the input stays responsive (avoids blocking the main thread on every keystroke)
+    startTransition(() => setNewMessage(value));
     adjustTextareaHeight(e.target);
     if (e.target !== messageInputRef.current) {
       adjustTextareaHeight(messageInputRef.current);
@@ -5236,28 +5225,26 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       adjustTextareaHeight(mobileMessageInputRef.current);
     }
 
-    // Send typing indicator
+    // Send typing indicator (throttled: at most once per TYPING_INDICATOR_THROTTLE_MS to avoid slow typing)
     if (selectedConversation && currentUser && websocketService.isSocketConnected()) {
-      const userName = currentUser.full_name || currentUser.email || 'User';
+      const now = Date.now();
+      if (now - lastTypingSentAtRef.current >= TYPING_INDICATOR_THROTTLE_MS) {
+        lastTypingSentAtRef.current = now;
+        const userName = currentUser.full_name || currentUser.email || 'User';
+        websocketService.sendTyping(
+          selectedConversation.id,
+          currentUser.id,
+          userName,
+          true
+        );
+      }
 
-      // Send typing started
-      console.log('⌨️ Sending typing indicator: true');
-      websocketService.sendTyping(
-        selectedConversation.id,
-        currentUser.id,
-        userName,
-        true
-      );
-
-      // Clear existing timeout
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
       }
-
-      // Set timeout to stop typing after 2 seconds of inactivity
       typingTimeoutRef.current = setTimeout(() => {
         if (selectedConversation && currentUser && websocketService.isSocketConnected()) {
-          console.log('⌨️ Sending typing indicator: false');
+          const userName = currentUser.full_name || currentUser.email || 'User';
           websocketService.sendTyping(
             selectedConversation.id,
             currentUser.id,
@@ -5266,12 +5253,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           );
         }
       }, 2000);
-    } else {
-      console.warn('⌨️ Cannot send typing indicator:', {
-        hasConversation: !!selectedConversation,
-        hasUser: !!currentUser,
-        isConnected: websocketService.isSocketConnected()
-      });
     }
   };
 
@@ -5677,7 +5658,26 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     };
   }, [selectedConversation?.id, currentUser?.id]); // Only depend on IDs to prevent constant re-joining
 
-  // Periodically refresh read receipts for messages in current conversation
+  // When entering a chat: mark as read and clear unread badge immediately (no need to leave/refresh)
+  useEffect(() => {
+    if (!selectedConversation || !currentUser) return;
+    const convId = selectedConversation.id;
+    // Clear unread count in UI immediately so sidepanel badge disappears
+    setConversations(prev =>
+      prev.map(conv => (conv.id === convId ? { ...conv, unread_count: 0 } : conv))
+    );
+    setPersistedConversations(prev =>
+      prev.map(conv => (conv.id === convId ? { ...conv, unread_count: 0 } : conv))
+    );
+    // Persist read state in backend
+    void supabase
+      .rpc('mark_conversation_as_read', { conv_id: convId, user_uuid: currentUser.id })
+      .then(() => {}, console.error);
+  }, [selectedConversation?.id, currentUser?.id]);
+
+  // Periodically refresh read receipts for messages in current conversation.
+  // Only call setMessages when at least one message's read_receipts actually changed, to avoid
+  // replacing the entire list with new object references every 3s (which caused blinking/flickering for some users).
   useEffect(() => {
     if (!selectedConversation || !currentUser || messages.length === 0) return;
 
@@ -5694,25 +5694,30 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .select('message_id, user_id, read_at')
         .in('message_id', messageIds);
 
-      if (receipts) {
-        // Group receipts by message_id
-        const receiptsByMessage = receipts.reduce((acc: any, receipt: any) => {
-          if (!acc[receipt.message_id]) {
-            acc[receipt.message_id] = [];
-          }
-          acc[receipt.message_id].push({
-            user_id: receipt.user_id,
-            read_at: receipt.read_at
-          });
-          return acc;
-        }, {});
+      if (!receipts || receipts.length === 0) return;
 
-        // Update messages with new read receipts
-        setMessages(prev => prev.map(msg => ({
-          ...msg,
-          read_receipts: receiptsByMessage[msg.id] || msg.read_receipts || []
-        })));
-      }
+      // Group receipts by message_id (key by number for message ids)
+      const receiptsByMessage: Record<number, Array<{ user_id: string; read_at: string }>> = receipts.reduce((acc: Record<number, Array<{ user_id: string; read_at: string }>>, receipt: any) => {
+        const mid = receipt.message_id as number;
+        if (!acc[mid]) acc[mid] = [];
+        acc[mid].push({ user_id: receipt.user_id, read_at: receipt.read_at });
+        return acc;
+      }, {});
+
+      const serializeReceipts = (arr: Array<{ user_id: string; read_at: string }>) =>
+        [...(arr || [])].sort((a, b) => (a.user_id + a.read_at).localeCompare(b.user_id + b.read_at)).map(r => `${r.user_id}:${r.read_at}`).join(',');
+
+      setMessages(prev => {
+        let hasChange = false;
+        const next = prev.map(msg => {
+          const newReceipts = receiptsByMessage[msg.id] || msg.read_receipts || [];
+          const prevReceipts = msg.read_receipts || [];
+          const same = serializeReceipts(prevReceipts) === serializeReceipts(newReceipts);
+          if (!same) hasChange = true;
+          return same ? msg : { ...msg, read_receipts: newReceipts };
+        });
+        return hasChange ? next : prev;
+      });
     };
 
     // Refresh immediately
@@ -6478,20 +6483,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               const hasDirectRoleOrDept = selectedConversation.type === 'direct' && (directRole || directDepartment);
               return (
             <div
-              className="py-2 px-3 border-b border-base-300 bg-base-100 absolute top-0 left-0 right-0 z-20"
+              className="py-1.5 px-2 border-b border-base-300 bg-base-100 absolute top-0 left-0 right-0 z-20"
               style={{
                 boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
               }}
             >
               <div className="relative flex items-center justify-between">
-                <div className="flex items-center gap-3 min-w-0 flex-1">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
                   <button
                     onClick={() => setShowMobileConversations(true)}
                     className="lg:hidden btn btn-ghost btn-sm btn-circle"
                   >
                     <ArrowLeftIcon className="w-5 h-5" />
                   </button>
-                  {getConversationAvatar(selectedConversation, 'xlarge')}
+                  {getConversationAvatar(selectedConversation, 'large')}
                   <div className="flex-1 min-w-0">
                     {selectedConversation.type === 'direct' ? (
                       (() => {
@@ -6509,7 +6514,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           return (
                             <>
                               <div className="flex flex-wrap items-center gap-2 text-base-content">
-                                <h2 className="font-semibold">
+                                <h2 className="font-semibold text-sm">
                                   {getConversationTitle(selectedConversation)}
                                 </h2>
                               </div>
@@ -6547,23 +6552,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         }
                         return (
                           <>
-                            <h2 className="font-semibold text-base-content">
+                            <h2 className="font-semibold text-sm text-base-content">
                               {getConversationTitle(selectedConversation)}
                             </h2>
-                            <p className="text-sm text-base-content/90">Direct message</p>
+                            <p className="text-xs text-base-content/90">Direct message</p>
                           </>
                         );
                       })()
                     ) : (
                       <>
                         <div className="flex items-center gap-2 flex-wrap">
-                          <h2 className="font-semibold text-gray-900">
+                          <h2 className="font-semibold text-sm text-gray-900">
                             {getConversationTitle(selectedConversation)}
                           </h2>
                           {selectedConversation.participants && selectedConversation.participants.length > 0 && (
                             <button
                               onClick={() => setShowDesktopGroupMembers(!showDesktopGroupMembers)}
-                              className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-sm font-medium text-gray-700 hover:bg-base-200 transition-colors"
+                              className="flex items-center gap-1 px-1.5 py-0.5 rounded-lg text-xs font-medium text-gray-700 hover:bg-base-200 transition-colors"
                               title={showDesktopGroupMembers ? 'Hide members' : 'Show members'}
                             >
                               <span>{selectedConversation.participants.length} {selectedConversation.participants.length === 1 ? 'member' : 'members'}</span>
@@ -6782,9 +6787,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       >
                         {showDateSeparator && (
                           <div className="flex justify-center my-4">
-                            <div className="text-sm font-medium px-3 py-1.5 rounded-full border bg-base-200 border-base-300 text-base-content shadow-sm">
-                              {formatDateSeparator(message.sent_at)}
-                            </div>
+                            <span className="text-sm text-gray-400">{formatDateSeparator(message.sent_at)}</span>
                           </div>
                         )}
                         {/* Unread messages indicator - Desktop */}
@@ -6882,35 +6885,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 )}
                             <div
                               className="relative cursor-pointer group w-full"
-                              onClick={(e) => {
-                                const target = e.target as HTMLElement;
-                                const isVideoElement = target.tagName === 'VIDEO';
-                                const isVideoControl = target.closest('video') !== null;
-                                if (isVideoElement || isVideoControl) return;
-                                openMediaModal(message);
-                              }}
+                              onClick={() => openMediaModal(message)}
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openMediaModal(message); } }}
                             >
                               <video
                                 data-message-id={message.id}
                                 src={message.attachment_url}
                                 crossOrigin="anonymous"
-                                className="max-w-full max-h-80 md:max-h-[600px] min-h-[200px] md:min-h-[300px] object-cover bg-gray-100 dark:bg-gray-800 relative z-10"
-                                controls
+                                className="max-w-full max-h-80 md:max-h-[600px] min-h-[200px] md:min-h-[300px] object-cover bg-gray-100 dark:bg-gray-800 relative z-10 pointer-events-none"
                                 preload="metadata"
                                 playsInline
-                                style={{ pointerEvents: 'auto' }}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  const target = e.target as HTMLElement;
-                                  if (target.tagName === 'VIDEO') {
-                                    const video = e.target as HTMLVideoElement;
-                                    if (video.paused) {
-                                      video.play().catch(() => { });
-                                    } else {
-                                      video.pause();
-                                    }
-                                  }
-                                }}
                                 onLoadedMetadata={(e) => {
                                   const video = e.target as HTMLVideoElement;
                                   addLoadedVideo(message.id);
@@ -7450,7 +7436,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     onClick={() => {
                       shouldAutoScrollRef.current = true;
                       setShouldAutoScroll(true);
-                      setNewMessagesCount(0);
                       scrollToBottom('smooth');
                     }}
                     className="text-white rounded-full p-3 shadow-lg transition-all"
@@ -7474,19 +7459,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             </div>
 
             {/* Message Input - Desktop Only (flex sibling so messages area height = remaining space) */}
-            <div className="hidden lg:flex flex-shrink-0 p-4 z-10">
-              <div className="flex items-center gap-3 relative w-full">
+            <div className="hidden lg:flex flex-shrink-0 p-2 z-10">
+              <div className="flex items-center gap-2 relative w-full">
                 {/* Consolidated Tools Button */}
                 <div className="relative flex-shrink-0" ref={desktopToolsRef}>
                   {!isRecording ? (
                     <button
                       onClick={() => setShowDesktopTools(prev => !prev)}
                       disabled={isSending}
-                      className="btn btn-circle w-12 h-12 text-white disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow flex-shrink-0"
-                      style={{ background: 'linear-gradient(to bottom right, #047857, #0f766e)', borderColor: 'transparent' }}
+                      className="btn btn-ghost btn-circle w-10 h-10 min-h-0 text-base-content disabled:opacity-50 flex-shrink-0 hover:bg-base-200"
                       title="Message tools"
                     >
-                      <Squares2X2Icon className="w-6 h-6" />
+                      <Squares2X2Icon className="w-7 h-7" />
                     </button>
                   ) : (
                     <div className="flex items-center gap-2 rounded-full px-3 py-2 shadow-lg border border-white/30" style={{ backgroundColor: 'rgba(255, 255, 255, 0.8)', backdropFilter: 'blur(10px)' }}>
@@ -7702,15 +7686,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     onPaste={handlePaste}
                     placeholder={messageToEdit ? "Edit message..." : "Type a message..."}
                     dir={containsHebrew(messageToEdit ? editingMessageText : newMessage) ? 'rtl' : 'ltr'}
-                    className="textarea w-full resize-none max-h-32 border border-gray-300 rounded-2xl focus:border-gray-400 focus:outline-none text-base text-gray-900 placeholder:text-gray-500 bg-gray-100"
+                    className="textarea w-full resize-none max-h-28 border-0 outline-none focus:outline-none focus:ring-0 rounded-2xl text-base text-gray-900 placeholder:text-gray-500 !bg-white"
                     rows={1}
                     disabled={isSending}
                     style={{
-                      height: '48px',
-                      minHeight: '48px',
-                      fontSize: '1.125rem',
-                      padding: '12px 16px',
-                      boxSizing: 'border-box'
+                      height: '40px',
+                      minHeight: '40px',
+                      fontSize: '1rem',
+                      padding: '8px 12px',
+                      boxSizing: 'border-box',
+                      backgroundColor: '#ffffff'
                     }}
                   />
                 </div>
@@ -7718,18 +7703,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <button
                   onClick={!newMessage.trim() && !messageToEdit ? startVoiceRecording : sendMessage}
                   disabled={isSending}
-                  className="btn btn-circle w-12 h-12 text-white disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow flex-shrink-0"
-                  style={{ background: 'linear-gradient(to bottom right, #047857, #0f766e)', borderColor: 'transparent' }}
+                  className="btn btn-ghost btn-circle w-10 h-10 min-h-0 text-base-content disabled:opacity-50 flex-shrink-0 hover:bg-base-200"
                   title={messageToEdit ? 'Save edit' : !newMessage.trim() && !messageToEdit ? 'Record voice message' : 'Send message'}
                 >
                   {isSending ? (
                     <div className="loading loading-spinner loading-sm"></div>
                   ) : messageToEdit ? (
-                    <CheckIcon className="w-5 h-5" />
+                    <CheckIcon className="w-6 h-6 text-green-600" />
                   ) : !newMessage.trim() ? (
-                    <MicrophoneIcon className="w-5 h-5" />
+                    <MicrophoneIcon className="w-6 h-6" />
                   ) : (
-                    <PaperAirplaneIcon className="w-5 h-5" />
+                    <PaperAirplaneIcon className="w-6 h-6 text-green-600" />
                   )}
                 </button>
               </div>
@@ -8149,9 +8133,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       >
                         {showDateSeparator && (
                           <div className="flex justify-center my-4">
-                            <div className="text-sm font-medium px-3 py-1.5 rounded-full border bg-base-200 border-base-300 text-base-content shadow-sm">
-                              {formatDateSeparator(message.sent_at)}
-                            </div>
+                            <span className="text-sm text-gray-400">{formatDateSeparator(message.sent_at)}</span>
                           </div>
                         )}
                         {/* Unread messages indicator - Mobile */}
@@ -8256,32 +8238,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     </span>
                                   </div>
                                 )}
-                                <div className="relative cursor-pointer group w-full" onClick={(e) => {
-                                  const target = e.target as HTMLElement;
-                                  if (target.tagName === 'VIDEO' || target.closest('video')) return;
-                                  openMediaModal(message);
-                                }}>
+                                <div
+                                  className="relative cursor-pointer group w-full"
+                                  onClick={() => openMediaModal(message)}
+                                  role="button"
+                                  tabIndex={0}
+                                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openMediaModal(message); } }}
+                                >
                               <video
                                 data-message-id={message.id}
                                 src={message.attachment_url}
                                 crossOrigin="anonymous"
-                                className="max-w-full max-h-80 md:max-h-[600px] min-h-[200px] md:min-h-[300px] rounded-lg object-cover bg-gray-100 dark:bg-gray-800 relative z-10"
-                                controls
+                                className="max-w-full max-h-80 md:max-h-[600px] min-h-[200px] md:min-h-[300px] rounded-lg object-cover bg-gray-100 dark:bg-gray-800 relative z-10 pointer-events-none"
                                 preload="metadata"
                                 playsInline
-                                style={{ pointerEvents: 'auto' }}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  const target = e.target as HTMLElement;
-                                  if (target.tagName === 'VIDEO') {
-                                    const video = e.target as HTMLVideoElement;
-                                    if (video.paused) {
-                                      video.play().catch(() => { });
-                                    } else {
-                                      video.pause();
-                                    }
-                                  }
-                                }}
                                 onLoadedMetadata={(e) => {
                                   const video = e.target as HTMLVideoElement;
                                   addLoadedVideo(message.id);
@@ -8755,25 +8725,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </AnimatePresence>
               )}
 
-              {/* New messages indicator when user is scrolled up - Mobile */}
+              {/* Scroll to bottom button when user is scrolled up - Mobile */}
               {isUserScrolling && !shouldAutoScroll && (
                 <div className="fixed bottom-20 right-4 z-50">
                   <button
                     onClick={() => {
                       shouldAutoScrollRef.current = true;
                       setShouldAutoScroll(true);
-                      setNewMessagesCount(0);
                       scrollToBottom('smooth');
                     }}
                     className="text-white rounded-full p-3 shadow-lg transition-all relative"
                     style={{ background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' }}
-                    title={newMessagesCount > 0 ? `${newMessagesCount} new message${newMessagesCount > 1 ? 's' : ''} - click to scroll down` : "New messages - click to scroll down"}
+                    title="Scroll to bottom"
                   >
-                    {newMessagesCount > 0 && (
-                      <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center shadow-lg">
-                        {newMessagesCount > 99 ? '99+' : newMessagesCount}
-                      </span>
-                    )}
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
                     </svg>
@@ -8801,23 +8765,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             </div>
 
             {/* Mobile Message Input - Mobile Only */}
-            <div className="lg:hidden absolute bottom-0 left-0 right-0 p-3 z-30 pointer-events-none">
-              <div className="relative space-y-2 pointer-events-auto">
+            <div className="lg:hidden absolute bottom-0 left-0 right-0 p-2 z-30 pointer-events-none">
+              <div className="relative space-y-1 pointer-events-auto">
                 <div className="flex items-center gap-2">
                   <div className="relative flex-shrink-0" ref={mobileToolsRef}>
                     <button
                       onClick={() => setShowMobileTools(prev => !prev)}
-                      className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow flex-shrink-0 border"
-                      style={{
-                        backgroundColor: 'rgba(2, 85, 62, 0.58)',
-                        backdropFilter: 'blur(14px)',
-                        WebkitBackdropFilter: 'blur(14px)',
-                        borderColor: 'rgba(2, 85, 62, 0.7)',
-                        boxShadow: '0 4px 24px rgba(2, 85, 62, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.2)'
-                      }}
+                      className="btn btn-ghost btn-circle w-10 h-10 min-h-0 text-base-content flex-shrink-0 hover:bg-base-200"
                       title="Message tools"
                     >
-                      <Squares2X2Icon className="w-6 h-6" />
+                      <Squares2X2Icon className="w-7 h-7" />
                     </button>
                     {showMobileTools && (
                       <div className="absolute bottom-12 left-0 z-50 bg-white border border-gray-200 rounded-xl shadow-xl w-64 divide-y divide-gray-100">
@@ -8919,13 +8876,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       onPaste={handlePaste}
                       placeholder={messageToEdit ? "Edit message..." : "Type a message..."}
                       dir={containsHebrew(messageToEdit ? editingMessageText : newMessage) ? 'rtl' : 'ltr'}
-                      className="textarea w-full resize-none max-h-40 border rounded-2xl focus:outline-none text-base text-white placeholder:text-white/80"
+                      className="textarea w-full resize-none max-h-32 border-0 outline-none focus:outline-none focus:ring-0 rounded-2xl text-base text-white placeholder:text-white/80"
                       rows={1}
                       disabled={isSending}
                       style={{
-                        height: '48px',
-                        minHeight: '48px',
-                        fontSize: '1.125rem',
+                        height: '40px',
+                        minHeight: '40px',
+                        fontSize: '1rem',
                         lineHeight: '1.4',
                         color: '#fff',
                         backgroundColor: 'rgba(2, 85, 62, 0.58)',
@@ -8933,7 +8890,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         WebkitBackdropFilter: 'blur(14px)',
                         border: '1px solid rgba(2, 85, 62, 0.7)',
                         boxShadow: '0 4px 24px rgba(2, 85, 62, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.2)',
-                        padding: '12px 16px',
+                        padding: '8px 12px',
                         boxSizing: 'border-box'
                       }}
                     />
@@ -8942,24 +8899,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   <button
                     onClick={!newMessage.trim() && !messageToEdit ? startVoiceRecording : sendMessage}
                     disabled={isSending}
-                    className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow flex-shrink-0 border"
-                    style={{
-                      backgroundColor: 'rgba(2, 85, 62, 0.58)',
-                      backdropFilter: 'blur(14px)',
-                      WebkitBackdropFilter: 'blur(14px)',
-                      borderColor: 'rgba(2, 85, 62, 0.7)',
-                      boxShadow: '0 4px 24px rgba(2, 85, 62, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.2)'
-                    }}
+                    className="btn btn-ghost btn-circle w-10 h-10 min-h-0 text-base-content disabled:opacity-50 flex-shrink-0 hover:bg-base-200"
                     title={messageToEdit ? 'Save edit' : !newMessage.trim() && !messageToEdit ? 'Record voice message' : 'Send message'}
                   >
                     {isSending ? (
                       <div className="loading loading-spinner loading-sm"></div>
                     ) : messageToEdit ? (
-                      <CheckIcon className="w-5 h-5" />
+                      <CheckIcon className="w-6 h-6 text-green-600" />
                     ) : !newMessage.trim() ? (
-                      <MicrophoneIcon className="w-5 h-5" />
+                      <MicrophoneIcon className="w-6 h-6" />
                     ) : (
-                      <PaperAirplaneIcon className="w-5 h-5" />
+                      <PaperAirplaneIcon className="w-6 h-6 text-green-600" />
                     )}
                   </button>
                 </div>

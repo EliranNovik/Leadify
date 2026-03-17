@@ -2987,6 +2987,7 @@ const Clients: React.FC<ClientsProps> = ({
             stage,
             cdate,
             udate,
+            file_id,
             notes,
             special_notes,
             next_followup,
@@ -3108,6 +3109,7 @@ const Clients: React.FC<ClientsProps> = ({
             source: getSourceDisplayFromJoin(data) ?? String(data.source_id ?? ''),
             created_at: data.cdate,
             updated_at: data.udate,
+            file_id: data.file_id != null && String(data.file_id).trim() !== '' && String(data.file_id).trim() !== '0000' ? String(data.file_id).trim() : '',
             notes: data.notes || '',
             special_notes: data.special_notes || '',
             next_followup: data.next_followup || '',
@@ -3902,6 +3904,7 @@ const Clients: React.FC<ClientsProps> = ({
                   source: getSourceDisplayFromJoin(legacyLead) ?? String(legacyLead.source_id || ''),
                   created_at: legacyLead.cdate,
                   updated_at: legacyLead.udate,
+                  file_id: (legacyLead as any).file_id != null && String((legacyLead as any).file_id).trim() !== '' && String((legacyLead as any).file_id).trim() !== '0000' ? String((legacyLead as any).file_id).trim() : '',
                   notes: legacyLead.notes || '',
                   special_notes: legacyLead.special_notes || '',
                   next_followup: legacyLead.next_followup || '',
@@ -8275,8 +8278,15 @@ const Clients: React.FC<ClientsProps> = ({
           updateData.topic = editLeadData.topic;
         }
         if (editLeadData.special_notes !== selectedClient.special_notes) {
-          updateData.special_notes = editLeadData.special_notes;
-          updateData.notes = editLeadData.special_notes; // Map special_notes to notes for legacy
+          const newSpecialNotes = editLeadData.special_notes;
+          const fileIdStr = String(selectedClient.file_id || '').trim();
+          if (fileIdStr && String(newSpecialNotes || '').trim() === fileIdStr) {
+            // Avoid writing file_id into notes/special_notes (guard against accidental copy)
+            console.warn('Edit lead: skipped writing value that matches file_id into special_notes/notes');
+          } else {
+            updateData.special_notes = newSpecialNotes;
+            updateData.notes = newSpecialNotes; // Map special_notes to notes for legacy
+          }
         }
         // Compare probability values (handle both string and number formats)
         const currentProbability = typeof selectedClient.probability === 'string'
@@ -8437,7 +8447,13 @@ const Clients: React.FC<ClientsProps> = ({
           updateData.topic = editLeadData.topic;
         }
         if (editLeadData.special_notes !== selectedClient.special_notes) {
-          updateData.special_notes = editLeadData.special_notes;
+          const newSpecialNotes = editLeadData.special_notes;
+          const fileIdStr = String(selectedClient.file_id || '').trim();
+          if (fileIdStr && String(newSpecialNotes || '').trim() === fileIdStr) {
+            console.warn('Edit lead: skipped writing value that matches file_id into special_notes');
+          } else {
+            updateData.special_notes = newSpecialNotes;
+          }
         }
         // Compare probability values (handle both string and number formats)
         const currentProbabilityNew = typeof selectedClient.probability === 'string'

@@ -266,12 +266,7 @@ class WebSocketService {
 
   // Send typing indicator
   sendTyping(conversationId: number, userId: string, userName: string, isTyping: boolean): void {
-    if (!this.socket?.connected) {
-      console.warn('⌨️ Cannot send typing indicator: WebSocket not connected');
-      return;
-    }
-
-    console.log('⌨️ Emitting typing event:', { conversationId, userId, userName, isTyping });
+    if (!this.socket?.connected) return;
     this.socket.emit('typing', {
       conversation_id: conversationId,
       user_id: userId,
