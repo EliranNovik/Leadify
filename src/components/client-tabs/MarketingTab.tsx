@@ -63,12 +63,12 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   return (
     <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-8">
-        <div className="w-8 h-8 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
-          <MegaphoneIcon className="w-6 h-6 text-white" />
+      <div className="flex items-center gap-3 mb-6">
+        <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
+          <MegaphoneIcon className="w-5 h-5 text-gray-600" />
         </div>
         <div>
-          <h2 className="text-2xl font-bold">Marketing Information</h2>
+          <h2 className="text-xl font-semibold text-gray-900">Marketing Information</h2>
           <p className="text-sm text-gray-500">Client potential and source tracking</p>
         </div>
       </div>

@@ -1460,9 +1460,6 @@ const PaymentPlansManager: React.FC = () => {
                 ← Back to List
               </button>
               <h3 className="text-xl font-bold">Payment Plan Details</h3>
-              <span className={`badge ${selectedPlan.lead_type === 'legacy' ? 'badge-warning' : 'badge-info'}`}>
-                {selectedPlan.lead_type === 'legacy' ? 'Legacy Lead' : 'New Lead'}
-              </span>
             </div>
             <div className="flex gap-2">
               <button 

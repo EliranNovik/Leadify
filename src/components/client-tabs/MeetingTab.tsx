@@ -15,6 +15,7 @@ import {
   ClockIcon as ClockSolidIcon,
   UserCircleIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
   DocumentTextIcon,
   AcademicCapIcon,
   ArrowPathIcon,
@@ -155,6 +156,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   }>({});
 
   // Scheduling information history
+  const [showPastMeetingsPanel, setShowPastMeetingsPanel] = useState(false);
+
   const [schedulingHistory, setSchedulingHistory] = useState<Array<{
     id: string;
     meeting_scheduling_notes?: string;
@@ -4300,14 +4303,16 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </div>
             {/* Action Buttons */}
             <div className="flex gap-1 sm:gap-2">
-              {/* Edit Button */}
-              <button
-                className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
-                onClick={() => handleEditMeeting(meeting)}
-                title="Edit Meeting"
-              >
-                <PencilIcon className="w-3 h-3 sm:w-4 sm:h-4" />
-              </button>
+              {/* Edit Button - only for upcoming meetings */}
+              {!past && (
+                <button
+                  className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
+                  onClick={() => handleEditMeeting(meeting)}
+                  title="Edit Meeting"
+                >
+                  <PencilIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                </button>
+              )}
               {!past && (
                 <>
                   <div className="relative" ref={(el) => {
@@ -5087,15 +5092,15 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   return (
-    <div className="px-1 sm:px-4 md:px-6 py-2 sm:py-4 md:py-6 space-y-4 sm:space-y-6">
+    <div className="px-1 sm:px-4 md:px-6 py-2 sm:py-4 md:py-6 space-y-10 sm:space-y-16">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex items-center justify-between mb-14">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
-            <CalendarIcon className="w-6 h-6 text-white" />
+          <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
+            <CalendarIcon className="w-5 h-5 text-gray-600" />
           </div>
           <div>
-            <h2 className="text-2xl font-bold">Meeting Management</h2>
+            <h2 className="text-xl font-semibold text-gray-900">Meeting Management</h2>
             <p className="text-sm text-gray-500">Schedule and track client meetings</p>
           </div>
         </div>
@@ -5113,14 +5118,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   setShowScheduleDrawer(true);
                 }
               }}
-              className="btn text-white border-none"
-              style={{
-                background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',
-                border: 'none',
-                boxShadow: 'none'
-              }}
+              className="btn btn-ghost border border-gray-300 text-gray-700 hover:bg-gray-50"
             >
-              <CalendarIcon className="w-5 h-5 mr-2 text-white" />
+              <CalendarIcon className="w-5 h-5 mr-2 text-gray-600" />
               {upcomingMeetings.length > 0 ? 'Reschedule Meeting' : 'Schedule Meeting'}
             </button>
           )}
@@ -5128,14 +5128,10 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       {/* Scheduling History Table */}
       {schedulingHistory.length > 0 && (
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-          <div className="px-6 py-4 bg-white">
-            <h4 className="text-lg font-semibold text-gray-900">Scheduling History</h4>
-            <div className="border-b border-gray-200 mt-3"></div>
-          </div>
-          <div className="p-6">
-            <div className="overflow-x-auto">
-              <table className="table w-full">
+        <div className="mb-16">
+          <h4 className="text-base font-semibold text-gray-900 mb-4">Scheduling History</h4>
+          <div className="overflow-x-auto">
+            <table className="table w-full">
                 <thead>
                   <tr>
                     <th className="text-xs font-semibold text-gray-600 uppercase">Date</th>
@@ -5181,7 +5177,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   })}
                 </tbody>
               </table>
-            </div>
           </div>
         </div>
       )}
@@ -5233,69 +5228,100 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
       </div> */}
 
-      {/* Two-column grid: Upcoming (left) and Past (right) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-6">
-        {/* Upcoming Meetings (Left) */}
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-          <div className="px-3 sm:px-6 py-4 bg-white">
-            <div className="flex items-center justify-between">
-              <h4 className="text-lg font-semibold text-gray-900">Upcoming Meetings</h4>
-              {upcomingMeetings.length > 0 && (
-                <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
-                  {leadSchedulingInfo.meeting_confirmation && leadSchedulingInfo.meeting_confirmation_by ? (
-                    <span className="text-sm text-gray-600">
-                      {getEmployeeDisplayName(leadSchedulingInfo.meeting_confirmation_by)} confirmed meeting
-                    </span>
-                  ) : (
-                    <span className="text-sm text-gray-600">Not confirmed</span>
-                  )}
-                  <input
-                    type="checkbox"
-                    className="toggle toggle-primary toggle-sm"
-                    checked={leadSchedulingInfo.meeting_confirmation ?? false}
-                    onChange={handleToggleMeetingConfirmation}
-                  />
-                </label>
-              )}
-            </div>
-            <div className="border-b border-gray-200 mt-3"></div>
+      {/* Upcoming Meetings with Past Meetings toggle */}
+      <div className="relative">
+        {/* Upcoming Meetings (main content) - centered */}
+        <div className="w-full max-w-2xl mx-auto">
+          <div className="flex items-center justify-end mb-5">
+            {upcomingMeetings.length > 0 && (
+              <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                {leadSchedulingInfo.meeting_confirmation && leadSchedulingInfo.meeting_confirmation_by ? (
+                  <span className="text-sm text-gray-600">
+                    {getEmployeeDisplayName(leadSchedulingInfo.meeting_confirmation_by)} confirmed meeting
+                  </span>
+                ) : (
+                  <span className="text-sm text-gray-600">Not confirmed</span>
+                )}
+                <input
+                  type="checkbox"
+                  className="toggle toggle-primary toggle-sm"
+                  checked={leadSchedulingInfo.meeting_confirmation ?? false}
+                  onChange={handleToggleMeetingConfirmation}
+                />
+              </label>
+            )}
           </div>
-          <div className="p-3 sm:p-6">
-            <div className="space-y-4">
-              {upcomingMeetings.length > 0 ? (
-                upcomingMeetings.map(renderMeetingCard)
-              ) : (
-                <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg">
-                  <CalendarIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                  <p className="font-medium">No upcoming meetings</p>
-                  <p className="text-sm">Schedule a meeting to get started</p>
-                </div>
-              )}
-            </div>
+          <div className="space-y-8">
+            {upcomingMeetings.length > 0 ? (
+              upcomingMeetings.map(renderMeetingCard)
+            ) : (
+              <div className="text-center py-8 text-gray-500">
+                <CalendarIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
+                <p className="font-medium">No upcoming meetings</p>
+                <p className="text-sm">Schedule a meeting to get started</p>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Past Meetings (Right) */}
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-          <div className="px-3 sm:px-6 py-4 bg-white">
-            <h4 className="text-lg font-semibold text-gray-900">Past Meetings</h4>
-            <div className="border-b border-gray-200 mt-3"></div>
-          </div>
-          <div className="p-3 sm:p-6">
-            <div className="space-y-4">
-              {pastMeetings.length > 0 ? (
-                pastMeetings.map(renderMeetingCard)
-              ) : (
-                <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg">
-                  <ClockIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                  <p className="font-medium">No past meetings</p>
-                  <p className="text-sm">Completed meetings will appear here</p>
-                </div>
-              )}
-            </div>
-          </div>
+        {/* Past Meetings icon button - fixed on right edge of screen */}
+        <div className="fixed right-0 top-1/2 -translate-y-1/2 z-30">
+          <button
+            type="button"
+            onClick={() => setShowPastMeetingsPanel(!showPastMeetingsPanel)}
+            className={`relative flex flex-col items-center justify-center gap-2 w-12 py-6 rounded-l-2xl border shadow-lg transition-all duration-200 ${
+              showPastMeetingsPanel
+                ? 'bg-gray-100 border-gray-300 hover:bg-gray-50'
+                : 'bg-white border-gray-200 hover:shadow-xl hover:bg-gray-50'
+            }`}
+            title={`Past Meetings${pastMeetings.length > 0 ? ` (${pastMeetings.length})` : ''}`}
+          >
+            <ClockIcon className="w-6 h-6 text-gray-600" />
+            {pastMeetings.length > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[22px] h-[22px] px-1.5 flex items-center justify-center text-sm font-semibold bg-red-500 text-white rounded-full">
+                {pastMeetings.length}
+              </span>
+            )}
+          </button>
         </div>
       </div>
+
+      {/* Past Meetings slide-out panel */}
+      {showPastMeetingsPanel && (
+        <>
+          <div
+            className="fixed inset-0 bg-black/20 z-40"
+            onClick={() => setShowPastMeetingsPanel(false)}
+            aria-hidden="true"
+          />
+          <div className="fixed top-0 right-0 bottom-0 w-full max-w-md bg-white shadow-xl z-50 flex flex-col border-l border-gray-200">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <h4 className="text-base font-semibold text-gray-900">Past Meetings</h4>
+              <button
+                type="button"
+                onClick={() => setShowPastMeetingsPanel(false)}
+                className="btn btn-ghost btn-sm btn-square"
+                aria-label="Close"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              <div className="space-y-6">
+                {pastMeetings.length > 0 ? (
+                  pastMeetings.map(renderMeetingCard)
+                ) : (
+                  <div className="text-center py-8 text-gray-500">
+                    <ClockIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
+                    <p className="font-medium">No past meetings</p>
+                    <p className="text-sm">Completed meetings will appear here</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Notify Modal */}
       {showNotifyModal && selectedMeetingForNotify && (
@@ -5598,22 +5624,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   })()}
                 </div>
               )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {meetings.length === 0 && (
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
-          <div className="px-6 py-4 bg-white">
-            <h4 className="text-lg font-semibold text-gray-900">Meetings</h4>
-            <div className="border-b border-gray-200 mt-3"></div>
-          </div>
-          <div className="p-6">
-            <div className="text-center py-12 text-gray-500">
-              <CalendarIcon className="w-16 h-16 mx-auto text-gray-300 mb-4" />
-              <p className="text-lg font-medium mb-2">No meetings scheduled</p>
-              <p className="text-sm">Schedule your first meeting to get started</p>
             </div>
           </div>
         </div>

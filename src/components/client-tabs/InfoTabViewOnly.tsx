@@ -290,19 +290,12 @@ const InfoTabViewOnly: React.FC<ClientTabProps> = ({ client }) => {
   return (
     <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-8">
-        <div className="w-8 h-8 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
-          <InformationCircleIcon className="w-6 h-6 text-white" />
+      <div className="flex items-center gap-3 mb-6">
+        <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
+          <InformationCircleIcon className="w-5 h-5 text-gray-600" />
         </div>
-        <div className="flex-1">
-          <div className="flex items-center gap-3">
-            <h2 className="text-2xl font-bold">Client Information</h2>
-            {isLegacy && (
-              <span className="badge badge-warning badge-sm text-white">
-                Legacy Lead
-              </span>
-            )}
-          </div>
+        <div>
+          <h2 className="text-xl font-semibold text-gray-900">Client Information</h2>
           <p className="text-sm text-gray-500">View client details and case information</p>
         </div>
       </div>
@@ -330,7 +323,7 @@ const InfoTabViewOnly: React.FC<ClientTabProps> = ({ client }) => {
                 </div>
                 <div className="w-full bg-gray-200 rounded-full h-2.5">
                   <div 
-                    className="bg-primary h-2.5 rounded-full" 
+                    className="bg-success h-2.5 rounded-full" 
                     style={{ width: `${probability}%` }}
                   ></div>
                 </div>

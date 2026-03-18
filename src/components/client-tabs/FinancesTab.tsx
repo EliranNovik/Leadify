@@ -5162,6 +5162,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   return (
     <>
+      <div className="p-2 sm:p-4 md:p-6">
+        {/* Header */}
+        <div className="flex items-center gap-3 mb-6">
+          <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
+            <BanknotesIcon className="w-5 h-5 text-gray-600" />
+          </div>
+          <div>
+            <h2 className="text-xl font-semibold text-gray-900">Finances</h2>
+            <p className="text-sm text-gray-500">Payment plans and financial overview</p>
+          </div>
+        </div>
+      </div>
       <div className="overflow-x-auto w-full">
         {/* Contract Information Section */}
         {/* COMMENTED OUT - Contract Information Section
@@ -5445,10 +5457,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                       <div className="mb-4">
                         <div className="mb-2 flex justify-end">
                           <button
-                            className="btn btn-xs btn-outline btn-primary"
+                            className="btn btn-circle btn-sm btn-outline btn-primary"
                             onClick={() => fetchPaymentHistory(contactName)}
+                            title={openHistoryContact === contactName ? 'Hide Payment History' : 'Show Payment History'}
                           >
-                            {openHistoryContact === contactName ? 'Hide' : 'Show'} Payment History
+                            {openHistoryContact === contactName ? (
+                              <MinusIcon className="w-4 h-4" />
+                            ) : (
+                              <PlusIcon className="w-4 h-4" />
+                            )}
                           </button>
                         </div>
                         {openHistoryContact === contactName && (
@@ -5481,7 +5498,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                           </div>
                         )}
                         <div
-                          className="flex items-center gap-3 bg-white rounded-lg p-4 border border-purple-200 cursor-pointer hover:from-purple-100 hover:to-blue-100 transition-all duration-200"
+                          className="flex items-center gap-3 bg-white rounded-lg p-4 cursor-pointer hover:from-purple-100 hover:to-blue-100 transition-all duration-200"
                           onClick={() => setCollapsedContacts(prev => ({ ...prev, [contactName]: !prev[contactName] }))}
                           title={collapsedContacts[contactName] ? "Expand payments" : "Collapse payments"}
                         >
@@ -5565,7 +5582,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                       {!collapsedContacts[contactName] && (
                         <>
                           {viewMode === 'table' ? (
-                            <div className="bg-white rounded-xl p-4 border border-gray-200 overflow-x-auto">
+                            <div className="bg-white rounded-xl p-4 overflow-x-auto">
                               <table className="min-w-full rounded-xl overflow-hidden">
                                 <thead className="sticky top-0 z-10">
                                   <tr>
@@ -5967,7 +5984,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                         </td>
                                       </tr>
                                     ) : (
-                                      <div className="bg-white rounded-2xl p-6 shadow-2xl border flex flex-col gap-0 relative group min-h-[480px] mt-4">
+                                      <div className="bg-white rounded-2xl p-6 shadow-2xl flex flex-col gap-0 relative group min-h-[480px] mt-4">
                                         <div className="flex flex-col gap-0 divide-y divide-base-200">
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due %</span>
@@ -6197,7 +6214,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   return (
                                     <div
                                       key={p.id || idx}
-                                      className={`bg-white rounded-2xl p-6 shadow-2xl hover:shadow-3xl transition-all duration-200 border flex flex-col gap-0 relative group min-h-[480px] ${isPaid ? 'border-green-500 ring-2 ring-green-400' : 'border-base-200'}`}
+                                      className={`bg-white rounded-2xl p-6 shadow-2xl hover:shadow-3xl transition-all duration-200 flex flex-col gap-0 relative group min-h-[480px] ${isPaid ? 'ring-2 ring-green-400' : ''}`}
                                       style={{ position: 'relative', overflow: 'hidden' }}
                                     >
 
@@ -6549,13 +6566,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                   }}
                 >
                   <PlusIcon className="w-4 h-4" />
-                  Create New Payment Plan
+                  New Payment Plan
                 </button>
               </div>
 
               {/* Deleted Payments Section */}
               <div className="mt-8">
-                <div className="flex items-center gap-3 bg-white rounded-xl p-4 border border-gray-200 cursor-pointer hover:bg-gray-50 transition-all duration-200" onClick={() => {
+                <div className="flex items-center gap-3 bg-white rounded-xl p-4 cursor-pointer hover:bg-gray-50 transition-all duration-200" onClick={() => {
                   setShowDeletedPayments(!showDeletedPayments);
                   if (!showDeletedPayments) {
                     fetchDeletedPayments();
@@ -6574,10 +6591,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 </div>
 
                 {showDeletedPayments && (
-                  <div className="mt-4 p-6 bg-white rounded-xl border border-gray-200">
+                  <div className="mt-4 p-6 bg-white rounded-xl">
 
                     {deletedPayments.length > 0 ? (
-                      <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+                      <div className="bg-white rounded-xl overflow-x-auto">
                         <table className="min-w-full rounded-xl overflow-hidden">
                           <thead className="bg-base-200 sticky top-0 z-10">
                             <tr>

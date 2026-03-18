@@ -119,7 +119,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
     if (imageError || !photoUrl) {
       return (
         <div
-          className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
+          className={`${sizeClasses} rounded-full flex items-center justify-center bg-gray-200 text-gray-600 font-medium flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
           onClick={() => {
             if (employee.id) {
               navigate(`/my-profile/${employee.id}`);
@@ -365,6 +365,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
   // Use computed roles as the source of truth - initialize state with computed roles
   const [roles, setRoles] = useState<Role[]>(computedRoles);
   const [isEditing, setIsEditing] = useState(false);
+  const [editingRoleId, setEditingRoleId] = useState<string | null>(null);
   const [originalRoles, setOriginalRoles] = useState<Role[]>(computedRoles);
   const [isRolesLocked, setIsRolesLocked] = useState<boolean>(false);
   const [isSuperuser, setIsSuperuser] = useState<boolean>(false);
@@ -527,7 +528,8 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
     return [...unassignOption, ...otherOptions];
   };
 
-  const handleSaveRoles = async () => {
+  const handleSaveRoles = async (rolesToSave?: Role[]) => {
+    const rolesToUse = rolesToSave ?? roles;
     try {
       // Use the best available employee list (prop takes priority, falls back to local state)
       const employeesToSearch = (allEmployeesProp && allEmployeesProp.length > 0) ? allEmployeesProp : allEmployees;
@@ -566,7 +568,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
 
       // Prepare update object with all role changes
       const updateData: any = {};
-      roles.forEach(role => {
+      rolesToUse.forEach(role => {
         if (isLegacyLead && role.legacyFieldName) {
           // For legacy leads, convert display name back to employee ID (bigint)
           const employeeId = getEmployeeIdFromDisplayName(role.assignee);
@@ -640,8 +642,9 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
         throw error;
       }
 
-      setOriginalRoles([...roles]);
+      setOriginalRoles([...rolesToUse]);
       setIsEditing(false);
+      setEditingRoleId(null);
       // Clear search terms after saving
       setSearchTerms({});
       setShowDropdowns({});
@@ -663,6 +666,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
   const handleCancelEdit = () => {
     setRoles([...originalRoles]);
     setIsEditing(false);
+    setEditingRoleId(null);
     // Clear search terms when canceling
     setSearchTerms({});
     setShowDropdowns({});
@@ -680,6 +684,40 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
       initialSearchTerms[role.id] = '';
     });
     setSearchTerms(initialSearchTerms);
+  };
+
+  const handleStartRowEdit = (roleId: string) => {
+    if (isRolesLocked) {
+      toast.error('Roles are locked. Please unlock roles first.');
+      return;
+    }
+    setEditingRoleId(roleId);
+    setSearchTerms(prev => ({ ...prev, [roleId]: '' }));
+    setShowDropdowns(prev => ({ ...prev, [roleId]: true }));
+  };
+
+  const handleCancelRowEdit = () => {
+    const rid = editingRoleId;
+    if (rid) {
+      const original = originalRoles.find(r => r.id === rid);
+      if (original) {
+        setRoles(roles.map(r => r.id === rid ? { ...r, assignee: original.assignee } : r));
+      }
+      setSearchTerms(prev => ({ ...prev, [rid]: '' }));
+      setShowDropdowns(prev => ({ ...prev, [rid]: false }));
+    }
+    setEditingRoleId(null);
+  };
+
+  const handleRoleSelectAndSave = async (roleId: string, option: string) => {
+    const newRoles = roles.map(role =>
+      role.id === roleId ? { ...role, assignee: option } : role
+    );
+    setRoles(newRoles);
+    setSearchTerms(prev => ({ ...prev, [roleId]: '' }));
+    setShowDropdowns(prev => ({ ...prev, [roleId]: false }));
+    setEditingRoleId(null);
+    await handleSaveRoles(newRoles);
   };
 
   const handleToggleLock = async () => {
@@ -715,8 +753,9 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
       toast.success(newLockStatus ? 'Roles locked' : 'Roles unlocked');
 
       // If locking, cancel any active editing
-      if (newLockStatus && isEditing) {
+      if (newLockStatus && (isEditing || editingRoleId)) {
         handleCancelEdit();
+        setEditingRoleId(null);
       }
 
       // Refresh client data in parent component
@@ -828,13 +867,13 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
   return (
     <div className="p-2 sm:p-4 md:p-6">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
-            <UserGroupIcon className="w-6 h-6 text-white" />
+        <div className="flex items-center gap-3 mb-6">
+          <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
+            <UserGroupIcon className="w-5 h-5 text-gray-600" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-2xl font-bold">Roles</h2>
+              <h2 className="text-xl font-semibold text-gray-900">Roles</h2>
               {isRolesLocked && (
                 <LockClosedIcon className="w-5 h-5 text-gray-500" />
               )}
@@ -850,10 +889,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
           {/* Lock Button - Only visible for superusers */}
           {isSuperuser && (
             <button
-              className={`btn gap-2 px-6 shadow-md hover:scale-105 transition-transform ${isRolesLocked
-                ? 'btn-error text-white'
-                : 'btn-ghost border border-gray-300'
-                }`}
+              className="btn btn-ghost border border-gray-300 gap-2 px-6"
               onClick={handleToggleLock}
               title={isRolesLocked ? 'Unlock roles' : 'Lock roles'}
             >
@@ -871,112 +907,95 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
             </button>
           )}
 
-          {/* Set Roles button - Hidden when locked */}
-          {!isRolesLocked && (
-            <>
-              {isEditing ? (
-                <>
-                  <button
-                    className="btn btn-primary gap-2 px-6 shadow-md hover:scale-105 transition-transform"
-                    onClick={handleSaveRoles}
-                  >
-                    <CheckIcon className="w-5 h-5" />
-                    Save Roles
-                  </button>
-                  <button
-                    className="btn btn-ghost gap-2 px-6 border border-base-200 shadow-sm hover:bg-base-200/60 hover:scale-105 transition-transform"
-                    onClick={handleCancelEdit}
-                  >
-                    <XMarkIcon className="w-5 h-5" />
-                    Cancel
-                  </button>
-                </>
-              ) : (
-                <button
-                  className="btn btn-ghost border border-gray-300 gap-2 px-6 shadow-md hover:scale-105 transition-transform"
-                  onClick={handleStartEditing}
-                >
-                  <PencilSquareIcon className="w-5 h-5" />
-                  Set Roles
-                </button>
-              )}
-            </>
-          )}
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {roles.map((role, idx) => {
-          const hasAssignee = role.assignee && role.assignee !== '---';
-          const initials = hasAssignee
-            ? String(role.assignee).split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
-            : '';
+      <div className="flex justify-center">
+        <div className="w-full max-w-4xl">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {roles.map((role) => {
+              const hasAssignee = role.assignee && role.assignee !== '---';
+              const isEditingRow = editingRoleId === role.id;
 
-          return (
-            <div
-              key={role.id}
-              className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-visible"
-            >
-              {/* Title Section */}
-              <div className="pl-6 pt-2 pb-2 w-2/5">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-lg font-semibold text-black">{role.title}</h4>
-                </div>
-                <div className="border-b border-gray-200 mt-2"></div>
-              </div>
+              return (
+                <div
+                  key={role.id}
+                  className="bg-white border border-gray-200 rounded-xl px-6 py-4 hover:bg-gray-50/50 transition-colors"
+                >
+                  {/* Role title on top */}
+                  <div className="text-sm font-medium text-gray-500 mb-2">{role.title}</div>
 
-              {/* Content Section */}
-              <div className="p-6">
-                <div className="flex items-center gap-4">
-                  {/* Role Icon or Employee Avatar */}
-                  {hasAssignee ? (
-                    <EmployeeAvatar employeeId={getEmployeeIdFromRole(role)} size="md" />
-                  ) : (
-                    <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600">
-                      {React.createElement(getRoleIcon(role.id), { className: "w-6 h-6 text-white" })}
-                    </div>
-                  )}
-
-                  {/* Assignee Name */}
-                  <div className="flex-1 relative">
-                    {isEditing && !isRolesLocked ? (
-                      <div className="relative">
-                        <input
-                          type="text"
-                          className="input input-bordered w-full max-w-xs font-semibold text-base"
-                          placeholder={role.assignee === '---' ? '---' : 'Type to search...'}
-                          value={searchTerms[role.id] !== undefined && searchTerms[role.id] !== ''
-                            ? searchTerms[role.id]
-                            : (role.assignee === '---' ? '' : role.assignee)}
-                          onChange={(e) => handleSearchChange(role.id, e.target.value)}
-                          onFocus={() => handleShowDropdown(role.id)}
-                          onBlur={() => handleHideDropdown(role.id)}
-                        />
-                        {showDropdowns[role.id] && getFilteredOptions(role.id).length > 0 && (
-                          <div className="absolute z-50 w-full max-w-xs mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto" style={{ top: '100%', left: 0 }}>
-                            {getFilteredOptions(role.id).map((option: string, index: number) => (
-                              <div
-                                key={index}
-                                className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                                onClick={() => handleRoleChange(role.id, option)}
-                              >
-                                {option}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                  {/* Row: Avatar + Employee name + Edit */}
+                  <div className="flex items-center gap-3">
+                    {hasAssignee ? (
+                      <EmployeeAvatar employeeId={getEmployeeIdFromRole(role)} size="md" />
                     ) : (
-                      <span className={`text-base font-semibold ${hasAssignee ? 'text-gray-900' : 'text-gray-500 italic'}`}>
-                        {hasAssignee ? role.assignee : 'Unassigned'}
-                      </span>
+                      <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gray-200 flex-shrink-0">
+                        {React.createElement(getRoleIcon(role.id), { className: "w-6 h-6 text-gray-500" })}
+                      </div>
+                    )}
+
+                    {/* Employee name (or input when editing) */}
+                    <div className="flex-1 relative min-w-0">
+                      {isEditingRow && !isRolesLocked ? (
+                        <div className="relative">
+                          <input
+                            type="text"
+                            className="input input-bordered w-full max-w-[280px] min-h-12 text-base"
+                            placeholder={role.assignee === '---' ? '---' : 'Type to search...'}
+                            value={searchTerms[role.id] !== undefined
+                              ? searchTerms[role.id]
+                              : (role.assignee === '---' ? '' : role.assignee)}
+                            onChange={(e) => handleSearchChange(role.id, e.target.value)}
+                            onFocus={() => handleShowDropdown(role.id)}
+                            onBlur={() => handleHideDropdown(role.id)}
+                            autoFocus
+                          />
+                          {showDropdowns[role.id] && getFilteredOptions(role.id).length > 0 && (
+                            <div className="absolute z-50 w-full max-w-[280px] mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto" style={{ top: '100%', left: 0 }}>
+                              {getFilteredOptions(role.id).map((option: string, index: number) => (
+                                <div
+                                  key={index}
+                                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                                  onClick={() => handleRoleSelectAndSave(role.id, option)}
+                                >
+                                  {option}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span className={`text-base ${hasAssignee ? 'text-gray-900 font-medium' : 'text-gray-500 italic'}`}>
+                          {hasAssignee ? role.assignee : 'Unassigned'}
+                        </span>
+                      )}
+                    </div>
+
+                    {!isRolesLocked && (
+                      isEditingRow ? (
+                        <button
+                          className="btn btn-ghost btn-sm border border-gray-300 flex-shrink-0"
+                          onClick={handleCancelRowEdit}
+                        >
+                          <XMarkIcon className="w-4 h-4" />
+                        </button>
+                      ) : (
+                        <button
+                          className="btn btn-ghost btn-sm border border-gray-300 flex-shrink-0"
+                          onClick={() => handleStartRowEdit(role.id)}
+                          title="Edit"
+                        >
+                          <PencilSquareIcon className="w-4 h-4" />
+                        </button>
+                      )
                     )}
                   </div>
                 </div>
-              </div>
-            </div>
-          );
-        })}
+              );
+            })}
+          </div>
+        </div>
       </div>
 
     </div>

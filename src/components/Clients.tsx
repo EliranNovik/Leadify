@@ -3081,8 +3081,16 @@ const Clients: React.FC<ClientsProps> = ({
             description,
             description_last_edited_by,
             description_last_edited_at,
+            notes_last_edited_by,
+            notes_last_edited_at,
             special_notes_last_edited_by,
             special_notes_last_edited_at,
+            expert_notes,
+            handler_notes,
+            expert_notes_last_edited_by,
+            expert_notes_last_edited_at,
+            handler_notes_last_edited_by,
+            handler_notes_last_edited_at,
             misc_language!leads_lead_language_id_fkey (
               name
             ),
@@ -3234,8 +3242,16 @@ const Clients: React.FC<ClientsProps> = ({
             description: data.description || null,
             description_last_edited_by: data.description_last_edited_by || null,
             description_last_edited_at: data.description_last_edited_at || null,
+            notes_last_edited_by: data.notes_last_edited_by || null,
+            notes_last_edited_at: data.notes_last_edited_at || null,
             special_notes_last_edited_by: data.special_notes_last_edited_by || null,
             special_notes_last_edited_at: data.special_notes_last_edited_at || null,
+            expert_notes: Array.isArray(data.expert_notes) ? data.expert_notes : (data.expert_notes || null),
+            handler_notes: Array.isArray(data.handler_notes) ? data.handler_notes : (data.handler_notes || null),
+            expert_notes_last_edited_by: data.expert_notes_last_edited_by || null,
+            expert_notes_last_edited_at: data.expert_notes_last_edited_at || null,
+            handler_notes_last_edited_by: data.handler_notes_last_edited_by || null,
+            handler_notes_last_edited_at: data.handler_notes_last_edited_at || null,
             // Note: language_id is excluded as we use language (name) instead
           };
           const normalizedTransformedData = normalizeClientStage(transformedData);
@@ -4062,8 +4078,16 @@ const Clients: React.FC<ClientsProps> = ({
                   description: legacyLead.description || null,
                   description_last_edited_by: legacyLead.description_last_edited_by || null,
                   description_last_edited_at: legacyLead.description_last_edited_at || null,
+                  notes_last_edited_by: legacyLead.notes_last_edited_by || null,
+                  notes_last_edited_at: legacyLead.notes_last_edited_at || null,
                   special_notes_last_edited_by: legacyLead.special_notes_last_edited_by || null,
                   special_notes_last_edited_at: legacyLead.special_notes_last_edited_at || null,
+                  expert_notes: Array.isArray(legacyLead.expert_notes) ? legacyLead.expert_notes : (legacyLead.expert_notes || null),
+                  handler_notes: Array.isArray(legacyLead.handler_notes) ? legacyLead.handler_notes : (legacyLead.handler_notes || null),
+                  expert_notes_last_edited_by: legacyLead.expert_notes_last_edited_by || null,
+                  expert_notes_last_edited_at: legacyLead.expert_notes_last_edited_at || null,
+                  handler_notes_last_edited_by: legacyLead.handler_notes_last_edited_by || null,
+                  handler_notes_last_edited_at: legacyLead.handler_notes_last_edited_at || null,
                   // Note: language_id is excluded as we use language (name) instead
                 };
                 break; // Found it, stop searching
@@ -5469,7 +5493,7 @@ const Clients: React.FC<ClientsProps> = ({
             color: badgeTextColour,
             fontSize: anchor === 'mobile' ? '0.75rem' : '0.95rem',
             fontWeight: 600,
-            borderRadius: anchor === 'mobile' ? '0.5rem' : '0.65rem',
+            borderRadius: '9999px',
             minHeight: anchor === 'mobile' ? '1.5rem' : '2rem',
             border: `2px solid ${fallbackStageColour}`,
             boxShadow: '0 8px 22px rgba(17, 24, 39, 0.12)',
@@ -14883,9 +14907,9 @@ const Clients: React.FC<ClientsProps> = ({
                         {tabs.map((tab, index) => (
                           <button
                             key={tab.id}
-                            className={`relative flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-full font-semibold text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
-                              ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg'
-                              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50/50 dark:hover:bg-gray-700/50'
+                            className={`relative flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg font-semibold text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
+                              ? 'bg-primary text-primary-content'
+                              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700/50'
                               }`}
                             style={{
                               animation: `fadeInSlide 0.3s ease-out ${index * 0.03}s both`
@@ -14896,19 +14920,19 @@ const Clients: React.FC<ClientsProps> = ({
                             }}
                           >
                             <div className="relative inline-flex items-center justify-center">
-                              <tab.icon className={`w-6 h-6 flex-shrink-0 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
+                              <tab.icon className={`w-6 h-6 flex-shrink-0 ${activeTab === tab.id ? 'text-primary-content' : 'text-gray-500'}`} />
                               {tab.id === 'interactions' && tab.badge && (
                                 <div className={`absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap ${activeTab === tab.id
-                                  ? 'bg-white/20 text-white'
-                                  : 'bg-purple-100 text-purple-700'
+                                  ? 'bg-primary-content/20 text-primary-content'
+                                  : 'bg-primary/10 text-primary'
                                   }`} style={{ minWidth: '1.25rem' }}>
                                   {tab.badge}
                                 </div>
                               )}
                             </div>
-                            <span className={`saira-light font-bold text-xs ${activeTab === tab.id ? 'text-white' : 'text-gray-600'}`}>{tab.label}</span>
+                            <span className={`saira-light font-bold text-xs ${activeTab === tab.id ? 'text-primary-content' : 'text-gray-600'}`}>{tab.label}</span>
                             {activeTab === tab.id && (
-                              <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
+                              <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-primary-content rounded-full"></div>
                             )}
                           </button>
                         ))}
@@ -15105,7 +15129,7 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
 
           {/* Tab Content - full width, white background */}
-          <div ref={tabContentRef} className="w-full bg-base-100 min-h-screen">
+          <div ref={tabContentRef} className="w-full bg-base-100 min-h-screen mt-6">
             <div
               key={`${activeTab}-${interactionCount}`}
               className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0"

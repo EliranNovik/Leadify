@@ -3591,16 +3591,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     <Fragment>
       <div className="w-full overflow-x-hidden overflow-y-auto">
         <div className="p-2 sm:p-4 md:p-6 max-w-full">
-          <div className="flex items-center gap-3 mb-8">
-            <div className="w-8 h-8 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
-              <UserIcon className="w-6 h-6 text-white" />
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
+              <UserIcon className="w-5 h-5 text-gray-600" />
             </div>
             <div>
-              <h2 className="text-2xl font-bold">Contact Information</h2>
+              <h2 className="text-xl font-semibold text-gray-900">Contact Information</h2>
               <p className="text-sm text-gray-500">Manage client contacts and contracts</p>
             </div>
-
-
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 w-full pb-6">
@@ -3608,25 +3606,23 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               return (
                 <div
                   key={contact.id}
-                  className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-visible"
+                  className="bg-white border border-gray-200 rounded-lg overflow-visible"
                 >
-                  {/* Header */}
-                  <div className="pl-6 pr-4 pt-2 pb-2 w-full bg-gradient-to-r from-purple-600 to-blue-600 dark:!bg-[#0f172a] rounded-tl-2xl rounded-tr-2xl rounded-br-2xl shadow-sm">
-                    <div className="flex flex-col gap-2">
-                      {/* First row: Name and action buttons */}
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex flex-col gap-2 flex-1 min-w-0">
-                          <h4 className="text-lg font-semibold text-white break-words line-clamp-2">
-                            {contact.name && contact.name !== '---' ? contact.name : 'Contact'}
-                          </h4>
-                          {contact.isMain && (
-                            <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-white text-[#3b28c7] whitespace-nowrap self-start">
-                              Main
-                            </span>
-                          )}
-                        </div>
+                  {/* Header - clean white, data-first */}
+                  <div className="px-4 py-3 border-b border-gray-100">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex flex-col gap-1.5 flex-1 min-w-0">
+                        <h4 className="text-base font-semibold text-gray-900 break-words line-clamp-2">
+                          {contact.name && contact.name !== '---' ? contact.name : 'Contact'}
+                        </h4>
+                        {contact.isMain && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-primary/10 text-primary whitespace-nowrap self-start">
+                            Main
+                          </span>
+                        )}
+                      </div>
                         <div className="flex items-center gap-2 flex-shrink-0">
-                          {/* View contract - round icon, green if signed, white if draft */}
+                          {/* View contract - green if signed, outline if draft */}
                           {(() => {
                             const contractForThisCard = contact.id === mainContactId ? contractForMainCard : contactContracts[contact.id];
                             if (!contractForThisCard) return null;
@@ -3634,11 +3630,11 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                             return (
                               <button
                                 type="button"
-                                className={`btn btn-sm btn-circle ${isSigned ? 'bg-green-600 hover:bg-green-700 border-green-600 text-white' : 'bg-white/90 hover:bg-white text-gray-800 border-white/50'}`}
+                                className={`btn btn-circle min-w-10 min-h-10 w-10 h-10 ${isSigned ? 'btn-success' : 'btn-ghost btn-outline'}`}
                                 onClick={() => handleViewContract(contractForThisCard.id)}
                                 title={`View contract (${contractForThisCard.status})`}
                               >
-                                <DocumentTextIcon className="w-4 h-4" />
+                                <DocumentTextIcon className="w-5 h-5" />
                               </button>
                             );
                           })()}
@@ -3646,7 +3642,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           {((contact.isMain && !isEditingMainContact) || (!contact.isMain && !contact.isEditing)) && (
                             <>
                               <button
-                                className="btn btn-ghost btn-sm btn-circle text-white hover:bg-white/20 border-white/30"
+                                className="btn btn-ghost btn-circle min-w-10 min-h-10 w-10 h-10 text-gray-500 hover:text-gray-700 hover:bg-gray-100"
                                 onClick={async () => {
                                   if (contact.isMain) {
                                     console.log('🔍 Edit button clicked - current contact data:', contact);
@@ -3671,11 +3667,11 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                 }}
                                 title="Edit contact"
                               >
-                                <PencilSquareIcon className="w-4 h-4" />
+                                <PencilSquareIcon className="w-5 h-5" />
                               </button>
                               {!contact.isMain && (
                                 <button
-                                  className="btn btn-ghost btn-sm btn-circle text-white hover:bg-red-500/30 border-white/30"
+                                  className="btn btn-ghost btn-circle min-w-10 min-h-10 w-10 h-10 text-gray-500 hover:text-red-600 hover:bg-red-50"
                                   onClick={() => {
                                     if (window.confirm('Are you sure you want to delete this contact?')) {
                                       handleDeleteContact(contact.id);
@@ -3683,7 +3679,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                   }}
                                   title="Delete contact"
                                 >
-                                  <TrashIcon className="w-4 h-4" />
+                                  <TrashIcon className="w-5 h-5" />
                                 </button>
                               )}
                             </>
@@ -3692,7 +3688,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           {((contact.isMain && isEditingMainContact) || contact.isEditing) && (
                             <>
                               <button
-                                className="btn btn-ghost btn-sm btn-circle text-white hover:bg-green-500/30 border-white/30"
+                                className="btn btn-ghost btn-sm btn-circle text-green-600 hover:bg-green-50"
                                 onClick={async () => {
                                   if (contact.isMain) {
                                     await handleSaveMainContact();
@@ -3702,14 +3698,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                 }}
                                 title="Save changes"
                               >
-                                <CheckIcon className="w-4 h-4" />
+                                <CheckIcon className="w-5 h-5" />
                               </button>
                               <button
-                                className="btn btn-ghost btn-sm btn-circle text-white hover:bg-white/20 border-white/30"
+                                className="btn btn-ghost btn-circle min-w-10 min-h-10 w-10 h-10 text-gray-500 hover:bg-gray-100"
                                 onClick={() => contact.isMain ? handleCancelMainContact() : handleCancelContact(contact)}
                                 title="Cancel editing"
                               >
-                                <XMarkIcon className="w-4 h-4" />
+                                <XMarkIcon className="w-5 h-5" />
                               </button>
                             </>
                           )}
@@ -3719,7 +3715,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       {!contact.isMain && (
                         <div className="flex items-center">
                           <button
-                            className="btn btn-xs btn-ghost text-white hover:bg-white/20 border-white/30 whitespace-nowrap"
+                            className="btn btn-xs btn-ghost text-gray-600 hover:bg-gray-100 whitespace-nowrap"
                             onClick={() => {
                               if (window.confirm('Set this contact as the main contact?')) {
                                 handleSetMainContact(contact.id);
@@ -3731,7 +3727,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           </button>
                         </div>
                       )}
-                    </div>
                   </div>
 
                   {/* Content */}
@@ -4334,7 +4329,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             })}
 
             {/* Add New Contact Card */}
-            <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden border-dashed border-gray-300">
+            <div className="bg-white border border-dashed border-gray-300 rounded-lg overflow-hidden">
               <div className="p-6">
                 <div className="flex flex-col items-center justify-center py-8">
                   {/* Removed plus icon and circle */}

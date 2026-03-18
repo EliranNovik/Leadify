@@ -8209,12 +8209,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                     </svg>
                   </button>
                 )}
-                <h2 className="text-lg md:text-2xl font-bold text-gray-900">Interactions</h2>
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-2 h-2 bg-green-500 rounded-full flex-shrink-0"></div>
-                  <span className="text-gray-600 text-sm md:text-base truncate">
-                    {selectedContactForEmail ? selectedContactForEmail.contact.name : client.name} ({client.lead_number})
-                  </span>
+                <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0">
+                  <ChatBubbleLeftRightIcon className="w-5 h-5 text-gray-600" />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="text-xl font-semibold text-gray-900">Interactions</h2>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-2 h-2 bg-green-500 rounded-full flex-shrink-0"></div>
+                    <span className="text-gray-600 text-sm md:text-base truncate">
+                      {selectedContactForEmail ? selectedContactForEmail.contact.name : client.name} ({client.lead_number})
+                    </span>
+                  </div>
                 </div>
               </div>
               <div className="flex flex-col items-end gap-2">

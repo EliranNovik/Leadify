@@ -2215,9 +2215,6 @@ const CollectionPage: React.FC = () => {
                         <span className="flex items-center gap-2">
                           <CurrencyDollarIcon className="w-5 h-5 text-green-600" />
                           <CalendarIcon className="w-5 h-5 text-blue-500" />
-                          {row.lead_type === 'legacy' && (
-                            <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Legacy</span>
-                          )}
                         </span>
                       </td>
                       <td className="font-bold text-primary">{row.lead_number}</td>
@@ -2261,9 +2258,6 @@ const CollectionPage: React.FC = () => {
                       <span className="flex items-center gap-2">
                         <CurrencyDollarIcon className="w-5 h-5 text-green-600" />
                         <CalendarIcon className="w-5 h-5 text-blue-500" />
-                        {row.lead_type === 'legacy' && (
-                          <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Legacy</span>
-                        )}
                       </span>
                       <span className="text-xs font-semibold text-gray-400 tracking-widest">{row.lead_number}</span>
                       <span className="w-1 h-1 bg-gray-300 rounded-full"></span>

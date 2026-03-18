@@ -412,7 +412,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         if (hasError || !photoUrl) {
             return (
                 <div
-                    className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
+                    className={`${sizeClasses} rounded-full flex items-center justify-center bg-gray-200 text-gray-600 font-medium flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity`}
                     onClick={() => {
                         if (employee.id) {
                             navigate(`/my-profile/${employee.id}`);
@@ -873,7 +873,17 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             <div className="flex items-center gap-2">
                                 {renderStageBadge('desktop')}
                             </div>
-
+                            {/* Timeline and History - next to stage badge */}
+                            {!hideHistoryAndTimeline && (
+                                <>
+                                    <button onClick={handleTimelineClick} className="btn btn-ghost btn-square min-h-10 min-w-10" title="View Timeline">
+                                        <ClockIcon className="w-7 h-7" />
+                                    </button>
+                                    <button onClick={handleHistoryClick} className="btn btn-ghost btn-square min-h-10 min-w-10" title="View History">
+                                        <ArchiveBoxIcon className="w-7 h-7" />
+                                    </button>
+                                </>
+                            )}
                             {/* Duplicate Contact Button - Yellow */}
                             {duplicateContacts && duplicateContacts.length > 0 && (
                                 <button
@@ -956,25 +966,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     )}
                                 </ul>
                                 </div>
-                                {/* Timeline and History - icon only, same size as Actions */}
-                                {!hideHistoryAndTimeline && (
-                                    <div className="flex flex-col items-center gap-1.5">
-                                        <button
-                                            onClick={handleTimelineClick}
-                                            className="btn btn-ghost btn-square min-h-10 min-w-10"
-                                            title="View Timeline"
-                                        >
-                                            <ClockIcon className="w-7 h-7" />
-                                        </button>
-                                        <button
-                                            onClick={handleHistoryClick}
-                                            className="btn btn-ghost btn-square min-h-10 min-w-10"
-                                            title="View History"
-                                        >
-                                            <ArchiveBoxIcon className="w-7 h-7" />
-                                        </button>
-                                    </div>
-                                )}
                             </div>
                         )}
                     </div>
@@ -983,7 +974,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-2 md:gap-4">
                         <div className="flex items-center gap-4">
                             <div>
-                                <div className="flex items-center gap-2 mb-1">
+                                <div className="flex items-center gap-2 mb-3">
                                     <h1 className="text-2xl font-bold text-gray-900 dark:text-white leading-none">
                                         #{renderLeadNumber()}
                                         <span className="mx-2 text-gray-300">|</span>
@@ -1075,7 +1066,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                         {/* Stage Badge and Actions Dropdown - Top Right (Desktop only) */}
                         <div className="hidden md:flex items-center gap-3">
-                            {/* Timeline and History Buttons - Circle Icon Buttons (moved to left of stage badge) */}
+                            {/* Stage Badge */}
+                            <div className="flex items-center gap-2">
+                                {renderStageBadge('desktop')}
+                            </div>
+
+                            {/* Timeline and History Buttons - to the right of stage badge */}
                             {!hideHistoryAndTimeline && (
                                 <>
                                     <button
@@ -1094,11 +1090,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </button>
                                 </>
                             )}
-
-                            {/* Stage Badge */}
-                            <div className="flex items-center gap-2">
-                                {renderStageBadge('desktop')}
-                            </div>
 
                             {/* Duplicate Contact Button - Yellow */}
                             {duplicateContacts && duplicateContacts.length > 0 && (
@@ -1922,7 +1913,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 </div>
 
                 {/* Workflow Actions Bar - Roles and Quick Actions */}
-                <div className="mt-1.5 md:mt-8 pt-1.5 md:pt-6 border-t border-gray-100 dark:border-gray-800 w-full">
+                <div className="mt-1.5 md:mt-6 pt-1.5 md:pt-6 border-t border-gray-100 dark:border-gray-800 w-full">
+                    <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-3">Assigned Team</p>
                     {(() => {
                         const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
 
@@ -2060,60 +2052,55 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         }
 
                         return (
-                            <div className="flex flex-wrap items-center justify-between w-full gap-8">
-                                {/* Group 1: Support Roles (Left) */}
-                                <div className="flex items-center gap-8 min-w-max">
+                            <div className="flex flex-wrap items-center justify-between w-full gap-6">
+                                {/* Assigned Team - inline, small avatars, text focus */}
+                                <div className="flex items-center gap-6 min-w-0 flex-wrap">
                                     {Array.from(roleGroups.values()).map((group, index) => (
-                                        <div key={index} className="flex flex-col items-center">
-                                            <div className="flex items-center gap-1.5 mb-2 flex-wrap justify-center min-h-[1rem]">
-                                                {group.roles.map((role, roleIndex) => (
-                                                    <span key={roleIndex} className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold">
-                                                        {role}
-                                                        {roleIndex < group.roles.length - 1 && <span className="mx-1.5 text-gray-300">•</span>}
-                                                    </span>
-                                                ))}
+                                        <div key={index} className="flex items-center gap-2">
+                                            <EmployeeAvatar employeeId={group.id} size="md" />
+                                            <div className="flex flex-col min-w-0">
+                                                <span className="text-[10px] text-gray-400 uppercase tracking-wide font-medium">
+                                                  {group.roles.join(', ')}
+                                                </span>
+                                                <span className="text-sm font-medium text-gray-700 truncate">{formatRoleDisplay(group.display)}</span>
                                             </div>
-                                            <div className="flex items-center h-16">
-                                                <EmployeeAvatar employeeId={group.id} size="lg" />
-                                            </div>
-                                            <p className="font-medium truncate text-sm leading-5 mt-1 text-gray-600">{formatRoleDisplay(group.display)}</p>
                                         </div>
                                     ))}
                                 </div>
 
-                                {/* Group 2: Handler and Retainer Handler (CENTER) - no background box; keep green ring and active badge */}
+                                {/* Handler and Retainer Handler - inline with small avatars */}
                                 {(!isRoleEmpty(handlerId, handlerDisplay) || !isRoleEmpty(retentionHandlerId, retentionHandlerDisplay)) && (
-                                    <div className="flex items-center gap-8 mx-auto">
+                                    <div className="flex items-center gap-6 mx-auto">
                                         {!isRoleEmpty(handlerId, handlerDisplay) && (
-                                            <div className="flex flex-col items-center">
-                                                <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-2">Handler</p>
-                                                <div className="flex items-center justify-center h-16 relative">
-                                                    <div className={`relative ${selectedClient.active_handler_type === 2 ? 'rounded-full ring-2 ring-emerald-500 p-0.5' : ''}`}>
-                                                        <EmployeeAvatar employeeId={handlerId} size="lg" />
-                                                        {selectedClient.active_handler_type === 2 && (
-                                                            <div className="absolute -top-1 -right-1 bg-emerald-500 rounded-full p-0.5 ring-2 ring-white shadow-md">
-                                                                <CheckCircleIcon className="w-4 h-4 text-white" />
-                                                            </div>
-                                                        )}
-                                                    </div>
+                                            <div className="flex items-center gap-2">
+                                                <div className={`relative ${selectedClient.active_handler_type === 2 ? 'ring-2 ring-emerald-500 rounded-full p-0.5' : ''}`}>
+                                                    <EmployeeAvatar employeeId={handlerId} size="md" />
+                                                    {selectedClient.active_handler_type === 2 && (
+                                                        <div className="absolute -top-0.5 -right-0.5 bg-emerald-500 rounded-full p-0.5 ring-2 ring-white">
+                                                            <CheckCircleIcon className="w-3 h-3 text-white" />
+                                                        </div>
+                                                    )}
                                                 </div>
-                                                <p className="font-medium truncate text-sm leading-5 mt-1 text-gray-600 dark:text-gray-400">{formatRoleDisplay(handlerDisplay)}</p>
+                                                <div className="flex flex-col min-w-0">
+                                                    <span className="text-[10px] text-gray-400 uppercase tracking-wide font-medium">Handler</span>
+                                                    <span className="text-sm font-medium text-gray-700 truncate">{formatRoleDisplay(handlerDisplay)}</span>
+                                                </div>
                                             </div>
                                         )}
                                         {!isRoleEmpty(retentionHandlerId, retentionHandlerDisplay) && (
-                                            <div className="flex flex-col items-center">
-                                                <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-2">R-Handler</p>
-                                                <div className="flex items-center justify-center h-16 relative">
-                                                    <div className={`relative ${selectedClient.active_handler_type === 1 ? 'rounded-full ring-2 ring-emerald-500 p-0.5' : ''}`}>
-                                                        <EmployeeAvatar employeeId={retentionHandlerId} size="lg" />
-                                                        {selectedClient.active_handler_type === 1 && (
-                                                            <div className="absolute -top-1 -right-1 bg-emerald-500 rounded-full p-0.5 ring-2 ring-white shadow-md">
-                                                                <CheckCircleIcon className="w-4 h-4 text-white" />
-                                                            </div>
-                                                        )}
-                                                    </div>
+                                            <div className="flex items-center gap-2">
+                                                <div className={`relative ${selectedClient.active_handler_type === 1 ? 'ring-2 ring-emerald-500 rounded-full p-0.5' : ''}`}>
+                                                    <EmployeeAvatar employeeId={retentionHandlerId} size="md" />
+                                                    {selectedClient.active_handler_type === 1 && (
+                                                        <div className="absolute -top-0.5 -right-0.5 bg-emerald-500 rounded-full p-0.5 ring-2 ring-white">
+                                                            <CheckCircleIcon className="w-3 h-3 text-white" />
+                                                        </div>
+                                                    )}
                                                 </div>
-                                                <p className="font-medium truncate text-sm leading-5 mt-1 text-gray-600 dark:text-gray-400">{formatRoleDisplay(retentionHandlerDisplay)}</p>
+                                                <div className="flex flex-col min-w-0">
+                                                    <span className="text-[10px] text-gray-400 uppercase tracking-wide font-medium">R-Handler</span>
+                                                    <span className="text-sm font-medium text-gray-700 truncate">{formatRoleDisplay(retentionHandlerDisplay)}</span>
+                                                </div>
                                             </div>
                                         )}
                                     </div>
@@ -2138,7 +2125,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     {areStagesEquivalent(currentStageName, 'Handler Set') && (
                                                         <button
                                                             onClick={handleStartCase}
-                                                            className="btn btn-primary rounded-full px-6 shadow-lg shadow-indigo-100 hover:shadow-indigo-200 text-white gap-2 text-base transition-all hover:scale-105"
+                                                            className="btn btn-primary rounded-full px-5 gap-2"
                                                         >
                                                             <PlayIcon className="w-5 h-5" />
                                                             Start Case
@@ -2150,14 +2137,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                         <>
                                                             <button
                                                                 onClick={() => updateLeadStage('Application submitted')}
-                                                                className="btn btn-success text-white rounded-full px-5 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 transition-all hover:scale-105"
+                                                                className="btn btn-success rounded-full px-5 gap-2"
                                                             >
                                                                 <DocumentCheckIcon className="w-5 h-5" />
                                                                 Application Submitted
                                                             </button>
                                                             <button
                                                                 onClick={() => updateLeadStage('Case Closed')}
-                                                                className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                                className="btn btn-outline btn-ghost rounded-full px-5 gap-2"
                                                             >
                                                                 <CheckCircleIcon className="w-5 h-5" />
                                                                 Close Case
@@ -2169,7 +2156,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     {areStagesEquivalent(currentStageName, 'Application submitted') && (
                                                         <button
                                                             onClick={() => updateLeadStage('Case Closed')}
-                                                            className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                            className="btn btn-outline btn-ghost rounded-full px-5 gap-2"
                                                         >
                                                             <CheckCircleIcon className="w-5 h-5" />
                                                             Close Case
@@ -2180,7 +2167,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     {areStagesEquivalent(currentStageName, 'payment_request_sent') && handlePaymentReceivedNewClient && (
                                                         <button
                                                             onClick={handlePaymentReceivedNewClient}
-                                                            className="btn btn-success text-white rounded-full px-5 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 transition-all hover:scale-105"
+                                                            className="btn btn-success rounded-full px-5 gap-2"
                                                         >
                                                             <CheckCircleIcon className="w-5 h-5" />
                                                             Payment Received - new Client !!!
@@ -2193,7 +2180,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                             {setShowRescheduleDrawer && (
                                                                 <button
                                                                     onClick={() => setShowRescheduleDrawer(true)}
-                                                                    className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                                    className="btn btn-outline rounded-full px-5 gap-2"
                                                                 >
                                                                     <ArrowPathIcon className="w-5 h-5" />
                                                                     Meeting ReScheduling
@@ -2202,7 +2189,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                             {handleStageUpdate && (
                                                                 <button
                                                                     onClick={() => handleStageUpdate('Meeting Ended')}
-                                                                    className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                                    className="btn btn-outline btn-ghost rounded-full px-5 gap-2"
                                                                 >
                                                                     <CheckCircleIcon className="w-5 h-5" />
                                                                     Meeting Ended
@@ -2223,7 +2210,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                     scheduleMenuLabel && (
                                                                         <button
                                                                             onClick={handleScheduleMenuClick}
-                                                                            className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                                            className="btn btn-primary rounded-full px-5 gap-2"
                                                                         >
                                                                             <CalendarDaysIcon className="w-5 h-5" />
                                                                             {scheduleMenuLabel}
@@ -2232,7 +2219,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                 {setShowRescheduleDrawer && (
                                                                     <button
                                                                         onClick={() => setShowRescheduleDrawer(true)}
-                                                                        className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                                        className="btn btn-outline rounded-full px-5 gap-2"
                                                                     >
                                                                         <ArrowPathIcon className="w-5 h-5" />
                                                                         Meeting ReScheduling
@@ -2243,7 +2230,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                     (!(areStagesEquivalent(currentStageName, 'Meeting rescheduling') || (isStageNumeric && stageNumeric === 21)) || hasScheduledMeetings) && (
                                                                         <button
                                                                             onClick={() => handleStageUpdate('Meeting Ended')}
-                                                                            className="btn btn-neutral rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                                            className="btn btn-outline btn-ghost rounded-full px-5 gap-2"
                                                                         >
                                                                             <CheckCircleIcon className="w-5 h-5" />
                                                                             Meeting Ended
@@ -2256,7 +2243,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     {areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') && openSendOfferModal && (
                                                         <button
                                                             onClick={openSendOfferModal}
-                                                            className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                            className="btn btn-primary rounded-full px-5 gap-2"
                                                         >
                                                             <DocumentCheckIcon className="w-5 h-5" />
                                                             Send Price Offer
@@ -2269,7 +2256,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                             {handleScheduleMenuClick && scheduleMenuLabel && (
                                                                 <button
                                                                     onClick={handleScheduleMenuClick}
-                                                                    className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                                    className="btn btn-primary rounded-full px-5 gap-2"
                                                                 >
                                                                     <CalendarDaysIcon className="w-5 h-5" />
                                                                     {scheduleMenuLabel}
@@ -2278,7 +2265,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                             {handleStageUpdate && (
                                                                 <button
                                                                     onClick={() => handleStageUpdate('Communication Started')}
-                                                                    className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                                    className="btn btn-outline rounded-full px-5 gap-2"
                                                                 >
                                                                     <ChatBubbleLeftRightIcon className="w-5 h-5" />
                                                                     {isStageNumeric && stageNumeric === 15 ? 'Scheduling Notes' : 'Communication Started'}
@@ -2293,7 +2280,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                             {handleScheduleMenuClick && scheduleMenuLabel && (
                                                                 <button
                                                                     onClick={handleScheduleMenuClick}
-                                                                    className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                                    className="btn btn-primary rounded-full px-5 gap-2"
                                                                 >
                                                                     <CalendarDaysIcon className="w-5 h-5" />
                                                                     {scheduleMenuLabel}
@@ -2302,7 +2289,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                             {handleOpenSignedDrawer && (
                                                                 <button
                                                                     onClick={handleOpenSignedDrawer}
-                                                                    className="btn btn-success text-white rounded-full px-5 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 transition-all hover:scale-105"
+                                                                    className="btn btn-success rounded-full px-5 gap-2"
                                                                 >
                                                                     <HandThumbUpIcon className="w-5 h-5" />
                                                                     Client signed
@@ -2311,7 +2298,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                             {handleOpenDeclinedDrawer && (
                                                                 <button
                                                                     onClick={handleOpenDeclinedDrawer}
-                                                                    className="btn btn-error text-white rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                                    className="btn btn-error rounded-full px-5 gap-2"
                                                                 >
                                                                     <HandThumbDownIcon className="w-5 h-5" />
                                                                     Client declined
@@ -2320,7 +2307,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                             {openSendOfferModal && (
                                                                 <button
                                                                     onClick={openSendOfferModal}
-                                                                    className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                                    className="btn btn-outline rounded-full px-5 gap-2"
                                                                 >
                                                                     <PencilSquareIcon className="w-5 h-5" />
                                                                     Revised price offer
@@ -2335,7 +2322,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                         areStagesEquivalent(currentStageName, 'client_signed')) && (
                                                             <button
                                                                 onClick={() => updateLeadStage('payment_request_sent')}
-                                                                className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                                className="btn btn-primary rounded-full px-5 gap-2"
                                                             >
                                                                 <CurrencyDollarIcon className="w-5 h-5" />
                                                                 Payment request sent
@@ -2364,7 +2351,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                 {handleScheduleMenuClick && scheduleMenuLabel && (
                                                                     <button
                                                                         onClick={handleScheduleMenuClick}
-                                                                        className="btn btn-primary rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                                        className="btn btn-primary rounded-full px-5 gap-2"
                                                                     >
                                                                         <CalendarDaysIcon className="w-5 h-5" />
                                                                         {scheduleMenuLabel}
@@ -2373,7 +2360,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                 {handleStageUpdate && (
                                                                     <button
                                                                         onClick={() => handleStageUpdate('Communication Started')}
-                                                                        className="btn btn-outline rounded-full px-5 shadow-lg gap-2 transition-all hover:scale-105"
+                                                                        className="btn btn-outline rounded-full px-5 gap-2"
                                                                     >
                                                                         <ChatBubbleLeftRightIcon className="w-5 h-5" />
                                                                         Communication Started

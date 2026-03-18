@@ -1030,16 +1030,16 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
           {isEditing ? (
             <>
               <button
-                className="btn btn-circle btn-ghost btn-sm"
+                className="btn btn-circle btn-ghost btn-md"
                 onClick={onSave}
               >
-                <CheckIcon className="w-4 h-4 text-success" />
+                <CheckIcon className="w-5 h-5 text-success" />
               </button>
               <button
-                className="btn btn-circle btn-ghost btn-sm"
+                className="btn btn-circle btn-ghost btn-md"
                 onClick={onCancel}
               >
-                <XMarkIcon className="w-4 h-4 text-error" />
+                <XMarkIcon className="w-5 h-5 text-error" />
               </button>
             </>
           ) : (
@@ -1094,17 +1094,12 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
     <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3 mb-8">
-        <div className="w-8 h-8 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
-          <InformationCircleIcon className="w-6 h-6 text-white" />
+        <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
+          <InformationCircleIcon className="w-5 h-5 text-gray-600" />
         </div>
         <div className="flex-1">
           <div className="flex items-center gap-3">
             <h2 className="text-2xl font-bold">Client Information</h2>
-            {isLegacy && (
-              <span className="badge badge-warning badge-sm text-white">
-                Legacy Lead
-              </span>
-            )}
           </div>
           <p className="text-sm text-gray-500">View and manage client details and case information</p>
         </div>
@@ -1134,7 +1129,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                   max="100"
                   value={probability}
                   onChange={readOnly ? undefined : handleProbabilityChange}
-                  className="range range-primary w-full"
+                  className="range range-success w-full"
                   step="1"
                   disabled={readOnly}
                   readOnly={readOnly}
@@ -1231,7 +1226,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                     <p className="text-sm text-gray-500 mb-3">No follow-up scheduled</p>
                     {!readOnly && (
                       <button
-                        className="btn btn-primary btn-sm gap-2"
+                        className="btn btn-sm gap-2 bg-white border-2 border-[#3b28c7] text-[#3b28c7] hover:bg-[#3b28c7] hover:text-white hover:border-[#3b28c7] transition-colors duration-200"
                         onClick={() => setIsAddingFollowup(true)}
                       >
                         <PlusIcon className="w-4 h-4" />
@@ -1253,7 +1248,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
             <div className="p-6 space-y-4">
               <div className="flex justify-between items-center">
                 <span className="text-sm font-medium text-gray-500">Expert Status</span>
-                <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-[#3b28c7] text-white ${getEligibilityStatus() === 'feasible_no_check' ? 'px-4 py-2 text-base rounded-xl' : ''}`}>
+                <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-gray-200 text-gray-700 ${getEligibilityStatus() === 'feasible_no_check' ? 'px-4 py-2 text-base rounded-xl' : ''}`}>
                   {eligibilityDisplay.text}
                   {(() => {
                     // Get section_eligibility - use state for legacy leads, client data for new leads
@@ -1267,7 +1262,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                       ];
                       const found = sections.find(s => s.value === currentSection);
                       return (
-                        <span className="ml-2 px-2 py-0.5 rounded text-white font-semibold text-xs">
+                        <span className="ml-2 px-2 py-0.5 rounded bg-gray-300 text-gray-800 font-semibold text-xs">
                           {found ? found.label.split(' - ')[1] : currentSection}
                         </span>
                       );
@@ -1400,10 +1395,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
         {/* Row 2: Special Notes and General Notes */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 gap-y-12">
           {/* Special Notes */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5">
-              <div className="flex items-center justify-between">
-                <h4 className="text-lg font-semibold text-black">Special Notes</h4>
+          <div className="mb-6">
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-base font-semibold text-gray-900">Special Notes</h4>
                 <EditButtons
                   isEditing={isEditingSpecialNotes}
                   onEdit={() => {
@@ -1472,10 +1466,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                   editButtonClassName="btn btn-ghost btn-sm"
                   editIconClassName="w-5 h-5 text-black"
                 />
-              </div>
-              <div className="border-b border-gray-200 mt-2"></div>
             </div>
-            <div className="p-6">
+            <div>
               {isEditingSpecialNotes ? (
                 <textarea
                   className="textarea textarea-bordered w-full h-32"
@@ -1506,10 +1498,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
           </div>
 
           {/* General Notes */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5">
-              <div className="flex items-center justify-between">
-                <h4 className="text-lg font-semibold text-black">General Notes</h4>
+          <div className="mb-6">
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-base font-semibold text-gray-900">General Notes</h4>
                 <EditButtons
                   isEditing={isEditingGeneralNotes}
                   onEdit={() => {
@@ -1578,10 +1569,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                   editButtonClassName="btn btn-ghost btn-sm"
                   editIconClassName="w-5 h-5 text-black"
                 />
-              </div>
-              <div className="border-b border-gray-200 mt-2"></div>
             </div>
-            <div className="p-6">
+            <div>
               {isEditingGeneralNotes ? (
                 <textarea
                   className="textarea textarea-bordered w-full h-32"
@@ -1613,10 +1602,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
         {/* Row 4: Facts of Case and Tags */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 gap-y-12">
           {/* Facts of Case */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5">
-              <div className="flex items-center justify-between">
-                <h4 className="text-lg font-semibold text-black">Facts of Case</h4>
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-base font-semibold text-gray-900">Facts of Case</h4>
                 <EditButtons
                   isEditing={isEditingFacts}
                   onEdit={() => {
@@ -1693,10 +1681,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                   editButtonClassName="btn btn-ghost btn-sm"
                   editIconClassName="w-5 h-5 text-black"
                 />
-              </div>
-              <div className="border-b border-gray-200 mt-2"></div>
             </div>
-            <div className="p-6">
+            <div>
               {isEditingFacts ? (
                 <textarea
                   className="textarea textarea-bordered w-full h-32"
@@ -1740,10 +1726,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
           </div>
 
           {/* Tags */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5">
-              <div className="flex items-center justify-between">
-                <h4 className="text-lg font-semibold text-black">Tags</h4>
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-base font-semibold text-gray-900">Tags</h4>
                 <EditButtons
                   isEditing={isEditingTags}
                   onEdit={() => {
@@ -1774,10 +1759,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                   editButtonClassName="btn btn-ghost btn-sm"
                   editIconClassName="w-5 h-5 text-black"
                 />
-              </div>
-              <div className="border-b border-gray-200 mt-2"></div>
             </div>
-            <div className="p-6">
+            <div>
               {isEditingTags ? (
                 <>
                   <input

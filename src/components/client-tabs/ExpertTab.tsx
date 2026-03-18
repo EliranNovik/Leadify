@@ -18,7 +18,9 @@ import {
   ArrowsPointingOutIcon,
   Squares2X2Icon,
   DocumentTextIcon,
-  CpuChipIcon
+  CpuChipIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon
 } from '@heroicons/react/24/outline';
 import { FolderIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../../lib/supabase';
@@ -52,6 +54,30 @@ interface EligibilityStatus {
   value: string;
   timestamp: string;
 }
+
+// Helper to detect Hebrew (RTL) vs English (LTR) for text direction
+const getTextDirection = (text: string): 'rtl' | 'ltr' => {
+  if (!text || !text.trim()) return 'ltr';
+  const hebrewRegex = /[\u0590-\u05FF]/;
+  return hebrewRegex.test(text) ? 'rtl' : 'ltr';
+};
+
+// Safe date formatter - returns empty string for invalid dates to avoid "Invalid Date"
+const safeFormatDate = (dateVal: string | number | Date | undefined | null): string => {
+  if (dateVal == null) return '';
+  if (dateVal instanceof Date) {
+    return Number.isNaN(dateVal.getTime()) ? '' : dateVal.toLocaleString();
+  }
+  if (typeof dateVal === 'number') {
+    const d = new Date(dateVal);
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleString();
+  }
+  const str = String(dateVal).trim();
+  if (!str) return '';
+  const d = new Date(str);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString();
+};
 
 const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Helper function to clean up text formatting
@@ -141,7 +167,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   // Helper function to get expert name from expert_id
   const getExpertName = async (expertId: string | number): Promise<string> => {
-    if (!expertId) return 'Not assigned';
+    if (!expertId) return '--';
 
     try {
       // Try to get expert name from tenants_employee table
@@ -179,10 +205,13 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     if (!client.id || !client.id.toString().startsWith('legacy_')) return;
 
     try {
-      const legacyId = client.id.toString().replace('legacy_', '');
+      const legacyIdStr = client.id.toString().replace('legacy_', '');
+      const legacyId = parseInt(legacyIdStr, 10);
+      if (isNaN(legacyId)) return;
+
       const { data: legacyData, error } = await supabase
         .from('leads_lead')
-        .select('expert_id, expert_opinion')
+        .select('expert_id, expert_opinion, expert_notes')
         .eq('id', legacyId)
         .single();
 
@@ -198,39 +227,32 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         // Update the expert name state
         setExpertName(expertName);
 
-        // Add expert_opinion to expert notes if it exists
+        // Add expert_opinion to expert notes if it exists - use DB expert_notes, not client
         if (legacyData.expert_opinion && legacyData.expert_opinion.trim()) {
-          const existingNotes = client.expert_notes || [];
+          const existingNotes = Array.isArray(legacyData.expert_notes) ? legacyData.expert_notes : [];
           const hasExpertOpinion = existingNotes.some((note: any) =>
-            note.content.includes('Expert Opinion:') || note.content.includes(legacyData.expert_opinion)
+            note?.content && (note.content.includes('Expert Opinion:') || note.content.includes(legacyData.expert_opinion))
           );
 
           if (!hasExpertOpinion) {
             const expertOpinionNote = {
               id: `legacy_opinion_${Date.now()}`,
               content: `Expert Opinion: ${formatNoteText(legacyData.expert_opinion)}`,
-              timestamp: new Date().toLocaleString()
+              timestamp: new Date().toISOString()
             };
 
             const updatedNotes = [...existingNotes, expertOpinionNote];
             setExpertNotes(updatedNotes);
 
-            // Save to database
-            const legacyIdStr = client.id.toString().replace('legacy_', '');
-            const legacyId = parseInt(legacyIdStr, 10);
-
-            if (!isNaN(legacyId)) {
-              await supabase
-                .from('leads_lead')
-                .update({ expert_notes: updatedNotes })
-                .eq('id', legacyId);
-            }
+            await supabase
+              .from('leads_lead')
+              .update({ expert_notes: updatedNotes })
+              .eq('id', legacyId);
           }
         }
 
         // Update client expert name if it's different
         if (expertName !== client.expert) {
-          // Update the client object locally
           client.expert = expertName;
           if (onClientUpdate) await onClientUpdate();
         }
@@ -256,6 +278,12 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       if (error) {
         return;
       }
+
+      // Update section-level tracking for footer display
+      if (data.expert_notes_last_edited_by) setExpertNotesLastEditedBy(data.expert_notes_last_edited_by);
+      if (data.expert_notes_last_edited_at) setExpertNotesLastEditedAt(data.expert_notes_last_edited_at);
+      if (data.handler_notes_last_edited_by) setHandlerNotesLastEditedBy(data.handler_notes_last_edited_by);
+      if (data.handler_notes_last_edited_at) setHandlerNotesLastEditedAt(data.handler_notes_last_edited_at);
 
       // Update expert notes with tracking info if available
       if (data.expert_notes_last_edited_by && expertNotes.length > 0) {
@@ -322,33 +350,33 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
         if (error) {
           console.error('Error fetching expert_id:', error);
-          setExpertName('Not assigned');
+          setExpertName('--');
           return;
         }
 
         if (data && data.expert_id) {
           const resolvedName = await getExpertName(data.expert_id);
-          setExpertName(resolvedName || 'Not assigned');
+          setExpertName(resolvedName || '--');
         } else {
-          setExpertName('Not assigned');
+          setExpertName('--');
         }
       } catch (error) {
         console.error('Error in fetchAssignedExpert (legacy):', error);
-        setExpertName('Not assigned');
+        setExpertName('--');
       }
     } else {
       try {
         const expertIdentifier = client.expert_id || client.expert;
         if (!expertIdentifier) {
-          setExpertName('Not assigned');
+          setExpertName('--');
           return;
         }
 
         const resolvedName = await getExpertName(expertIdentifier);
-        setExpertName(resolvedName || 'Not assigned');
+        setExpertName(resolvedName || '--');
       } catch (error) {
         console.error('Error in fetchAssignedExpert (new lead):', error);
-        setExpertName(client.expert || 'Not assigned');
+        setExpertName(client.expert || '--');
       }
     }
   };
@@ -517,7 +545,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               setAssignedExpertId(expertIdNum);
               // Get display name from employee ID
               const expertName = await getExpertName(expertIdNum);
-              setAssignedExpertDisplayName(expertName !== 'Not assigned' ? expertName : null);
+              setAssignedExpertDisplayName(expertName !== '--' ? expertName : null);
             } else {
               setAssignedExpertId(null);
               setAssignedExpertDisplayName(null);
@@ -547,7 +575,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               setAssignedExpertId(expertIdNum);
               // Get display name from employee ID
               const expertName = await getExpertName(expertIdNum);
-              setAssignedExpertDisplayName(expertName !== 'Not assigned' ? expertName : null);
+              setAssignedExpertDisplayName(expertName !== '--' ? expertName : null);
             } else {
               setAssignedExpertId(null);
               setAssignedExpertDisplayName(null);
@@ -584,12 +612,8 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             .single();
 
           if (!error && data) {
-            if (data.expert_notes && Array.isArray(data.expert_notes)) {
-              setExpertNotes(data.expert_notes);
-            }
-            if (data.handler_notes && Array.isArray(data.handler_notes)) {
-              setHandlerNotes(data.handler_notes);
-            }
+            setExpertNotes(Array.isArray(data.expert_notes) ? data.expert_notes : []);
+            setHandlerNotes(Array.isArray(data.handler_notes) ? data.handler_notes : []);
           }
         } catch (error) {
           console.error('Error fetching notes from database:', error);
@@ -605,12 +629,8 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .single();
 
         if (!error && data) {
-          if (data.expert_notes && Array.isArray(data.expert_notes)) {
-            setExpertNotes(data.expert_notes);
-          }
-          if (data.handler_notes && Array.isArray(data.handler_notes)) {
-            setHandlerNotes(data.handler_notes);
-          }
+          setExpertNotes(Array.isArray(data.expert_notes) ? data.expert_notes : []);
+          setHandlerNotes(Array.isArray(data.handler_notes) ? data.handler_notes : []);
         }
       } catch (error) {
         console.error('Error fetching notes from database (new leads):', error);
@@ -628,9 +648,14 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   });
   const [sectionEligibilityLastEditedBy, setSectionEligibilityLastEditedBy] = useState<string | null>(null);
   const [sectionEligibilityLastEditedAt, setSectionEligibilityLastEditedAt] = useState<string | null>(null);
+  const [expertNotesLastEditedBy, setExpertNotesLastEditedBy] = useState<string | null>(null);
+  const [expertNotesLastEditedAt, setExpertNotesLastEditedAt] = useState<string | null>(null);
+  const [handlerNotesLastEditedBy, setHandlerNotesLastEditedBy] = useState<string | null>(null);
+  const [handlerNotesLastEditedAt, setHandlerNotesLastEditedAt] = useState<string | null>(null);
 
   // AI Summary state - MUST be declared before useEffect hooks that use them
   const [showAISummary, setShowAISummary] = useState(false);
+  const [isSummaryCollapsed, setIsSummaryCollapsed] = useState(true);
   const [aiSummary, setAiSummary] = useState<string>('');
   const [savedAiSummary, setSavedAiSummary] = useState<string>('');
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
@@ -1181,15 +1206,23 @@ ${combinedText}`;
 
   // Fetch legacy expert data on component mount
   useEffect(() => {
-    fetchLegacyExpertData();
-    cleanupExistingNotes();
-    fetchTrackingInfo();
-    fetchDocsUrl();
-    fetchAssignedExpert();
-    fetchLegacyEligibilityData();
-    fetchNotesFromDatabase(); // Fetch notes directly from database
-    fetchSummaryData(); // Fetch summary data
-    fetchSavedAiSummary(); // Fetch saved AI summary
+    const runFetches = async () => {
+      setExpertNotesLastEditedBy(null);
+      setExpertNotesLastEditedAt(null);
+      setHandlerNotesLastEditedBy(null);
+      setHandlerNotesLastEditedAt(null);
+      // Fetch notes first so we have current data before fetchLegacyExpertData may add expert_opinion
+      await fetchNotesFromDatabase();
+      fetchLegacyExpertData();
+      cleanupExistingNotes();
+      fetchTrackingInfo();
+      fetchDocsUrl();
+      fetchAssignedExpert();
+      fetchLegacyEligibilityData();
+      fetchSummaryData();
+      fetchSavedAiSummary();
+    };
+    runFetches();
   }, [client.id]);
 
   // Sync notes when client data changes (e.g., after refresh)
@@ -1346,7 +1379,7 @@ ${combinedText}`;
   const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
 
   // Expert name state
-  const [expertName, setExpertName] = useState<string>(client.expert || 'Not assigned');
+  const [expertName, setExpertName] = useState<string>(client.expert || '--');
 
   // Current user state
   const [isSuperuser, setIsSuperuser] = useState<boolean>(false);
@@ -2233,36 +2266,33 @@ ${combinedText}`;
   return (
     <div className="p-2 sm:p-4 md:p-6">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-8">
-        <div className="p-2 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg">
-          <AcademicCapIcon className="w-6 h-6 text-white" />
+      <div className="flex items-center gap-3 mb-6">
+        <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
+          <AcademicCapIcon className="w-5 h-5 text-gray-600" />
         </div>
         <div>
-          <h2 className="text-2xl font-bold">Expert Assignment</h2>
+          <h2 className="text-xl font-semibold text-gray-900">Expert Assignment</h2>
           <p className="text-sm text-gray-500">Case evaluation and expert opinions</p>
         </div>
       </div>
 
-      {/* Main Content Grid - Left side with all boxes, Right side with summary */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column - All existing boxes */}
-        <div className="lg:col-span-2 space-y-4 sm:space-y-6">
+      {/* Main Content Grid - Left side with all boxes, Right side with summary (when expanded) */}
+      <div className="relative">
+      <div className={`grid gap-6 ${isSummaryCollapsed ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-3'}`}>
+        {/* Left Column - All existing boxes (full width when summary collapsed) */}
+        <div className={`space-y-8 sm:space-y-12 ${!isSummaryCollapsed ? 'lg:col-span-2' : ''}`}>
 
           {/* Expert Information */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5">
-              <h4 className="text-lg font-semibold text-black">Expert Information</h4>
-              <div className="border-b border-gray-200 mt-2"></div>
-            </div>
-            <div className="p-6">
-              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
-                <div className="space-y-4">
+          <div className="mb-12">
+            <h4 className="text-base font-semibold text-gray-900 mb-3">Expert Information</h4>
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
+                <div className="space-y-6">
                   <div className="flex items-center gap-3">
-                    <label className="text-base font-medium text-gray-500 uppercase tracking-wide">Assigned Expert</label>
+                    <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Assigned Expert</label>
                     <span className="text-2xl font-bold text-gray-900">{expertName}</span>
                   </div>
                   <div className="space-y-2">
-                    <label className="text-base font-medium text-gray-500 uppercase tracking-wide">Eligibility Status</label>
+                    <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Eligibility Status</label>
                     <span className={`inline-flex items-center px-3 py-1 rounded-full text-base font-medium ${eligibilityStatus.value === 'Not checked' ? 'bg-gray-100 text-gray-800' :
                       eligibilityStatus.value.includes('feasible_no_check') ? 'bg-green-100 text-green-800' :
                         eligibilityStatus.value.includes('feasible_check') ? 'bg-yellow-100 text-yellow-800' :
@@ -2317,22 +2347,17 @@ ${combinedText}`;
                   </button>
                 </div>
               </div>
-            </div>
           </div>
 
           {/* Section Eligibility and Document Upload Row */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             {/* Section Eligibility */}
-            <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-              <div className="pl-6 pt-2 pb-2 w-2/5">
-                <h4 className="text-lg font-semibold text-black">Section Eligibility</h4>
-                <div className="border-b border-gray-200 mt-2"></div>
-              </div>
-              <div className="p-6">
-                <div className="space-y-4">
+            <div>
+              <h4 className="text-base font-semibold text-gray-900 mb-3">Section Eligibility</h4>
+              <div className="space-y-4">
                   {/* Eligibility Dropdown */}
                   <div className="space-y-2">
-                    <label className="text-base font-medium text-gray-500 uppercase tracking-wide">Eligibility Assessment</label>
+                    <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Eligibility Assessment</label>
                     <div className={!canEditEligibility ? "tooltip tooltip-top w-full" : ""} data-tip={!canEditEligibility ? "Only the assigned expert is able to save changes" : ""}>
                       <select
                         className="select select-bordered w-full"
@@ -2355,7 +2380,7 @@ ${combinedText}`;
 
                   {/* Citizenship Section Dropdown */}
                   <div className="space-y-2">
-                    <label className="text-base font-medium text-gray-500 uppercase tracking-wide">
+                    <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">
                       Citizenship Section
                       {isLegacyLead && (
                         <span className="text-sm font-normal text-gray-400 ml-2">(Optional)</span>
@@ -2391,18 +2416,13 @@ ${combinedText}`;
                       <span>{new Date(sectionEligibilityLastEditedAt).toLocaleString()}</span>
                     </div>
                   )}
-                </div>
               </div>
             </div>
 
             {/* Document Upload Section */}
-            <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-              <div className="pl-6 pt-2 pb-2 w-2/5">
-                <h4 className="text-lg font-semibold text-black">Document Upload</h4>
-                <div className="border-b border-gray-200 mt-2"></div>
-              </div>
-              <div className="p-6">
-                <div className="space-y-4">
+            <div>
+              <h4 className="text-base font-semibold text-gray-900 mb-3">Document Upload</h4>
+              <div className="space-y-4">
                   {/* Upload Area */}
                   <div
                     className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors duration-200 ${isUploading
@@ -2500,54 +2520,48 @@ ${combinedText}`;
                       ))}
                     </div>
                   )}
-                </div>
               </div>
             </div>
           </div>
 
-          {/* Expert Notes Row */}
-          <div className="grid grid-cols-1 gap-6">
-            {/* Expert Opinion Notes */}
-            <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-              <div className="pl-6 pt-2 pb-2 w-2/5">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-lg font-semibold text-black">Expert Notes</h4>
-                  <div className="flex gap-2">
-                    {!isAddingExpertNote && !editingExpertNoteId && (
-                      <>
-                        <button
-                          className="btn btn-ghost btn-md bg-transparent hover:bg-transparent shadow-none"
-                          onClick={() => setIsExpertNotesModalOpen(true)}
-                          title="View full screen"
-                        >
-                          <ArrowsPointingOutIcon className="w-5 h-5 text-black" />
-                        </button>
-                        <button
-                          className="btn btn-ghost btn-md bg-transparent hover:bg-transparent shadow-none"
-                          onClick={() => {
-                            setIsAddingExpertNote(true);
-                            setNewExpertNoteContent('');
-                          }}
-                          title="Add note"
-                        >
-                          <PencilSquareIcon className="w-5 h-5 text-black" />
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-                <div className="border-b border-gray-200 mt-2"></div>
+          {/* Expert Notes */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-base font-semibold text-gray-900">Expert Notes</h4>
+              <div className="flex gap-2">
+                {!isAddingExpertNote && !editingExpertNoteId && (
+                  <>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => setIsExpertNotesModalOpen(true)}
+                      title="View full screen"
+                    >
+                      <ArrowsPointingOutIcon className="w-5 h-5 text-gray-600" />
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => {
+                        setIsAddingExpertNote(true);
+                        setNewExpertNoteContent('');
+                      }}
+                      title="Add note"
+                    >
+                      <PencilSquareIcon className="w-5 h-5 text-gray-600" />
+                    </button>
+                  </>
+                )}
               </div>
-              <div className="p-6">
+            </div>
+            <div>
                 {/* Add Expert Note Form */}
                 {isAddingExpertNote && !editingExpertNoteId && (
-                  <div className="mb-6 border border-gray-200 rounded-lg bg-white p-4">
+                  <div className="mb-6">
                     <textarea
                       className="textarea textarea-bordered w-full h-32 mb-3"
                       placeholder="Enter your note..."
                       value={newExpertNoteContent}
                       onChange={(e) => setNewExpertNoteContent(e.target.value)}
-                      dir="rtl"
+                      dir={getTextDirection(newExpertNoteContent)}
                     />
                     <div className="flex justify-end gap-2">
                       <button
@@ -2576,7 +2590,7 @@ ${combinedText}`;
                     expertNotes.map((note, index) => (
                       <div
                         key={note.id}
-                        className={`border border-gray-200 rounded-lg transition-all duration-200 hover:shadow-sm ${editingExpertNoteId === note.id ? 'ring-2 ring-purple-200 bg-purple-50' : 'bg-white'
+                        className={`rounded-lg transition-all duration-200 ${editingExpertNoteId === note.id ? 'ring-2 ring-purple-200 bg-purple-50' : ''
                           }`}
                         style={editingExpertNoteId === note.id ? { '--tw-ring-color': '#3b28c7', '--tw-ring-opacity': '0.2' } as React.CSSProperties : {}}
                       >
@@ -2614,27 +2628,28 @@ ${combinedText}`;
                               // Render HTML content
                               <div
                                 className="text-base text-gray-800 leading-relaxed mb-3 prose max-w-none"
-                                dir="rtl"
+                                dir={getTextDirection(note.content)}
                                 dangerouslySetInnerHTML={{ __html: note.content }}
                               />
                             ) : (
                               // Render plain text
-                              <p className="text-base text-gray-800 whitespace-pre-wrap leading-relaxed mb-3" dir="rtl">{formatNoteText(note.content)}</p>
+                              <p className="text-base text-gray-800 whitespace-pre-wrap leading-relaxed mb-3" dir={getTextDirection(note.content)}>{formatNoteText(note.content)}</p>
                             )}
 
-                            {/* Note Footer - Simple and Clean */}
-                            {note.edited_by && (
+                            {/* Note Footer - Last edited by/at */}
+                            {(note.edited_by || note.edited_at || note.timestamp) && (
                               <div className="pt-3 border-t border-gray-100">
                                 <div className="flex items-center gap-2 text-sm text-gray-500">
-                                  <span>Edited by {note.edited_by}</span>
-                                  <span>•</span>
-                                  <span>{note.timestamp}</span>
-                                  {note.edited_at && note.edited_at !== note.timestamp && (
-                                    <>
-                                      <span>•</span>
-                                      <span>Updated: {note.edited_at}</span>
-                                    </>
-                                  )}
+                                  {note.edited_by && <span>Last edited by {note.edited_by}</span>}
+                                  {(() => {
+                                    const formatted = safeFormatDate(note.edited_at || note.timestamp);
+                                    return formatted ? (
+                                      <>
+                                        {note.edited_by && <span>•</span>}
+                                        <span>{formatted}</span>
+                                      </>
+                                    ) : null;
+                                  })()}
                                 </div>
                               </div>
                             )}
@@ -2651,33 +2666,33 @@ ${combinedText}`;
                     </div>
                   )}
                 </div>
-              </div>
+                {((client as any).expert_notes_last_edited_by || expertNotesLastEditedBy || (client as any).expert_notes_last_edited_at || expertNotesLastEditedAt) && (
+                  <div className="text-xs text-gray-400 flex justify-between mt-3 pt-3 border-t border-gray-100">
+                    <span>Last edited by {(client as any).expert_notes_last_edited_by || expertNotesLastEditedBy || 'Unknown'}</span>
+                    <span>{safeFormatDate((client as any).expert_notes_last_edited_at || expertNotesLastEditedAt)}</span>
+                  </div>
+                )}
             </div>
           </div>
 
-          {/* Handler Notes Row */}
-          <div className="grid grid-cols-1 gap-6">
-            {/* Handler Opinion Section */}
-            <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-              <div className="pl-6 pt-2 pb-2 w-2/5">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-lg font-semibold text-black">Handler Notes</h4>
-                  {!isAddingHandlerNote && !editingHandlerNoteId && (
-                    <button
-                      className="btn btn-ghost btn-md bg-transparent hover:bg-transparent shadow-none"
-                      onClick={() => {
-                        setIsAddingHandlerNote(true);
-                        setNewHandlerNoteContent('');
-                      }}
-                      title="Add Handler Note"
-                    >
-                      <PencilSquareIcon className="w-5 h-5 text-black" />
-                    </button>
-                  )}
-                </div>
-                <div className="border-b border-gray-200 mt-2"></div>
-              </div>
-              <div className="p-6">
+          {/* Handler Notes */}
+          <div className="mt-12">
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-base font-semibold text-gray-900">Handler Notes</h4>
+              {!isAddingHandlerNote && !editingHandlerNoteId && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    setIsAddingHandlerNote(true);
+                    setNewHandlerNoteContent('');
+                  }}
+                  title="Add Handler Note"
+                >
+                  <PencilSquareIcon className="w-5 h-5 text-gray-600" />
+                </button>
+              )}
+            </div>
+            <div>
                 {/* Add/Edit Handler Note Form */}
                 {(isAddingHandlerNote || editingHandlerNoteId) && (
                   <div className="mb-6">
@@ -2686,6 +2701,7 @@ ${combinedText}`;
                       placeholder="Enter your note..."
                       value={newHandlerNoteContent}
                       onChange={(e) => setNewHandlerNoteContent(e.target.value)}
+                      dir={getTextDirection(newHandlerNoteContent)}
                     />
                     <div className="flex justify-end gap-2">
                       <button
@@ -2714,26 +2730,27 @@ ${combinedText}`;
                     handlerNotes.map((note, index) => (
                       <div
                         key={note.id}
-                        className="relative p-4 rounded-lg transition-all duration-200 hover:shadow-sm bg-white"
+                        className="relative py-4"
                       >
                         {/* Note Content */}
-                        <div className="p-4">
-                          <p className="text-base text-gray-800 whitespace-pre-wrap leading-relaxed">{formatNoteText(note.content)}</p>
+                        <div>
+                          <p className="text-base text-gray-800 whitespace-pre-wrap leading-relaxed" dir={getTextDirection(note.content)}>{formatNoteText(note.content)}</p>
                         </div>
 
-                        {/* Note Footer */}
-                        {note.edited_by && (
-                          <div className="mt-3 pt-2 bg-[#391BCB] rounded-b-lg -mx-4 -mb-4 px-4 pb-3">
-                            <div className="flex items-center gap-2 text-sm text-white">
-                              <span className="font-medium">Edited by {note.edited_by}</span>
-                              <span>•</span>
-                              <span>{note.timestamp}</span>
-                              {note.edited_at && note.edited_at !== note.timestamp && (
-                                <>
-                                  <span>•</span>
-                                  <span>Updated: {note.edited_at}</span>
-                                </>
-                              )}
+                        {/* Note Footer - Last edited by/at */}
+                        {(note.edited_by || note.edited_at || note.timestamp) && (
+                          <div className="mt-3 pt-3 border-t border-gray-100">
+                            <div className="flex items-center gap-2 text-sm text-gray-500">
+                              {note.edited_by && <span>Last edited by {note.edited_by}</span>}
+                              {(() => {
+                                const formatted = safeFormatDate(note.edited_at || note.timestamp);
+                                return formatted ? (
+                                  <>
+                                    {note.edited_by && <span>•</span>}
+                                    <span>{formatted}</span>
+                                  </>
+                                ) : null;
+                              })()}
                             </div>
                           </div>
                         )}
@@ -2748,17 +2765,32 @@ ${combinedText}`;
                     </div>
                   )}
                 </div>
-              </div>
+                {((client as any).handler_notes_last_edited_by || handlerNotesLastEditedBy || (client as any).handler_notes_last_edited_at || handlerNotesLastEditedAt) && (
+                  <div className="text-xs text-gray-400 flex justify-between mt-3 pt-3 border-t border-gray-100">
+                    <span>Last edited by {(client as any).handler_notes_last_edited_by || handlerNotesLastEditedBy || 'Unknown'}</span>
+                    <span>{safeFormatDate((client as any).handler_notes_last_edited_at || handlerNotesLastEditedAt)}</span>
+                  </div>
+                )}
             </div>
           </div>
         </div>
 
-        {/* Right Column - Summary Box */}
+        {/* Right Column - Summary Box (only in grid when expanded) */}
+        {!isSummaryCollapsed && (
         <div className="lg:col-span-1">
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden h-full sticky top-6 flex flex-col">
             <div className="pl-6 pt-2 pb-2 flex-shrink-0">
               <div className="flex items-center justify-between pr-6">
-                <h4 className="text-lg font-semibold text-black">Lead Summary</h4>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setIsSummaryCollapsed(true)}
+                    className="btn btn-ghost btn-square btn-sm"
+                    title="Collapse Lead Summary"
+                  >
+                    <ChevronRightIcon className="w-5 h-5 text-gray-600" />
+                  </button>
+                  <h4 className="text-lg font-semibold text-black">Lead Summary</h4>
+                </div>
                 <div className="flex items-center gap-2">
                   {/* Toggle between AI Summary and Individual Fields */}
                   <div className="flex items-center gap-2">
@@ -2907,6 +2939,22 @@ ${combinedText}`;
             </div>
           </div>
         </div>
+        )}
+
+        {/* Collapsed Summary - Fixed on right edge of screen */}
+        {isSummaryCollapsed && (
+          <div className="fixed right-0 top-1/2 -translate-y-1/2 z-50">
+            <button
+              onClick={() => setIsSummaryCollapsed(false)}
+              className="flex flex-col items-center justify-center gap-2 w-12 py-6 bg-white border border-gray-200 rounded-l-2xl shadow-lg hover:shadow-xl hover:bg-gray-50 transition-all duration-200"
+              title="Expand Lead Summary"
+            >
+              <DocumentTextIcon className="w-6 h-6 text-gray-600" />
+              <ChevronLeftIcon className="w-5 h-5 text-gray-500" />
+            </button>
+          </div>
+        )}
+      </div>
       </div>
 
       {/* Document Modal */}

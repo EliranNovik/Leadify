@@ -1962,7 +1962,7 @@ const ReassignLeadsReport: React.FC = () => {
                                                                     {lead.name}
                                                                 </div>
                                                                 <div className="text-xs opacity-80">
-                                                                    {lead.isLegacy ? 'Legacy' : 'New'} Lead #{lead.lead_number || lead.id}
+                                                                    Lead #{lead.lead_number || lead.id}
                                                                 </div>
                                                             </div>
                                                             {isSelected && (

@@ -3075,7 +3075,6 @@ const WhatsAppLeadsPage: React.FC = () => {
                                             <div className="text-sm font-medium text-gray-900 truncate">{lead.name}</div>
                                             <div className="text-xs text-gray-500 truncate">
                                               {lead.lead_number}
-                                              {lead.isLegacy && <span className="ml-1 text-xs bg-gray-100 text-gray-600 px-1 rounded">Legacy</span>}
                                             </div>
                                           </div>
                                         </button>
@@ -3097,7 +3096,6 @@ const WhatsAppLeadsPage: React.FC = () => {
                                             <div className="text-sm font-medium text-gray-900 truncate">{contact.name}</div>
                                             <div className="text-xs text-gray-500 truncate">
                                               Lead: {contact.lead_number}
-                                              {contact.isLegacy && <span className="ml-1 text-xs bg-gray-100 text-gray-600 px-1 rounded">Legacy</span>}
                                             </div>
                                           </div>
                                         </button>
@@ -4224,9 +4222,6 @@ const WhatsAppLeadsPage: React.FC = () => {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1">
                             <span className="font-semibold text-gray-900">{lead.lead_number}</span>
-                            {lead.isLegacy && (
-                              <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">Legacy</span>
-                            )}
                           </div>
                           <p className="text-sm font-medium text-gray-700 truncate">{lead.name || 'No name'}</p>
                           {lead.email && (

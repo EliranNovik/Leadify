@@ -146,9 +146,9 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
     >
       <div
         ref={navBarRef}
-        className="mx-3 mb-2 rounded-full bg-white/70 dark:bg-white/40 backdrop-blur-2xl border border-white/50 dark:border-white/20 shadow-xl shadow-black/5"
+        className="mx-4 mb-2 max-w-[300px] mx-auto rounded-full bg-white/70 dark:bg-white/40 backdrop-blur-2xl border border-white/50 dark:border-white/20 shadow-xl shadow-black/5"
       >
-        <div className="flex items-center justify-around py-1.5 px-1">
+        <div className="flex items-center justify-center gap-1 py-1.5 px-2">
           {leftItems.map((item) => {
             const actionItem = item as { action?: string };
             const isAction = !!actionItem.action;
@@ -156,7 +156,7 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
               !isAction && (pathname === item.path || (item.path !== '/' && pathname.startsWith(item.path)));
             const IconComponent = isActive ? item.IconActive : item.Icon;
             const showCount = item.path === '/new-cases' && newLeadsCount > 0;
-            const itemClass = `flex items-center justify-center min-w-[56px] py-3 px-4 rounded-full transition-all duration-200 relative ${
+            const itemClass = `flex items-center justify-center min-w-[44px] py-3 px-2 rounded-full transition-all duration-200 relative ${
               isActive ? 'bg-primary/10 text-primary' : 'text-base-content/60 hover:text-base-content hover:bg-base-content/5'
             }`;
 
@@ -179,7 +179,7 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
                 key={item.path}
                 to={item.path}
                 className={({ isActive: navActive }) =>
-                  `flex items-center justify-center min-w-[56px] py-3 px-4 rounded-full transition-all duration-200 relative ${
+                  `flex items-center justify-center min-w-[44px] py-3 px-2 rounded-full transition-all duration-200 relative ${
                     navActive ? 'bg-primary/10 text-primary' : 'text-base-content/60 hover:text-base-content hover:bg-base-content/5'
                   }`
                 }
@@ -197,7 +197,7 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
           })}
 
           {/* Quick Actions - center */}
-          <div className="flex flex-col items-center justify-center min-w-[48px] py-1 px-2 gap-0.5" data-quick-actions-dropdown>
+          <div className="flex flex-col items-center justify-center min-w-[40px] py-1 px-1 gap-0.5" data-quick-actions-dropdown>
             <button
               ref={quickActionsButtonRef}
               type="button"
@@ -221,7 +221,7 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
               !isAction && (pathname === item.path || (item.path !== '/' && pathname.startsWith(item.path)));
             const IconComponent = isActive ? item.IconActive : item.Icon;
             const showCount = item.path === '/new-cases' && newLeadsCount > 0;
-            const itemClass = `flex items-center justify-center min-w-[56px] py-3 px-4 rounded-full transition-all duration-200 relative ${
+            const itemClass = `flex items-center justify-center min-w-[44px] py-3 px-2 rounded-full transition-all duration-200 relative ${
               isActive ? 'bg-primary/10 text-primary' : 'text-base-content/60 hover:text-base-content hover:bg-base-content/5'
             }`;
 
@@ -244,7 +244,7 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
                 key={item.path}
                 to={item.path}
                 className={({ isActive: navActive }) =>
-                  `flex items-center justify-center min-w-[56px] py-3 px-4 rounded-full transition-all duration-200 relative ${
+                  `flex items-center justify-center min-w-[44px] py-3 px-2 rounded-full transition-all duration-200 relative ${
                     navActive ? 'bg-primary/10 text-primary' : 'text-base-content/60 hover:text-base-content hover:bg-base-content/5'
                   }`
                 }

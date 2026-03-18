@@ -4911,9 +4911,6 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                               Lead: {contact.lead_number}
                             </div>
                           </div>
-                          <div className="text-xs text-gray-400">
-                            {contact.lead_type === 'legacy' ? 'Legacy' : 'New'}
-                          </div>
                         </div>
                       </div>
                     );
