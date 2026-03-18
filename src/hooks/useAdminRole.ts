@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 
 export const useAdminRole = () => {
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isSuperUser, setIsSuperUser] = useState(false);
   const [isLoading, setIsLoading] = useState(false); // Start as false to not block UI
 
   const refreshAdminStatus = useCallback(async () => {
@@ -26,15 +27,21 @@ export const useAdminRole = () => {
 
       if (error) {
         setIsAdmin(false);
+        setIsSuperUser(false);
       } else {
         const adminStatus = data?.role === 'admin' || 
           data?.is_staff === true || 
           data?.is_superuser === true;
+        const superUserStatus = data?.is_superuser === true || 
+          data?.is_superuser === 'true' || 
+          data?.is_superuser === 1;
         
         setIsAdmin(adminStatus);
+        setIsSuperUser(!!superUserStatus);
       }
     } catch (error) {
       setIsAdmin(false);
+      setIsSuperUser(false);
     } finally {
       setIsLoading(false);
     }
@@ -49,6 +56,7 @@ export const useAdminRole = () => {
         
         if (authError || !user) {
           setIsAdmin(false);
+          setIsSuperUser(false);
           return;
         }
 
@@ -80,8 +88,12 @@ export const useAdminRole = () => {
                 const adminStatus = retryData?.role === 'admin' || 
                   retryData?.is_staff === true || 
                   retryData?.is_superuser === true;
+                const superUserStatus = retryData?.is_superuser === true || 
+                  retryData?.is_superuser === 'true' || 
+                  retryData?.is_superuser === 1;
                 
                 setIsAdmin(adminStatus);
+                setIsSuperUser(!!superUserStatus);
                 return;
               }
             }
@@ -95,11 +107,16 @@ export const useAdminRole = () => {
           const adminStatus = data?.role === 'admin' || 
             data?.is_staff === true || 
             data?.is_superuser === true;
+          const superUserStatus = data?.is_superuser === true || 
+            data?.is_superuser === 'true' || 
+            data?.is_superuser === 1;
           
           setIsAdmin(adminStatus);
+          setIsSuperUser(!!superUserStatus);
         }
       } catch (error) {
         setIsAdmin(false);
+        setIsSuperUser(false);
       }
     };
 
@@ -118,5 +135,5 @@ export const useAdminRole = () => {
     };
   }, []);
 
-  return { isAdmin, isLoading, refreshAdminStatus };
+  return { isAdmin, isSuperUser, isLoading, refreshAdminStatus };
 }; 

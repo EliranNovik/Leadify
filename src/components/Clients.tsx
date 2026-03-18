@@ -95,6 +95,7 @@ import CombineLeadsModal from './CombineLeadsModal';
 import SendPriceOfferModal from './SendPriceOfferModal';
 import { addToHighlights, removeFromHighlights, isInHighlights } from '../lib/highlightsUtils';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
+import { addRecentLead } from '../lib/recentSearchStorage';
 
 // Performance debugging for Clients load: in DEV, logs timings to console. Set window.__CLIENTS_PERF__ = true for Performance tab marks.
 const CLIENT_LOAD_PERF = typeof window !== 'undefined' && import.meta.env.DEV;
@@ -565,6 +566,19 @@ const Clients: React.FC<ClientsProps> = ({
     setIsInactiveBadgeExpanded(false);
   }, [selectedClient?.id]);
 
+  // Record recently viewed lead for Header mobile search (when viewing a client)
+  // Use lead_number for new leads (route uses /clients/L123456), legacy id for legacy leads
+  useEffect(() => {
+    if (!selectedClient?.id) return;
+    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+    const routeId = isLegacy
+      ? selectedClient.id.toString().replace(/^legacy_/, '')
+      : (selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '');
+    const name = selectedClient.name || 'Unknown';
+    const leadNumber = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '';
+    addRecentLead({ id: routeId, name, lead_number: leadNumber });
+  }, [selectedClient?.id]);
+
   // Helper function to extract country code and number from full phone number
   const parsePhoneNumber = (fullNumber: string | undefined | null) => {
     // Handle null, undefined, or empty values
@@ -666,9 +680,12 @@ const Clients: React.FC<ClientsProps> = ({
   };
 
   // Optimized function to find duplicate contacts - uses parallel queries and batching
-  const findDuplicateContacts = async () => {
-    if (!selectedClient?.id) {
+  // Accepts optional client param so it can be called from fetch handler before selectedClient is set
+  const findDuplicateContacts = async (client?: { id: string | number; lead_type?: string; lead_number?: string; manual_id?: string } | null) => {
+    const clientToUse = client ?? selectedClient;
+    if (!clientToUse?.id) {
       setDuplicateContacts([]);
+      if (clientToUse) persistDuplicateContacts(clientToUse, []);
       return;
     }
 
@@ -676,10 +693,10 @@ const Clients: React.FC<ClientsProps> = ({
     setDuplicateContacts([]);
 
     try {
-      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      const isLegacyLead = clientToUse.lead_type === 'legacy' || clientToUse.id?.toString().startsWith('legacy_');
       const currentLeadId = isLegacyLead
-        ? (typeof selectedClient.id === 'string' ? selectedClient.id.replace('legacy_', '') : String(selectedClient.id))
-        : selectedClient.id;
+        ? (typeof clientToUse.id === 'string' ? clientToUse.id.replace('legacy_', '') : String(clientToUse.id))
+        : clientToUse.id;
 
       // Normalize phone numbers for comparison
       const normalizePhone = (phone: string | null | undefined): string => {
@@ -707,6 +724,7 @@ const Clients: React.FC<ClientsProps> = ({
       if (!leadContacts || leadContacts.length === 0) {
         console.log('⚠️ findDuplicateContacts: No lead contacts found');
         setDuplicateContacts([]);
+        persistDuplicateContacts(clientToUse, []);
         return;
       }
 
@@ -715,6 +733,7 @@ const Clients: React.FC<ClientsProps> = ({
       if (contactIds.length === 0) {
         console.log('⚠️ findDuplicateContacts: No contact IDs');
         setDuplicateContacts([]);
+        persistDuplicateContacts(clientToUse, []);
         return;
       }
 
@@ -734,6 +753,7 @@ const Clients: React.FC<ClientsProps> = ({
       if (currentContacts.length === 0) {
         console.log('⚠️ findDuplicateContacts: No current contacts found');
         setDuplicateContacts([]);
+        persistDuplicateContacts(clientToUse, []);
         return;
       }
 
@@ -773,6 +793,7 @@ const Clients: React.FC<ClientsProps> = ({
 
       if (allFilters.length === 0) {
         setDuplicateContacts([]);
+        persistDuplicateContacts(clientToUse, []);
         return;
       }
 
@@ -788,6 +809,7 @@ const Clients: React.FC<ClientsProps> = ({
 
       if (duplicateContacts.length === 0) {
         setDuplicateContacts([]);
+        persistDuplicateContacts(clientToUse, []);
         return;
       }
 
@@ -800,6 +822,7 @@ const Clients: React.FC<ClientsProps> = ({
 
       if (!relationships || relationships.length === 0) {
         setDuplicateContacts([]);
+        persistDuplicateContacts(clientToUse, []);
         return;
       }
 
@@ -1031,9 +1054,11 @@ const Clients: React.FC<ClientsProps> = ({
       );
 
       setDuplicateContacts(uniqueMatches);
+      persistDuplicateContacts(clientToUse, uniqueMatches);
     } catch (error) {
       console.error('❌ Error finding duplicate contacts:', error);
       setDuplicateContacts([]);
+      if (clientToUse) persistDuplicateContacts(clientToUse, []);
     }
   };
 
@@ -1303,28 +1328,20 @@ const Clients: React.FC<ClientsProps> = ({
     return '/clients';
   }, []);
 
+  // Helper to get storage key for a client (used by persistClientData and persistDuplicateContacts)
+  const getClientStorageKey = useCallback((client: any, leadNumber?: string): string | undefined => {
+    if (leadNumber) return leadNumber;
+    const isLegacy = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+    if (isLegacy) {
+      return client?.id?.toString().replace('legacy_', '') || client?.id?.toString();
+    }
+    return client?.lead_number || client?.manual_id || client?.id?.toString();
+  }, []);
+
   // Helper function to persist client data to sessionStorage
   const persistClientData = useCallback((client: any, leadNumber?: string) => {
     try {
-      // For legacy leads, use numeric ID (without "legacy_" prefix) as key
-      // For new leads, use lead_number or manual_id
-      let keyToUse: string | undefined;
-
-      if (leadNumber) {
-        // If leadNumber is provided, use it directly (it's already normalized from URL)
-        keyToUse = leadNumber;
-      } else {
-        const isLegacy = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-        if (isLegacy) {
-          // Legacy: extract numeric ID (remove "legacy_" prefix if present)
-          const clientId = client?.id?.toString().replace('legacy_', '') || client?.id?.toString();
-          keyToUse = clientId;
-        } else {
-          // New: use lead_number, manual_id, or id
-          keyToUse = client?.lead_number || client?.manual_id || client?.id?.toString();
-        }
-      }
-
+      const keyToUse = getClientStorageKey(client, leadNumber);
       if (keyToUse) {
         const persistedKey = `clientsPage_clientData_${keyToUse}`;
         sessionStorage.setItem(persistedKey, JSON.stringify(client));
@@ -1336,7 +1353,19 @@ const Clients: React.FC<ClientsProps> = ({
     } catch (error) {
       console.error('Error persisting client data:', error);
     }
-  }, [buildClientRoute]);
+  }, [buildClientRoute, getClientStorageKey]);
+
+  // Persist duplicate contacts so they don't need refetch when navigating back
+  const persistDuplicateContacts = useCallback((client: any, duplicates: typeof duplicateContacts) => {
+    try {
+      const keyToUse = getClientStorageKey(client);
+      if (keyToUse) {
+        sessionStorage.setItem(`clientsPage_duplicateContacts_${keyToUse}`, JSON.stringify(duplicates));
+      }
+    } catch (error) {
+      console.error('Error persisting duplicate contacts:', error);
+    }
+  }, [getClientStorageKey]);
 
   // Persist UI state so it's restored when navigating back (same as LeadSearchPage.tsx)
   const [activeTab, setActiveTab] = usePersistedState('clientsPage_activeTab', 'info', {
@@ -1369,6 +1398,31 @@ const Clients: React.FC<ClientsProps> = ({
   const [isProgressCollapsed, setIsProgressCollapsed] = usePersistedState('clientsPage_isProgressCollapsed', false, {
     storage: 'sessionStorage',
   });
+  const [isMobileTabPanelOpen, setIsMobileTabPanelOpen] = useState(false);
+  const mobileTabPanelRef = useRef<HTMLDivElement>(null);
+  const tabContentRef = useRef<HTMLDivElement>(null);
+
+  const handleMobileTabSelect = (tabId: string) => {
+    setActiveTab(tabId);
+    setIsMobileTabPanelOpen(false);
+    setTimeout(() => {
+      tabContentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  };
+
+  // Close mobile tab panel when clicking outside
+  useEffect(() => {
+    if (!isMobileTabPanelOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (mobileTabPanelRef.current?.contains(target)) return;
+      const btn = document.querySelector('[data-mobile-tab-arrow-btn]');
+      if (btn?.contains(target)) return;
+      setIsMobileTabPanelOpen(false);
+    };
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, [isMobileTabPanelOpen]);
 
   // Set default collapsed state for mobile on mount
   useEffect(() => {
@@ -2282,6 +2336,7 @@ const Clients: React.FC<ClientsProps> = ({
   const isSettingUpClientRef = useRef(false); // Flag to prevent useEffect from interfering during setup
   const isFetchingRef = useRef(false); // Flag to prevent duplicate fetches
   const fetchingRouteRef = useRef<string | null>(null); // Track which route is currently being fetched
+  const duplicateFetchStartedForClientRef = useRef<string | null>(null); // Skip useEffect when we started from fetch handler
   const clientsLoadStartRef = useRef<number | null>(null); // For perf timing (see CLIENT_LOAD_PERF)
 
   useEffect(() => {
@@ -3340,11 +3395,16 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Find duplicate contacts when selectedClient changes - run immediately without delay
   useEffect(() => {
+    const clientId = selectedClient?.id?.toString();
+    // Skip if we already started from fetch handler (avoids duplicate network request)
+    if (clientId && duplicateFetchStartedForClientRef.current === clientId) {
+      duplicateFetchStartedForClientRef.current = null;
+      return;
+    }
     // Clear immediately when client changes to prevent showing old badge
     setDuplicateContacts([]);
 
     if (selectedClient?.id) {
-      // Run immediately - no delay needed
       findDuplicateContacts();
     }
   }, [selectedClient?.id]);
@@ -3434,9 +3494,54 @@ const Clients: React.FC<ClientsProps> = ({
               // Update fetching refs to prevent any subsequent fetches
               isFetchingRef.current = false;
               fetchingRouteRef.current = null;
+              // Set master/sub-lead state immediately so buttons appear (same logic as fetch handler)
+              const isLegacyPersisted = normalizedPersistedData?.lead_type === 'legacy' || normalizedPersistedData?.id?.toString().startsWith('legacy_');
+              const clientLeadNumPersisted = normalizedPersistedData?.lead_number ?? '';
+              const hasLinkedPersisted = normalizedPersistedData?.linked_master_lead != null && (typeof normalizedPersistedData.linked_master_lead === 'number' || (typeof normalizedPersistedData.linked_master_lead === 'string' && String(normalizedPersistedData.linked_master_lead).trim() !== ''));
+              const isSubLeadPersisted = isLegacyPersisted
+                ? (!!clientLeadNumPersisted && clientLeadNumPersisted.includes('/')) || (!!normalizedPersistedData?.master_id && String(normalizedPersistedData.master_id).trim() !== '') || hasLinkedPersisted
+                : (!!normalizedPersistedData?.master_id && String(normalizedPersistedData.master_id).trim() !== '') || hasLinkedPersisted;
+              let masterNumPersisted: string | null = null;
+              if (isSubLeadPersisted) {
+                if (clientLeadNumPersisted.includes('/')) masterNumPersisted = clientLeadNumPersisted.split('/')[0];
+                else if (hasLinkedPersisted) masterNumPersisted = String(normalizedPersistedData.linked_master_lead);
+                else if (isLegacyPersisted && normalizedPersistedData?.master_id) masterNumPersisted = String(normalizedPersistedData.master_id);
+              }
+              if (!isSubLeadPersisted) {
+                setMasterLeadNumberForNewLead(null);
+                setMasterLeadNumberForLegacy(null);
+                setIsMasterLead(true); // Optimistic for master
+              } else if (masterNumPersisted) {
+                if (isLegacyPersisted) setMasterLeadNumberForLegacy(masterNumPersisted);
+                else setMasterLeadNumberForNewLead(masterNumPersisted);
+                setIsMasterLead(false);
+              } else {
+                setIsMasterLead(false);
+              }
               // Set loading to false and client data; refresh in background so data stays current
               setLocalLoading(false);
               setSelectedClient(normalizedPersistedData);
+              // Restore duplicate contacts from cache if available, otherwise fetch
+              const dupKey = `clientsPage_duplicateContacts_${effectiveLeadNumber}`;
+              try {
+                const cachedDups = sessionStorage.getItem(dupKey);
+                if (cachedDups) {
+                  const parsed = JSON.parse(cachedDups);
+                  if (Array.isArray(parsed)) {
+                    setDuplicateContacts(parsed);
+                    duplicateFetchStartedForClientRef.current = normalizedPersistedData?.id?.toString() ?? null;
+                  } else {
+                    duplicateFetchStartedForClientRef.current = normalizedPersistedData?.id?.toString() ?? null;
+                    findDuplicateContacts(normalizedPersistedData);
+                  }
+                } else {
+                  duplicateFetchStartedForClientRef.current = normalizedPersistedData?.id?.toString() ?? null;
+                  findDuplicateContacts(normalizedPersistedData);
+                }
+              } catch {
+                duplicateFetchStartedForClientRef.current = normalizedPersistedData?.id?.toString() ?? null;
+                findDuplicateContacts(normalizedPersistedData);
+              }
               clientsPerfMark('cache-hit');
               if (clientsLoadStartRef.current != null) {
                 const loadStart = clientsLoadStartRef.current;
@@ -3517,6 +3622,8 @@ const Clients: React.FC<ClientsProps> = ({
         setMasterLeadNumberForNewLead(null);
         setMasterLeadNumberForLegacy(null);
         setIsMasterLead(false);
+        setSubLeads([]);
+        setMasterSubLeadsCount(0);
         setDuplicateContacts([]);
         setIsDuplicateDropdownOpen(false);
         // Continue to fetch data below - don't return early
@@ -4129,14 +4236,15 @@ const Clients: React.FC<ClientsProps> = ({
             // Set state immediately so button appears while overlay is showing
             // Clear state if not a sublead, or set it if we calculated it
             if (!calculatedIsSubLead) {
-              // Not a sublead - clear the state immediately
+              // Not a sublead - clear master lead number
               if (!isLegacyForCalc) {
                 setMasterLeadNumberForNewLead(null);
               } else {
                 setMasterLeadNumberForLegacy(null);
               }
-              // Also ensure isMasterLead is false for regular leads
-              setIsMasterLead(false);
+              // Optimistic: show master dashboard button for leads with no master_id
+              // fetchSubLeads will correct to false if no sub-leads found
+              setIsMasterLead(true);
             } else if (calculatedMasterLeadNumber) {
               // For new leads, set the master lead number immediately if we extracted it from pattern
               if (!isLegacyForCalc) {
@@ -4144,6 +4252,11 @@ const Clients: React.FC<ClientsProps> = ({
               } else {
                 setMasterLeadNumberForLegacy(calculatedMasterLeadNumber);
               }
+              // Sub-lead: not a master lead
+              setIsMasterLead(false);
+            } else if (calculatedIsSubLead) {
+              // Sub-lead but masterLeadNumber not yet available - will be fetched in useEffect
+              setIsMasterLead(false);
             }
             // Note: If calculatedIsSubLead is true but calculatedMasterLeadNumber is null,
             // the useEffect hooks will fetch it from the database
@@ -4156,6 +4269,10 @@ const Clients: React.FC<ClientsProps> = ({
 
             // Clear loading overlay as soon as client data is ready so UI can paint immediately
             setLocalLoading(false);
+
+            // Start duplicate contacts fetch immediately (don't wait for useEffect)
+            duplicateFetchStartedForClientRef.current = normalizedClient?.id?.toString() ?? null;
+            findDuplicateContacts(normalizedClient);
             clientsPerfMark('state-set');
             if (CLIENT_LOAD_PERF && clientsLoadStartRef.current != null) {
               const total = performance.now() - clientsLoadStartRef.current;
@@ -11932,6 +12049,21 @@ const Clients: React.FC<ClientsProps> = ({
     normalizeCurrencyForForm,
   ]);
 
+  // Effective lead from URL for route-matching
+  const effectiveLeadForMatch = lead_number || fullLeadNumber || requestedLeadNumber;
+  // Only show client content when selectedClient matches current route — prevents flash of wrong client when navigating
+  // When no lead in URL (e.g. /clients), never show client — we're about to redirect
+  const clientMatchesRoute = !!effectiveLeadForMatch && !!selectedClient && (() => {
+    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+    const clientId = isLegacy ? selectedClient.id?.toString().replace('legacy_', '') : selectedClient.id?.toString();
+    const clientLeadNumber = selectedClient.lead_number;
+    if (isLegacy) {
+      return clientId === effectiveLeadForMatch || clientId === String(effectiveLeadForMatch);
+    }
+    return clientLeadNumber === effectiveLeadForMatch || clientId === effectiveLeadForMatch ||
+      (selectedClient as any)?.manual_id === effectiveLeadForMatch;
+  })();
+
   if (!localLoading && !selectedClient) {
     return (
       <div className="p-6">
@@ -11943,8 +12075,8 @@ const Clients: React.FC<ClientsProps> = ({
     );
   }
 
-  // Early return when loading and no client yet — single central loading spinner only
-  if (localLoading && !selectedClient) {
+  // Show loading when: loading and no client, OR have client but it doesn't match route (prevents flash of wrong client)
+  if ((localLoading && !selectedClient) || (selectedClient && !clientMatchesRoute)) {
     const hasLeadInUrl = Boolean(lead_number || fullLeadNumber || requestedLeadNumber);
     const loadingMessage = hasLeadInUrl ? 'Loading client…' : 'Opening latest client…';
     return (
@@ -14180,12 +14312,12 @@ const Clients: React.FC<ClientsProps> = ({
       {/* Only render main content if selectedClient exists */}
       {selectedClient && (
         <>
-          {/* Sticky Header - appears when scrolled down, positioned below main header */}
+          {/* Sticky Header - appears when scrolled down, positioned below main header (desktop only - mobile bar removed) */}
           {/* Centered oval glassy bar */}
           {showStickyHeader && (
-            <div className="fixed top-16 left-0 right-0 z-[35] flex justify-center px-3 transition-all duration-300 ease-in-out">
+            <div className="hidden md:flex fixed top-16 left-0 right-0 z-[35] justify-center px-3 transition-all duration-300 ease-in-out">
               <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-xl border border-white/20 dark:border-gray-700/20 px-4 py-2 md:px-5 md:py-2.5 transition-all duration-300 ease-in-out">
-                {/* Mobile View - Lead number, client name, timeline, history, and duplicate button */}
+                {/* Mobile View - Lead number, client name, stage badge, timeline, history, and duplicate button */}
                 <div className="md:hidden flex items-center justify-center gap-1.5">
                   <div className="flex items-center gap-1.5 min-w-0">
                     <span className="text-sm font-bold text-base-content whitespace-nowrap">
@@ -14194,6 +14326,10 @@ const Clients: React.FC<ClientsProps> = ({
                     <span className="text-sm font-semibold text-base-content/90 truncate">
                       {selectedClient.name || 'Unnamed Lead'}
                     </span>
+                  </div>
+                  {/* Stage Badge */}
+                  <div className="flex items-center flex-shrink-0">
+                    {getStageBadge(selectedClient.stage, 'mobile', selectedClient?.stage_name != null || selectedClient?.stage_colour != null ? { name: selectedClient?.stage_name, colour: selectedClient?.stage_colour } : undefined)}
                   </div>
                   {/* Timeline and History Buttons */}
                   <button
@@ -14263,7 +14399,7 @@ const Clients: React.FC<ClientsProps> = ({
 
                 {/* Desktop View - Full layout with tab navigation */}
                 <div className="hidden md:flex items-center justify-center gap-3 flex-wrap">
-                  {/* Left side: Lead number, name, and duplicate contact badge */}
+                  {/* Left side: Lead number, name, stage badge, and duplicate contact badge */}
                   <div className="flex items-center gap-2 min-w-0">
                     <div className="flex items-center gap-2 min-w-0 flex-wrap">
                       <span className="text-base font-bold text-base-content whitespace-nowrap">
@@ -14272,6 +14408,10 @@ const Clients: React.FC<ClientsProps> = ({
                       <span className="text-base font-semibold text-base-content/90 truncate">
                         {selectedClient.name || 'Unnamed Lead'}
                       </span>
+                      {/* Stage Badge */}
+                      <div className="flex items-center flex-shrink-0">
+                        {getStageBadge(selectedClient.stage, 'desktop', selectedClient?.stage_name != null || selectedClient?.stage_colour != null ? { name: selectedClient?.stage_name, colour: selectedClient?.stage_colour } : undefined)}
+                      </div>
                       {/* Duplicate Contact Badge - Icon and Number Only */}
                       {duplicateContacts.length > 0 && (
                         <div className="relative">
@@ -14965,7 +15105,7 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
 
           {/* Tab Content - full width, white background */}
-          <div className="w-full bg-base-100 min-h-screen">
+          <div ref={tabContentRef} className="w-full bg-base-100 min-h-screen">
             <div
               key={`${activeTab}-${interactionCount}`}
               className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0"
@@ -17602,26 +17742,41 @@ const Clients: React.FC<ClientsProps> = ({
             }}
           />
 
-          {/* Mobile Tabs Navigation - Bottom of page, horizontal oval box, horizontally scrollable */}
+          {/* Mobile Tabs Navigation - Arrow on right, opens tab panel */}
           {/* Hide when edit drawer, balance modal, schedule meeting panel, reschedule drawer, or update drawer is open */}
+          {/* Overlay when tabs box is open */}
+          {isMobileTabPanelOpen && !showEditLeadDrawer && !isBalanceModalOpen && !showScheduleMeetingPanel && !showRescheduleDrawer && !showUpdateDrawer && (
+            <div
+              className="md:hidden fixed inset-0 bg-black/40 z-[38]"
+              onClick={() => setIsMobileTabPanelOpen(false)}
+              aria-hidden="true"
+            />
+          )}
           {/* z-40 to stay below sidebar (z-50) */}
-          <div className={`md:hidden fixed bottom-0 left-0 right-0 z-40 ${showEditLeadDrawer || isBalanceModalOpen || showScheduleMeetingPanel || showRescheduleDrawer || showUpdateDrawer ? 'hidden' : ''}`}>
-            <div className="flex justify-center px-3 pb-0 pt-1">
-              <div className="bg-white/75 dark:bg-gray-800/75 backdrop-blur-md rounded-full shadow-sm border border-gray-200/40 dark:border-gray-600/40 px-2 py-1.5 overflow-x-auto scrollbar-hide" style={{ borderRadius: '9999px', maxWidth: '95vw' }}>
-                <div className="flex items-center gap-1" style={{ scrollBehavior: 'smooth' }}>
+          <div ref={mobileTabPanelRef} className={`md:hidden fixed right-0 top-1/2 -translate-y-1/2 z-40 flex items-center ${showEditLeadDrawer || isBalanceModalOpen || showScheduleMeetingPanel || showRescheduleDrawer || showUpdateDrawer ? 'hidden' : ''}`}>
+            {/* Vertical tab panel - appears when arrow is clicked */}
+            {isMobileTabPanelOpen && (
+              <div
+                className="absolute right-12 top-1/2 -translate-y-1/2 bg-white/95 dark:bg-gray-800/95 backdrop-blur-md rounded-2xl shadow-xl border border-gray-200/60 dark:border-gray-600/60 px-4 py-4 overflow-y-auto scrollbar-hide"
+                style={{ maxWidth: 'min(90vw, 320px)', maxHeight: '85vh' }}
+              >
+                <div className="flex flex-col gap-1.5" style={{ scrollBehavior: 'smooth' }}>
                   {tabs.map((tab) => (
                     <button
                       key={tab.id}
-                      className={`relative flex flex-col items-center justify-center gap-1 px-3 py-2.5 rounded-full font-semibold text-xs transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
+                      className={`relative flex flex-row items-center justify-start gap-4 w-full px-4 py-3.5 rounded-xl font-semibold text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
                         ? 'text-black dark:text-white bg-black/5 dark:bg-white/10'
                         : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100/50 dark:hover:bg-gray-700/30'
                         }`}
-                      onClick={() => setActiveTab(tab.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleMobileTabSelect(tab.id);
+                      }}
                     >
-                      <div className="relative inline-flex items-center justify-center">
-                        <tab.icon className={`w-6 h-6 flex-shrink-0 ${activeTab === tab.id ? '!text-black dark:!text-white' : 'text-gray-500 dark:text-gray-400'}`} />
+                      <div className="relative inline-flex items-center justify-center flex-shrink-0">
+                        <tab.icon className={`w-8 h-8 ${activeTab === tab.id ? '!text-black dark:!text-white' : 'text-gray-500 dark:text-gray-400'}`} />
                         {tab.id === 'interactions' && tab.badge && (
-                          <div className={`absolute -top-0.5 -right-0.5 min-w-[1.125rem] h-4.5 px-0.5 rounded-full text-[11px] font-bold flex items-center justify-center whitespace-nowrap ${activeTab === tab.id
+                          <div className={`absolute -top-0.5 -right-0.5 min-w-[1.25rem] h-5 px-1 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap ${activeTab === tab.id
                             ? 'bg-black/10 dark:bg-white/20 text-black dark:text-white'
                             : 'bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300'
                             }`}>
@@ -17629,12 +17784,30 @@ const Clients: React.FC<ClientsProps> = ({
                           </div>
                         )}
                       </div>
-                      <span className={`saira-light font-bold text-xs leading-tight ${activeTab === tab.id ? 'text-black dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>{tab.label}</span>
+                      <span className={`saira-light font-bold text-sm leading-tight truncate ${activeTab === tab.id ? 'text-black dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>{tab.label}</span>
                     </button>
                   ))}
                 </div>
               </div>
-            </div>
+            )}
+            {/* Tabs toggle button - fixed on right edge, same purple as Quick Actions */}
+            <button
+              type="button"
+              data-mobile-tab-arrow-btn
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsMobileTabPanelOpen((v) => !v);
+              }}
+              className="flex items-center justify-center w-10 h-14 rounded-l-xl backdrop-blur-md shadow-lg border border-r-0 border-[#471CCA]/30 text-white hover:opacity-90 transition-colors"
+              style={{ backgroundColor: '#471CCA' }}
+              aria-label={isMobileTabPanelOpen ? 'Close tabs' : 'Open tabs'}
+            >
+              {(() => {
+                const activeTabData = tabs.find((t) => t.id === activeTab);
+                const IconComponent = activeTabData?.icon ?? ChevronLeftIcon;
+                return <IconComponent className="w-6 h-6" />;
+              })()}
+            </button>
           </div>
         </>
       )}

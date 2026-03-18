@@ -6787,7 +6787,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       >
                         {showDateSeparator && (
                           <div className="flex justify-center my-4">
-                            <span className="text-sm text-gray-400">{formatDateSeparator(message.sent_at)}</span>
+                            <span className={`text-sm ${chatBackgroundImageUrl ? 'text-white' : 'text-gray-400'}`}>{formatDateSeparator(message.sent_at)}</span>
                           </div>
                         )}
                         {/* Unread messages indicator - Desktop */}
@@ -7135,7 +7135,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     : 'border rounded-bl-md bg-white border-gray-200 text-base-content shadow-sm'
                                     }`}
                                   style={isOwn && !isEmojiOnly(message.content)
-                                    ? { background: 'linear-gradient(to bottom right, #047857, #0f766e)' }
+                                    ? { background: 'linear-gradient(to bottom right, #065f46, #0d5c52)' }
                                     : {}
                                   }
                                 >
@@ -8133,7 +8133,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       >
                         {showDateSeparator && (
                           <div className="flex justify-center my-4">
-                            <span className="text-sm text-gray-400">{formatDateSeparator(message.sent_at)}</span>
+                            <span className={`text-sm ${chatBackgroundImageUrl ? 'text-white' : 'text-gray-400'}`}>{formatDateSeparator(message.sent_at)}</span>
                           </div>
                         )}
                         {/* Unread messages indicator - Mobile */}
@@ -8460,7 +8460,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     : 'border rounded-bl-md bg-white border-gray-200 text-base-content shadow-sm'
                                     }`}
                                   style={isOwn && !isEmojiOnly(message.content)
-                                    ? { background: 'linear-gradient(to bottom right, #047857, #0f766e)' }
+                                    ? { background: 'linear-gradient(to bottom right, #065f46, #0d5c52)' }
                                     : {}
                                   }
                                 >
@@ -8771,7 +8771,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   <div className="relative flex-shrink-0" ref={mobileToolsRef}>
                     <button
                       onClick={() => setShowMobileTools(prev => !prev)}
-                      className="btn btn-ghost btn-circle w-10 h-10 min-h-0 text-base-content flex-shrink-0 hover:bg-base-200"
+                      className={`btn btn-ghost btn-circle w-10 h-10 min-h-0 flex-shrink-0 ${chatBackgroundImageUrl ? 'text-white hover:bg-white/20' : 'text-base-content hover:bg-base-200'}`}
                       title="Message tools"
                     >
                       <Squares2X2Icon className="w-7 h-7" />
@@ -8899,17 +8899,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   <button
                     onClick={!newMessage.trim() && !messageToEdit ? startVoiceRecording : sendMessage}
                     disabled={isSending}
-                    className="btn btn-ghost btn-circle w-10 h-10 min-h-0 text-base-content disabled:opacity-50 flex-shrink-0 hover:bg-base-200"
+                    className={`btn btn-ghost btn-circle w-10 h-10 min-h-0 disabled:opacity-50 flex-shrink-0 ${chatBackgroundImageUrl ? 'text-white hover:bg-white/20' : 'text-base-content hover:bg-base-200'}`}
                     title={messageToEdit ? 'Save edit' : !newMessage.trim() && !messageToEdit ? 'Record voice message' : 'Send message'}
                   >
                     {isSending ? (
                       <div className="loading loading-spinner loading-sm"></div>
                     ) : messageToEdit ? (
-                      <CheckIcon className="w-6 h-6 text-green-600" />
+                      <CheckIcon className={`w-6 h-6 ${chatBackgroundImageUrl ? 'text-white' : 'text-green-600'}`} />
                     ) : !newMessage.trim() ? (
                       <MicrophoneIcon className="w-6 h-6" />
                     ) : (
-                      <PaperAirplaneIcon className="w-6 h-6 text-green-600" />
+                      <PaperAirplaneIcon className={`w-6 h-6 ${chatBackgroundImageUrl ? 'text-white' : 'text-green-600'}`} />
                     )}
                   </button>
                 </div>

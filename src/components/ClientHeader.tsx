@@ -862,12 +862,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     return (
         <div className="bg-white dark:bg-gray-900">
-            <div className="w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+            <div className="w-full mx-auto px-4 sm:px-6 lg:px-8 pt-2 pb-4 md:py-6">
 
                 {/* Top Row: Identity & Status */}
-                <div className="flex flex-col gap-4 mb-8">
+                <div className="flex flex-col gap-2 md:gap-4 mb-4 md:mb-8">
                     {/* Stage Badge and Actions Dropdown - Mobile: Above client name (Mobile only) */}
-                    <div className="flex md:hidden items-center justify-between gap-3 mb-2 w-full">
+                    <div className="flex md:hidden items-center justify-between gap-3 mb-1 w-full">
                         <div className="flex items-center gap-3">
                             {/* Stage Badge */}
                             <div className="flex items-center gap-2">
@@ -890,11 +890,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                         {/* Actions Dropdown - Right side */}
                         {!hideActionsDropdown && (
-                            <div className="dropdown dropdown-end">
-                                <label tabIndex={0} className="btn btn-ghost btn-square min-h-10 min-w-10">
-                                    <Cog6ToothIcon className="w-7 h-7" />
-                                </label>
-                                <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2">
+                            <div className="flex flex-col items-end gap-2">
+                                <div className="dropdown dropdown-end">
+                                    <label tabIndex={0} className="btn btn-ghost btn-square min-h-10 min-w-10">
+                                        <Cog6ToothIcon className="w-7 h-7" />
+                                    </label>
+                                    <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2">
                                     {/* Stage Specific Actions */}
                                     {dropdownItems && (
                                         <>
@@ -954,12 +955,32 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         </>
                                     )}
                                 </ul>
+                                </div>
+                                {/* Timeline and History - icon only, same size as Actions */}
+                                {!hideHistoryAndTimeline && (
+                                    <div className="flex flex-col items-center gap-1.5">
+                                        <button
+                                            onClick={handleTimelineClick}
+                                            className="btn btn-ghost btn-square min-h-10 min-w-10"
+                                            title="View Timeline"
+                                        >
+                                            <ClockIcon className="w-7 h-7" />
+                                        </button>
+                                        <button
+                                            onClick={handleHistoryClick}
+                                            className="btn btn-ghost btn-square min-h-10 min-w-10"
+                                            title="View History"
+                                        >
+                                            <ArchiveBoxIcon className="w-7 h-7" />
+                                        </button>
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>
 
                     {/* First row: Client name and info */}
-                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-2 md:gap-4">
                         <div className="flex items-center gap-4">
                             <div>
                                 <div className="flex items-center gap-2 mb-1">
@@ -1164,9 +1185,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     </div>
 
                     {/* Second row: Email, Phone, Source, Topic (vertically on mobile) and Total Value (right side) */}
-                    <div className="flex flex-row items-start md:items-center justify-between gap-4 mt-4 md:mt-0">
+                    <div className="flex flex-row items-start md:items-center justify-between gap-4 mt-2 md:mt-0">
                         {/* Email, Phone, Source, Topic - Stacked vertically on mobile, horizontal on desktop */}
-                        <div className="flex flex-col md:flex-row md:items-center gap-3 md:gap-6 flex-1 md:mr-8">
+                        <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-6 flex-1 md:mr-8">
                             {/* Email */}
                             <div className="flex items-center gap-2 md:gap-2 group">
                                 <div className="w-8 h-8 md:w-10 md:h-10 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center text-black flex-shrink-0">
@@ -1379,7 +1400,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                     {/* Total Value - Mobile: Centered under stage badge (moved from below) */}
                     {!hideTotalValueBadge && (
-                    <div className="flex md:hidden flex-col items-center">
+                    <div className="flex md:hidden flex-col items-center my-4">
                         {(() => {
                             const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
 
@@ -1571,7 +1592,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 </div>
 
                 {/* Stage Logic Buttons - Mobile: Below timeline/history/stage badge row */}
-                <div className="flex md:hidden items-center gap-3 flex-wrap mt-2">
+                <div className="flex md:hidden items-center gap-3 flex-wrap mt-1.5">
                     {/* Check if case is unactivated - show message instead of buttons */}
                     {(() => {
                         const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
@@ -1901,7 +1922,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 </div>
 
                 {/* Workflow Actions Bar - Roles and Quick Actions */}
-                <div className="mt-2 md:mt-8 pt-2 md:pt-6 border-t border-gray-100 dark:border-gray-800 w-full">
+                <div className="mt-1.5 md:mt-8 pt-1.5 md:pt-6 border-t border-gray-100 dark:border-gray-800 w-full">
                     {(() => {
                         const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
 

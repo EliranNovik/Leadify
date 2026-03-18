@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
 import { Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
 import { Search } from 'lucide-react';
@@ -917,6 +917,7 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
 
 const LeadSearchPage: React.FC = () => {
   const { isAltTheme } = useTheme();
+  const [searchParams, setSearchParams] = useSearchParams();
   // State for sticky search bar on mobile: full bar by default; circle only after clicking Search (click circle to open full bar again)
   const [showStickySearchButton, setShowStickySearchButton] = useState(false);
 
@@ -959,6 +960,18 @@ const LeadSearchPage: React.FC = () => {
     storage: 'sessionStorage',
   });
   const [stageOptions, setStageOptions] = useState<string[]>([]);
+
+  // Pre-fill content filter from ?q= param (e.g. from Header recent search)
+  const qParamAppliedRef = useRef(false);
+  useEffect(() => {
+    if (qParamAppliedRef.current) return;
+    const q = searchParams.get('q');
+    if (q?.trim()) {
+      qParamAppliedRef.current = true;
+      setFilters(prev => ({ ...prev, content: q.trim() }));
+      setSearchParams({}, { replace: true }); // Clear param after applying
+    }
+  }, [searchParams, setFilters, setSearchParams]);
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
   const [mainCategoryOptions, setMainCategoryOptions] = useState<string[]>([]);
   const [sourceOptions, setSourceOptions] = useState<string[]>([]);

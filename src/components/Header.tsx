@@ -10,6 +10,7 @@ import { toast } from 'react-hot-toast';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 import Siriwave from 'react-siriwave';
 import {
+  ArrowLeftIcon,
   Bars3Icon,
   MagnifyingGlassIcon,
   BellIcon,
@@ -38,6 +39,7 @@ import EmployeeModal from './EmployeeModal';
 import RMQMessagesPage from '../pages/RMQMessagesPage';
 import HighlightsPanel from './HighlightsPanel';
 import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
+import { getRecentSearches, getRecentLeads, addRecentSearch, addRecentLead, type RecentLead } from '../lib/recentSearchStorage';
 import { useExternalUser } from '../hooks/useExternalUser';
 import { useAuthContext } from '../contexts/AuthContext';
 
@@ -196,10 +198,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [searchDropdownStyle, setSearchDropdownStyle] = useState({ top: 0, left: 0, width: 0 });
   const [isSearchAnimationDone, setIsSearchAnimationDone] = useState(false);
   const [showQuickActionsDropdown, setShowQuickActionsDropdown] = useState(false);
-  const [showMobileQuickActionsDropdown, setShowMobileQuickActionsDropdown] = useState(false);
   const [showSignOutModal, setShowSignOutModal] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const mobileButtonRef = useRef<HTMLButtonElement>(null);
   const [stageOptions, setStageOptions] = useState<string[]>([]);
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
   const [sourceOptions, setSourceOptions] = useState<string[]>([]);
@@ -237,7 +237,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [newLeadsCount, setNewLeadsCount] = useState<number>(0);
   const [showProfileDropdown, setShowProfileDropdown] = useState(false);
   const profileDropdownRef = useRef<HTMLDivElement>(null);
+  const profileButtonRefMobile = useRef<HTMLButtonElement>(null);
   const profileDropdownRefDesktop = useRef<HTMLDivElement>(null);
+  const [profileDropdownPosition, setProfileDropdownPosition] = useState({ top: 0, left: 0 });
   const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
   const createdStageIdsRef = useRef<number[]>([0, 11]);
   const schedulerStageIdsRef = useRef<number[]>([10]);
@@ -558,7 +560,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
 
       // Close profile dropdown when clicking outside (check both mobile and desktop profile refs)
-      const outsideMobile = !profileDropdownRef.current?.contains(target as Node);
+      // Mobile dropdown is portaled to body, so also check data-profile-dropdown-mobile
+      const mobileDropdownEl = document.querySelector('[data-profile-dropdown-mobile]');
+      const outsideMobile = !profileDropdownRef.current?.contains(target as Node) && !mobileDropdownEl?.contains(target as Node);
       const outsideDesktop = !profileDropdownRefDesktop.current?.contains(target as Node);
       if (outsideMobile && outsideDesktop) {
         setShowProfileDropdown(false);
@@ -572,15 +576,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       const isNavigationLink = target.tagName === 'A' || target.closest('a');
 
       // Close dropdowns if clicking outside both dropdown and menu
-      if (showQuickActionsDropdown || showMobileQuickActionsDropdown) {
+      if (showQuickActionsDropdown) {
         // Check if click is outside the button and the dropdown menu
-        const clickedOutsideButton = !buttonRef.current?.contains(target as Node) &&
-          !mobileButtonRef.current?.contains(target as Node);
+        const clickedOutsideButton = !buttonRef.current?.contains(target as Node);
         const clickedOutsideMenu = !dropdownMenu?.contains(target as Node);
 
         if ((clickedOutsideButton && clickedOutsideMenu) || isNavigationLink) {
           setShowQuickActionsDropdown(false);
-          setShowMobileQuickActionsDropdown(false);
         }
       }
     };
@@ -597,12 +599,19 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       document.removeEventListener('click', handleDropdownClickOutside);
       document.removeEventListener('scroll', handleScroll, true);
     };
-  }, [showFilterDropdown, showQuickActionsDropdown, showMobileQuickActionsDropdown, showProfileDropdown]);
+  }, [showFilterDropdown, showQuickActionsDropdown, showProfileDropdown]);
+
+  // Update mobile profile dropdown position when it opens
+  useEffect(() => {
+    if (showProfileDropdown && profileButtonRefMobile.current) {
+      const rect = profileButtonRefMobile.current.getBoundingClientRect();
+      setProfileDropdownPosition({ top: rect.bottom + 8, left: rect.left });
+    }
+  }, [showProfileDropdown]);
 
   // Close quick actions and profile dropdown when route changes
   useEffect(() => {
     setShowQuickActionsDropdown(false);
-    setShowMobileQuickActionsDropdown(false);
     setShowProfileDropdown(false);
   }, [location.pathname]);
 
@@ -611,7 +620,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     const handleEscapeKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setShowQuickActionsDropdown(false);
-        setShowMobileQuickActionsDropdown(false);
         setShowNotifications(false);
         setShowFilterDropdown(false);
         setShowProfileDropdown(false);
@@ -626,7 +634,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   useEffect(() => {
     return () => {
       setShowQuickActionsDropdown(false);
-      setShowMobileQuickActionsDropdown(false);
       setShowNotifications(false);
       setShowFilterDropdown(false);
       setShowProfileDropdown(false);
@@ -5731,7 +5738,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   }, [allEmployees, fetchNewLeadsCount, currentUser]);
 
   useEffect(() => {
-    if (isSearchActive && searchContainerRef.current) {
+    if (!isSearchActive || !searchContainerRef.current) return;
+    const measure = () => {
+      if (!searchContainerRef.current) return;
       const rect = searchContainerRef.current.getBoundingClientRect();
       if (isMobile) {
         const margin = 12;
@@ -5739,14 +5748,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       } else {
         setSearchDropdownStyle({ top: rect.bottom + window.scrollY, left: rect.left + window.scrollX, width: rect.width });
       }
-    }
-  }, [isSearchActive, showFilterDropdown, searchResults.length, searchValue, isMobile]);
+    };
+    measure();
+    // Re-measure after search bar expand animation (700ms) to get full width
+    const t = setTimeout(measure, 750);
+    return () => clearTimeout(t);
+  }, [isSearchActive, showFilterDropdown, searchResults.length, searchValue, isMobile, isSearchAnimationDone]);
 
-  // Animation effect for searchbar open/close
+  // Animation effect for searchbar open/close (box appears early in expand)
   useEffect(() => {
     let timeout: NodeJS.Timeout;
     if (isSearchActive) {
-      timeout = setTimeout(() => setIsSearchAnimationDone(true), 700);
+      timeout = setTimeout(() => setIsSearchAnimationDone(true), 500);
     } else {
       setIsSearchAnimationDone(false);
     }
@@ -5790,6 +5803,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // New leads: use lead_number
       path = `/clients/${encodeURIComponent(lead.lead_number)}`;
     }
+    // Store for mobile recent items
+    addRecentSearch(searchValue.trim());
+    addRecentLead({
+      id: lead.lead_type === 'legacy' ? String(lead.id).replace(/^legacy_/, '') : String(lead.lead_number),
+      name: lead.contactName || lead.name || '',
+      lead_number: lead.lead_number || String(lead.id),
+    });
     navigate(path);
     closeSearchBar();
   };
@@ -6696,7 +6716,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 e.preventDefault();
                 e.stopPropagation();
                 setShowQuickActionsDropdown(!showQuickActionsDropdown);
-                setShowMobileQuickActionsDropdown(false);
               }}
               className="flex items-center gap-2 px-4 py-2 rounded-xl font-medium transition-all duration-300 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
             >
@@ -6750,67 +6769,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             )}
           </div>
 
-          {/* Quick Actions Dropdown - Mobile: icon only with coloured badge */}
-          <div className="md:hidden relative ml-2" data-quick-actions-dropdown>
-            <button
-              ref={mobileButtonRef}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setShowMobileQuickActionsDropdown(!showMobileQuickActionsDropdown);
-                setShowQuickActionsDropdown(false);
-              }}
-              className="flex items-center justify-center w-10 h-10 rounded-full bg-purple-500 text-white font-medium transition-all duration-300 hover:bg-purple-600 active:scale-95"
-              title="Quick Actions"
-            >
-              <BoltIcon className="w-6 h-6" />
-            </button>
-
-            {/* Dropdown Menu */}
-            {showMobileQuickActionsDropdown && createPortal(
-              <div
-                className="fixed w-48 bg-white rounded-xl shadow-2xl border border-gray-200 z-[9999] overflow-hidden"
-                data-dropdown-menu
-                style={{
-                  top: '56px',
-                  left: '8px',
-                  right: '8px'
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                {/* RMQ Messages Option */}
-                <button
-                  onClick={() => {
-                    setShowMobileQuickActionsDropdown(false);
-                    if (onOpenMessaging) {
-                      onOpenMessaging();
-                    }
-                  }}
-                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50 relative"
-                >
-                  <ChatBubbleLeftRightIcon className="w-5 h-5 text-gray-500" />
-                  <span className="text-sm font-medium">RMQ Messages</span>
-                  {rmqUnreadCount > 0 && (
-                    <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                      {rmqUnreadCount > 9 ? '9+' : rmqUnreadCount}
-                    </span>
-                  )}
-                </button>
-                {/* RMQ AI Option */}
-                <button
-                  onClick={() => {
-                    setShowMobileQuickActionsDropdown(false);
-                    handleAIClick();
-                  }}
-                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left hover:bg-gray-50 relative"
-                >
-                  <FaRobot className={`w-5 h-5 ${isAltTheme ? 'text-green-600' : 'text-purple-500'}`} />
-                  <span className="text-sm font-medium">RMQ AI</span>
-                </button>
-              </div>,
-              document.body
-            )}
-          </div>
         </div>
       </>
     );
@@ -6829,122 +6787,139 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             )}
           </button>
 
-          {/* Quick Actions Dropdown - Mobile only: icon only with coloured badge */}
-          <div className="md:hidden relative ml-2" data-quick-actions-dropdown>
+          {/* Profile + dropdown: mobile only, next to hamburger */}
+          <div className="relative flex items-center flex-shrink-0 md:hidden" ref={profileDropdownRef}>
             <button
-              ref={mobileButtonRef}
+              ref={profileButtonRefMobile}
+              type="button"
+              className="btn btn-ghost gap-1.5 min-h-0 h-10 w-auto min-w-[2.5rem] pl-2 pr-2 rounded-full flex items-center justify-center flex-shrink-0"
               onClick={(e) => {
-                e.preventDefault();
                 e.stopPropagation();
-                setShowMobileQuickActionsDropdown(!showMobileQuickActionsDropdown);
-                setShowQuickActionsDropdown(false); // Close desktop dropdown if open
+                setShowProfileDropdown((v) => !v);
               }}
-              className="flex items-center justify-center w-10 h-10 rounded-full bg-purple-500 text-white font-medium transition-all duration-300 hover:bg-purple-600 active:scale-95"
-              title="Quick Actions"
+              aria-expanded={showProfileDropdown}
+              aria-haspopup="true"
             >
-              <BoltIcon className="w-6 h-6" />
+              {(currentUserEmployee?.photo_url || currentUserEmployee?.photo) ? (
+                <>
+                  <span
+                    className="w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] flex-shrink-0 rounded-full bg-base-300 block bg-no-repeat bg-center"
+                    style={{
+                      backgroundImage: `url(${currentUserEmployee.photo_url || currentUserEmployee.photo})`,
+                      backgroundSize: 'contain',
+                    }}
+                  />
+                  <img
+                    src={currentUserEmployee.photo_url || currentUserEmployee.photo}
+                    alt=""
+                    className="hidden"
+                    onError={(e) => {
+                      const target = e.target as HTMLImageElement;
+                      target.previousElementSibling?.classList.add('hidden');
+                      target.nextElementSibling?.classList.remove('hidden');
+                    }}
+                  />
+                </>
+              ) : null}
+              <span className={`w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] flex-shrink-0 rounded-full overflow-hidden aspect-square bg-base-300 flex items-center justify-center ${(currentUserEmployee?.photo_url || currentUserEmployee?.photo) ? 'hidden' : ''}`}>
+                {(authUserInitials || authUserFullName || userFullName) ? (
+                  <span className="text-sm font-semibold text-base-content/80">
+                    {(authUserInitials || (authUserFullName || userFullName || '').trim().split(/\s+/).map(n => n[0]).join('').toUpperCase().slice(0, 2)) || 'U'}
+                  </span>
+                ) : (
+                  <UserIcon className="w-5 h-5 text-base-content/70" />
+                )}
+              </span>
+              <ChevronDownIcon className={`w-4 h-4 flex-shrink-0 transition-transform ${showProfileDropdown ? 'rotate-180' : ''}`} />
             </button>
-
-            {/* Dropdown Menu */}
-            {showMobileQuickActionsDropdown && createPortal(
+            {showProfileDropdown && isMobile && createPortal(
               <div
-                className="fixed w-48 bg-white rounded-xl shadow-2xl border border-gray-200 z-[9999] overflow-hidden"
-                data-dropdown-menu
-                style={{
-                  top: '56px',
-                  left: '8px',
-                  right: '8px'
-                }}
+                data-profile-dropdown-mobile
+                className="fixed w-52 py-1 rounded-xl shadow-xl border border-base-300 bg-base-100 z-[100]"
+                role="menu"
+                style={{ top: profileDropdownPosition.top, left: profileDropdownPosition.left }}
                 onClick={(e) => e.stopPropagation()}
               >
-                {/* RMQ Messages Option */}
                 <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
                   onClick={() => {
-                    setShowMobileQuickActionsDropdown(false);
-                    if (onOpenMessaging) {
-                      onOpenMessaging();
-                    }
+                    setShowProfileDropdown(false);
+                    navigate('/my-profile');
                   }}
-                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50 relative"
                 >
-                  <ChatBubbleLeftRightIcon className="w-5 h-5 text-gray-500" />
-                  <span className="text-sm font-medium">RMQ Messages</span>
-                  {rmqUnreadCount > 0 && (
-                    <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                      {rmqUnreadCount > 9 ? '9+' : rmqUnreadCount}
-                    </span>
-                  )}
+                  <UserIcon className="w-5 h-5 text-base-content/70" />
+                  View profile
                 </button>
-
-                {/* WhatsApp Option */}
                 <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
                   onClick={() => {
-                    setShowMobileQuickActionsDropdown(false);
-                    if (onOpenWhatsApp) {
-                      onOpenWhatsApp();
-                    }
+                    setShowProfileDropdown(false);
+                    setIsHighlightsPanelOpen(true);
                   }}
-                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50 relative"
                 >
-                  <FaWhatsapp className="w-5 h-5 text-green-500" />
-                  <span className="text-sm font-medium">WhatsApp</span>
-                  {whatsappClientsUnreadCount > 0 && (
-                    <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                      {whatsappClientsUnreadCount > 9 ? '9+' : whatsappClientsUnreadCount}
-                    </span>
-                  )}
+                  <StarIcon className="w-5 h-5 text-base-content/70" style={{ color: '#3E28CD' }} />
+                  Highlights
                 </button>
-
-                {/* Email Thread Option */}
+                {typeof onOpenAIChat === 'function' && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
+                    onClick={() => {
+                      setShowProfileDropdown(false);
+                      onOpenAIChat();
+                    }}
+                  >
+                    <FaRobot className="w-5 h-5 text-base-content/70" />
+                    RMQ AI
+                  </button>
+                )}
                 <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
                   onClick={() => {
-                    setShowMobileQuickActionsDropdown(false);
-                    if (onOpenEmailThread) {
-                      onOpenEmailThread();
-                    }
+                    setShowProfileDropdown(false);
+                    navigate('/settings');
                   }}
-                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50 relative"
                 >
-                  <EnvelopeIcon className="w-5 h-5 text-gray-500" />
-                  <span className="text-sm font-medium">Email Thread</span>
-                  {emailUnreadCount > 0 && (
-                    <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                      {emailUnreadCount > 9 ? '9+' : emailUnreadCount}
-                    </span>
-                  )}
+                  <Cog6ToothIcon className="w-5 h-5 text-base-content/70" />
+                  Settings
                 </button>
-
-                {navTabs
-                  .filter(tab => isSuperUser || tab.path !== '/new-cases')
-                  .map(tab => {
-                    const Icon = tab.icon;
-                    const showCount = tab.path === '/new-cases' && newLeadsCount > 0;
-
-                    // Skip WhatsApp and Email Thread as they're now handled above
-                    if (tab.path === '/whatsapp' || tab.label === 'Email Thread') {
-                      return null;
-                    }
-
-                    return (
-                      <Link
-                        key={tab.path || tab.label}
-                        to={tab.path || '/'}
-                        onClick={() => {
-                          setShowMobileQuickActionsDropdown(false);
-                          setShowQuickActionsDropdown(false);
-                        }}
-                        className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700"
-                      >
-                        <Icon className="w-5 h-5 text-gray-500" />
-                        <span className="text-sm font-medium">{tab.label}</span>
-                        {showCount && (
-                          <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full font-semibold">
-                            {newLeadsCount}
-                          </span>
-                        )}
-                      </Link>
-                    );
-                  })}
+                {!userAccount && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
+                    onClick={() => {
+                      setShowProfileDropdown(false);
+                      handleMicrosoftSignIn();
+                    }}
+                    disabled={isMsalLoading || !isMsalInitialized}
+                  >
+                    <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24">
+                      <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
+                    </svg>
+                    <span className="text-base-content/70">Sign in with Microsoft</span>
+                  </button>
+                )}
+                <div className="border-t border-base-300 my-1" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors text-error"
+                  onClick={() => {
+                    setShowProfileDropdown(false);
+                    handleSignOut();
+                  }}
+                >
+                  <ArrowRightOnRectangleIcon className="w-5 h-5" />
+                  Log out
+                </button>
               </div>,
               document.body
             )}
@@ -6959,7 +6934,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 e.preventDefault();
                 e.stopPropagation();
                 setShowQuickActionsDropdown(!showQuickActionsDropdown);
-                setShowMobileQuickActionsDropdown(false);
               }}
               className="btn btn-ghost btn-square min-h-12 h-12 w-12 p-0 flex items-center justify-center rounded-xl"
               aria-label={showQuickActionsDropdown ? 'Close menu' : 'Open menu'}
@@ -7146,7 +7120,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                           <button
                             onClick={() => {
                               setShowQuickActionsDropdown(false);
-                              setShowMobileQuickActionsDropdown(false);
                               if (onOpenEmailThread) onOpenEmailThread();
                             }}
                             className={itemClass}
@@ -7164,7 +7137,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                           <button
                             onClick={() => {
                               setShowQuickActionsDropdown(false);
-                              setShowMobileQuickActionsDropdown(false);
                               if (onOpenWhatsApp) onOpenWhatsApp();
                             }}
                             className={itemClass}
@@ -7187,7 +7159,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                           to={tab.path || '/'}
                           onClick={() => {
                             setShowQuickActionsDropdown(false);
-                            setShowMobileQuickActionsDropdown(false);
                           }}
                           className={itemClass}
                         >
@@ -7380,13 +7351,83 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
         {/* End of search bar container */}
         {isSearchActive && typeof window !== 'undefined' && createPortal(
-          <div className="fixed z-[10000] flex gap-4" style={{
-            top: searchDropdownStyle.top,
-            left: searchDropdownStyle.left,
-            zIndex: 10000,
-          }}>
-            {/* Search Results - show if there's a search value (always show when searching or has value), or filters applied */}
-            {(searchValue.trim() || isAdvancedSearching || hasAppliedFilters) && (
+          <>
+            {/* Mobile overlay - white full-screen background with recent searches/leads (no live preview) */}
+            {isMobile && (
+              <div
+                className="fixed inset-x-0 top-14 bottom-0 bg-white dark:bg-gray-900 z-[49] md:hidden flex flex-col"
+                onClick={() => {
+                  setIsSearchActive(false);
+                  searchInputRef.current?.blur();
+                }}
+              >
+                {/* Recent searches and leads - clickable, navigates to clients/lead-search. Stop propagation so clicking content doesn't close. */}
+                <div className="flex-1 overflow-y-auto pt-6 px-4 pb-8" onClick={(e) => e.stopPropagation()}>
+                  <div className="max-w-xl mx-auto space-y-6">
+                  {(getRecentSearches().length > 0 || getRecentLeads().length > 0) ? (
+                    <>
+                      {getRecentSearches().length > 0 && (
+                        <div>
+                          <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400 mb-2">Recent searches</h3>
+                          <div className="space-y-1">
+                            {getRecentSearches().map((q, i) => (
+                              <button
+                                key={`search-${i}-${q}`}
+                                onClick={() => {
+                                  navigate(`/lead-search?q=${encodeURIComponent(q)}`);
+                                  closeSearchBar();
+                                }}
+                                className="w-full px-4 py-3 text-left rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-base-content flex items-center gap-2"
+                              >
+                                <MagnifyingGlassIcon className="w-5 h-5 text-gray-400 flex-shrink-0" />
+                                <span className="truncate">{q}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {getRecentLeads().length > 0 && (
+                        <div>
+                          <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400 mb-2">Recently viewed</h3>
+                          <div className="space-y-1">
+                            {getRecentLeads().map((lead) => (
+                              <button
+                                key={`lead-${lead.id}`}
+                                onClick={() => {
+                                  navigate(`/clients/${encodeURIComponent(lead.id)}`);
+                                  closeSearchBar();
+                                }}
+                                className="w-full px-4 py-3 text-left rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-base-content flex items-center gap-2"
+                              >
+                                <UserIcon className="w-5 h-5 text-gray-400 flex-shrink-0" />
+                                <div className="min-w-0 flex-1">
+                                  <p className="font-medium truncate">{lead.name || 'Unknown'}</p>
+                                  <p className="text-sm text-gray-500 dark:text-gray-400 truncate">#{lead.lead_number}</p>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="py-8 text-center text-base-content/60 text-sm">
+                      <p className="mb-2">No recent searches or leads yet.</p>
+                      <p>Search above or visit a client to see them here.</p>
+                    </div>
+                  )}
+                  </div>
+                </div>
+              </div>
+            )}
+            {/* Search Results / Recent items - on top of white overlay (z-[10000] > overlay z-[49]) */}
+            <div className="fixed z-[10000] flex gap-4" style={{
+              top: searchDropdownStyle.top,
+              left: searchDropdownStyle.left,
+              zIndex: 10000,
+            }}>
+            {/* Search Results - show when there's a search value, or filters applied */}
+            {(searchValue.trim() || isAdvancedSearching || hasAppliedFilters) ? (
               <div
                 ref={searchDropdownRef}
                 className="bg-base-100 rounded-xl shadow-xl border border-base-300 max-h-96 overflow-y-auto search-dropdown min-w-[92vw] md:min-w-0"
@@ -7547,10 +7588,77 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   </div>
                 ) : null}
               </div>
-            )}
+            ) : !isMobile && isSearchActive && isSearchAnimationDone ? (
+              /* Desktop: Recent searches and leads - white box below search bar when no query (appears when search bar is fully open) */
+              <div
+                ref={searchDropdownRef}
+                className="bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-base-300 max-h-96 overflow-y-auto search-dropdown md:min-w-0"
+                style={{
+                  width: searchDropdownStyle.width,
+                  zIndex: 10000,
+                }}
+                onMouseEnter={() => { isMouseOverSearchRef.current = true; }}
+                onMouseLeave={() => { isMouseOverSearchRef.current = false; }}
+              >
+                <div className="p-4 space-y-4">
+                  {(getRecentSearches().length > 0 || getRecentLeads().length > 0) ? (
+                    <>
+                      {getRecentSearches().length > 0 && (
+                        <div>
+                          <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400 mb-2">Recent searches</h3>
+                          <div className="space-y-1">
+                            {getRecentSearches().map((q, i) => (
+                              <button
+                                key={`search-${i}-${q}`}
+                                onClick={() => {
+                                  navigate(`/lead-search?q=${encodeURIComponent(q)}`);
+                                  closeSearchBar();
+                                }}
+                                className="w-full px-3 py-2 text-left rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-base-content flex items-center gap-2 text-sm"
+                              >
+                                <MagnifyingGlassIcon className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                                <span className="truncate">{q}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {getRecentLeads().length > 0 && (
+                        <div>
+                          <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400 mb-2">Recently viewed</h3>
+                          <div className="space-y-1">
+                            {getRecentLeads().map((lead) => (
+                              <button
+                                key={`lead-${lead.id}`}
+                                onClick={() => {
+                                  navigate(`/clients/${encodeURIComponent(lead.id)}`);
+                                  closeSearchBar();
+                                }}
+                                className="w-full px-3 py-2 text-left rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-base-content flex items-center gap-2 text-sm"
+                              >
+                                <UserIcon className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                                <div className="min-w-0 flex-1">
+                                  <p className="font-medium truncate">{lead.name || 'Unknown'}</p>
+                                  <p className="text-xs text-gray-500 dark:text-gray-400 truncate">#{lead.lead_number}</p>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="py-6 text-center text-base-content/60 text-sm">
+                      <p className="mb-1">No recent searches or leads yet.</p>
+                      <p>Search above or visit a client to see them here.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : null}
 
-            {/* Advanced Filter Dropdown - positioned to the right of search results */}
-            {showFilterDropdown && (
+            {/* Advanced Filter Dropdown - positioned to the right of search results (desktop only) */}
+            {showFilterDropdown && !isMobile && (
               <div
                 ref={filterDropdownRef}
                 className="bg-base-100 rounded-xl shadow-xl border border-base-300 p-6 animate-fadeInUp min-w-80 filter-dropdown"
@@ -7818,6 +7926,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               </div>
             )}
           </div>
+          </>
           , document.body)}
 
         {/* Right section with notifications and user */}
@@ -7899,144 +8008,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               </svg>
             </button>
           )}
-
-          {/* Profile + dropdown: mobile only (desktop profile is in left section next to RMQ) */}
-          <div className="relative mr-2 flex items-center flex-shrink-0 md:hidden" ref={profileDropdownRef}>
-            <button
-              type="button"
-              className="btn btn-ghost gap-2 md:gap-2.5 min-h-0 h-10 md:h-10 w-auto min-w-[2.5rem] pl-2 pr-2.5 md:px-2.5 rounded-full flex items-center justify-center md:justify-start flex-shrink-0"
-              onClick={() => setShowProfileDropdown((v) => !v)}
-              aria-expanded={showProfileDropdown}
-              aria-haspopup="true"
-            >
-              {(currentUserEmployee?.photo_url || currentUserEmployee?.photo) ? (
-                <>
-                  <span
-                    className="w-10 h-10 min-w-[2.5rem] min-h-[2.5rem] flex-shrink-0 rounded-full bg-base-300 block bg-no-repeat bg-center"
-                    style={{
-                      backgroundImage: `url(${currentUserEmployee.photo_url || currentUserEmployee.photo})`,
-                      backgroundSize: 'contain',
-                    }}
-                  />
-                  <img
-                    src={currentUserEmployee.photo_url || currentUserEmployee.photo}
-                    alt=""
-                    className="hidden"
-                    onError={(e) => {
-                      const target = e.target as HTMLImageElement;
-                      target.previousElementSibling?.classList.add('hidden');
-                      target.nextElementSibling?.classList.remove('hidden');
-                    }}
-                  />
-                </>
-              ) : null}
-              <span className={`w-10 h-10 min-w-[2.5rem] min-h-[2.5rem] flex-shrink-0 rounded-full overflow-hidden aspect-square bg-base-300 flex items-center justify-center ${(currentUserEmployee?.photo_url || currentUserEmployee?.photo) ? 'hidden' : ''}`}>
-                {(authUserInitials || authUserFullName || userFullName) ? (
-                  <span className="text-sm md:text-base font-semibold text-base-content/80">
-                    {(authUserInitials || (authUserFullName || userFullName || '').trim().split(/\s+/).map(n => n[0]).join('').toUpperCase().slice(0, 2)) || 'U'}
-                  </span>
-                ) : (
-                  <UserIcon className="w-5 h-5 md:w-6 md:h-6 text-base-content/70" />
-                )}
-              </span>
-              <span className="hidden md:inline font-medium text-base-content max-w-[140px] truncate text-sm">
-                {currentUserEmployee?.official_name || currentUserEmployee?.display_name || userFullName || authUserFullName || 'User'}
-              </span>
-              <ChevronDownIcon className={`w-4 h-4 flex-shrink-0 transition-transform ${showProfileDropdown ? 'rotate-180' : ''}`} />
-            </button>
-            {showProfileDropdown && (
-              <div
-                className="absolute right-0 top-full mt-2 w-52 py-1 rounded-xl shadow-xl border border-base-300 bg-base-100 z-50"
-                role="menu"
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
-                  onClick={() => {
-                    setShowProfileDropdown(false);
-                    navigate('/my-profile');
-                  }}
-                >
-                  <UserIcon className="w-5 h-5 text-base-content/70" />
-                  View profile
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
-                  onClick={() => {
-                    setShowProfileDropdown(false);
-                    setIsHighlightsPanelOpen(true);
-                  }}
-                >
-                  <StarIcon className="w-5 h-5 text-base-content/70" style={{ color: '#3E28CD' }} />
-                  Highlights
-                </button>
-                {typeof onOpenAIChat === 'function' && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="w-full hidden md:flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
-                    onClick={() => {
-                      setShowProfileDropdown(false);
-                      onOpenAIChat();
-                    }}
-                  >
-                    <FaRobot className="w-5 h-5 text-base-content/70" />
-                    RMQ AI
-                  </button>
-                )}
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
-                  onClick={() => {
-                    setShowProfileDropdown(false);
-                    navigate('/settings');
-                  }}
-                >
-                  <Cog6ToothIcon className="w-5 h-5 text-base-content/70" />
-                  Settings
-                </button>
-                {/* Microsoft sign in / signed in - desktop only, inside profile dropdown */}
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="w-full hidden md:flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
-                  onClick={() => {
-                    setShowProfileDropdown(false);
-                    if (userAccount) {
-                      setShowSignOutModal(true);
-                    } else {
-                      handleMicrosoftSignIn();
-                    }
-                  }}
-                  disabled={isMsalLoading || !isMsalInitialized}
-                >
-                  <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24">
-                    <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
-                  </svg>
-                  <span className={userAccount ? 'text-primary' : 'text-base-content/70'}>
-                    {userAccount ? 'Signed in' : 'Sign in with Microsoft'}
-                  </span>
-                </button>
-                <div className="border-t border-base-300 my-1" />
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors text-error"
-                  onClick={() => {
-                    setShowProfileDropdown(false);
-                    handleSignOut();
-                  }}
-                >
-                  <ArrowRightOnRectangleIcon className="w-5 h-5" />
-                  Log out
-                </button>
-              </div>
-            )}
-          </div>
 
           {/* Notifications */}
           <div className="relative" ref={notificationsRef}>
@@ -8348,6 +8319,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               </div>
             )}
           </div>
+
+          {/* Mobile back button - right corner inside header (hidden on login) */}
+          {location.pathname !== '/login' && (
+            <button
+              type="button"
+              onClick={() => navigate(-1)}
+              className="md:hidden btn btn-ghost btn-circle flex items-center justify-center flex-shrink-0"
+              aria-label="Go back"
+            >
+              <ArrowLeftIcon className="w-6 h-6" />
+            </button>
+          )}
         </div>
       </div>
       {/* Sign Out Confirmation Modal */}

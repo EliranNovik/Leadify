@@ -814,17 +814,17 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
 
       {/* Mobile Sidebar Drawer */}
       <div className="md:hidden">
-        {/* Overlay */}
+        {/* Overlay - z-[60] to stay above bottom nav (z-50) */}
         {isOpen && (
           <div
-            className="fixed inset-0 bg-black/50 z-40 transition-opacity duration-300"
+            className="fixed inset-0 bg-black/50 z-[60] transition-opacity duration-300"
             onClick={onClose}
           />
         )}
 
-        {/* Drawer */}
+        {/* Drawer - z-[60] to stay above bottom nav (z-50) */}
         <div
-          className={`fixed inset-y-0 left-0 w-64 bg-base-100 shadow-2xl z-50 transform transition-transform duration-300 ease-out ${isOpen ? 'translate-x-0' : '-translate-x-full'
+          className={`fixed inset-y-0 left-0 w-64 bg-base-100 shadow-2xl z-[60] transform transition-transform duration-300 ease-out ${isOpen ? 'translate-x-0' : '-translate-x-full'
             }`}
         >
           <div className="flex flex-col h-full">

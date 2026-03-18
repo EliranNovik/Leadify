@@ -19,6 +19,7 @@ import { MailboxReconnectProvider } from './contexts/MailboxReconnectContext';
 import MoneyRainCelebration from './components/MoneyRainCelebration';
 import MailboxReconnectModal from './components/MailboxReconnectModal';
 import PWAUpdateNotification from './components/PWAUpdateNotification';
+import MobileBottomNav from './components/MobileBottomNav';
 import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIcon, UserGroupIcon, DocumentArrowUpIcon } from '@heroicons/react/24/outline';
 import Dashboard from './components/Dashboard';
 import Clients from './components/Clients';
@@ -116,6 +117,10 @@ const AppContentInner: React.FC = () => {
   // Memoize computed props for Header/Sidebar to prevent unnecessary re-renders
   const sidebarUserName = useMemo(() => userFullName || userName, [userFullName, userName]);
   const sidebarMobileOnly = useMemo(() => isReportsPage || isAdminPage, [isReportsPage, isAdminPage]);
+  const showBottomNav = useMemo(
+    () => !isContractPage && !isCaseManagerPage && !isReportsPage,
+    [isContractPage, isCaseManagerPage, isReportsPage]
+  );
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -125,6 +130,14 @@ const AppContentInner: React.FC = () => {
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
   const [isMessagingOpen, setIsMessagingOpen] = useState(false);
   const [selectedClient, setSelectedClient] = useState<any>(null);
+
+  // Clear selectedClient when navigating away from Clients page to prevent flash of stale client data
+  const isClientsRoute = location.pathname === '/clients' || location.pathname.startsWith('/clients/');
+  useEffect(() => {
+    if (!isClientsRoute && selectedClient) {
+      setSelectedClient(null);
+    }
+  }, [isClientsRoute, selectedClient]);
 
   // Contact selection state for email/WhatsApp
   const [showContactSelector, setShowContactSelector] = useState(false);
@@ -819,7 +832,7 @@ const AppContentInner: React.FC = () => {
                   onOpenMessaging={handleOpenMessaging}
                   isMenuOpen={isSidebarOpen}
                 />
-                <main className={`flex-1 overflow-x-hidden overflow-y-auto ${isReportsPage ? 'w-full' : ''}`}>
+                <main className={`flex-1 overflow-x-hidden overflow-y-auto ${isReportsPage ? 'w-full' : ''} ${showBottomNav ? 'main-with-bottom-nav-padding' : ''}`}>
                   <Routes>
                     <Route path="/" element={<Dashboard />} />
                     <Route path="/clients" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} />} />
@@ -877,6 +890,11 @@ const AppContentInner: React.FC = () => {
                   </Routes>
                 </main>
               </div>
+              <MobileBottomNav
+                onOpenMessaging={handleOpenMessaging}
+                onOpenWhatsApp={handleOpenWhatsApp}
+                onOpenEmailThread={handleOpenEmailThread}
+              />
               <AIChatWindow
                 isOpen={isAiChatOpen}
                 onClose={() => setIsAiChatOpen(false)}

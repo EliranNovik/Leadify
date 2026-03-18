@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useRef } from 'react';
+import { usePersistedState } from '../hooks/usePersistedState';
 import { supabase } from '../lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { UserGroupIcon, DocumentTextIcon, CurrencyDollarIcon, CheckCircleIcon, BriefcaseIcon, XMarkIcon } from '@heroicons/react/24/outline';
-import { getStageName, fetchStageNames } from '../lib/stageUtils';
+import { UserGroupIcon, DocumentTextIcon, CurrencyDollarIcon, CheckCircleIcon, BriefcaseIcon, XMarkIcon, EyeIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
+import { getStageName, fetchStageNames, getStageColour } from '../lib/stageUtils';
 import { convertToNIS } from '../lib/currencyConversion';
 import LeadDetailsModal from '../components/LeadDetailsModal';
 import AssignMultipleLeadsModal from '../components/AssignMultipleLeadsModal';
@@ -38,6 +39,8 @@ interface UnassignedLead {
   isLegacy: boolean;
   applicantsCount?: number;
   signed_date?: string;
+  created_at?: string;  // fallback for new leads when no leads_leadstage records
+  cdate?: string;      // fallback for legacy leads when no leads_leadstage records
 }
 
 interface NextPayment {
@@ -52,25 +55,43 @@ interface NextPayment {
   isLegacy: boolean;
 }
 
+interface HandlerManagementPageData {
+  handlers: Handler[];
+  unassignedLeads: UnassignedLead[];
+  nextPayments: NextPayment[];
+  loadedAt: number | null;
+}
+
+// Module-level cache for table data - persists across SPA navigation, clears on page refresh
+// Bump CACHE_VERSION when data structure changes to invalidate stale cache
+const CACHE_VERSION = 2;
+let handlerManagementCache: (HandlerManagementPageData & { _v?: number }) | null = null;
+
 const HandlerManagementPage: React.FC = () => {
   const navigate = useNavigate();
-  const [handlers, setHandlers] = useState<Handler[]>([]);
-  const [unassignedLeads, setUnassignedLeads] = useState<UnassignedLead[]>([]);
-  const [nextPayments, setNextPayments] = useState<NextPayment[]>([]);
+  const [pageData, setPageData] = useState<HandlerManagementPageData>(() => {
+    if (handlerManagementCache?.loadedAt && handlerManagementCache?._v === CACHE_VERSION) {
+      return handlerManagementCache;
+    }
+    return { handlers: [], unassignedLeads: [], nextPayments: [], loadedAt: null };
+  });
+  const handlers = pageData.handlers;
+  const unassignedLeads = pageData.unassignedLeads;
+  const nextPayments = pageData.nextPayments;
   const [loading, setLoading] = useState(true);
   const [assigningLeadId, setAssigningLeadId] = useState<string | number | null>(null);
   const [selectedHandlerId, setSelectedHandlerId] = useState<number | null>(null);
   const [employees, setEmployees] = useState<Map<number, { id: number; display_name: string; photo_url?: string; photo?: string }>>(new Map());
-  const [viewMode, setViewMode] = useState<'boxes' | 'table'>('table');
+  const [viewMode, setViewMode] = usePersistedState<'boxes' | 'table'>('handlerManagement_viewMode', 'table', { storage: 'sessionStorage' });
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [selectedLeadForAssign, setSelectedLeadForAssign] = useState<string | number | null>(null);
   const [employeeSearchQuery, setEmployeeSearchQuery] = useState('');
-  const [pageEmployeeSearchQuery, setPageEmployeeSearchQuery] = useState('');
-  const [selectedDepartment, setSelectedDepartment] = useState<string>('');
-  const [sortColumn, setSortColumn] = useState<'due' | 'newCases' | 'activeCases' | 'inProcess' | 'applicationsSent' | 'totalCases' | null>(null);
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
-  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
-  const [selectedStages, setSelectedStages] = useState<number[]>([]);
+  const [pageEmployeeSearchQuery, setPageEmployeeSearchQuery] = usePersistedState('handlerManagement_pageEmployeeSearchQuery', '', { storage: 'sessionStorage' });
+  const [selectedDepartment, setSelectedDepartment] = usePersistedState('handlerManagement_selectedDepartment', '', { storage: 'sessionStorage' });
+  const [sortColumn, setSortColumn] = usePersistedState<'due' | 'newCases' | 'activeCases' | 'inProcess' | 'applicationsSent' | 'totalCases' | null>('handlerManagement_sortColumn', null, { storage: 'sessionStorage' });
+  const [sortDirection, setSortDirection] = usePersistedState<'asc' | 'desc'>('handlerManagement_sortDirection', 'asc', { storage: 'sessionStorage' });
+  const [selectedCategories, setSelectedCategories] = usePersistedState<string[]>('handlerManagement_selectedCategories', [], { storage: 'sessionStorage' });
+  const [selectedStages, setSelectedStages] = usePersistedState<number[]>('handlerManagement_selectedStages', [], { storage: 'sessionStorage' });
   const [categorySearch, setCategorySearch] = useState<string>('');
   const [stageSearch, setStageSearch] = useState<string>('');
   const [showCategoryDropdown, setShowCategoryDropdown] = useState<boolean>(false);
@@ -78,13 +99,16 @@ const HandlerManagementPage: React.FC = () => {
   const [showLeadDetailsModal, setShowLeadDetailsModal] = useState(false);
   const [selectedLeadForModal, setSelectedLeadForModal] = useState<{ id: string | number; name: string } | null>(null);
   const [showAssignMultipleModal, setShowAssignMultipleModal] = useState(false);
-  const [showNextPaymentsTable, setShowNextPaymentsTable] = useState(false);
+  const [showNextPaymentsTable, setShowNextPaymentsTable] = usePersistedState('handlerManagement_showNextPaymentsTable', false, { storage: 'sessionStorage' });
   const [selectedLeads, setSelectedLeads] = useState<Set<string | number>>(new Set());
   const [showSelectedLeadsAssignBox, setShowSelectedLeadsAssignBox] = useState(false);
   const [selectedLeadsHandlerSearch, setSelectedLeadsHandlerSearch] = useState('');
   const [assigningSelectedLeads, setAssigningSelectedLeads] = useState(false);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [unassignedSortColumn, setUnassignedSortColumn] = usePersistedState<'signedDate' | 'total' | null>('handlerManagement_unassignedSortColumn', null, { storage: 'sessionStorage' });
+  const [unassignedSortDirection, setUnassignedSortDirection] = usePersistedState<'asc' | 'desc'>('handlerManagement_unassignedSortDirection', 'asc', { storage: 'sessionStorage' });
   const unassignedLeadsRef = useRef<HTMLDivElement>(null);
+  const handlersRef = useRef<HTMLDivElement>(null);
   const nextPaymentsRef = useRef<HTMLDivElement>(null);
 
   // Initialize stage names cache on mount
@@ -175,23 +199,52 @@ const HandlerManagementPage: React.FC = () => {
   };
 
   useEffect(() => {
+    if (handlerManagementCache?.loadedAt && handlerManagementCache?._v === CACHE_VERSION) {
+      setLoading(false);
+      return;
+    }
+    handlerManagementCache = null;
     fetchData();
   }, []);
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      await Promise.all([
+      const [handlersData, unassignedData, paymentsData] = await Promise.all([
         fetchHandlers(),
         fetchUnassignedLeads(),
         fetchNextPayments()
       ]);
+      const newData: HandlerManagementPageData & { _v?: number } = {
+        handlers: handlersData,
+        unassignedLeads: unassignedData,
+        nextPayments: paymentsData,
+        loadedAt: Date.now(),
+        _v: CACHE_VERSION,
+      };
+      handlerManagementCache = newData;
+      setPageData(newData);
     } catch (error) {
       console.error('Error fetching data:', error);
       toast.error('Failed to load data');
     } finally {
       setLoading(false);
     }
+  };
+
+  const removeAssignedLeadsFromState = (leadIds: (string | number)[]) => {
+    const leadIdSet = new Set(leadIds.map(id => String(id)));
+    const newUnassignedLeads = unassignedLeads.filter(lead => !leadIdSet.has(String(lead.id)));
+    const newNextPayments = nextPayments.filter(p => !leadIdSet.has(String(p.lead_id)));
+    const newData: HandlerManagementPageData & { _v?: number } = {
+      handlers,
+      unassignedLeads: newUnassignedLeads,
+      nextPayments: newNextPayments,
+      loadedAt: pageData.loadedAt,
+      _v: CACHE_VERSION,
+    };
+    handlerManagementCache = newData;
+    setPageData(newData);
   };
 
   // Helper function to get stage ID from stage value
@@ -226,7 +279,7 @@ const HandlerManagementPage: React.FC = () => {
     }
   };
 
-  const fetchHandlers = async () => {
+  const fetchHandlers = async (): Promise<Handler[]> => {
     try {
       // First, fetch main category IDs for Germany and Austria
       const { data: germanyCategory, error: germanyError } = await supabase
@@ -328,19 +381,35 @@ const HandlerManagementPage: React.FC = () => {
           const handlerId = handler.id;
           const handlerName = handler.display_name || handler.official_name || '';
 
-          // Fetch all new leads assigned to this handler (exclude stage 91 and inactive leads)
+          // Fetch all new leads assigned to this handler with category join (exclude stage 91 and inactive leads)
           const { data: newLeads } = await supabase
             .from('leads')
-            .select('id, stage, handler_stage')
+            .select(`
+              id,
+              stage,
+              handler_stage,
+              category_id,
+              misc_category!fk_leads_category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
+            `)
             .or(`handler.eq.${handlerName},case_handler_id.eq.${handlerId}`)
             .gte('stage', 60)
             .neq('stage', 91) // Exclude stage 91 (Dropped/Spam/Irrelevant)
             .is('unactivated_at', null); // Only active leads (exclude inactive: unactivated_at IS NULL means active)
 
-          // Fetch all legacy leads assigned to this handler (exclude stage 91 and inactive leads)
+          // Fetch all legacy leads assigned to this handler with category, currency, employee joins (exclude stage 91 and inactive leads)
           const { data: legacyLeads } = await supabase
             .from('leads_lead')
-            .select('id, stage')
+            .select(`
+              id,
+              stage,
+              total,
+              total_base,
+              currency_id,
+              category_id,
+              accounting_currencies!leads_lead_currency_id_fkey(id, name, iso_code),
+              misc_category!leads_lead_category_id_fkey(id, name, parent_id, misc_maincategory!parent_id(id, name)),
+              case_handler:tenants_employee!fk_leads_lead_case_handler_id(id, display_name)
+            `)
             .eq('case_handler_id', handlerId)
             .gte('stage', 60)
             .neq('stage', 91) // Exclude stage 91 (Dropped/Spam/Irrelevant)
@@ -536,64 +605,6 @@ const HandlerManagementPage: React.FC = () => {
             const handlerNewLeadIds = (newLeads || []).map(l => l.id).filter(Boolean);
             const handlerLegacyLeadIds = (legacyLeads || []).map(l => l.id).filter(Boolean);
 
-            // Fetch new leads metadata separately (same as CollectionDueReportPage)
-            let newLeadsMap = new Map();
-            if (handlerNewLeadIds.length > 0) {
-              const { data: newLeadsData, error: newLeadsError } = await supabase
-                .from('leads')
-                .select(`
-                  id,
-                  category_id,
-                  misc_category!category_id(
-                    id,
-                    name,
-                    parent_id,
-                    misc_maincategory!parent_id(
-                      id,
-                      name
-                    )
-                  )
-                `)
-                .in('id', handlerNewLeadIds);
-
-              if (!newLeadsError && newLeadsData) {
-                newLeadsData.forEach(lead => {
-                  newLeadsMap.set(lead.id, lead);
-                });
-              }
-            }
-
-            // Fetch legacy leads metadata separately (same as CollectionDueReportPage)
-            let legacyLeadsMap = new Map();
-            if (handlerLegacyLeadIds.length > 0) {
-              const { data: legacyLeadsData, error: legacyLeadsError } = await supabase
-                .from('leads_lead')
-                .select(`
-                  id,
-                  category_id,
-                  misc_category!category_id(
-                    id,
-                    name,
-                    parent_id,
-                    misc_maincategory!parent_id(
-                      id,
-                      name
-                    )
-                  )
-                `)
-                .in('id', handlerLegacyLeadIds);
-
-              if (!legacyLeadsError && legacyLeadsData) {
-                legacyLeadsData.forEach(lead => {
-                  const key = lead.id?.toString() || String(lead.id);
-                  legacyLeadsMap.set(key, lead);
-                  if (typeof lead.id === 'number') {
-                    legacyLeadsMap.set(lead.id, lead);
-                  }
-                });
-              }
-            }
-
             // Fetch new payments for this handler's leads (last 30 days)
             const { data: allNewPayments } = await supabase
               .from('payment_plans')
@@ -617,9 +628,9 @@ const HandlerManagementPage: React.FC = () => {
               handlerNewLeadIds.includes(p.lead_id)
             );
 
-            // Process new payments (same as CollectionDueReportPage)
+            // Process new payments (same as CollectionDueReportPage) - use joined category from newLeads
             handlerNewPayments.forEach(payment => {
-              const lead = newLeadsMap.get(payment.lead_id);
+              const lead = (newLeads || []).find(l => l.id == payment.lead_id);
               if (!lead) return;
 
               const value = Number(payment.value || 0);
@@ -689,12 +700,9 @@ const HandlerManagementPage: React.FC = () => {
                 .lte('due_date', toDateTime)
                 .in('lead_id', handlerLegacyLeadIds);
 
-              // Process legacy payments (same as CollectionDueReportPage)
+              // Process legacy payments (same as CollectionDueReportPage) - use joined category from legacyLeads
               (allLegacyPayments || []).forEach(payment => {
-                // Try both string and number keys for lead_id lookup
-                const leadIdKey = payment.lead_id?.toString() || String(payment.lead_id);
-                const leadIdNum = typeof payment.lead_id === 'number' ? payment.lead_id : Number(payment.lead_id);
-                const lead = legacyLeadsMap.get(leadIdKey) || legacyLeadsMap.get(leadIdNum);
+                const lead = (legacyLeads || []).find(l => l.id == payment.lead_id);
                 if (!lead) return;
 
                 const value = Number(payment.value || payment.value_base || 0);
@@ -776,14 +784,14 @@ const HandlerManagementPage: React.FC = () => {
         })
       );
 
-      setHandlers(handlersWithCounts);
+      return handlersWithCounts;
     } catch (error) {
       console.error('Error fetching handlers:', error);
       throw error;
     }
   };
 
-  const fetchUnassignedLeads = async () => {
+  const fetchUnassignedLeads = async (): Promise<UnassignedLead[]> => {
     try {
       const unassigned: UnassignedLead[] = [];
 
@@ -800,11 +808,16 @@ const HandlerManagementPage: React.FC = () => {
           stage,
           balance,
           balance_currency,
+          proposal_total,
+          proposal_currency,
+          currency_id,
           category,
           topic,
           category_id,
           handler,
           case_handler_id,
+          created_at,
+          accounting_currencies!leads_currency_id_fkey (id, name, iso_code),
           misc_category!category_id(
             id,
             name,
@@ -859,7 +872,7 @@ const HandlerManagementPage: React.FC = () => {
           });
         }
 
-        filteredNewLeads.forEach(lead => {
+        filteredNewLeads.forEach((lead: any) => {
           // Extract main category only
           let categoryDisplay = 'No Category';
           if (lead.misc_category) {
@@ -875,6 +888,22 @@ const HandlerManagementPage: React.FC = () => {
             }
           } else if (lead.category) {
             categoryDisplay = lead.category;
+          }
+
+          // Total/value logic (same as CalendarPage): balance first, then proposal_total
+          let totalValue = 0;
+          let totalCurrency = '₪';
+          if (typeof lead.balance === 'number' && lead.balance > 0) {
+            totalValue = lead.balance;
+            const currencyRecord = lead.accounting_currencies
+              ? (Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies)
+              : null;
+            totalCurrency = currencyRecord
+              ? (currencyRecord.name || currencyRecord.iso_code || '₪').trim() || '₪'
+              : (lead.balance_currency || '₪');
+          } else if (typeof lead.proposal_total === 'number' && lead.proposal_total > 0) {
+            totalValue = lead.proposal_total;
+            totalCurrency = lead.proposal_currency || lead.balance_currency || '₪';
           }
 
           // Format lead number with sublead handling (same logic as LeadSearchPage)
@@ -911,8 +940,8 @@ const HandlerManagementPage: React.FC = () => {
             stage_name: getStageName(String(lead.stage)), // Use getStageName like Clients.tsx
             category: categoryDisplay,
             topic: lead.topic || 'N/A',
-            total: lead.balance || 0,
-            currency: lead.balance_currency || 'NIS',
+            total: totalValue,
+            currency: totalCurrency,
             isLegacy: false
           });
         });
@@ -927,10 +956,13 @@ const HandlerManagementPage: React.FC = () => {
           master_id,
           stage,
           total,
+          total_base,
           currency_id,
           category,
           topic,
           category_id,
+          cdate,
+          accounting_currencies!leads_lead_currency_id_fkey (id, name, iso_code),
           misc_category!category_id(
             id,
             name,
@@ -972,7 +1004,7 @@ const HandlerManagementPage: React.FC = () => {
           });
         }
 
-        (legacyLeads || []).forEach(lead => {
+        (legacyLeads || []).forEach((lead: any) => {
           // Extract main category only
           let categoryDisplay = 'No Category';
           if (lead.misc_category) {
@@ -990,9 +1022,40 @@ const HandlerManagementPage: React.FC = () => {
             categoryDisplay = lead.category;
           }
 
+          // Total/value logic (same as CalendarPage): if currency_id is 1 (NIS), use total_base; otherwise use total
+          let totalValue = 0;
+          let totalCurrency = '₪';
+          const currencyId = lead.currency_id;
+          let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+          if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+            numericCurrencyId = 1; // Default to NIS
+          }
+          if (numericCurrencyId === 1) {
+            totalValue = parseFloat(lead.total_base || '0') || 0;
+          } else {
+            totalValue = parseFloat(lead.total || '0') || 0;
+          }
+          const currencyRecord = lead.accounting_currencies
+            ? (Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies)
+            : null;
+          if (currencyRecord) {
+            const isoCode = (currencyRecord.iso_code || '').toUpperCase();
+            if (isoCode === 'ILS' || isoCode === 'NIS') totalCurrency = '₪';
+            else if (isoCode === 'USD') totalCurrency = '$';
+            else if (isoCode === 'EUR') totalCurrency = '€';
+            else if (isoCode === 'GBP') totalCurrency = '£';
+            else totalCurrency = (currencyRecord.name || currencyRecord.iso_code || '₪').trim() || '₪';
+          } else if (lead.currency_id) {
+            const cid = Number(lead.currency_id);
+            if (cid === 1) totalCurrency = '₪';
+            else if (cid === 2) totalCurrency = '€';
+            else if (cid === 3) totalCurrency = '$';
+            else if (cid === 4) totalCurrency = '£';
+          }
+
           // Format lead number with sublead handling (same logic as LeadSearchPage)
           let displayLeadNumber: string;
-          const legacyLeadAny = lead as any;
+          const legacyLeadAny = lead;
           const masterId = legacyLeadAny.master_id;
           const leadId = String(lead.id);
 
@@ -1025,9 +1088,10 @@ const HandlerManagementPage: React.FC = () => {
             stage_name: getStageName(String(lead.stage)), // Use getStageName like Clients.tsx
             category: categoryDisplay,
             topic: lead.topic || 'N/A',
-            total: lead.total || 0,
-            currency_id: lead.currency_id,
-            isLegacy: true
+            total: totalValue,
+            currency: totalCurrency,
+            isLegacy: true,
+            cdate: lead.cdate
           });
         });
       }
@@ -1077,24 +1141,42 @@ const HandlerManagementPage: React.FC = () => {
       }
 
       // Fetch signed dates from leads_leadstage (stage 60 = Client signed agreement)
+      // Use the date column from leads_leadstage. Fallback: if no stage 60, use date of latest stage record.
       const newLeadsSignedDatesMap = new Map<string | number, string>();
       if (newLeadIds.length > 0) {
         const { data: newSignedStages, error: newSignedStagesError } = await supabase
           .from('leads_leadstage')
-          .select('newlead_id, date, cdate')
+          .select('newlead_id, date')
           .eq('stage', 60)
           .in('newlead_id', newLeadIds);
 
         if (!newSignedStagesError && newSignedStages) {
           newSignedStages.forEach(stage => {
+            if (stage.newlead_id && stage.date) {
+              const signedDate = stage.date;
+              const existingDate = newLeadsSignedDatesMap.get(stage.newlead_id);
+              if (!existingDate || new Date(signedDate) > new Date(existingDate)) {
+                newLeadsSignedDatesMap.set(stage.newlead_id, signedDate);
+              }
+            }
+          });
+        }
+
+        // Fallback: for leads without stage 60, use date of latest stage record
+        const missingNewLeadIds = newLeadIds.filter(id => !newLeadsSignedDatesMap.has(id));
+        if (missingNewLeadIds.length > 0) {
+          const { data: allNewStages } = await supabase
+            .from('leads_leadstage')
+            .select('newlead_id, date, cdate')
+            .in('newlead_id', missingNewLeadIds);
+
+          (allNewStages || []).forEach(stage => {
             if (stage.newlead_id) {
-              // Use date field, fallback to cdate
-              const signedDate = stage.date || stage.cdate;
-              if (signedDate) {
-                // Keep the latest date if multiple records exist
+              const recordDate = stage.date || stage.cdate;
+              if (recordDate) {
                 const existingDate = newLeadsSignedDatesMap.get(stage.newlead_id);
-                if (!existingDate || (signedDate && new Date(signedDate) > new Date(existingDate))) {
-                  newLeadsSignedDatesMap.set(stage.newlead_id, signedDate);
+                if (!existingDate || new Date(recordDate) > new Date(existingDate)) {
+                  newLeadsSignedDatesMap.set(stage.newlead_id, recordDate);
                 }
               }
             }
@@ -1102,27 +1184,48 @@ const HandlerManagementPage: React.FC = () => {
         }
       }
 
-      // Fetch signed dates for legacy leads
+      // Fetch signed dates for legacy leads from leads_leadstage (stage 60 = Client signed agreement)
+      // Use the date column. Fallback: if no stage 60, use date of latest stage record.
       const legacyLeadsSignedDatesMap = new Map<number, string>();
       if (legacyLeadIds.length > 0) {
         const { data: legacySignedStages, error: legacySignedStagesError } = await supabase
           .from('leads_leadstage')
-          .select('lead_id, date, cdate')
+          .select('lead_id, date')
           .eq('stage', 60)
           .in('lead_id', legacyLeadIds);
 
         if (!legacySignedStagesError && legacySignedStages) {
           legacySignedStages.forEach(stage => {
+            if (stage.lead_id && stage.date) {
+              const leadId = typeof stage.lead_id === 'number' ? stage.lead_id : parseInt(String(stage.lead_id));
+              if (!isNaN(leadId)) {
+                const signedDate = stage.date;
+                const existingDate = legacyLeadsSignedDatesMap.get(leadId);
+                if (!existingDate || new Date(signedDate) > new Date(existingDate)) {
+                  legacyLeadsSignedDatesMap.set(leadId, signedDate);
+                }
+              }
+            }
+          });
+        }
+
+        // Fallback: for leads without stage 60, use date of latest stage record
+        const missingLegacyLeadIds = legacyLeadIds.filter(id => !legacyLeadsSignedDatesMap.has(id));
+        if (missingLegacyLeadIds.length > 0) {
+          const { data: allLegacyStages } = await supabase
+            .from('leads_leadstage')
+            .select('lead_id, date, cdate')
+            .in('lead_id', missingLegacyLeadIds);
+
+          (allLegacyStages || []).forEach(stage => {
             if (stage.lead_id) {
               const leadId = typeof stage.lead_id === 'number' ? stage.lead_id : parseInt(String(stage.lead_id));
               if (!isNaN(leadId)) {
-                // Use date field, fallback to cdate
-                const signedDate = stage.date || stage.cdate;
-                if (signedDate) {
-                  // Keep the latest date if multiple records exist
+                const recordDate = stage.date || stage.cdate;
+                if (recordDate) {
                   const existingDate = legacyLeadsSignedDatesMap.get(leadId);
-                  if (!existingDate || (signedDate && new Date(signedDate) > new Date(existingDate))) {
-                    legacyLeadsSignedDatesMap.set(leadId, signedDate);
+                  if (!existingDate || new Date(recordDate) > new Date(existingDate)) {
+                    legacyLeadsSignedDatesMap.set(leadId, recordDate);
                   }
                 }
               }
@@ -1138,14 +1241,22 @@ const HandlerManagementPage: React.FC = () => {
 
         if (!lead.isLegacy) {
           applicantsCount = newLeadsContactsMap.get(lead.id) || 0;
-          signedDate = newLeadsSignedDatesMap.get(lead.id);
+          signedDate = newLeadsSignedDatesMap.get(lead.id) ?? newLeadsSignedDatesMap.get(String(lead.id));
+          // Fallback: if no leads_leadstage records, use created_at from leads table
+          if (!signedDate && lead.created_at) {
+            signedDate = lead.created_at;
+          }
         } else {
           const legacyId = typeof lead.id === 'string' && lead.id.startsWith('legacy_')
             ? parseInt(lead.id.replace('legacy_', ''))
             : (typeof lead.id === 'number' ? lead.id : parseInt(String(lead.id)));
           if (!isNaN(legacyId)) {
             applicantsCount = legacyLeadsContactsMap.get(legacyId) || 0;
-            signedDate = legacyLeadsSignedDatesMap.get(legacyId);
+            signedDate = legacyLeadsSignedDatesMap.get(legacyId) ?? legacyLeadsSignedDatesMap.get(Number(legacyId));
+            // Fallback: if no leads_leadstage records, use cdate from leads_lead table
+            if (!signedDate && lead.cdate) {
+              signedDate = lead.cdate;
+            }
           }
         }
 
@@ -1156,14 +1267,14 @@ const HandlerManagementPage: React.FC = () => {
         };
       });
 
-      setUnassignedLeads(leadsWithApplicants);
+      return leadsWithApplicants;
     } catch (error) {
       console.error('Error fetching unassigned leads:', error);
       throw error;
     }
   };
 
-  const fetchNextPayments = async () => {
+  const fetchNextPayments = async (): Promise<NextPayment[]> => {
     try {
       const payments: NextPayment[] = [];
 
@@ -1435,7 +1546,7 @@ const HandlerManagementPage: React.FC = () => {
         return dateA - dateB;
       });
 
-      setNextPayments(payments);
+      return payments;
     } catch (error) {
       console.error('Error fetching next payments:', error);
       throw error;
@@ -1478,8 +1589,7 @@ const HandlerManagementPage: React.FC = () => {
 
       toast.success(`Handler ${handlerName} assigned successfully!`);
 
-      // Refresh data
-      await fetchData();
+      removeAssignedLeadsFromState([leadId]);
     } catch (error) {
       console.error('Error assigning handler:', error);
       toast.error('Failed to assign handler');
@@ -1540,19 +1650,17 @@ const HandlerManagementPage: React.FC = () => {
   };
 
   const formatCurrency = (value: number, currency: string = 'NIS') => {
-    // Normalize currency code - handle shekel symbol and various formats
-    let normalizedCurrency = currency || 'NIS';
-
-    // Convert shekel symbol (₪) or NIS to ILS (ISO code)
-    if (normalizedCurrency === '₪' || normalizedCurrency === 'NIS' || normalizedCurrency === 'nis') {
+    // Normalize currency to ISO code (same as CalendarPage)
+    let normalizedCurrency = (currency || 'NIS').trim();
+    if (normalizedCurrency === '₪' || normalizedCurrency === 'NIS' || normalizedCurrency === 'nis' || normalizedCurrency === 'ILS') {
       normalizedCurrency = 'ILS';
-    }
-
-    // Remove any non-ASCII characters that might cause issues
-    normalizedCurrency = normalizedCurrency.replace(/[^\x20-\x7E]/g, '');
-
-    // If still not a valid 3-letter code, default to ILS
-    if (normalizedCurrency.length !== 3) {
+    } else if (normalizedCurrency === '$' || normalizedCurrency === 'USD') {
+      normalizedCurrency = 'USD';
+    } else if (normalizedCurrency === '€' || normalizedCurrency === 'EUR') {
+      normalizedCurrency = 'EUR';
+    } else if (normalizedCurrency === '£' || normalizedCurrency === 'GBP') {
+      normalizedCurrency = 'GBP';
+    } else if (normalizedCurrency.length !== 3) {
       normalizedCurrency = 'ILS';
     }
 
@@ -1567,6 +1675,21 @@ const HandlerManagementPage: React.FC = () => {
       // Fallback if currency code is still invalid
       return `${normalizedCurrency} ${value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
     }
+  };
+
+  const getContrastingTextColor = (hexColor?: string | null) => {
+    if (!hexColor) return '#111827';
+    let sanitized = hexColor.trim();
+    if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
+    if (sanitized.length === 3) {
+      sanitized = sanitized.split('').map(char => char + char).join('');
+    }
+    if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) return '#111827';
+    const r = parseInt(sanitized.slice(0, 2), 16) / 255;
+    const g = parseInt(sanitized.slice(2, 4), 16) / 255;
+    const b = parseInt(sanitized.slice(4, 6), 16) / 255;
+    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return luminance > 0.55 ? '#111827' : '#ffffff';
   };
 
   const formatDate = (dateString: string) => {
@@ -1708,6 +1831,29 @@ const HandlerManagementPage: React.FC = () => {
   const scrollToUnassignedLeads = () => {
     unassignedLeadsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
+  const handleUnassignedSort = (column: 'signedDate' | 'total') => {
+    setUnassignedSortColumn(prev => {
+      if (prev === column) {
+        setUnassignedSortDirection(d => d === 'asc' ? 'desc' : 'asc');
+        return column;
+      }
+      setUnassignedSortDirection('asc');
+      return column;
+    });
+  };
+
+  const scrollToHandlers = () => {
+    const el = handlersRef.current;
+    if (!el) return;
+    const scrollParent = el.closest('main');
+    if (scrollParent) {
+      const rect = el.getBoundingClientRect();
+      const scrollTop = scrollParent.scrollTop + rect.top - 16;
+      scrollParent.scrollTo({ top: Math.max(0, scrollTop), behavior: 'smooth' });
+    } else {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
 
   const scrollToNextPayments = () => {
     nextPaymentsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1729,7 +1875,13 @@ const HandlerManagementPage: React.FC = () => {
       </div>
 
       {/* Employee Search Bar and Department Filter */}
-      <div className="mb-6 flex flex-col sm:flex-row gap-4">
+      <div
+        className={`mb-6 flex flex-col sm:flex-row gap-4 ${
+          pageEmployeeSearchQuery.trim()
+            ? 'sticky top-0 z-10 bg-white dark:bg-base-100 py-4 -mx-2 sm:-mx-4 md:-mx-6 lg:-mx-8 xl:-mx-12 px-2 sm:px-4 md:px-6 lg:px-8 xl:px-12 rounded-b-lg shadow-md border-b border-gray-200'
+            : ''
+        }`}
+      >
         <div className="flex-1">
           <label className="label pb-2">
             <span className="label-text font-semibold">Search Employees</span>
@@ -1739,7 +1891,10 @@ const HandlerManagementPage: React.FC = () => {
             placeholder="Search by name or department..."
             className="input input-bordered w-full"
             value={pageEmployeeSearchQuery}
-            onChange={(e) => setPageEmployeeSearchQuery(e.target.value)}
+            onChange={(e) => {
+              setPageEmployeeSearchQuery(e.target.value);
+              scrollToHandlers();
+            }}
           />
         </div>
         <div className="sm:w-64">
@@ -1762,12 +1917,19 @@ const HandlerManagementPage: React.FC = () => {
       {/* Summary Boxes */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
         {/* Handlers Summary */}
-        <div className="bg-blue-50 rounded-2xl shadow-md border border-blue-100 p-6">
+        <div className="relative bg-blue-50 rounded-2xl shadow-md border border-blue-100 p-6">
+          <button
+            onClick={scrollToHandlers}
+            className="btn btn-circle btn-sm btn-primary absolute top-2 right-2"
+            title="View Table"
+          >
+            <EyeIcon className="w-5 h-5" />
+          </button>
           <div className="flex items-center gap-3 mb-4">
             <div className="p-3 bg-blue-100 rounded-xl">
               <UserGroupIcon className="w-6 h-6 text-blue-600" />
             </div>
-            <div>
+            <div className="flex-1">
               <h3 className="text-lg font-semibold text-gray-900">Total Handlers</h3>
               <p className="text-3xl font-bold text-gray-900">{handlers.length}</p>
             </div>
@@ -1790,7 +1952,14 @@ const HandlerManagementPage: React.FC = () => {
         </div>
 
         {/* Unassigned Leads Summary */}
-        <div className="bg-yellow-50 rounded-2xl shadow-md border border-yellow-100 p-6">
+        <div className="relative bg-yellow-50 rounded-2xl shadow-md border border-yellow-100 p-6">
+          <button
+            onClick={scrollToUnassignedLeads}
+            className="btn btn-circle btn-sm btn-primary absolute top-2 right-2"
+            title="View Table"
+          >
+            <EyeIcon className="w-5 h-5" />
+          </button>
           <div className="flex items-center gap-3 mb-4">
             <div className="p-3 bg-yellow-100 rounded-xl">
               <DocumentTextIcon className="w-6 h-6 text-yellow-600" />
@@ -1800,16 +1969,24 @@ const HandlerManagementPage: React.FC = () => {
               <p className="text-3xl font-bold text-gray-900">{unassignedLeads.length}</p>
             </div>
           </div>
-          <button
-            onClick={scrollToUnassignedLeads}
-            className="btn btn-sm btn-outline w-full mt-2"
-          >
-            View Table
-          </button>
         </div>
 
         {/* Next Payments Summary */}
-        <div className="bg-green-50 rounded-2xl shadow-md border border-green-100 p-6">
+        <div className="relative bg-green-50 rounded-2xl shadow-md border border-green-100 p-6">
+          <button
+            onClick={() => {
+              setShowNextPaymentsTable(!showNextPaymentsTable);
+              if (!showNextPaymentsTable) {
+                setTimeout(() => {
+                  nextPaymentsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }, 100);
+              }
+            }}
+            className="btn btn-circle btn-sm btn-primary absolute top-2 right-2"
+            title={showNextPaymentsTable ? 'Hide Table' : 'View Table'}
+          >
+            <EyeIcon className="w-5 h-5" />
+          </button>
           <div className="flex items-center gap-3 mb-4">
             <div className="p-3 bg-green-100 rounded-xl">
               <CurrencyDollarIcon className="w-6 h-6 text-green-600" />
@@ -1819,25 +1996,475 @@ const HandlerManagementPage: React.FC = () => {
               <p className="text-3xl font-bold text-gray-900">{nextPayments.length}</p>
             </div>
           </div>
-          <button
-            onClick={() => {
-              setShowNextPaymentsTable(!showNextPaymentsTable);
-              if (!showNextPaymentsTable) {
-                // Scroll to table when opening
-                setTimeout(() => {
-                  nextPaymentsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                }, 100);
-              }
-            }}
-            className="btn btn-sm btn-outline w-full mt-2"
-          >
-            {showNextPaymentsTable ? 'Hide Table' : 'View Table'}
-          </button>
         </div>
       </div>
 
+      {/* Unassigned Leads */}
+      <div ref={unassignedLeadsRef} className="mb-8">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-bold text-gray-900">Unassigned Leads</h2>
+          <button
+            type="button"
+            onClick={() => {
+              handlerManagementCache = null;
+              fetchData();
+            }}
+            disabled={loading}
+            className="btn btn-sm btn-ghost gap-1"
+            title="Refresh data"
+          >
+            <ArrowPathIcon className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
+        </div>
+
+        {/* Filters */}
+        {unassignedLeads.length > 0 && (
+          <div className="mb-4 flex flex-wrap gap-4">
+            {/* Category Filter */}
+            <div className="relative flex-1 min-w-[200px]">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Main Category (Multi-select)</label>
+              <div
+                className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
+                onClick={() => setShowCategoryDropdown(true)}
+              >
+                {selectedCategories && selectedCategories.length > 0 ? (
+                  selectedCategories.map((category) => (
+                    <div
+                      key={category}
+                      className="badge badge-primary badge-sm flex items-center gap-1"
+                    >
+                      <span>{category}</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleCategorySelection(category);
+                        }}
+                        className="ml-1 hover:bg-primary-focus rounded-full p-0.5"
+                      >
+                        <XMarkIcon className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))
+                ) : null}
+                <input
+                  type="text"
+                  className="flex-1 min-w-[120px] bg-transparent border-none outline-none text-sm py-0"
+                  placeholder="Search or select main categories..."
+                  value={categorySearch}
+                  onChange={(e) => {
+                    setCategorySearch(e.target.value);
+                    if (!showCategoryDropdown) setShowCategoryDropdown(true);
+                  }}
+                  onFocus={() => setShowCategoryDropdown(true)}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </div>
+              {showCategoryDropdown && (
+                <>
+                  <div
+                    className="fixed inset-0 z-[5]"
+                    onClick={() => setShowCategoryDropdown(false)}
+                  />
+                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                    <div
+                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedCategories([]);
+                        setCategorySearch('');
+                      }}
+                    >
+                      Clear All
+                    </div>
+                    <div className="border-t border-gray-200 my-1"></div>
+                    {filteredCategories.map((cat) => {
+                      const isSelected = selectedCategories?.includes(cat) || false;
+                      return (
+                        <div
+                          key={cat}
+                          className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleCategorySelection(cat);
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleCategorySelection(cat)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="checkbox checkbox-sm checkbox-primary"
+                          />
+                          <span className={isSelected ? 'font-semibold' : ''}>{cat}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Stage Filter */}
+            <div className="relative flex-1 min-w-[200px]">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Stage (Multi-select)</label>
+              <div
+                className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
+                onClick={() => setShowStageDropdown(true)}
+              >
+                {selectedStages && selectedStages.length > 0 ? (
+                  selectedStages.map((stageId) => {
+                    const stageName = getStageName(String(stageId));
+                    return (
+                      <div
+                        key={stageId}
+                        className="badge badge-primary badge-sm flex items-center gap-1 max-w-full"
+                      >
+                        <span className="truncate text-xs">{stageName} ({stageId})</span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleStageSelection(stageId);
+                          }}
+                          className="ml-1 hover:bg-primary-focus rounded-full p-0.5 flex-shrink-0"
+                        >
+                          <XMarkIcon className="w-3 h-3" />
+                        </button>
+                      </div>
+                    );
+                  })
+                ) : null}
+                <input
+                  type="text"
+                  className="flex-1 min-w-[120px] bg-transparent border-none outline-none text-sm py-0"
+                  placeholder="Search or select stages..."
+                  value={stageSearch}
+                  onChange={(e) => {
+                    setStageSearch(e.target.value);
+                    if (!showStageDropdown) setShowStageDropdown(true);
+                  }}
+                  onFocus={() => setShowStageDropdown(true)}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </div>
+              {showStageDropdown && (
+                <>
+                  <div
+                    className="fixed inset-0 z-[5]"
+                    onClick={() => setShowStageDropdown(false)}
+                  />
+                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                    <div
+                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedStages([]);
+                        setStageSearch('');
+                      }}
+                    >
+                      Clear All
+                    </div>
+                    <div className="border-t border-gray-200 my-1"></div>
+                    {filteredStages.map((stageId) => {
+                      const isSelected = selectedStages?.includes(stageId) || false;
+                      const stageName = getStageName(String(stageId));
+                      return (
+                        <div
+                          key={stageId}
+                          className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleStageSelection(stageId);
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleStageSelection(stageId)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="checkbox checkbox-sm checkbox-primary"
+                          />
+                          <span className={isSelected ? 'font-semibold' : ''}>{stageName} ({stageId})</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Assign Buttons */}
+            <div className="flex items-end gap-2">
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  if (!isSelectionMode) {
+                    setIsSelectionMode(true);
+                    setSelectedLeads(new Set());
+                  } else {
+                    if (selectedLeads.size === 0) {
+                      setIsSelectionMode(false);
+                      setSelectedLeads(new Set());
+                      return;
+                    }
+                    setShowSelectedLeadsAssignBox(true);
+                  }
+                }}
+              >
+                {isSelectionMode
+                  ? selectedLeads.size > 0
+                    ? `Assign Selected Leads (${selectedLeads.size})`
+                    : 'Cancel Selection'
+                  : 'Assign Selected Leads'
+                }
+              </button>
+              {isSelectionMode && (
+                <button
+                  className="btn btn-circle btn-outline"
+                  onClick={() => {
+                    setIsSelectionMode(false);
+                    setSelectedLeads(new Set());
+                  }}
+                  title="Cancel Selection"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              )}
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  const filteredLeads = unassignedLeads.filter(lead => {
+                    const categoryMatch = selectedCategories.length === 0 || (lead.category && selectedCategories.includes(lead.category));
+                    const stageMatch = selectedStages.length === 0 || (() => {
+                      const stageId = typeof lead.stage === 'number' ? lead.stage : Number(lead.stage);
+                      return !isNaN(stageId) && selectedStages.includes(stageId);
+                    })();
+                    return categoryMatch && stageMatch;
+                  });
+
+                  if (filteredLeads.length === 0) {
+                    toast.error('No leads to assign. Please adjust your filters.');
+                    return;
+                  }
+
+                  setShowAssignMultipleModal(true);
+                }}
+                disabled={unassignedLeads.length === 0}
+              >
+                Assign Multiple Leads
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Filtered Leads Count */}
+        {unassignedLeads.length > 0 && (
+          <div className="mb-4 text-sm text-gray-600">
+            Showing {unassignedLeads.filter(lead => {
+              const categoryMatch = selectedCategories.length === 0 || (lead.category && selectedCategories.includes(lead.category));
+              const stageMatch = selectedStages.length === 0 || (() => {
+                const stageId = typeof lead.stage === 'number' ? lead.stage : Number(lead.stage);
+                return !isNaN(stageId) && selectedStages.includes(stageId);
+              })();
+              return categoryMatch && stageMatch;
+            }).length} of {unassignedLeads.length} leads
+          </div>
+        )}
+
+        {unassignedLeads.length === 0 ? (
+          <p className="text-gray-500 text-center py-8">No unassigned leads found</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="table w-full">
+              <thead>
+                <tr>
+                  {isSelectionMode && (
+                    <th>
+                      <input
+                        type="checkbox"
+                        className="checkbox checkbox-sm"
+                        checked={selectedLeads.size > 0 && selectedLeads.size === unassignedLeads.filter(lead => {
+                          const categoryMatch = selectedCategories.length === 0 || (lead.category && selectedCategories.includes(lead.category));
+                          const stageMatch = selectedStages.length === 0 || (() => {
+                            const stageId = typeof lead.stage === 'number' ? lead.stage : Number(lead.stage);
+                            return !isNaN(stageId) && selectedStages.includes(stageId);
+                          })();
+                          return categoryMatch && stageMatch;
+                        }).length}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            const filtered = unassignedLeads.filter(lead => {
+                              const categoryMatch = selectedCategories.length === 0 || (lead.category && selectedCategories.includes(lead.category));
+                              const stageMatch = selectedStages.length === 0 || (() => {
+                                const stageId = typeof lead.stage === 'number' ? lead.stage : Number(lead.stage);
+                                return !isNaN(stageId) && selectedStages.includes(stageId);
+                              })();
+                              return categoryMatch && stageMatch;
+                            });
+                            setSelectedLeads(new Set(filtered.map(l => l.id)));
+                          } else {
+                            setSelectedLeads(new Set());
+                          }
+                        }}
+                      />
+                    </th>
+                  )}
+                  <th>Lead #</th>
+                  <th>Contact</th>
+                  <th>Category</th>
+                  <th>Topic</th>
+                  <th>Stage</th>
+                  <th>
+                    <button
+                      className="flex items-center gap-1 hover:text-primary cursor-pointer"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleUnassignedSort('signedDate');
+                      }}
+                    >
+                      Signed Date
+                      {unassignedSortColumn === 'signedDate' && (
+                        <span>{unassignedSortDirection === 'asc' ? '↑' : '↓'}</span>
+                      )}
+                    </button>
+                  </th>
+                  <th>Applicants</th>
+                  <th>
+                    <button
+                      className="flex items-center gap-1 hover:text-primary cursor-pointer"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleUnassignedSort('total');
+                      }}
+                    >
+                      Total
+                      {unassignedSortColumn === 'total' && (
+                        <span>{unassignedSortDirection === 'asc' ? '↑' : '↓'}</span>
+                      )}
+                    </button>
+                  </th>
+                  <th>Assign</th>
+                </tr>
+              </thead>
+              <tbody>
+                {unassignedLeads
+                  .filter(lead => {
+                    const categoryMatch = selectedCategories.length === 0 || (lead.category && selectedCategories.includes(lead.category));
+                    const stageMatch = selectedStages.length === 0 || (() => {
+                      const stageId = typeof lead.stage === 'number' ? lead.stage : Number(lead.stage);
+                      return !isNaN(stageId) && selectedStages.includes(stageId);
+                    })();
+                    return categoryMatch && stageMatch;
+                  })
+                  .sort((a, b) => {
+                    if (!unassignedSortColumn) return 0;
+                    const dir = unassignedSortDirection === 'asc' ? 1 : -1;
+                    if (unassignedSortColumn === 'signedDate') {
+                      const dateA = a.signed_date ? new Date(a.signed_date).getTime() : 0;
+                      const dateB = b.signed_date ? new Date(b.signed_date).getTime() : 0;
+                      return (dateA - dateB) * dir;
+                    }
+                    if (unassignedSortColumn === 'total') {
+                      const toNIS = (amount: number, currency?: string) => {
+                        let code = (currency || '₪').trim();
+                        if (code === '₪' || code === 'NIS' || code === 'ILS') code = 'NIS';
+                        else if (code === '$' || code === 'USD') code = 'USD';
+                        else if (code === '€' || code === 'EUR') code = 'EUR';
+                        else if (code === '£' || code === 'GBP') code = 'GBP';
+                        return convertToNIS(amount || 0, code);
+                      };
+                      const nisA = toNIS(a.total || 0, a.currency);
+                      const nisB = toNIS(b.total || 0, b.currency);
+                      return (nisA - nisB) * dir;
+                    }
+                    return 0;
+                  })
+                  .map(lead => (
+                  <tr
+                    key={lead.id}
+                    className={`hover cursor-pointer ${selectedLeads.has(lead.id) ? 'bg-primary/10' : ''}`}
+                    onClick={() => {
+                      if (isSelectionMode) {
+                        setSelectedLeads(prev => {
+                          const next = new Set(prev);
+                          if (next.has(lead.id)) next.delete(lead.id);
+                          else next.add(lead.id);
+                          return next;
+                        });
+                      } else {
+                        handleViewClient(lead);
+                      }
+                    }}
+                  >
+                    {isSelectionMode && (
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          className="checkbox checkbox-sm"
+                          checked={selectedLeads.has(lead.id)}
+                          onChange={() => {
+                            setSelectedLeads(prev => {
+                              const next = new Set(prev);
+                              if (next.has(lead.id)) next.delete(lead.id);
+                              else next.add(lead.id);
+                              return next;
+                            });
+                          }}
+                        />
+                      </td>
+                    )}
+                    <td>{lead.lead_number || lead.id}</td>
+                    <td>{lead.name}</td>
+                    <td>{lead.category || 'No Category'}</td>
+                    <td>{lead.topic || 'N/A'}</td>
+                    <td>
+                      {(() => {
+                        const stageStr = String(lead.stage ?? '');
+                        const stageName = lead.stage_name || getStageName(stageStr) || stageStr || 'No Stage';
+                        const stageColour = getStageColour(stageStr);
+                        const backgroundColor = stageColour || '#3f28cd';
+                        const textColor = (stageName === 'Scheduler assigned' || stageName === 'scheduler assigned' || stageName === 'scheduler_assigned')
+                          ? '#ffffff'
+                          : (stageColour ? getContrastingTextColor(stageColour) : '#ffffff');
+                        return (
+                          <span
+                            className="badge text-xs px-2 py-0.5"
+                            style={{ backgroundColor, borderColor: backgroundColor, color: textColor }}
+                          >
+                            {stageName}
+                          </span>
+                        );
+                      })()}
+                    </td>
+                    <td>{lead.signed_date ? formatDate(lead.signed_date) : 'N/A'}</td>
+                    <td>{lead.applicantsCount ?? 0}</td>
+                    <td>{formatCurrency(lead.total || 0, lead.currency)}</td>
+                    <td>
+                      <button
+                        className="btn btn-sm btn-outline"
+                        disabled={assigningLeadId === lead.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleAssignClick(lead.id);
+                        }}
+                      >
+                        {assigningLeadId === lead.id ? (
+                          <span className="loading loading-spinner loading-xs"></span>
+                        ) : (
+                          'Assign'
+                        )}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       {/* Handlers and Their Cases */}
-      <div className="mb-8">
+      <div ref={handlersRef} className="mb-8">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-xl font-bold text-gray-900">Handlers & Their Cases</h2>
           <div className="flex items-center gap-2">
@@ -2038,407 +2665,6 @@ const HandlerManagementPage: React.FC = () => {
         )}
       </div>
 
-      {/* Unassigned Leads */}
-      <div ref={unassignedLeadsRef} className="mb-8">
-        <h2 className="text-xl font-bold text-gray-900 mb-4">Unassigned Leads (From stage Client signed Agreement)</h2>
-
-        {/* Filters */}
-        {unassignedLeads.length > 0 && (
-          <div className="mb-4 flex flex-wrap gap-4">
-            {/* Category Filter */}
-            <div className="relative flex-1 min-w-[200px]">
-              <label className="block text-sm font-medium text-gray-700 mb-1">Main Category (Multi-select)</label>
-              <input
-                type="text"
-                className="w-full mb-2 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Search main categories..."
-                value={categorySearch}
-                onChange={(e) => {
-                  setCategorySearch(e.target.value);
-                  if (!showCategoryDropdown) {
-                    setShowCategoryDropdown(true);
-                  }
-                }}
-                onFocus={() => setShowCategoryDropdown(true)}
-              />
-              <div
-                className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
-                onClick={() => setShowCategoryDropdown(true)}
-              >
-                {selectedCategories && selectedCategories.length > 0 ? (
-                  selectedCategories.map((category) => (
-                    <div
-                      key={category}
-                      className="badge badge-primary badge-sm flex items-center gap-1"
-                    >
-                      <span>{category}</span>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleCategorySelection(category);
-                        }}
-                        className="ml-1 hover:bg-primary-focus rounded-full p-0.5"
-                      >
-                        <XMarkIcon className="w-3 h-3" />
-                      </button>
-                    </div>
-                  ))
-                ) : (
-                  <span className="text-gray-400 text-sm">Click to select main categories...</span>
-                )}
-              </div>
-              {showCategoryDropdown && (
-                <>
-                  <div
-                    className="fixed inset-0 z-[5]"
-                    onClick={() => setShowCategoryDropdown(false)}
-                  />
-                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                    <div
-                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedCategories([]);
-                        setCategorySearch('');
-                      }}
-                    >
-                      Clear All
-                    </div>
-                    <div className="border-t border-gray-200 my-1"></div>
-                    {filteredCategories.map((cat) => {
-                      const isSelected = selectedCategories?.includes(cat) || false;
-                      return (
-                        <div
-                          key={cat}
-                          className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleCategorySelection(cat);
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => toggleCategorySelection(cat)}
-                            onClick={(e) => e.stopPropagation()}
-                            className="checkbox checkbox-sm checkbox-primary"
-                          />
-                          <span className={isSelected ? 'font-semibold' : ''}>{cat}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* Stage Filter */}
-            <div className="relative flex-1 min-w-[200px]">
-              <label className="block text-sm font-medium text-gray-700 mb-1">Stage (Multi-select)</label>
-              <input
-                type="text"
-                className="w-full mb-2 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Search stages..."
-                value={stageSearch}
-                onChange={(e) => {
-                  setStageSearch(e.target.value);
-                  if (!showStageDropdown) {
-                    setShowStageDropdown(true);
-                  }
-                }}
-                onFocus={() => setShowStageDropdown(true)}
-              />
-              <div
-                className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
-                onClick={() => setShowStageDropdown(true)}
-              >
-                {selectedStages && selectedStages.length > 0 ? (
-                  selectedStages.map((stageId) => {
-                    const stageName = getStageName(String(stageId));
-                    return (
-                      <div
-                        key={stageId}
-                        className="badge badge-primary badge-sm flex items-center gap-1 max-w-full"
-                      >
-                        <span className="truncate text-xs">{stageName} ({stageId})</span>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleStageSelection(stageId);
-                          }}
-                          className="ml-1 hover:bg-primary-focus rounded-full p-0.5 flex-shrink-0"
-                        >
-                          <XMarkIcon className="w-3 h-3" />
-                        </button>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <span className="text-gray-400 text-sm">Click to select stages...</span>
-                )}
-              </div>
-              {showStageDropdown && (
-                <>
-                  <div
-                    className="fixed inset-0 z-[5]"
-                    onClick={() => setShowStageDropdown(false)}
-                  />
-                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                    <div
-                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedStages([]);
-                        setStageSearch('');
-                      }}
-                    >
-                      Clear All
-                    </div>
-                    <div className="border-t border-gray-200 my-1"></div>
-                    {filteredStages.map((stageId) => {
-                      const isSelected = selectedStages?.includes(stageId) || false;
-                      const stageName = getStageName(String(stageId));
-                      return (
-                        <div
-                          key={stageId}
-                          className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleStageSelection(stageId);
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => toggleStageSelection(stageId)}
-                            onClick={(e) => e.stopPropagation()}
-                            className="checkbox checkbox-sm checkbox-primary"
-                          />
-                          <span className={isSelected ? 'font-semibold' : ''}>{stageName} ({stageId})</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* Assign Buttons */}
-            <div className="flex items-end gap-2">
-              <button
-                className="btn btn-primary"
-                onClick={() => {
-                  if (!isSelectionMode) {
-                    // Enable selection mode
-                    setIsSelectionMode(true);
-                    setSelectedLeads(new Set());
-                  } else {
-                    // If in selection mode and has selections, show assignment box
-                    if (selectedLeads.size === 0) {
-                      // Cancel selection mode if no leads selected
-                      setIsSelectionMode(false);
-                      setSelectedLeads(new Set());
-                      return;
-                    }
-                    setShowSelectedLeadsAssignBox(true);
-                  }
-                }}
-              >
-                {isSelectionMode
-                  ? selectedLeads.size > 0
-                    ? `Assign Selected Leads (${selectedLeads.size})`
-                    : 'Cancel Selection'
-                  : 'Assign Selected Leads'
-                }
-              </button>
-              {isSelectionMode && (
-                <button
-                  className="btn btn-circle btn-outline"
-                  onClick={() => {
-                    setIsSelectionMode(false);
-                    setSelectedLeads(new Set());
-                  }}
-                  title="Cancel Selection"
-                >
-                  <XMarkIcon className="w-5 h-5" />
-                </button>
-              )}
-              <button
-                className="btn btn-primary"
-                onClick={() => {
-                  const filteredLeads = unassignedLeads.filter(lead => {
-                    const categoryMatch = selectedCategories.length === 0 || (lead.category && selectedCategories.includes(lead.category));
-                    const stageMatch = selectedStages.length === 0 || (() => {
-                      const stageId = typeof lead.stage === 'number' ? lead.stage : Number(lead.stage);
-                      return !isNaN(stageId) && selectedStages.includes(stageId);
-                    })();
-                    return categoryMatch && stageMatch;
-                  });
-
-                  if (filteredLeads.length === 0) {
-                    toast.error('No leads to assign. Please adjust your filters.');
-                    return;
-                  }
-
-                  setShowAssignMultipleModal(true);
-                }}
-                disabled={unassignedLeads.length === 0}
-              >
-                Assign Multiple Leads
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Filtered Leads Count */}
-        {unassignedLeads.length > 0 && (
-          <div className="mb-4 text-sm text-gray-600">
-            Showing {unassignedLeads.filter(lead => {
-              const categoryMatch = selectedCategories.length === 0 || (lead.category && selectedCategories.includes(lead.category));
-              const stageMatch = selectedStages.length === 0 || (() => {
-                const stageId = typeof lead.stage === 'number' ? lead.stage : Number(lead.stage);
-                return !isNaN(stageId) && selectedStages.includes(stageId);
-              })();
-              return categoryMatch && stageMatch;
-            }).length} of {unassignedLeads.length} leads
-          </div>
-        )}
-
-        {unassignedLeads.length === 0 ? (
-          <p className="text-gray-500 text-center py-8">No unassigned leads found</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="table w-full">
-              <thead>
-                <tr>
-                  {isSelectionMode && (
-                    <th>
-                      <input
-                        type="checkbox"
-                        className="checkbox checkbox-sm"
-                        checked={selectedLeads.size > 0 && selectedLeads.size === unassignedLeads.filter(lead => {
-                          const categoryMatch = selectedCategories.length === 0 || (lead.category && selectedCategories.includes(lead.category));
-                          const stageMatch = selectedStages.length === 0 || (() => {
-                            const stageId = typeof lead.stage === 'number' ? lead.stage : Number(lead.stage);
-                            return !isNaN(stageId) && selectedStages.includes(stageId);
-                          })();
-                          return categoryMatch && stageMatch;
-                        }).length}
-                        onChange={(e) => {
-                          const filteredLeads = unassignedLeads.filter(lead => {
-                            const categoryMatch = selectedCategories.length === 0 || (lead.category && selectedCategories.includes(lead.category));
-                            const stageMatch = selectedStages.length === 0 || (() => {
-                              const stageId = typeof lead.stage === 'number' ? lead.stage : Number(lead.stage);
-                              return !isNaN(stageId) && selectedStages.includes(stageId);
-                            })();
-                            return categoryMatch && stageMatch;
-                          });
-
-                          if (e.target.checked) {
-                            setSelectedLeads(new Set(filteredLeads.map(lead => lead.id)));
-                          } else {
-                            setSelectedLeads(new Set());
-                          }
-                        }}
-                      />
-                    </th>
-                  )}
-                  <th>Lead Name</th>
-                  <th>Lead Number</th>
-                  <th>Category</th>
-                  <th>Topic</th>
-                  <th>Stage</th>
-                  <th>Signed</th>
-                  <th>Total Applicants</th>
-                  <th>Total</th>
-                  <th>Assign Handler</th>
-                </tr>
-              </thead>
-              <tbody>
-                {unassignedLeads.filter(lead => {
-                  const categoryMatch = selectedCategories.length === 0 || (lead.category && selectedCategories.includes(lead.category));
-                  const stageMatch = selectedStages.length === 0 || (() => {
-                    const stageId = typeof lead.stage === 'number' ? lead.stage : Number(lead.stage);
-                    return !isNaN(stageId) && selectedStages.includes(stageId);
-                  })();
-                  return categoryMatch && stageMatch;
-                }).map(lead => (
-                  <tr
-                    key={lead.id}
-                    className={`cursor-pointer hover:bg-gray-50 ${selectedLeads.has(lead.id) ? 'bg-blue-50' : ''}`}
-                    onClick={(e) => {
-                      // Don't open modal if clicking on checkbox or assign button
-                      if ((e.target as HTMLElement).closest('input[type="checkbox"]') ||
-                        (e.target as HTMLElement).closest('button.btn')) {
-                        return;
-                      }
-                      // Use the lead ID directly - it's already formatted correctly (legacy_ prefix for legacy leads)
-                      setSelectedLeadForModal({ id: lead.id, name: lead.name });
-                      setShowLeadDetailsModal(true);
-                    }}
-                  >
-                    {isSelectionMode && (
-                      <td onClick={(e) => e.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          className="checkbox checkbox-sm"
-                          checked={selectedLeads.has(lead.id)}
-                          onChange={(e) => {
-                            e.stopPropagation();
-                            setSelectedLeads(prev => {
-                              const newSet = new Set(prev);
-                              if (e.target.checked) {
-                                newSet.add(lead.id);
-                              } else {
-                                newSet.delete(lead.id);
-                              }
-                              return newSet;
-                            });
-                          }}
-                        />
-                      </td>
-                    )}
-                    <td>
-                      <button
-                        className="text-blue-600 hover:underline"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleViewClient(lead, e);
-                        }}
-                      >
-                        {lead.name}
-                      </button>
-                    </td>
-                    <td>{lead.lead_number || (lead.isLegacy ? lead.id.toString().replace('legacy_', '') : String(lead.id))}</td>
-                    <td>{lead.category || 'No Category'}</td>
-                    <td>{lead.topic || 'N/A'}</td>
-                    <td>{lead.stage_name || lead.stage}</td>
-                    <td>{lead.signed_date ? formatDate(lead.signed_date) : 'N/A'}</td>
-                    <td>{lead.applicantsCount ?? 0}</td>
-                    <td>{formatCurrency(lead.total || 0, lead.currency)}</td>
-                    <td>
-                      <button
-                        className="btn btn-sm btn-outline"
-                        disabled={assigningLeadId === lead.id}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleAssignClick(lead.id);
-                        }}
-                      >
-                        {assigningLeadId === lead.id ? (
-                          <span className="loading loading-spinner loading-xs"></span>
-                        ) : (
-                          'Assign'
-                        )}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
 
       {/* Next Payments */}
       {showNextPaymentsTable && (
@@ -2624,9 +2850,16 @@ const HandlerManagementPage: React.FC = () => {
           return categoryMatch && stageMatch;
         })}
         handlers={handlers}
-        onAssignComplete={async () => {
-          // Refresh the data after assignment
-          await fetchData();
+        onAssignComplete={() => {
+          const assignedLeadIds = unassignedLeads.filter(lead => {
+            const categoryMatch = selectedCategories.length === 0 || (lead.category && selectedCategories.includes(lead.category));
+            const stageMatch = selectedStages.length === 0 || (() => {
+              const stageId = typeof lead.stage === 'number' ? lead.stage : Number(lead.stage);
+              return !isNaN(stageId) && selectedStages.includes(stageId);
+            })();
+            return categoryMatch && stageMatch;
+          }).map(l => l.id);
+          removeAssignedLeadsFromState(assignedLeadIds);
         }}
       />
 
@@ -2695,7 +2928,7 @@ const HandlerManagementPage: React.FC = () => {
                         setAssigningSelectedLeads(true);
                         try {
                           const selectedLeadsArray = Array.from(selectedLeads);
-                          let successCount = 0;
+                          const successfullyAssignedIds: (string | number)[] = [];
                           let errorCount = 0;
 
                           for (const leadId of selectedLeadsArray) {
@@ -2707,7 +2940,7 @@ const HandlerManagementPage: React.FC = () => {
                               }
 
                               await assignHandler(leadId, handler.id);
-                              successCount++;
+                              successfullyAssignedIds.push(leadId);
                             } catch (error) {
                               console.error('Error assigning lead:', error);
                               errorCount++;
@@ -2715,9 +2948,9 @@ const HandlerManagementPage: React.FC = () => {
                           }
 
                           if (errorCount === 0) {
-                            toast.success(`Successfully assigned ${successCount} lead(s) to ${handler.display_name}`);
-                          } else {
-                            toast.success(`Assigned ${successCount} lead(s), ${errorCount} failed`);
+                            toast.success(`Successfully assigned ${successfullyAssignedIds.length} lead(s) to ${handler.display_name}`);
+                          } else if (successfullyAssignedIds.length > 0) {
+                            toast.success(`Assigned ${successfullyAssignedIds.length} lead(s), ${errorCount} failed`);
                           }
 
                           // Clear selection and close box
@@ -2725,9 +2958,6 @@ const HandlerManagementPage: React.FC = () => {
                           setShowSelectedLeadsAssignBox(false);
                           setSelectedLeadsHandlerSearch('');
                           setIsSelectionMode(false);
-
-                          // Refresh data
-                          await fetchData();
                         } catch (error: any) {
                           console.error('Error assigning leads:', error);
                           toast.error('Failed to assign leads');

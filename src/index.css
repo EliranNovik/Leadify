@@ -213,6 +213,13 @@ html,
   }
 }
 
+/* Ensure main content can scroll past bottom nav on mobile - nothing hidden behind it */
+@media (max-width: 767px) {
+  .main-with-bottom-nav-padding {
+    padding-bottom: max(5.5rem, calc(5rem + env(safe-area-inset-bottom, 0px)));
+  }
+}
+
 /* Custom styles for react-big-calendar event boxes in week/day views */
 .rbc-event-content,
 .event-item {
