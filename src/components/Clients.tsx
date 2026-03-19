@@ -15129,10 +15129,10 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
 
           {/* Tab Content - full width, white background */}
-          <div ref={tabContentRef} className="w-full bg-base-100 min-h-screen mt-6">
+          <div ref={tabContentRef} className="w-full bg-base-100 min-h-screen mt-8 md:mt-10">
             <div
               key={`${activeTab}-${interactionCount}`}
-              className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0"
+              className="p-4 sm:p-5 md:p-8 pb-8 md:pb-8 mb-6 md:mb-0 space-y-6 md:space-y-8"
             >
               {ActiveComponent && selectedClient && (
                 <div className="md:pb-0 pb-32">
@@ -17781,14 +17781,14 @@ const Clients: React.FC<ClientsProps> = ({
             {/* Vertical tab panel - appears when arrow is clicked */}
             {isMobileTabPanelOpen && (
               <div
-                className="absolute right-12 top-1/2 -translate-y-1/2 bg-white/95 dark:bg-gray-800/95 backdrop-blur-md rounded-2xl shadow-xl border border-gray-200/60 dark:border-gray-600/60 px-4 py-4 overflow-y-auto scrollbar-hide"
-                style={{ maxWidth: 'min(90vw, 320px)', maxHeight: '85vh' }}
+                className="absolute right-12 top-1/2 -translate-y-1/2 bg-white/95 dark:bg-gray-800/95 backdrop-blur-md rounded-xl shadow-xl border border-gray-200/60 dark:border-gray-600/60 px-4 py-3 overflow-y-auto scrollbar-hide"
+                style={{ maxWidth: 'min(90vw, 290px)', maxHeight: '78vh' }}
               >
-                <div className="flex flex-col gap-1.5" style={{ scrollBehavior: 'smooth' }}>
+                <div className="flex flex-col gap-1" style={{ scrollBehavior: 'smooth' }}>
                   {tabs.map((tab) => (
                     <button
                       key={tab.id}
-                      className={`relative flex flex-row items-center justify-start gap-4 w-full px-4 py-3.5 rounded-xl font-semibold text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
+                      className={`relative flex flex-row items-center justify-start gap-3 w-full px-4 py-2.5 rounded-lg font-semibold text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
                         ? 'text-black dark:text-white bg-black/5 dark:bg-white/10'
                         : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100/50 dark:hover:bg-gray-700/30'
                         }`}
@@ -17798,7 +17798,7 @@ const Clients: React.FC<ClientsProps> = ({
                       }}
                     >
                       <div className="relative inline-flex items-center justify-center flex-shrink-0">
-                        <tab.icon className={`w-8 h-8 ${activeTab === tab.id ? '!text-black dark:!text-white' : 'text-gray-500 dark:text-gray-400'}`} />
+                        <tab.icon className={`w-6 h-6 ${activeTab === tab.id ? '!text-black dark:!text-white' : 'text-gray-500 dark:text-gray-400'}`} />
                         {tab.id === 'interactions' && tab.badge && (
                           <div className={`absolute -top-0.5 -right-0.5 min-w-[1.25rem] h-5 px-1 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap ${activeTab === tab.id
                             ? 'bg-black/10 dark:bg-white/20 text-black dark:text-white'
@@ -17822,7 +17822,7 @@ const Clients: React.FC<ClientsProps> = ({
                 e.stopPropagation();
                 setIsMobileTabPanelOpen((v) => !v);
               }}
-              className="flex items-center justify-center w-10 h-14 rounded-l-xl backdrop-blur-md shadow-lg border border-r-0 border-[#471CCA]/30 text-white hover:opacity-90 transition-colors"
+              className="flex items-center justify-center w-10 h-12 rounded-l-lg backdrop-blur-md shadow-lg border border-r-0 border-[#471CCA]/30 text-white hover:opacity-90 transition-colors"
               style={{ backgroundColor: '#471CCA' }}
               aria-label={isMobileTabPanelOpen ? 'Close tabs' : 'Open tabs'}
             >

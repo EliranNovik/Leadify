@@ -862,43 +862,55 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     return (
         <div className="bg-white dark:bg-gray-900">
-            <div className="w-full mx-auto px-4 sm:px-6 lg:px-8 pt-2 pb-4 md:py-6">
+            <div className="w-full mx-auto px-4 sm:px-6 lg:px-8 pt-4 pb-6 md:py-6 space-y-6 md:space-y-8">
 
                 {/* Top Row: Identity & Status */}
-                <div className="flex flex-col gap-2 md:gap-4 mb-4 md:mb-8">
-                    {/* Stage Badge and Actions Dropdown - Mobile: Above client name (Mobile only) */}
-                    <div className="flex md:hidden items-center justify-between gap-3 mb-1 w-full">
-                        <div className="flex items-center gap-3">
-                            {/* Stage Badge */}
-                            <div className="flex items-center gap-2">
+                <div className="flex flex-col gap-2 md:gap-6 mb-0 md:mb-8">
+                    {/* Mobile: two columns - left = stage + client name (name directly under stage), right = actions */}
+                    <div className="flex md:hidden flex-row items-start gap-3 w-full">
+                        {/* Left column: stage then client name with minimal gap */}
+                        <div className="flex flex-col gap-1.5 min-w-0 flex-1">
+                            <div className="flex items-center gap-2 mb-2">
                                 {renderStageBadge('desktop')}
                             </div>
-                            {/* Timeline and History - next to stage badge */}
-                            {!hideHistoryAndTimeline && (
-                                <>
-                                    <button onClick={handleTimelineClick} className="btn btn-ghost btn-square min-h-10 min-w-10" title="View Timeline">
-                                        <ClockIcon className="w-7 h-7" />
-                                    </button>
-                                    <button onClick={handleHistoryClick} className="btn btn-ghost btn-square min-h-10 min-w-10" title="View History">
-                                        <ArchiveBoxIcon className="w-7 h-7" />
-                                    </button>
-                                </>
-                            )}
-                            {/* Duplicate Contact Button - Yellow */}
-                            {duplicateContacts && duplicateContacts.length > 0 && (
-                                <button
-                                    onClick={() => setIsDuplicateModalOpen(true)}
-                                    className="btn btn-circle btn-warning btn-sm"
-                                    title={duplicateContacts.length === 1
-                                        ? `Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`
-                                        : `${duplicateContacts.length} Duplicate Contacts`}
-                                >
-                                    <DocumentDuplicateIcon className="w-5 h-5" />
-                                </button>
-                            )}
+                            {/* Client name + meta - mobile only, directly below stage */}
+                            <div className="flex flex-col gap-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                    <h1 className="text-xl font-bold text-gray-900 dark:text-white leading-tight">
+                                        #{renderLeadNumber()}
+                                        <span className="mx-1.5 text-gray-300">|</span>
+                                        {selectedClient.name || 'Unnamed Lead'}
+                                    </h1>
+                                    {(isSubLead && masterLeadNumber) || (isMasterLead && subLeadsCount !== undefined && subLeadsCount >= 0) ? (
+                                        <button
+                                            onClick={() => {
+                                                if (isSubLead && masterLeadNumber) navigate(`/clients/${masterLeadNumber}/master`);
+                                                else if (isMasterLead && selectedClient) {
+                                                    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                                    const identifier = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : (selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '');
+                                                    navigate(`/clients/${encodeURIComponent(identifier)}/master`);
+                                                }
+                                            }}
+                                            className="btn btn-square btn-sm relative bg-red-100 hover:bg-red-200 text-red-700 border-red-300"
+                                            title={isSubLead ? `View master` : `View ${subLeadsCount} sub-leads`}
+                                        >
+                                            <Squares2X2Icon className="w-5 h-5" />
+                                            <span className="absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full min-w-[1.25rem] h-5 flex items-center justify-center px-1">{(subLeadsCount || 0) + 1}</span>
+                                        </button>
+                                    ) : null}
+                                </div>
+                                <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 flex-wrap">
+                                    {selectedClient.language && <span className="flex items-center gap-1"><GlobeAltIcon className="w-4 h-4" />{selectedClient.language}</span>}
+                                    <div className="flex items-center gap-1">
+                                        <TagIcon className="w-4 h-4" />
+                                        <span className={disableCategoryModal ? '' : 'cursor-pointer hover:text-indigo-600'} onClick={disableCategoryModal ? undefined : () => { setShowCategoryModal(true); setCategoryInputValue(displayCategory); }}>{displayCategory}</span>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
-
-                        {/* Actions Dropdown - Right side */}
+                        {/* Right column: Actions + Timeline/History/Duplicate */}
+                        <div className="flex flex-col items-end gap-4 flex-shrink-0">
+                        {/* Actions Dropdown - Top right */}
                         {!hideActionsDropdown && (
                             <div className="flex flex-col items-end gap-2">
                                 <div className="dropdown dropdown-end">
@@ -968,10 +980,35 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 </div>
                             </div>
                         )}
+                        {/* Timeline, History, Duplicate Contact - stacked vertically below Actions, right-aligned */}
+                        <div className="flex flex-col items-end gap-3">
+                            {!hideHistoryAndTimeline && (
+                                <>
+                                    <button onClick={handleTimelineClick} className="btn btn-ghost btn-square min-h-10 min-w-10" title="View Timeline">
+                                        <ClockIcon className="w-6 h-6" />
+                                    </button>
+                                    <button onClick={handleHistoryClick} className="btn btn-ghost btn-square min-h-10 min-w-10" title="View History">
+                                        <ArchiveBoxIcon className="w-6 h-6" />
+                                    </button>
+                                </>
+                            )}
+                            {duplicateContacts && duplicateContacts.length > 0 && (
+                                <button
+                                    onClick={() => setIsDuplicateModalOpen(true)}
+                                    className="btn btn-circle btn-warning btn-sm"
+                                    title={duplicateContacts.length === 1
+                                        ? `Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`
+                                        : `${duplicateContacts.length} Duplicate Contacts`}
+                                >
+                                    <DocumentDuplicateIcon className="w-5 h-5" />
+                                </button>
+                            )}
+                        </div>
+                        </div>
                     </div>
 
-                    {/* First row: Client name and info */}
-                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-2 md:gap-4">
+                    {/* First row: Client name and info (desktop only; on mobile shown in left column above) */}
+                    <div className="hidden md:flex flex-col md:flex-row justify-between items-start md:items-center gap-2 md:gap-4">
                         <div className="flex items-center gap-4">
                             <div>
                                 <div className="flex items-center gap-2 mb-3">
@@ -1175,8 +1212,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         </div>
                     </div>
 
-                    {/* Second row: Email, Phone, Source, Topic (vertically on mobile) and Total Value (right side) */}
-                    <div className="flex flex-row items-start md:items-center justify-between gap-4 mt-2 md:mt-0">
+                    {/* Second row: Email, Phone, Source, Topic (vertically on mobile) and Total Value (right side) - tight to language/category on mobile */}
+                    <div className="flex flex-row items-start md:items-center justify-between gap-4 -mt-3 md:mt-0 pt-2 md:pt-0">
                         {/* Email, Phone, Source, Topic - Stacked vertically on mobile, horizontal on desktop */}
                         <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-6 flex-1 md:mr-8">
                             {/* Email */}

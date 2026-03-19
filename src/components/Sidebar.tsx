@@ -3,7 +3,6 @@ import { useLocation, Link } from 'react-router-dom';
 import { FaRobot } from 'react-icons/fa';
 import { useAdminRole } from '../hooks/useAdminRole';
 import { useExternalUser } from '../hooks/useExternalUser';
-import { toast } from 'react-hot-toast';
 import {
   HomeIcon,
   UserGroupIcon,
@@ -574,25 +573,6 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
     return () => window.removeEventListener('resize', checkGap);
   }, []);
 
-  const handleSignOut = async () => {
-    try {
-      console.log('Signing out from sidebar...');
-      const { error } = await supabase.auth.signOut();
-      if (error) {
-        console.error('Error signing out:', error);
-        toast.error('Failed to sign out');
-      } else {
-        console.log('Successfully signed out from sidebar');
-        toast.success('Signed out successfully');
-        // Navigate to login page instead of reload
-        window.location.href = '/login';
-      }
-    } catch (error) {
-      console.error('Unexpected error during sign out:', error);
-      toast.error('Failed to sign out');
-    }
-  };
-
   // 3. Add state for expanded menu
   const [expandedMenu, setExpandedMenu] = React.useState<string | null>(null);
 
@@ -693,12 +673,12 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
         <div className="hidden md:block">
           <div
             ref={sidebarRef}
-            className={`fixed top-20 left-4 flex flex-col shadow-2xl z-40 ${isSidebarHovered ? 'w-64' : 'w-20'} transition-all duration-300 group/sidebar rounded-2xl h-[calc(100vh-6rem)] max-h-[calc(100vh-6rem)] min-h-[120px] border sidebar-frosted-glass`}
+            className={`fixed top-20 left-4 flex flex-col min-h-0 overflow-hidden shadow-2xl z-40 ${isSidebarHovered ? 'w-64' : 'w-20'} transition-all duration-300 group/sidebar rounded-2xl h-[calc(100vh-5rem)] max-h-[calc(100vh-5rem)] min-h-[120px] border sidebar-frosted-glass`}
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
           >
-            {/* Navigation Items */}
-            <nav className="flex flex-col mt-8 gap-2 flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-white/20 scrollbar-track-transparent hover:scrollbar-thumb-white/30 pb-4">
+            {/* Navigation Items — min-h-0 + flex-1 so this scrolls fully; padding only inside scroll area */}
+            <nav className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-white/20 scrollbar-track-transparent hover:scrollbar-thumb-white/30 pt-2 pb-4 px-0 overscroll-contain">
               {filteredDesktopItems
                 .map((item, index) => {
                   const Icon = item.icon;
@@ -760,61 +740,13 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                   );
                 })}
             </nav>
-
-            {/* User info and sign out button */}
-            <div className="flex flex-col px-4 py-6 border-t border-white/10 mt-auto w-full gap-3 flex-shrink-0">
-              <div className={`flex items-center w-full justify-start gap-3`}>
-                {/* Sign out button */}
-                <div className="relative group">
-                  <button
-                    className={`bg-white/10 text-white rounded-lg p-2 flex items-center justify-center shadow border border-white/20 ${isAltTheme ? 'hover:border-green-300 hover:bg-green-400/20' : 'hover:border-cyan-300 hover:bg-cyan-400/20'} transition-colors duration-200`}
-                    title="Sign out"
-                    onClick={handleSignOut}
-                  >
-                    <ArrowRightOnRectangleIcon className="w-6 h-6" />
-                  </button>
-                  {!isSidebarHovered && (
-                    <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 bg-black/90 text-white text-xs rounded-lg px-3 py-2 shadow-lg whitespace-nowrap z-50 opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-opacity duration-200">
-                      Sign out
-                    </div>
-                  )}
-                </div>
-
-                {/* User info - only visible when sidebar is expanded */}
-                {isSidebarHovered && (
-                  <div className="flex flex-col min-w-0 flex-1">
-                    {/* Name row with Admin badge on the right */}
-                    <div className="flex items-center gap-2 w-full min-w-0">
-                      <span className="text-white font-medium text-sm truncate min-w-0 flex-1">
-                        {userOfficialName || userName || authUser?.email || 'User'}
-                      </span>
-                      {isSuperUser && (
-                        <span className="flex-shrink-0 w-9 h-9 rounded-full bg-green-500 flex items-center justify-center" title="Admin">
-                          <ShieldCheckIcon className="w-5 h-5 text-white" />
-                        </span>
-                      )}
-                    </div>
-                    {/* Always show role - will be "User" initially, then update when data loads */}
-                    <span className="text-white/70 text-xs truncate">
-                      {userRoleFromDB || 'User'}
-                    </span>
-                    {/* Always show department if it exists - will update when data loads */}
-                    {userDepartment ? (
-                      <span className="text-white/50 text-xs truncate">
-                        {userDepartment}
-                      </span>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-            </div>
           </div>
         </div>
       )}
 
       {/* Mobile Sidebar Drawer */}
       <div className="md:hidden">
-        {/* Overlay - z-[60] to stay above bottom nav (z-50) */}
+        {/* Overlay - z-[60] to stay above bottom nav (z-40) */}
         {isOpen && (
           <div
             className="fixed inset-0 bg-black/50 z-[60] transition-opacity duration-300"
@@ -822,7 +754,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
           />
         )}
 
-        {/* Drawer - z-[60] to stay above bottom nav (z-50) */}
+        {/* Drawer - z-[60] to stay above bottom nav (z-40) */}
         <div
           className={`fixed inset-y-0 left-0 w-64 bg-base-100 shadow-2xl z-[60] transform transition-transform duration-300 ease-out ${isOpen ? 'translate-x-0' : '-translate-x-full'
             }`}
@@ -931,44 +863,6 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                 </li>
               </ul>
             </nav>
-
-            {/* Footer with user info and sign out */}
-            <div className="p-4 border-t border-base-200">
-              <div className="flex items-center justify-start gap-3">
-                <button
-                  className="btn btn-ghost btn-circle btn-sm"
-                  title="Sign out"
-                  onClick={handleSignOut}
-                >
-                  <ArrowRightOnRectangleIcon className="w-5 h-5" />
-                </button>
-
-                {/* User info - always visible on mobile */}
-                <div className="flex flex-col min-w-0 flex-1">
-                  {/* Name row with Admin badge on the right */}
-                  <div className="flex items-center gap-2 w-full min-w-0">
-                    <span className="text-base-content font-medium text-sm truncate min-w-0 flex-1">
-                      {userOfficialName || userName || authUser?.email || 'User'}
-                    </span>
-                    {isSuperUser && (
-                      <span className="flex-shrink-0 w-9 h-9 rounded-full bg-green-500 flex items-center justify-center" title="Admin">
-                        <ShieldCheckIcon className="w-5 h-5 text-white" />
-                      </span>
-                    )}
-                  </div>
-                  {/* Always show role - will be "User" initially, then update when data loads */}
-                  <span className="text-base-content/70 text-xs truncate">
-                    {userRoleFromDB || 'User'}
-                  </span>
-                  {/* Always show department if it exists - will update when data loads */}
-                  {userDepartment ? (
-                    <span className="text-base-content/50 text-xs truncate">
-                      {userDepartment}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       </div>

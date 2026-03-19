@@ -139,16 +139,17 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
 
   return (
     <nav
-      className="md:hidden fixed bottom-0 left-0 right-0 z-50"
-      style={{
-        paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom, 0px))',
-      }}
+      className="md:hidden fixed bottom-0 left-0 right-0 w-full z-[40]"
+      style={{ paddingBottom: 0 }}
     >
       <div
         ref={navBarRef}
-        className="mx-4 mb-2 max-w-[300px] mx-auto rounded-full bg-white/70 dark:bg-white/40 backdrop-blur-2xl border border-white/50 dark:border-white/20 shadow-xl shadow-black/5"
+        className="w-full min-w-0 rounded-t-2xl border-t border-x-0 border-b-0 border-white/50 dark:border-white/20 bg-white/90 dark:bg-base-300/90 backdrop-blur-2xl shadow-[0_-4px_24px_rgba(0,0,0,0.08)]"
+        style={{
+          paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom, 0px))',
+        }}
       >
-        <div className="flex items-center justify-center gap-1 py-1.5 px-2">
+        <div className="flex items-center justify-between py-1.5 px-3 gap-2">
           {leftItems.map((item) => {
             const actionItem = item as { action?: string };
             const isAction = !!actionItem.action;
@@ -267,7 +268,7 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
       {showQuickActionsDropdown &&
         createPortal(
           <div
-            className="fixed left-4 right-4 bg-white dark:bg-base-100 rounded-xl shadow-2xl border border-base-200 z-[9999] overflow-hidden"
+            className="fixed left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 sm:max-w-sm w-auto min-w-[280px] bg-white dark:bg-base-100 rounded-2xl shadow-2xl border border-base-200 z-[9999] overflow-hidden py-2"
             data-mobile-quick-actions-dropdown
             style={{ bottom: dropdownBottom }}
             onClick={(e) => e.stopPropagation()}
@@ -277,38 +278,38 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
                 setShowQuickActionsDropdown(false);
                 onOpenMessaging?.();
               }}
-              className="flex items-center gap-3 px-4 py-3 w-full text-left border-b border-base-200 hover:bg-base-200/50 transition-colors"
+              className="flex items-center gap-4 px-5 py-4 w-full text-left border-b border-base-200 hover:bg-base-200/50 active:bg-base-200/70 transition-colors"
             >
-              <ChatBubbleLeftRightIcon className="w-5 h-5 text-gray-500" />
-              <span className="text-sm font-medium">RMQ Messages</span>
+              <ChatBubbleLeftRightIcon className="w-6 h-6 text-gray-500 flex-shrink-0" />
+              <span className="text-base font-medium">RMQ Messages</span>
             </button>
             <button
               onClick={() => {
                 setShowQuickActionsDropdown(false);
                 onOpenWhatsApp?.();
               }}
-              className="flex items-center gap-3 px-4 py-3 w-full text-left border-b border-base-200 hover:bg-base-200/50 transition-colors"
+              className="flex items-center gap-4 px-5 py-4 w-full text-left border-b border-base-200 hover:bg-base-200/50 active:bg-base-200/70 transition-colors"
             >
-              <FaWhatsapp className="w-5 h-5 text-green-500" />
-              <span className="text-sm font-medium">WhatsApp</span>
+              <FaWhatsapp className="w-6 h-6 text-green-500 flex-shrink-0" />
+              <span className="text-base font-medium">WhatsApp</span>
             </button>
             <button
               onClick={() => {
                 setShowQuickActionsDropdown(false);
                 onOpenEmailThread?.();
               }}
-              className="flex items-center gap-3 px-4 py-3 w-full text-left border-b border-base-200 hover:bg-base-200/50 transition-colors"
+              className="flex items-center gap-4 px-5 py-4 w-full text-left border-b border-base-200 hover:bg-base-200/50 active:bg-base-200/70 transition-colors"
             >
-              <EnvelopeIcon className="w-5 h-5 text-gray-500" />
-              <span className="text-sm font-medium">Email Thread</span>
+              <EnvelopeIcon className="w-6 h-6 text-gray-500 flex-shrink-0" />
+              <span className="text-base font-medium">Email Thread</span>
             </button>
             <Link
               to="/handler-management"
               onClick={() => setShowQuickActionsDropdown(false)}
-              className="flex items-center gap-3 px-4 py-3 w-full text-left hover:bg-base-200/50 transition-colors"
+              className="flex items-center gap-4 px-5 py-4 w-full text-left hover:bg-base-200/50 active:bg-base-200/70 transition-colors"
             >
-              <UserGroupIcon className="w-5 h-5 text-gray-500" />
-              <span className="text-sm font-medium">Handler Management</span>
+              <UserGroupIcon className="w-6 h-6 text-gray-500 flex-shrink-0" />
+              <span className="text-base font-medium">Handler Management</span>
             </Link>
           </div>,
           document.body

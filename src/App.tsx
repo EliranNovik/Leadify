@@ -713,8 +713,8 @@ const AppContentInner: React.FC = () => {
                 onOpenMessaging={() => setIsMessagingOpen(true)}
                 isMenuOpen={isSidebarOpen}
               />
-              <main className="flex-1 overflow-x-hidden overflow-y-auto bg-white">
-                <CallsLedgerPage />
+<main className="flex-1 overflow-x-hidden overflow-y-auto bg-white pt-8 md:pt-6">
+              <CallsLedgerPage />
               </main>
             </div>
             <RMQMessagesPage
@@ -741,7 +741,7 @@ const AppContentInner: React.FC = () => {
                 onOpenMessaging={handleOpenMessaging}
                 isMenuOpen={isSidebarOpen}
               />
-              <main className="flex-1 overflow-x-hidden overflow-y-auto bg-white">
+              <main className="flex-1 overflow-x-hidden overflow-y-auto bg-white pt-8 md:pt-6">
                 <MyProfilePage />
               </main>
             </div>
@@ -832,7 +832,7 @@ const AppContentInner: React.FC = () => {
                   onOpenMessaging={handleOpenMessaging}
                   isMenuOpen={isSidebarOpen}
                 />
-                <main className={`flex-1 overflow-x-hidden overflow-y-auto ${isReportsPage ? 'w-full' : ''} ${showBottomNav ? 'main-with-bottom-nav-padding' : ''}`}>
+                <main className={`flex-1 overflow-x-hidden overflow-y-auto pt-8 md:pt-6 ${isReportsPage ? 'w-full' : ''} ${showBottomNav ? 'main-with-bottom-nav-padding' : ''}`}>
                   <Routes>
                     <Route path="/" element={<Dashboard />} />
                     <Route path="/clients" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} />} />

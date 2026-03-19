@@ -154,6 +154,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [isSearching, setIsSearching] = useState(false);
   const searchTimeoutRef = useRef<NodeJS.Timeout>();
   const isMouseOverSearchRef = useRef(false);
+  /** Cleared on re-enter; prevents stacked timeouts when moving bar → portaled preview */
+  const searchHoverCloseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const masterSearchResultsRef = useRef<CombinedLead[]>([]);
   const exactMatchesRef = useRef<CombinedLead[]>([]);
   const fuzzyMatchesRef = useRef<CombinedLead[]>([]);
@@ -5742,17 +5744,24 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     const measure = () => {
       if (!searchContainerRef.current) return;
       const rect = searchContainerRef.current.getBoundingClientRect();
+      // Portal uses position:fixed — top/left must be viewport coords (getBoundingClientRect), not + scrollY/X
       if (isMobile) {
         const margin = 12;
-        setSearchDropdownStyle({ top: rect.bottom + window.scrollY, left: margin + window.scrollX, width: window.innerWidth - margin * 2 });
+        setSearchDropdownStyle({ top: rect.bottom, left: margin, width: window.innerWidth - margin * 2 });
       } else {
-        setSearchDropdownStyle({ top: rect.bottom + window.scrollY, left: rect.left + window.scrollX, width: rect.width });
+        setSearchDropdownStyle({ top: rect.bottom, left: rect.left, width: rect.width });
       }
     };
     measure();
     // Re-measure after search bar expand animation (700ms) to get full width
     const t = setTimeout(measure, 750);
-    return () => clearTimeout(t);
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, true);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure, true);
+    };
   }, [isSearchActive, showFilterDropdown, searchResults.length, searchValue, isMobile, isSearchAnimationDone]);
 
   // Animation effect for searchbar open/close (box appears early in expand)
@@ -5815,6 +5824,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   };
 
   const handleClearSearch = () => {
+    if (searchHoverCloseTimeoutRef.current != null) {
+      clearTimeout(searchHoverCloseTimeoutRef.current);
+      searchHoverCloseTimeoutRef.current = null;
+    }
     setSearchValue('');
     setSearchResults([]);
     masterSearchResultsRef.current = [];
@@ -5836,6 +5849,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   };
 
   const closeSearchBar = () => {
+    if (searchHoverCloseTimeoutRef.current != null) {
+      clearTimeout(searchHoverCloseTimeoutRef.current);
+      searchHoverCloseTimeoutRef.current = null;
+    }
     setIsSearchActive(false);
     setSearchResults([]);
     masterSearchResultsRef.current = [];
@@ -5861,6 +5878,66 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     setShowFilterDropdown(false);
   };
 
+  const clearSearchHoverCloseTimer = useCallback(() => {
+    if (searchHoverCloseTimeoutRef.current != null) {
+      clearTimeout(searchHoverCloseTimeoutRef.current);
+      searchHoverCloseTimeoutRef.current = null;
+    }
+  }, []);
+
+  const scheduleSearchHoverClose = useCallback(() => {
+    clearSearchHoverCloseTimer();
+    // Only auto-close on hover-away when idle (no query, filters, or in-flight search)
+    if (
+      !showFilterDropdown &&
+      !searchValue.trim() &&
+      searchResults.length === 0 &&
+      !isSearching &&
+      !isAdvancedSearching &&
+      !hasAppliedFilters
+    ) {
+      searchHoverCloseTimeoutRef.current = setTimeout(() => {
+        searchHoverCloseTimeoutRef.current = null;
+        if (!isMouseOverSearchRef.current) {
+          setIsSearchActive(false);
+        }
+      }, 280);
+    }
+  }, [
+    clearSearchHoverCloseTimer,
+    showFilterDropdown,
+    searchValue,
+    searchResults.length,
+    isSearching,
+    isAdvancedSearching,
+    hasAppliedFilters,
+  ]);
+
+  const handleDesktopSearchMouseEnter = useCallback(() => {
+    isMouseOverSearchRef.current = true;
+    clearSearchHoverCloseTimer();
+    setIsSearchActive(true);
+    setTimeout(() => searchInputRef.current?.focus(), 100);
+  }, [clearSearchHoverCloseTimer]);
+
+  const handleDesktopSearchMouseLeave = useCallback(() => {
+    isMouseOverSearchRef.current = false;
+    scheduleSearchHoverClose();
+  }, [scheduleSearchHoverClose]);
+
+  const handleDesktopSearchDropdownMouseEnter = useCallback(() => {
+    isMouseOverSearchRef.current = true;
+    clearSearchHoverCloseTimer();
+  }, [clearSearchHoverCloseTimer]);
+
+  const handleDesktopSearchDropdownMouseLeave = useCallback(() => {
+    isMouseOverSearchRef.current = false;
+    scheduleSearchHoverClose();
+  }, [scheduleSearchHoverClose]);
+
+  useEffect(() => {
+    return () => clearSearchHoverCloseTimer();
+  }, [clearSearchHoverCloseTimer]);
 
   const handleNotificationClick = () => {
     const newShowState = !showNotifications;
@@ -7228,23 +7305,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             style={{
               background: 'transparent'
             }}
-            onMouseEnter={!isMobile ? () => {
-              isMouseOverSearchRef.current = true;
-              setIsSearchActive(true);
-              setTimeout(() => searchInputRef.current?.focus(), 100);
-            } : undefined}
-            onMouseLeave={!isMobile ? () => {
-              isMouseOverSearchRef.current = false;
-              // Only close on mouse leave if filter dropdown is not open, no search value/results, and not searching
-              if (!showFilterDropdown && !searchValue.trim() && searchResults.length === 0 && !isSearching) {
-                setTimeout(() => {
-                  // Double check that mouse is still not over search area
-                  if (!isMouseOverSearchRef.current) {
-                    setIsSearchActive(false);
-                  }
-                }, 300); // Longer delay to prevent accidental closures
-              }
-            } : undefined}
+            onMouseEnter={!isMobile ? handleDesktopSearchMouseEnter : undefined}
+            onMouseLeave={!isMobile ? handleDesktopSearchMouseLeave : undefined}
           >
             <div
               className={`relative flex items-center rounded-full transition-all duration-[700ms] ease-in-out ${isSearchActive ? 'w-full overflow-hidden bg-white dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-600 shadow-md' : `w-12 min-w-12 md:w-48 md:min-w-48 overflow-visible ${isMobile ? 'min-h-[48px] bg-transparent border-0' : 'md:bg-white dark:md:bg-gray-800 md:border-2 md:border-gray-200 dark:md:border-gray-600 md:shadow-md'}`}`}
@@ -7421,11 +7483,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               </div>
             )}
             {/* Search Results / Recent items - on top of white overlay (z-[10000] > overlay z-[49]) */}
-            <div className="fixed z-[10000] flex gap-4" style={{
-              top: searchDropdownStyle.top,
-              left: searchDropdownStyle.left,
-              zIndex: 10000,
-            }}>
+            <div
+              className={`fixed z-[10000] flex gap-4 pointer-events-auto ${!isMobile ? '-mt-1.5 pt-1.5' : ''}`}
+              style={{
+                top: searchDropdownStyle.top,
+                left: searchDropdownStyle.left,
+                zIndex: 10000,
+              }}
+            >
             {/* Search Results - show when there's a search value, or filters applied */}
             {(searchValue.trim() || isAdvancedSearching || hasAppliedFilters) ? (
               <div
@@ -7435,12 +7500,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   width: searchDropdownStyle.width,
                   zIndex: 10000,
                 }}
-                onMouseEnter={() => {
-                  isMouseOverSearchRef.current = true;
-                }}
-                onMouseLeave={() => {
-                  isMouseOverSearchRef.current = false;
-                }}
+                onMouseEnter={handleDesktopSearchDropdownMouseEnter}
+                onMouseLeave={handleDesktopSearchDropdownMouseLeave}
               >
                 {isSearching || isAdvancedSearching ? (
                   <div className="p-4 text-center text-base-content/70">
@@ -7597,8 +7658,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   width: searchDropdownStyle.width,
                   zIndex: 10000,
                 }}
-                onMouseEnter={() => { isMouseOverSearchRef.current = true; }}
-                onMouseLeave={() => { isMouseOverSearchRef.current = false; }}
+                onMouseEnter={handleDesktopSearchDropdownMouseEnter}
+                onMouseLeave={handleDesktopSearchDropdownMouseLeave}
               >
                 <div className="p-4 space-y-4">
                   {(getRecentSearches().length > 0 || getRecentLeads().length > 0) ? (
@@ -7662,12 +7723,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               <div
                 ref={filterDropdownRef}
                 className="bg-base-100 rounded-xl shadow-xl border border-base-300 p-6 animate-fadeInUp min-w-80 filter-dropdown"
-                onMouseEnter={() => {
-                  isMouseOverSearchRef.current = true;
-                }}
-                onMouseLeave={() => {
-                  isMouseOverSearchRef.current = false;
-                }}
+                onMouseEnter={handleDesktopSearchDropdownMouseEnter}
+                onMouseLeave={handleDesktopSearchDropdownMouseLeave}
               >
                 <div className="mb-4 flex justify-between items-start">
                   <div>

@@ -5264,8 +5264,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div>
 
-        {/* Past Meetings icon button - fixed on right edge of screen */}
-        <div className="fixed right-0 top-1/2 -translate-y-1/2 z-30">
+        {/* Past Meetings icon button - fixed on right edge; on mobile just above bottom tabs */}
+        <div className="fixed right-0 bottom-24 md:bottom-auto md:top-1/2 md:-translate-y-1/2 z-30">
           <button
             type="button"
             onClick={() => setShowPastMeetingsPanel(!showPastMeetingsPanel)}

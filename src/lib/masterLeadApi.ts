@@ -871,6 +871,19 @@ export const fetchLegacyMasterLead = async (
       });
     }
 
+    // Fallback: for leads with no main=true contact, use first contact from lead_leadcontact (same idea as ContactInfoTab which assigns by contact_id)
+    if (leadContacts && leadContacts.length > 0) {
+      allLeadIds.forEach((leadId: number) => {
+        if (!legacyMainContactsMap.has(leadId)) {
+          const first = leadContacts.find((lc: any) => Number(lc.lead_id) === leadId);
+          if (first && first.contact_id) {
+            legacyMainContactsMap.set(leadId, first.contact_id);
+            console.log('🔍 Fallback main contact for lead', leadId, '-> contact', first.contact_id);
+          }
+        }
+      });
+    }
+
     const contractsMap = new Map<string, ContractData>();
 
     // Create reverse map: contact_id -> lead_id for legacy leads
@@ -928,15 +941,18 @@ export const fetchLegacyMasterLead = async (
 
         console.log('🔍 Legacy contract:', lc.id, 'for lead:', leadId, 'contact_id:', lc.contact_id, 'mainContactId:', mainContactId);
 
-        // Verify this is a main contact contract
-        if (mainContactId && mainContactId === lc.contact_id) {
+        // Assign when this row's contact_id matches the lead's main (or fallback) contact (same as ContactInfoTab)
+        if (mainContactId != null && mainContactId === lc.contact_id) {
           const leadIdNum = Number(lc.lead_id);
           const signedDate = signedDatesMap.get(leadIdNum);
+          const hasSignedContract = lc.signed_contract_html &&
+            lc.signed_contract_html.trim() !== '' &&
+            lc.signed_contract_html !== '\\N';
+          // When contract has signed content but no stage 60 date, still treat as signed (same as ContactInfoTab)
+          const effectiveSignedAt = signedDate ?? (hasSignedContract ? new Date().toISOString() : undefined);
 
-          // Check if we already have a contract for this lead
           const existing = contractsMap.get(leadId);
 
-          // Prefer legacy contracts if they exist, or add if no contract exists
           if (!existing || existing.isLegacy === false) {
             console.log('🔍 ✅ Assigning legacy contract', lc.id, 'to lead', leadId);
             contractsMap.set(leadId, {
@@ -945,7 +961,7 @@ export const fetchLegacyMasterLead = async (
               contractHtml: lc.contract_html,
               signedContractHtml: lc.signed_contract_html,
               public_token: lc.public_token,
-              signed_at: signedDate
+              signed_at: effectiveSignedAt
             });
           } else {
             console.log('🔍 ⚠️ Legacy contract already exists for lead', leadId, '- keeping existing');
