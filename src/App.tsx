@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo, Suspense } from 'react';
 import { BrowserRouter as Router } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './lib/queryClient';
-import AppRoutes from './AppRoutes';
 import ScrollRestoration from './components/ScrollRestoration';
 import { MsalProvider, useMsal } from '@azure/msal-react';
 import { PublicClientApplication } from '@azure/msal-browser';
@@ -21,77 +20,84 @@ import MailboxReconnectModal from './components/MailboxReconnectModal';
 import PWAUpdateNotification from './components/PWAUpdateNotification';
 import MobileBottomNav from './components/MobileBottomNav';
 import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIcon, UserGroupIcon, DocumentArrowUpIcon } from '@heroicons/react/24/outline';
-import Dashboard from './components/Dashboard';
-import Clients from './components/Clients';
-import LeadSearchPage from './pages/LeadSearchPage';
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
-import ExpertPage from './components/ExpertPage';
-import CalendarPage from './components/CalendarPage';
-import WaitingForPriceOfferPage from './components/WaitingForPriceOfferPage';
-import CreateNewLead from './components/CreateNewLead';
-import LoginPage from './components/LoginPage';
 import ProtectedRoute from './components/ProtectedRoute';
-import OutlookCalendarPage from './components/OutlookCalendarPage';
-import PipelinePage from './components/PipelinePage';
-import NewCasesPage from './pages/NewCasesPage';
-import NewHandlerCasesPage from './pages/NewHandlerCasesPage';
-import HandlerManagementPage from './pages/HandlerManagementPage';
-import MyCasesPage from './pages/MyCasesPage';
-import RetainerHandlerCasesPage from './pages/RetainerHandlerCasesPage';
-import CaseManagerPageNew from './components/CaseManagerPageNew';
-import CaseDetailsPage from './pages/CaseDetailsPage';
-import DoubleLeadsPage from './pages/DoubleLeadsPage';
-import AdminPage from './components/admin/AdminPage';
-import TeamsPage from './pages/TeamsPage';
-import WhatsAppPage from './pages/WhatsAppPage';
-import WhatsAppLeadsPage from './pages/WhatsAppLeadsPage';
-import EmailThreadLeadPage from './pages/EmailThreadLeadPage';
 import WhatsAppModal from './components/WhatsAppModal';
-import CollectionPage from './pages/CollectionPage';
-import MyPerformancePage from './pages/MyPerformancePage';
-import ProformaViewPage from './pages/ProformaViewPage';
-import ProformaLegacyViewPage from './pages/ProformaLegacyViewPage';
-import ProformaLegacyCreatePage from './pages/ProformaLegacyCreatePage';
-import ReportsPage from './pages/ReportsPage';
-import CollectionFinancesReport from './pages/CollectionFinancesReport';
-import CollectionDueReportPage from './pages/CollectionDueReportPage';
-import CloserSuperPipelinePage from './pages/CloserSuperPipelinePage';
-import SalesContributionPage from './pages/SalesContributionPage';
-import EditContractsPage from './pages/EditContractsPage';
-import ReassignLeadsPage from './pages/ReassignLeadsPage';
-import EmployeeUnavailabilitiesReport from './pages/EmployeeUnavailabilitiesReport';
-import EmployeeSalariesReport from './pages/EmployeeSalariesReport';
-import EmployeeInfoReport from './pages/EmployeeInfoReport';
-import LeadsReportPage from './pages/LeadsReportPage';
-import ExternalUserAccessLogsPage from './pages/ExternalUserAccessLogsPage';
-import MasterLeadPage from './components/MasterLeadPage';
-import SettingsPage from './pages/SettingsPage';
-import TimelinePage from './components/TimelinePage';
-import HistoryPage from './components/HistoryPage';
-import ContractPage from './components/ContractPage';
-import PublicContractView from './pages/PublicContractView';
-import PublicLegacyContractView from './pages/PublicLegacyContractView';
-import PaymentPage from './pages/PaymentPage';
-import CTIPopupPage from './pages/CTIPopupPage';
 import CTIPopupModal from './components/CTIPopupModal';
-import ProformaCreatePage from './pages/ProformaCreatePage';
-import AboutPage from './pages/AboutPage';
-import DocumentsPage from './pages/DocumentsPage';
-import ContactPage from './pages/ContactPage';
-import HowItWorksPage from './pages/HowItWorksPage';
-import MeetingSummaryTestPage from './pages/MeetingSummaryTestPage';
-import SimpleTestPage from './pages/SimpleTestPage';
-import DebugTestPage from './pages/DebugTestPage';
-import EmployeePerformancePage from './pages/EmployeePerformancePage';
 import RMQMessagesPage from './pages/RMQMessagesPage';
-import CallsLedgerPage from './pages/CallsLedgerPage';
-import SchedulerToolPage from './pages/SchedulerToolPage';
-import SignedSalesReportPage from './pages/SignedSalesReportPage';
-import MyProfilePage from './pages/MyProfilePage';
-import PublicProfilePage from './pages/PublicProfilePage';
-import BusinessCardPage from './pages/BusinessCardPage';
+import PageLoader from './components/PageLoader';
+import {
+  LazyAboutPage,
+  LazyAdminPage,
+  LazyBusinessCardPage,
+  LazyCalendarPage,
+  LazyCallsLedgerPage,
+  LazyCaseDetailsPage,
+  LazyCaseManagerPageNew,
+  LazyClients,
+  LazyCloserSuperPipelinePage,
+  LazyCollectionDueReportPage,
+  LazyCollectionFinancesReport,
+  LazyCollectionPage,
+  LazyContactPage,
+  LazyContractPage,
+  LazyCreateNewLead,
+  LazyCTIPopupPage,
+  LazyDashboard,
+  LazyDebugTestPage,
+  LazyDocumentsPage,
+  LazyDoubleLeadsPage,
+  LazyEditContractsPage,
+  LazyEmailThreadLeadPage,
+  LazyEmployeeInfoReport,
+  LazyEmployeePerformancePage,
+  LazyEmployeeSalariesReport,
+  LazyEmployeeUnavailabilitiesReport,
+  LazyExpertPage,
+  LazyExternalUserAccessLogsPage,
+  LazyHandlerManagementPage,
+  LazyHistoryPage,
+  LazyHowItWorksPage,
+  LazyLeadSearchPage,
+  LazyLeadsReportPage,
+  LazyLoginPage,
+  LazyMasterLeadPage,
+  LazyMeetingSummaryTestPage,
+  LazyMyCasesPage,
+  LazyMyPerformancePage,
+  LazyMyProfilePage,
+  LazyNewCasesPage,
+  LazyNewHandlerCasesPage,
+  LazyOutlookCalendarPage,
+  LazyPaymentPage,
+  LazyPipelinePage,
+  LazyProformaCreatePage,
+  LazyProformaLegacyCreatePage,
+  LazyProformaLegacyViewPage,
+  LazyProformaViewPage,
+  LazyPublicContractView,
+  LazyPublicLegacyContractView,
+  LazyPublicProfilePage,
+  LazyReassignLeadsPage,
+  LazyReportsPage,
+  LazyRetainerHandlerCasesPage,
+  LazySalesContributionPage,
+  LazySchedulerToolPage,
+  LazySettingsPage,
+  LazySignedSalesReportPage,
+  LazySimpleTestPage,
+  LazyTeamsPage,
+  LazyTimelinePage,
+  LazyWaitingForPriceOfferPage,
+  LazyWhatsAppLeadsPage,
+  LazyWhatsAppPage,
+} from './routes/lazyPages';
 import { AuthProvider, useAuthContext } from './contexts/AuthContext';
 import { captureRefreshPathnameOnce } from './hooks/usePersistedState';
+
+function RouteSuspense({ children }: { children: React.ReactNode }) {
+  return <Suspense fallback={<PageLoader />}>{children}</Suspense>;
+}
 
 const AppContentInner: React.FC = () => {
   const { accounts, instance } = useMsal();
@@ -544,16 +550,16 @@ const AppContentInner: React.FC = () => {
 
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/about" element={<AboutPage />} />
-      <Route path="/contact" element={<ContactPage />} />
-      <Route path="/how-it-works" element={<HowItWorksPage />} />
-      <Route path="/public-contract/:contractId/:token" element={<PublicContractView />} />
-      <Route path="/public-legacy-contract/:contractId/:token" element={<PublicLegacyContractView />} />
-      <Route path="/payment/:token" element={<PaymentPage />} />
-      <Route path="/cti/pop" element={<CTIPopupPage />} />
-      <Route path="/my-profile/:employeeId" element={<PublicProfilePage />} />
-      <Route path="/business-card/:employeeId" element={<BusinessCardPage />} />
+      <Route path="/login" element={<RouteSuspense><LazyLoginPage /></RouteSuspense>} />
+      <Route path="/about" element={<RouteSuspense><LazyAboutPage /></RouteSuspense>} />
+      <Route path="/contact" element={<RouteSuspense><LazyContactPage /></RouteSuspense>} />
+      <Route path="/how-it-works" element={<RouteSuspense><LazyHowItWorksPage /></RouteSuspense>} />
+      <Route path="/public-contract/:contractId/:token" element={<RouteSuspense><LazyPublicContractView /></RouteSuspense>} />
+      <Route path="/public-legacy-contract/:contractId/:token" element={<RouteSuspense><LazyPublicLegacyContractView /></RouteSuspense>} />
+      <Route path="/payment/:token" element={<RouteSuspense><LazyPaymentPage /></RouteSuspense>} />
+      <Route path="/cti/pop" element={<RouteSuspense><LazyCTIPopupPage /></RouteSuspense>} />
+      <Route path="/my-profile/:employeeId" element={<RouteSuspense><LazyPublicProfilePage /></RouteSuspense>} />
+      <Route path="/business-card/:employeeId" element={<RouteSuspense><LazyBusinessCardPage /></RouteSuspense>} />
       <Route path="/documents" element={
         <div className="flex h-screen bg-white">
           <div className="flex-1 flex flex-col overflow-hidden">
@@ -664,7 +670,9 @@ const AppContentInner: React.FC = () => {
               </div>
             </div>
             <main className="flex-1 overflow-x-hidden overflow-y-auto bg-gradient-to-br from-blue-800 via-blue-900 to-blue-950" style={{ background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 50%, #1e3a8a 100%)' }}>
-              <DocumentsPage />
+              <RouteSuspense>
+                <LazyDocumentsPage />
+              </RouteSuspense>
             </main>
           </div>
         </div>
@@ -714,7 +722,9 @@ const AppContentInner: React.FC = () => {
                 isMenuOpen={isSidebarOpen}
               />
 <main className="flex-1 overflow-x-hidden overflow-y-auto bg-white pt-8 md:pt-6">
-              <CallsLedgerPage />
+              <RouteSuspense>
+                <LazyCallsLedgerPage />
+              </RouteSuspense>
               </main>
             </div>
             <RMQMessagesPage
@@ -742,7 +752,9 @@ const AppContentInner: React.FC = () => {
                 isMenuOpen={isSidebarOpen}
               />
               <main className="flex-1 overflow-x-hidden overflow-y-auto bg-white pt-8 md:pt-6">
-                <MyProfilePage />
+                <RouteSuspense>
+                  <LazyMyProfilePage />
+                </RouteSuspense>
               </main>
             </div>
             <AIChatWindow
@@ -834,59 +846,59 @@ const AppContentInner: React.FC = () => {
                 />
                 <main className={`flex-1 overflow-x-hidden overflow-y-auto pt-8 md:pt-6 ${isReportsPage ? 'w-full' : ''} ${showBottomNav ? 'main-with-bottom-nav-padding' : ''}`}>
                   <Routes>
-                    <Route path="/" element={<Dashboard />} />
-                    <Route path="/clients" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} />} />
-                    <Route path="/clients/:lead_number/contract" element={<ContractPage key="contract-lead" />} />
-                    <Route path="/contract/:contractId" element={<ContractPage key="contract-id" />} />
-                    <Route path="/clients/:lead_number/timeline" element={<TimelinePage />} />
-                    <Route path="/clients/:lead_number/history" element={<HistoryPage />} />
-                    <Route path="/clients/:lead_number/master" element={<MasterLeadPage />} />
-                    <Route path="/clients/:lead_number/*" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} />} />
-                    <Route path="/calendar" element={<CalendarPage />} />
-                    <Route path="/outlook-calendar" element={<OutlookCalendarPage />} />
-                    <Route path="/waiting-for-price-offer" element={<WaitingForPriceOfferPage />} />
-                    <Route path="/expert" element={<ExpertPage />} />
-                    <Route path="/create" element={<CreateNewLead />} />
-                    <Route path="/lead-search" element={<LeadSearchPage />} />
-                    <Route path="/pipeline" element={<PipelinePage />} />
-                    <Route path="/new-cases" element={<NewCasesPage />} />
-                    <Route path="/new-handler-cases" element={<NewHandlerCasesPage />} />
-                    <Route path="/handler-management" element={<HandlerManagementPage />} />
-                    <Route path="/my-cases" element={<MyCasesPage />} />
-                    <Route path="/retainer-handler-cases" element={<RetainerHandlerCasesPage />} />
-                    <Route path="/case-manager" element={<CaseManagerPageNew />} />
-                    <Route path="/case-manager/:caseId" element={<CaseDetailsPage />} />
-                    <Route path="/double-leads" element={<DoubleLeadsPage />} />
-                    <Route path="/admin" element={<AdminPage />} />
-                    <Route path="/teams" element={<TeamsPage />} />
-                    <Route path="/employee-performance" element={<EmployeePerformancePage />} />
-                    <Route path="/scheduler-tool" element={<SchedulerToolPage />} />
-                    <Route path="/whatsapp" element={<WhatsAppPage />} />
-                    <Route path="/whatsapp-leads" element={<WhatsAppLeadsPage />} />
-                    <Route path="/email-leads" element={<EmailThreadLeadPage />} />
-                    <Route path="/collection" element={<CollectionPage />} />
-                    <Route path="/performance" element={<MyPerformancePage />} />
-                    <Route path="/proforma/:id" element={<ProformaViewPage />} />
-                    <Route path="/proforma/create/:paymentId" element={<ProformaCreatePage />} />
-                    <Route path="/proforma-legacy/:id" element={<ProformaLegacyViewPage />} />
-                    <Route path="/proforma-legacy/create/:leadId" element={<ProformaLegacyCreatePage />} />
-                    <Route path="/reports" element={<ReportsPage />} />
-                    <Route path="/reports/collection-finances" element={<CollectionFinancesReport />} />
-                    <Route path="/reports/collection-due" element={<CollectionDueReportPage />} />
-                    <Route path="/reports/closer-super-pipeline" element={<CloserSuperPipelinePage />} />
-                    <Route path="/reports/sales-contribution" element={<SalesContributionPage />} />
-                    <Route path="/reports/edit-contracts" element={<EditContractsPage />} />
-                    <Route path="/reports/reassign-leads" element={<ReassignLeadsPage />} />
-                    <Route path="/reports/employee-unavailabilities" element={<EmployeeUnavailabilitiesReport />} />
-                    <Route path="/reports/employee-salaries" element={<EmployeeSalariesReport />} />
-                    <Route path="/reports/employee-info" element={<EmployeeInfoReport />} />
-                    <Route path="/reports/leads-report" element={<LeadsReportPage />} />
-                    <Route path="/access-logs" element={<ExternalUserAccessLogsPage />} />
-                    <Route path="/sales/signed" element={<SignedSalesReportPage />} />
-                    <Route path="/settings" element={<SettingsPage />} />
-                    <Route path="/test-meeting-summary" element={<MeetingSummaryTestPage />} />
-                    <Route path="/simple-test" element={<SimpleTestPage />} />
-                    <Route path="/debug-test" element={<DebugTestPage />} />
+                    <Route path="/" element={<RouteSuspense><LazyDashboard /></RouteSuspense>} />
+                    <Route path="/clients" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} /></RouteSuspense>} />
+                    <Route path="/clients/:lead_number/contract" element={<RouteSuspense><LazyContractPage key="contract-lead" /></RouteSuspense>} />
+                    <Route path="/contract/:contractId" element={<RouteSuspense><LazyContractPage key="contract-id" /></RouteSuspense>} />
+                    <Route path="/clients/:lead_number/timeline" element={<RouteSuspense><LazyTimelinePage /></RouteSuspense>} />
+                    <Route path="/clients/:lead_number/history" element={<RouteSuspense><LazyHistoryPage /></RouteSuspense>} />
+                    <Route path="/clients/:lead_number/master" element={<RouteSuspense><LazyMasterLeadPage /></RouteSuspense>} />
+                    <Route path="/clients/:lead_number/*" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} /></RouteSuspense>} />
+                    <Route path="/calendar" element={<RouteSuspense><LazyCalendarPage /></RouteSuspense>} />
+                    <Route path="/outlook-calendar" element={<RouteSuspense><LazyOutlookCalendarPage /></RouteSuspense>} />
+                    <Route path="/waiting-for-price-offer" element={<RouteSuspense><LazyWaitingForPriceOfferPage /></RouteSuspense>} />
+                    <Route path="/expert" element={<RouteSuspense><LazyExpertPage /></RouteSuspense>} />
+                    <Route path="/create" element={<RouteSuspense><LazyCreateNewLead /></RouteSuspense>} />
+                    <Route path="/lead-search" element={<RouteSuspense><LazyLeadSearchPage /></RouteSuspense>} />
+                    <Route path="/pipeline" element={<RouteSuspense><LazyPipelinePage /></RouteSuspense>} />
+                    <Route path="/new-cases" element={<RouteSuspense><LazyNewCasesPage /></RouteSuspense>} />
+                    <Route path="/new-handler-cases" element={<RouteSuspense><LazyNewHandlerCasesPage /></RouteSuspense>} />
+                    <Route path="/handler-management" element={<RouteSuspense><LazyHandlerManagementPage /></RouteSuspense>} />
+                    <Route path="/my-cases" element={<RouteSuspense><LazyMyCasesPage /></RouteSuspense>} />
+                    <Route path="/retainer-handler-cases" element={<RouteSuspense><LazyRetainerHandlerCasesPage /></RouteSuspense>} />
+                    <Route path="/case-manager" element={<RouteSuspense><LazyCaseManagerPageNew /></RouteSuspense>} />
+                    <Route path="/case-manager/:caseId" element={<RouteSuspense><LazyCaseDetailsPage /></RouteSuspense>} />
+                    <Route path="/double-leads" element={<RouteSuspense><LazyDoubleLeadsPage /></RouteSuspense>} />
+                    <Route path="/admin" element={<RouteSuspense><LazyAdminPage /></RouteSuspense>} />
+                    <Route path="/teams" element={<RouteSuspense><LazyTeamsPage /></RouteSuspense>} />
+                    <Route path="/employee-performance" element={<RouteSuspense><LazyEmployeePerformancePage /></RouteSuspense>} />
+                    <Route path="/scheduler-tool" element={<RouteSuspense><LazySchedulerToolPage /></RouteSuspense>} />
+                    <Route path="/whatsapp" element={<RouteSuspense><LazyWhatsAppPage /></RouteSuspense>} />
+                    <Route path="/whatsapp-leads" element={<RouteSuspense><LazyWhatsAppLeadsPage /></RouteSuspense>} />
+                    <Route path="/email-leads" element={<RouteSuspense><LazyEmailThreadLeadPage /></RouteSuspense>} />
+                    <Route path="/collection" element={<RouteSuspense><LazyCollectionPage /></RouteSuspense>} />
+                    <Route path="/performance" element={<RouteSuspense><LazyMyPerformancePage /></RouteSuspense>} />
+                    <Route path="/proforma/:id" element={<RouteSuspense><LazyProformaViewPage /></RouteSuspense>} />
+                    <Route path="/proforma/create/:paymentId" element={<RouteSuspense><LazyProformaCreatePage /></RouteSuspense>} />
+                    <Route path="/proforma-legacy/:id" element={<RouteSuspense><LazyProformaLegacyViewPage /></RouteSuspense>} />
+                    <Route path="/proforma-legacy/create/:leadId" element={<RouteSuspense><LazyProformaLegacyCreatePage /></RouteSuspense>} />
+                    <Route path="/reports" element={<RouteSuspense><LazyReportsPage /></RouteSuspense>} />
+                    <Route path="/reports/collection-finances" element={<RouteSuspense><LazyCollectionFinancesReport /></RouteSuspense>} />
+                    <Route path="/reports/collection-due" element={<RouteSuspense><LazyCollectionDueReportPage /></RouteSuspense>} />
+                    <Route path="/reports/closer-super-pipeline" element={<RouteSuspense><LazyCloserSuperPipelinePage /></RouteSuspense>} />
+                    <Route path="/reports/sales-contribution" element={<RouteSuspense><LazySalesContributionPage /></RouteSuspense>} />
+                    <Route path="/reports/edit-contracts" element={<RouteSuspense><LazyEditContractsPage /></RouteSuspense>} />
+                    <Route path="/reports/reassign-leads" element={<RouteSuspense><LazyReassignLeadsPage /></RouteSuspense>} />
+                    <Route path="/reports/employee-unavailabilities" element={<RouteSuspense><LazyEmployeeUnavailabilitiesReport /></RouteSuspense>} />
+                    <Route path="/reports/employee-salaries" element={<RouteSuspense><LazyEmployeeSalariesReport /></RouteSuspense>} />
+                    <Route path="/reports/employee-info" element={<RouteSuspense><LazyEmployeeInfoReport /></RouteSuspense>} />
+                    <Route path="/reports/leads-report" element={<RouteSuspense><LazyLeadsReportPage /></RouteSuspense>} />
+                    <Route path="/access-logs" element={<RouteSuspense><LazyExternalUserAccessLogsPage /></RouteSuspense>} />
+                    <Route path="/sales/signed" element={<RouteSuspense><LazySignedSalesReportPage /></RouteSuspense>} />
+                    <Route path="/settings" element={<RouteSuspense><LazySettingsPage /></RouteSuspense>} />
+                    <Route path="/test-meeting-summary" element={<RouteSuspense><LazyMeetingSummaryTestPage /></RouteSuspense>} />
+                    <Route path="/simple-test" element={<RouteSuspense><LazySimpleTestPage /></RouteSuspense>} />
+                    <Route path="/debug-test" element={<RouteSuspense><LazyDebugTestPage /></RouteSuspense>} />
                   </Routes>
                 </main>
               </div>

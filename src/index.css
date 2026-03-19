@@ -216,7 +216,7 @@ html,
 /* Ensure main content can scroll past bottom nav on mobile - nothing hidden behind it */
 @media (max-width: 767px) {
   .main-with-bottom-nav-padding {
-    padding-bottom: max(5.5rem, calc(5rem + env(safe-area-inset-bottom, 0px)));
+    padding-bottom: max(4.25rem, calc(3.75rem + env(safe-area-inset-bottom, 0px)));
   }
 }
 

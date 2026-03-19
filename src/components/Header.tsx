@@ -3,6 +3,7 @@ import { useLocation, Link, useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { searchLeads } from '../lib/legacyLeadsApi';
 import { supabase } from '../lib/supabase';
+import { readBootstrappedDisplayName } from '../lib/authBootstrap';
 import type { Lead } from '../lib/supabase';
 import type { CombinedLead } from '../lib/legacyLeadsApi';
 import { generateSearchVariants, buildMultilingualSearchConditions, transliterateHebrew, transliterateArabic, containsHebrew, containsArabic } from '../lib/transliteration';
@@ -175,11 +176,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const searchDropdownRef = useRef<HTMLDivElement>(null);
   const filterDropdownRef = useRef<HTMLDivElement>(null);
   const { instance } = useMsal();
-  const { userFullName: authUserFullName, userInitials: authUserInitials } = useAuthContext();
+  const {
+    userFullName: authUserFullName,
+    userInitials: authUserInitials,
+    profilePhotoUrl: authProfilePhotoUrl,
+    sessionRefreshNonce,
+  } = useAuthContext();
   const [isMsalLoading, setIsMsalLoading] = useState(false);
   const [userAccount, setUserAccount] = useState<any>(null);
   const [isMsalInitialized, setIsMsalInitialized] = useState(false);
-  const [userFullName, setUserFullName] = useState<string | null>(null);
+  const [userFullName, setUserFullName] = useState<string | null>(() =>
+    typeof window !== 'undefined' ? readBootstrappedDisplayName() : null
+  );
   const [showFilterDropdown, setShowFilterDropdown] = useState(false);
   const [advancedFilters, setAdvancedFilters] = useState({
     fromDate: '',
@@ -208,6 +216,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
   const [hasAppliedFilters, setHasAppliedFilters] = useState(false);
   const [currentUserEmployee, setCurrentUserEmployee] = useState<any>(null);
+  /** Prefer live employee row; fall back to auth display cache so avatar matches name on first paint after refresh */
+  const resolvedHeaderPhotoUrl =
+    [currentUserEmployee?.photo_url, currentUserEmployee?.photo, authProfilePhotoUrl].find(
+      (u) => typeof u === 'string' && u.trim() !== ''
+    )?.trim() ?? null;
   const [isEmployeeModalOpen, setIsEmployeeModalOpen] = useState(false);
   const [authUserId, setAuthUserId] = useState<string | null>(null);
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
@@ -4370,7 +4383,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     initializeMsal();
   }, [instance]);
 
-  // Listen for auth changes so we refetch user/employee data when a different user signs in
+  // AuthContext bumps sessionRefreshNonce on token/visibility refresh — refetch header profile once (no duplicate listeners)
+  const lastHeaderNonceRef = useRef<number | null>(null);
+
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
       setAuthUserId(user?.id ?? null);
@@ -4382,17 +4397,26 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   }, []);
 
   useEffect(() => {
+    const skipSessionCache =
+      lastHeaderNonceRef.current !== null && sessionRefreshNonce !== lastHeaderNonceRef.current;
+    lastHeaderNonceRef.current = sessionRefreshNonce;
+
     // Fetch the current user's name and employee data from Supabase
     const fetchUserData = async () => {
-      // Prefer getSession() first (reads storage); on mobile/deployed getUser() can be null before session is restored
+      // Fast path: session from client (AuthContext already refreshed on visibility when needed)
       let user = (await supabase.auth.getSession()).data?.session?.user ?? null;
       if (!user) {
         user = (await supabase.auth.getUser()).data?.user ?? null;
       }
       if (!user) {
-        // Retry getSession after short delays so we don't clear name on first paint when session isn't ready yet
-        for (const delayMs of [400, 1200]) {
-          await new Promise(r => setTimeout(r, delayMs));
+        try {
+          const { data: { session } } = await supabase.auth.refreshSession();
+          if (session?.user) user = session.user;
+        } catch (_) {}
+      }
+      if (!user) {
+        for (const delayMs of [50, 200]) {
+          await new Promise((r) => setTimeout(r, delayMs));
           const session = (await supabase.auth.getSession()).data?.session;
           if (session?.user) {
             user = session.user;
@@ -4409,16 +4433,22 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         return;
       }
 
-      // Per-user cache so switching employees shows the correct profile
       const cacheKey = `header_userData_${user.id}`;
       const cacheTimestampKey = `header_userData_${user.id}_timestamp`;
       const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+
+      if (skipSessionCache) {
+        try {
+          sessionStorage.removeItem(cacheKey);
+          sessionStorage.removeItem(cacheTimestampKey);
+        } catch (_) {}
+      }
 
       try {
         const cachedData = sessionStorage.getItem(cacheKey);
         const cachedTimestamp = sessionStorage.getItem(cacheTimestampKey);
 
-        if (cachedData && cachedTimestamp) {
+        if (!skipSessionCache && cachedData && cachedTimestamp) {
           const age = Date.now() - parseInt(cachedTimestamp, 10);
           if (age < CACHE_DURATION) {
             const data = JSON.parse(cachedData);
@@ -4695,7 +4725,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
     };
     fetchUserData();
-  }, [authUserId]);
+  }, [authUserId, sessionRefreshNonce]);
 
   // Fetch RMQ messages for notifications
   const fetchRmqMessages = async () => {
@@ -6877,17 +6907,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               aria-expanded={showProfileDropdown}
               aria-haspopup="true"
             >
-              {(currentUserEmployee?.photo_url || currentUserEmployee?.photo) ? (
+              {resolvedHeaderPhotoUrl ? (
                 <>
                   <span
                     className="w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] flex-shrink-0 rounded-full bg-base-300 block bg-no-repeat bg-center"
                     style={{
-                      backgroundImage: `url(${currentUserEmployee.photo_url || currentUserEmployee.photo})`,
+                      backgroundImage: `url(${resolvedHeaderPhotoUrl})`,
                       backgroundSize: 'contain',
                     }}
                   />
                   <img
-                    src={currentUserEmployee.photo_url || currentUserEmployee.photo}
+                    src={resolvedHeaderPhotoUrl}
                     alt=""
                     className="hidden"
                     onError={(e) => {
@@ -6898,7 +6928,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   />
                 </>
               ) : null}
-              <span className={`w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] flex-shrink-0 rounded-full overflow-hidden aspect-square bg-base-300 flex items-center justify-center ${(currentUserEmployee?.photo_url || currentUserEmployee?.photo) ? 'hidden' : ''}`}>
+              <span className={`w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] flex-shrink-0 rounded-full overflow-hidden aspect-square bg-base-300 flex items-center justify-center ${resolvedHeaderPhotoUrl ? 'hidden' : ''}`}>
                 {(authUserInitials || authUserFullName || userFullName) ? (
                   <span className="text-sm font-semibold text-base-content/80">
                     {(authUserInitials || (authUserFullName || userFullName || '').trim().split(/\s+/).map(n => n[0]).join('').toUpperCase().slice(0, 2)) || 'U'}
@@ -7035,17 +7065,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 aria-expanded={showProfileDropdown}
                 aria-haspopup="true"
               >
-                {(currentUserEmployee?.photo_url || currentUserEmployee?.photo) ? (
+                {resolvedHeaderPhotoUrl ? (
                   <>
                     <span
                       className="w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] flex-shrink-0 rounded-full bg-base-300 block bg-no-repeat bg-center"
                       style={{
-                        backgroundImage: `url(${currentUserEmployee.photo_url || currentUserEmployee.photo})`,
+                        backgroundImage: `url(${resolvedHeaderPhotoUrl})`,
                         backgroundSize: 'contain',
                       }}
                     />
                     <img
-                      src={currentUserEmployee.photo_url || currentUserEmployee.photo}
+                      src={resolvedHeaderPhotoUrl}
                       alt=""
                       className="hidden"
                       onError={(e) => {
@@ -7056,7 +7086,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     />
                   </>
                 ) : null}
-                <span className={`w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] flex-shrink-0 rounded-full overflow-hidden aspect-square bg-base-300 flex items-center justify-center ${(currentUserEmployee?.photo_url || currentUserEmployee?.photo) ? 'hidden' : ''}`}>
+                <span className={`w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] flex-shrink-0 rounded-full overflow-hidden aspect-square bg-base-300 flex items-center justify-center ${resolvedHeaderPhotoUrl ? 'hidden' : ''}`}>
                   {(authUserInitials || authUserFullName || userFullName) ? (
                     <span className="text-sm font-semibold text-base-content/80">
                       {(authUserInitials || (authUserFullName || userFullName || '').trim().split(/\s+/).map(n => n[0]).join('').toUpperCase().slice(0, 2)) || 'U'}
@@ -7253,11 +7283,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 </div>
                 {/* Employee profile at bottom */}
                 <div className="flex-shrink-0 px-4 py-4 pb-6 border-t border-base-300 flex items-center gap-3">
-                  {(currentUserEmployee?.photo_url || currentUserEmployee?.photo) ? (
+                  {resolvedHeaderPhotoUrl ? (
                     <span
                       className="w-12 h-12 min-w-[3rem] min-h-[3rem] flex-shrink-0 rounded-full bg-base-300 block bg-no-repeat bg-center"
                       style={{
-                        backgroundImage: `url(${currentUserEmployee.photo_url || currentUserEmployee.photo})`,
+                        backgroundImage: `url(${resolvedHeaderPhotoUrl})`,
                         backgroundSize: 'cover',
                       }}
                     />

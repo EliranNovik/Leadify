@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useLocation, useNavigate, useParams, useNavigationType } from 'react-router-dom';
 import { supabase, type Lead, isAuthError, tryRefreshThenExpire } from '../lib/supabase';
 import { getStageName, fetchStageNames, areStagesEquivalent, normalizeStageName, getStageColour } from '../lib/stageUtils';
@@ -62,16 +62,26 @@ import {
   ArrowRightIcon,
   ArchiveBoxIcon,
 } from '@heroicons/react/24/outline';
-// Import tab components directly - lazy loading was causing Sidebar/Header to load late
-import InfoTab from './client-tabs/InfoTab';
-import RolesTab from './client-tabs/RolesTab';
-import ContactInfoTab from './client-tabs/ContactInfoTab';
-import MarketingTab from './client-tabs/MarketingTab';
-import ExpertTab from './client-tabs/ExpertTab';
-import MeetingTab from './client-tabs/MeetingTab';
-import PriceOfferTab from './client-tabs/PriceOfferTab';
-import InteractionsTab from './client-tabs/InteractionsTab';
-import FinancesTab from './client-tabs/FinancesTab';
+const loadInfoTab = () => import('./client-tabs/InfoTab');
+const loadRolesTab = () => import('./client-tabs/RolesTab');
+const loadContactInfoTab = () => import('./client-tabs/ContactInfoTab');
+const loadMarketingTab = () => import('./client-tabs/MarketingTab');
+const loadExpertTab = () => import('./client-tabs/ExpertTab');
+const loadMeetingTab = () => import('./client-tabs/MeetingTab');
+const loadPriceOfferTab = () => import('./client-tabs/PriceOfferTab');
+const loadInteractionsTab = () => import('./client-tabs/InteractionsTab');
+const loadFinancesTab = () => import('./client-tabs/FinancesTab');
+
+// Keep the suspense boundary local to the tab body so Header/Sidebar never wait on tab chunks.
+const InfoTab = lazy(loadInfoTab);
+const RolesTab = lazy(loadRolesTab);
+const ContactInfoTab = lazy(loadContactInfoTab);
+const MarketingTab = lazy(loadMarketingTab);
+const ExpertTab = lazy(loadExpertTab);
+const MeetingTab = lazy(loadMeetingTab);
+const PriceOfferTab = lazy(loadPriceOfferTab);
+const InteractionsTab = lazy(loadInteractionsTab);
+const FinancesTab = lazy(loadFinancesTab);
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee, getAccessTokenWithFallback, AuthPopupBlockedError, triggerTokenRedirect } from '../lib/graph';
@@ -99,6 +109,17 @@ import { addRecentLead } from '../lib/recentSearchStorage';
 
 // Performance debugging for Clients load: in DEV, logs timings to console. Set window.__CLIENTS_PERF__ = true for Performance tab marks.
 const CLIENT_LOAD_PERF = typeof window !== 'undefined' && import.meta.env.DEV;
+const TAB_LOADERS: Record<string, () => Promise<any>> = {
+  info: loadInfoTab,
+  roles: loadRolesTab,
+  contact: loadContactInfoTab,
+  marketing: loadMarketingTab,
+  expert: loadExpertTab,
+  meeting: loadMeetingTab,
+  price: loadPriceOfferTab,
+  interactions: loadInteractionsTab,
+  finances: loadFinancesTab,
+};
 // Set window.__CLIENTS_DEBUG__ = true to show verbose console logs (handler options, sub-leads, etc.)
 const CLIENTS_DEBUG = typeof window !== 'undefined' && (window as any).__CLIENTS_DEBUG__ === true;
 function clientsPerfMark(name: string) {
@@ -1371,6 +1392,14 @@ const Clients: React.FC<ClientsProps> = ({
   const [activeTab, setActiveTab] = usePersistedState('clientsPage_activeTab', 'info', {
     storage: 'sessionStorage',
   });
+  const prefetchTabChunk = useCallback((tabId: string) => {
+    const load = TAB_LOADERS[tabId];
+    if (load) {
+      void load().catch(() => {
+        /* ignore background prefetch failures */
+      });
+    }
+  }, []);
   // Check if floating nav bar should always be open
   const floatingNavBarAlwaysOpen = localStorage.getItem('floatingNavBarAlwaysOpen') === 'true';
   const [isTabBarCollapsed, setIsTabBarCollapsed] = useState(!floatingNavBarAlwaysOpen);
@@ -1401,6 +1430,10 @@ const Clients: React.FC<ClientsProps> = ({
   const [isMobileTabPanelOpen, setIsMobileTabPanelOpen] = useState(false);
   const mobileTabPanelRef = useRef<HTMLDivElement>(null);
   const tabContentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    prefetchTabChunk(activeTab);
+  }, [activeTab, prefetchTabChunk]);
 
   const handleMobileTabSelect = (tabId: string) => {
     setActiveTab(tabId);
@@ -15102,6 +15135,8 @@ const Clients: React.FC<ClientsProps> = ({
                         : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
                         }`}
                       onClick={() => setActiveTab(tab.id)}
+                      onMouseEnter={() => prefetchTabChunk(tab.id)}
+                      onTouchStart={() => prefetchTabChunk(tab.id)}
                     >
                       <div className="relative inline-flex items-center justify-center">
                         <tab.icon className={`w-5 h-5 mb-1 ${isActive ? 'text-white' : 'text-gray-500'}`} />
@@ -15136,16 +15171,24 @@ const Clients: React.FC<ClientsProps> = ({
             >
               {ActiveComponent && selectedClient && (
                 <div className="md:pb-0 pb-32">
-                  <ActiveComponent
-                    key={`${activeTab}-${selectedClient.id}`}
-                    client={selectedClient}
-                    onClientUpdate={onClientUpdate}
-                    interactionsCache={interactionsCacheForLead}
-                    onInteractionsCacheUpdate={handleInteractionsCacheUpdate}
-                    onInteractionCountUpdate={handleInteractionCountUpdate}
-                    allEmployees={allEmployees}
-                    {...financeProps}
-                  />
+                  <Suspense
+                    fallback={
+                      <div className="py-16 flex items-center justify-center">
+                        <div className="loading loading-spinner loading-lg text-primary" />
+                      </div>
+                    }
+                  >
+                    <ActiveComponent
+                      key={`${activeTab}-${selectedClient.id}`}
+                      client={selectedClient}
+                      onClientUpdate={onClientUpdate}
+                      interactionsCache={interactionsCacheForLead}
+                      onInteractionsCacheUpdate={handleInteractionsCacheUpdate}
+                      onInteractionCountUpdate={handleInteractionCountUpdate}
+                      allEmployees={allEmployees}
+                      {...financeProps}
+                    />
+                  </Suspense>
                 </div>
               )}
 
@@ -17796,6 +17839,8 @@ const Clients: React.FC<ClientsProps> = ({
                         e.stopPropagation();
                         handleMobileTabSelect(tab.id);
                       }}
+                      onMouseEnter={() => prefetchTabChunk(tab.id)}
+                      onTouchStart={() => prefetchTabChunk(tab.id)}
                     >
                       <div className="relative inline-flex items-center justify-center flex-shrink-0">
                         <tab.icon className={`w-6 h-6 ${activeTab === tab.id ? '!text-black dark:!text-white' : 'text-gray-500 dark:text-gray-400'}`} />

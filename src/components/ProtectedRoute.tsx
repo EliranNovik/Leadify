@@ -3,9 +3,8 @@ import { Navigate } from 'react-router-dom';
 import { useAuthContext } from '../contexts/AuthContext';
 
 /**
- * ProtectedRoute - Relies on AuthContext.
- * Redirects to login only after Supabase has reported session state (sessionCheckComplete && no user).
- * Shows a brief loading state until session check completes to avoid flashing protected content then redirect.
+ * ProtectedRoute — uses AuthContext only (no extra auth round-trips).
+ * With sync session hydrate, returning users see the app on first paint.
  */
 const ProtectedRoute: React.FC<{ user: any; children: React.ReactNode }> = ({ children }) => {
   const { user, sessionCheckComplete } = useAuthContext();
@@ -18,10 +17,24 @@ const ProtectedRoute: React.FC<{ user: any; children: React.ReactNode }> = ({ ch
     return <Navigate to="/login" replace />;
   }
 
-  // Session not yet determined: show loading to avoid flash of dashboard then redirect
+  // Rare: auth keys exist but Supabase not hydrated yet — thin bar + tiny spinner, no “loading session” text
   return (
-    <div className="min-h-screen flex items-center justify-center bg-base-200">
-      <span className="loading loading-spinner loading-lg text-primary" />
+    <div className="relative min-h-[20vh]" aria-busy="true" aria-label="Loading">
+      <div className="fixed top-0 left-0 right-0 z-[100] h-0.5 bg-primary/25 overflow-hidden pointer-events-none">
+        <div
+          className="h-full w-1/4 bg-primary/60 rounded-r-full"
+          style={{ animation: 'auth-shimmer 1s ease-in-out infinite' }}
+        />
+      </div>
+      <style>{`
+        @keyframes auth-shimmer {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(500%); }
+        }
+      `}</style>
+      <div className="flex justify-center pt-14 opacity-50">
+        <span className="loading loading-spinner loading-sm text-primary" />
+      </div>
     </div>
   );
 };

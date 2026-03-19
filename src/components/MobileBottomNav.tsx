@@ -80,7 +80,7 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
     return () => observer.disconnect();
   }, []);
-  const [dropdownBottom, setDropdownBottom] = useState('5.5rem');
+  const [dropdownBottom, setDropdownBottom] = useState('4.25rem');
   const quickActionsButtonRef = useRef<HTMLButtonElement>(null);
   const navBarRef = useRef<HTMLDivElement>(null);
 
@@ -146,10 +146,10 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
         ref={navBarRef}
         className="w-full min-w-0 rounded-t-2xl border-t border-x-0 border-b-0 border-white/50 dark:border-white/20 bg-white/90 dark:bg-base-300/90 backdrop-blur-2xl shadow-[0_-4px_24px_rgba(0,0,0,0.08)]"
         style={{
-          paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom, 0px))',
+          paddingBottom: 'max(0.375rem, env(safe-area-inset-bottom, 0px))',
         }}
       >
-        <div className="flex items-center justify-between py-1.5 px-3 gap-2">
+        <div className="flex items-center justify-between py-1 px-2 gap-1">
           {leftItems.map((item) => {
             const actionItem = item as { action?: string };
             const isAction = !!actionItem.action;
@@ -157,7 +157,7 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
               !isAction && (pathname === item.path || (item.path !== '/' && pathname.startsWith(item.path)));
             const IconComponent = isActive ? item.IconActive : item.Icon;
             const showCount = item.path === '/new-cases' && newLeadsCount > 0;
-            const itemClass = `flex items-center justify-center min-w-[44px] py-3 px-2 rounded-full transition-all duration-200 relative ${
+            const itemClass = `flex items-center justify-center min-w-[48px] py-2.5 px-2 rounded-full transition-all duration-200 relative ${
               isActive ? 'bg-primary/10 text-primary' : 'text-base-content/60 hover:text-base-content hover:bg-base-content/5'
             }`;
 
@@ -170,7 +170,7 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
                   className={itemClass}
                   title={item.label}
                 >
-                  <IconComponent className="w-8 h-8 transition-transform duration-200" />
+                  <IconComponent className="w-7 h-7 transition-transform duration-200" />
                 </button>
               );
             }
@@ -180,15 +180,15 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
                 key={item.path}
                 to={item.path}
                 className={({ isActive: navActive }) =>
-                  `flex items-center justify-center min-w-[44px] py-3 px-2 rounded-full transition-all duration-200 relative ${
+                  `flex items-center justify-center min-w-[48px] py-2.5 px-2 rounded-full transition-all duration-200 relative ${
                     navActive ? 'bg-primary/10 text-primary' : 'text-base-content/60 hover:text-base-content hover:bg-base-content/5'
                   }`
                 }
               >
                 <span className="relative inline-flex">
-                  <IconComponent className={`w-8 h-8 transition-transform duration-200 ${isActive ? 'scale-110' : ''}`} />
+                  <IconComponent className={`w-7 h-7 transition-transform duration-200 ${isActive ? 'scale-105' : ''}`} />
                   {showCount && (
-                    <span className="absolute -top-1 -right-2 bg-red-500 text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
+                    <span className="absolute -top-0.5 -right-1.5 bg-red-500 text-white text-[9px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5">
                       {newLeadsCount > 9 ? '9+' : newLeadsCount}
                     </span>
                   )}
@@ -198,7 +198,7 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
           })}
 
           {/* Quick Actions - center */}
-          <div className="flex flex-col items-center justify-center min-w-[40px] py-1 px-1 gap-0.5" data-quick-actions-dropdown>
+          <div className="flex flex-col items-center justify-center min-w-[40px] py-0.5 px-0.5 gap-0" data-quick-actions-dropdown>
             <button
               ref={quickActionsButtonRef}
               type="button"
@@ -207,11 +207,11 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
                 e.stopPropagation();
                 setShowQuickActionsDropdown((v) => !v);
               }}
-              className="flex items-center justify-center w-14 h-14 rounded-full text-white font-medium transition-all duration-300 active:scale-95 shadow-lg hover:opacity-90"
+              className="flex items-center justify-center w-12 h-12 rounded-full text-white font-medium transition-all duration-300 active:scale-95 shadow-lg hover:opacity-90"
               style={{ backgroundColor: '#471CCA' }}
               title="Quick Actions"
             >
-              <BoltIcon className="w-7 h-7" />
+              <BoltIcon className="w-6 h-6" />
             </button>
           </div>
 
@@ -222,7 +222,7 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
               !isAction && (pathname === item.path || (item.path !== '/' && pathname.startsWith(item.path)));
             const IconComponent = isActive ? item.IconActive : item.Icon;
             const showCount = item.path === '/new-cases' && newLeadsCount > 0;
-            const itemClass = `flex items-center justify-center min-w-[44px] py-3 px-2 rounded-full transition-all duration-200 relative ${
+            const itemClass = `flex items-center justify-center min-w-[48px] py-2.5 px-2 rounded-full transition-all duration-200 relative ${
               isActive ? 'bg-primary/10 text-primary' : 'text-base-content/60 hover:text-base-content hover:bg-base-content/5'
             }`;
 
@@ -235,7 +235,7 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
                   className={itemClass}
                   title={item.label}
                 >
-                  <IconComponent className="w-8 h-8 transition-transform duration-200" />
+                  <IconComponent className="w-7 h-7 transition-transform duration-200" />
                 </button>
               );
             }
@@ -245,15 +245,15 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
                 key={item.path}
                 to={item.path}
                 className={({ isActive: navActive }) =>
-                  `flex items-center justify-center min-w-[44px] py-3 px-2 rounded-full transition-all duration-200 relative ${
+                  `flex items-center justify-center min-w-[48px] py-2.5 px-2 rounded-full transition-all duration-200 relative ${
                     navActive ? 'bg-primary/10 text-primary' : 'text-base-content/60 hover:text-base-content hover:bg-base-content/5'
                   }`
                 }
               >
                 <span className="relative inline-flex">
-                  <IconComponent className={`w-8 h-8 transition-transform duration-200 ${isActive ? 'scale-110' : ''}`} />
+                  <IconComponent className={`w-7 h-7 transition-transform duration-200 ${isActive ? 'scale-105' : ''}`} />
                   {showCount && (
-                    <span className="absolute -top-1 -right-2 bg-red-500 text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
+                    <span className="absolute -top-0.5 -right-1.5 bg-red-500 text-white text-[9px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5">
                       {newLeadsCount > 9 ? '9+' : newLeadsCount}
                     </span>
                   )}

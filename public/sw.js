@@ -1,19 +1,16 @@
 // Service Worker for RMQ 2.0 PWA
 // Static cache for assets that don't change often
 const STATIC_CACHE_NAME = 'rmq-2.0-static-v1';
+/** Hashed Vite chunks: stale-while-revalidate (fast repeat visits; background update when online) */
+const BUNDLE_CACHE_NAME = 'rmq-2.0-bundles-v1';
 const OFFLINE_PAGE = '/offline.html';
 
 // Files that should always be fetched from network (never cached)
-// This ensures HTML, JS bundles, and API calls always get fresh content
 const NETWORK_ONLY_PATTERNS = [
   /\/api\//,
   /\.html$/,
   /\/index\.html$/,
   /\/manifest\.json$/,
-  // JS bundles (Vite creates hash-based filenames, but we still want network-first)
-  /\/assets\/.*\.js$/,
-  // CSS files (also hash-based, but network-first to ensure updates)
-  /\/assets\/.*\.css$/,
 ];
 
 // Static assets that can be cached (images, fonts, etc.)
@@ -36,7 +33,11 @@ self.addEventListener('activate', (event) => {
       return Promise.all(
         cacheNames.map((cacheName) => {
           // Delete all old caches (keep only current static cache)
-          if (cacheName !== STATIC_CACHE_NAME && cacheName.startsWith('rmq-2.0-')) {
+          if (
+            cacheName !== STATIC_CACHE_NAME &&
+            cacheName !== BUNDLE_CACHE_NAME &&
+            cacheName.startsWith('rmq-2.0-')
+          ) {
             console.log('Service Worker: Deleting old cache', cacheName);
             return caches.delete(cacheName);
           }
@@ -72,6 +73,29 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   const isNetworkOnly = NETWORK_ONLY_PATTERNS.some(pattern => pattern.test(url.pathname));
   const isStaticAsset = STATIC_ASSET_PATTERNS.some(pattern => pattern.test(url.pathname));
+  const isHashedBundle = /\/assets\/[^/]+\.(js|css)$/.test(url.pathname);
+
+  // Stale-while-revalidate for Vite JS/CSS (content-hashed filenames → safe to cache)
+  if (isHashedBundle) {
+    event.respondWith(
+      caches.open(BUNDLE_CACHE_NAME).then((cache) =>
+        cache.match(event.request).then((cached) => {
+          const networkPromise = fetch(event.request).then((res) => {
+            if (res.ok && res.type === 'basic') {
+              cache.put(event.request, res.clone());
+            }
+            return res;
+          });
+          if (cached) {
+            void networkPromise.catch(() => {});
+            return cached;
+          }
+          return networkPromise;
+        })
+      )
+    );
+    return;
+  }
 
   // Network-first strategy for HTML, API, and manifest (always get fresh content)
   if (isNetworkOnly) {
@@ -92,7 +116,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Cache-first strategy for static assets (images, fonts, CSS, JS bundles)
+  // Cache-first strategy for static assets (images, fonts)
   if (isStaticAsset) {
     event.respondWith(
       caches.match(event.request)

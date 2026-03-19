@@ -73,13 +73,26 @@ const formatNoteText = (text: string): string => {
     .trim();
 };
 
-// Helper function to detect Hebrew text and apply RTL alignment
-const getTextAlignment = (text: string): string => {
-  if (!text) return 'text-left';
-
-  // Check if text contains Hebrew characters (Unicode range 0590-05FF)
-  const hebrewRegex = /[\u0590-\u05FF]/;
-  return hebrewRegex.test(text) ? 'text-right' : 'text-left';
+/**
+ * Direction from the first *strong* directional character (Unicode bidi).
+ * - Hebrew / Arabic scripts → rtl
+ * - Latin letters → ltr
+ * - Numbers, punctuation, spaces only → ltr (avoids wrongly forcing RTL on English-only content)
+ */
+const getTextDirection = (text: string): 'rtl' | 'ltr' => {
+  if (!text) return 'ltr';
+  for (const ch of text) {
+    const cp = ch.codePointAt(0)!;
+    // Hebrew
+    if (cp >= 0x0590 && cp <= 0x05ff) return 'rtl';
+    // Arabic + related RTL scripts
+    if (cp >= 0x0600 && cp <= 0x06ff) return 'rtl';
+    if (cp >= 0x0750 && cp <= 0x077f) return 'rtl';
+    if (cp >= 0x08a0 && cp <= 0x08ff) return 'rtl';
+    // Latin (English and common European letters)
+    if (/[A-Za-z]/.test(ch)) return 'ltr';
+  }
+  return 'ltr';
 };
 
 // Helper function to decode URL-encoded text in URLs
@@ -1470,7 +1483,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
             <div>
               {isEditingSpecialNotes ? (
                 <textarea
-                  className="textarea textarea-bordered w-full h-32"
+                  dir="auto"
+                  className="textarea textarea-bordered w-full h-32 text-start"
                   value={editedSpecialNotes}
                   onChange={(e) => setEditedSpecialNotes(e.target.value)}
                   placeholder="Add special notes here..."
@@ -1480,7 +1494,13 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                   <div className="min-h-[80px]">
                     {specialNotes.length > 0 ? (
                       specialNotes.map((note, index) => (
-                        <p key={index} className={`text-gray-900 mb-2 last:mb-0 whitespace-pre-wrap break-words ${getTextAlignment(formatNoteText(note))}`}>{formatNoteText(note)}</p>
+                        <p
+                          key={index}
+                          dir={getTextDirection(formatNoteText(note))}
+                          className="text-gray-900 mb-2 last:mb-0 whitespace-pre-wrap break-words text-start"
+                        >
+                          {formatNoteText(note)}
+                        </p>
                       ))
                     ) : (
                       <span className="text-gray-500">No special notes added</span>
@@ -1573,7 +1593,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
             <div>
               {isEditingGeneralNotes ? (
                 <textarea
-                  className="textarea textarea-bordered w-full h-32"
+                  dir="auto"
+                  className="textarea textarea-bordered w-full h-32 text-start"
                   value={editedGeneralNotes}
                   onChange={(e) => setEditedGeneralNotes(e.target.value)}
                   placeholder="Add general notes here..."
@@ -1582,7 +1603,12 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                 <div className="space-y-3">
                   <div className="min-h-[80px]">
                     {generalNotes ? (
-                      <p className={`text-gray-900 whitespace-pre-wrap break-words ${getTextAlignment(formatNoteText(generalNotes))}`}>{formatNoteText(generalNotes)}</p>
+                      <p
+                        dir={getTextDirection(formatNoteText(generalNotes))}
+                        className="text-gray-900 whitespace-pre-wrap break-words text-start"
+                      >
+                        {formatNoteText(generalNotes)}
+                      </p>
                     ) : (
                       <span className="text-gray-500">No general notes added</span>
                     )}
@@ -1685,7 +1711,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
             <div>
               {isEditingFacts ? (
                 <textarea
-                  className="textarea textarea-bordered w-full h-32"
+                  dir="auto"
+                  className="textarea textarea-bordered w-full h-32 text-start"
                   value={editedFacts}
                   onChange={(e) => setEditedFacts(e.target.value)}
                   placeholder="Add case facts here..."
@@ -1693,26 +1720,30 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
               ) : (
                 <div className="space-y-3">
                   <div className="min-h-[80px]">
-                    {(() => {
-                      if (factsOfCase.length > 0) {
-                        // Process facts: HTML tags are already stripped in getFacts(), just format for display
-                        const processedFacts = factsOfCase.map((fact, index) => {
-                          // Convert "n/" to line break in display (HTML tags already stripped)
-                          let displayValue = typeof fact.value === 'string' ? fact.value.replace(/n\//g, '\n') : String(fact.value || '');
-                          // Decode URL-encoded text in URLs
-                          displayValue = decodeUrlInText(displayValue);
-                          return displayValue;
-                        }).join('\n');
-
-                        return (
-                          <p className={`text-gray-900 whitespace-pre-wrap break-words ${getTextAlignment(factsOfCase.map(fact => fact.value).join('\n'))}`}>
-                            {processedFacts}
+                    {factsOfCase.length > 0 ? (
+                      (() => {
+                        const processedFacts = factsOfCase
+                          .map((fact) => {
+                            let displayValue =
+                              typeof fact.value === 'string' ? fact.value.replace(/n\//g, '\n') : String(fact.value || '');
+                            displayValue = decodeUrlInText(displayValue);
+                            return displayValue;
+                          })
+                          .join('\n');
+                        // Per-line dir="auto" so English lines stay LTR and Hebrew lines RTL in the same box
+                        return processedFacts.split('\n').map((line, idx) => (
+                          <p
+                            key={idx}
+                            dir="auto"
+                            className="text-gray-900 break-words text-start m-0 min-h-[1.25em]"
+                          >
+                            {line.length === 0 ? '\u00a0' : line}
                           </p>
-                        );
-                      } else {
-                        return <span className="text-gray-500">No case facts added</span>;
-                      }
-                    })()}
+                        ));
+                      })()
+                    ) : (
+                      <span className="text-gray-500">No case facts added</span>
+                    )}
                   </div>
                   {(getFieldValue(client, isLegacy ? 'description_last_edited_by' : 'facts_last_edited_by') || getFieldValue(client, isLegacy ? 'description_last_edited_at' : 'facts_last_edited_at')) && (
                     <div className="text-xs text-gray-400 flex justify-between">
@@ -1781,7 +1812,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                 <div className="space-y-3">
                   <div className="min-h-[80px]">
                     {tags ? (
-                      <p className={`text-gray-900 whitespace-pre-wrap break-words ${getTextAlignment(tags)}`}>{tags}</p>
+                      <p dir={getTextDirection(tags)} className="text-gray-900 whitespace-pre-wrap break-words text-start">
+                        {tags}
+                      </p>
                     ) : (
                       <span className="text-gray-500">No tags added</span>
                     )}
@@ -1858,7 +1891,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                 <div className="space-y-3">
                   <div className="min-h-[80px]">
                     {anchor ? (
-                      <p className={`text-gray-900 ${getTextAlignment(anchor)}`}>{anchor}</p>
+                      <p dir={getTextDirection(anchor)} className="text-gray-900 text-start">
+                        {anchor}
+                      </p>
                     ) : (
                       <span className="text-gray-500">No anchor information</span>
                     )}

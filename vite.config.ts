@@ -6,6 +6,23 @@ export default defineConfig({
   define: {
     global: 'globalThis',
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return;
+          if (id.includes('@supabase')) return 'supabase';
+          if (id.includes('msal') || id.includes('@azure')) return 'msal';
+          if (id.includes('@tanstack')) return 'tanstack';
+          if (id.includes('react-dom')) return 'react-dom';
+          if (id.includes('react-router')) return 'react-router';
+          if (id.includes('node_modules/react/')) return 'react';
+          return 'vendor';
+        },
+      },
+    },
+    chunkSizeWarningLimit: 1600,
+  },
   optimizeDeps: {
     include: ['plyr'],
   },

@@ -1,6 +1,29 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { supabase, sessionManager, isAuthError, isExpectedNoSessionError, handleSessionExpiration } from '../lib/supabase';
 import { preCheckExternalUser } from '../hooks/useExternalUser';
+import {
+  readCachedSupabaseSessionFromStorage,
+  hasAnySupabaseAuthKey,
+  readAuthDisplayCache,
+  writeAuthDisplayCache,
+  clearAuthDisplayCache,
+  deriveInitialsFromDisplayName,
+} from '../lib/authBootstrap';
+
+const USER_DETAIL_SELECT =
+  'first_name, last_name, full_name, email, tenants_employee!employee_id(photo_url, photo)';
+
+function profilePhotoFromUsersRow(data: {
+  tenants_employee?: { photo_url?: string | null; photo?: string | null } | null;
+}): string | null {
+  const emp = data?.tenants_employee;
+  if (!emp || typeof emp !== 'object') return null;
+  const a = emp.photo_url;
+  const b = emp.photo;
+  const s =
+    (typeof a === 'string' && a.trim()) || (typeof b === 'string' && b.trim()) || '';
+  return s || null;
+}
 
 // Helper to check if error is a network/transient error (not a real auth failure)
 const isNetworkError = (error: any): boolean => {
@@ -18,17 +41,62 @@ const isNetworkError = (error: any): boolean => {
   );
 };
 
-// Get Supabase URL for localStorage key checking
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+function buildSyncInitialAuthState(): AuthState {
+  const empty: AuthState = {
+    user: null,
+    userFullName: null,
+    userInitials: null,
+    profilePhotoUrl: null,
+    isLoading: false,
+    isInitialized: true,
+    sessionCheckComplete: false,
+    sessionRefreshNonce: 0,
+  };
+  if (typeof window === 'undefined') return empty;
+
+  const session = readCachedSupabaseSessionFromStorage();
+  if (session?.user) {
+    const u = session.user;
+    const email = ((u.email as string) || '').trim();
+    const display = u.id ? readAuthDisplayCache(String(u.id)) : null;
+    const userFullName = display?.userFullName || email || null;
+    const userInitials =
+      display?.userInitials || (userFullName ? deriveInitialsFromDisplayName(userFullName) : null);
+    const profilePhotoUrl = display?.profilePhotoUrl ?? null;
+    return {
+      user: u,
+      userFullName,
+      userInitials,
+      profilePhotoUrl,
+      isLoading: false,
+      isInitialized: true,
+      sessionCheckComplete: true,
+      sessionRefreshNonce: 0,
+    };
+  }
+
+  if (!hasAnySupabaseAuthKey()) {
+    return {
+      ...empty,
+      sessionCheckComplete: true,
+    };
+  }
+
+  return empty;
+}
 
 interface AuthState {
   user: any;
   userFullName: string | null;
   userInitials: string | null;
+  /** Cached employee/profile image URL for instant avatar after refresh */
+  profilePhotoUrl: string | null;
   isLoading: boolean;
   isInitialized: boolean;
   /** True only after Supabase INITIAL_SESSION has been processed. Used to avoid redirecting before we know session state. */
   sessionCheckComplete: boolean;
+  /** Bumped after token refresh / visibility refresh so consumers (e.g. Header) refetch profile once. */
+  sessionRefreshNonce: number;
 }
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
@@ -44,25 +112,23 @@ function useAuthContext() {
 export { useAuthContext };
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Default to initialized=true to prevent premature redirects
-  // Let INITIAL_SESSION event handle actual session detection
-  // This prevents new tabs from redirecting to login before auth state is determined
-  const [authState, setAuthState] = useState<AuthState>({
-    user: null,
-    userFullName: null,
-    userInitials: null,
-    isLoading: false,
-    isInitialized: true,
-    sessionCheckComplete: false, // Set true only after INITIAL_SESSION is handled - prevents redirect before we know session
-  });
-
-  // Prevent duplicate processing
+  // Refs must be set synchronously when we hydrate from localStorage so INITIAL_SESSION(null)
+  // (can fire as soon as onAuthStateChange registers) never clears the user — fixes new tabs / Chrome.
   const processingRef = useRef(false);
   const lastUserIdRef = useRef<string | null>(null);
-  /** Set when we restore session from getSession() before INITIAL_SESSION; prevents INITIAL_SESSION(null) from overwriting. */
   const restoredFromStorageRef = useRef(false);
-  /** Set when we restore session from getCachedSession(); prevents INITIAL_SESSION(null) from overwriting and redirecting. */
   const restoredFromCacheRef = useRef(false);
+  const syncHydratedRef = useRef(false);
+
+  const [authState, setAuthState] = useState<AuthState>(() => {
+    const initial = buildSyncInitialAuthState();
+    if (initial.user) {
+      syncHydratedRef.current = true;
+      restoredFromCacheRef.current = true;
+      lastUserIdRef.current = initial.user.id ?? null;
+    }
+    return initial;
+  });
 
   const fetchUserDetails = useCallback(async (user: any) => {
     if (!user?.id) return;
@@ -73,7 +139,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // This prevents errors when auth user exists but users table record is missing
       let { data, error } = await supabase
         .from('users')
-        .select('first_name, last_name, full_name, email')
+        .select(USER_DETAIL_SELECT)
         .eq('auth_id', user.id)
         .maybeSingle();
 
@@ -81,7 +147,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if ((error || !data) && user.email) {
         const { data: userByEmail, error: emailError } = await supabase
           .from('users')
-          .select('first_name, last_name, full_name, email')
+          .select(USER_DETAIL_SELECT)
           .eq('email', user.email)
           .maybeSingle();
         
@@ -106,28 +172,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           initials = (data.email || user.email || 'U')[0].toUpperCase();
         }
 
+        const photoUrl = profilePhotoFromUsersRow(data as any);
+        writeAuthDisplayCache(user.id, fullName, initials, photoUrl);
         setAuthState(prev => ({
           ...prev,
           userFullName: fullName,
           userInitials: initials,
+          profilePhotoUrl: photoUrl,
         }));
       } else {
         // Fallback to auth user metadata
         const authName = user.user_metadata?.first_name || user.user_metadata?.full_name || user.email || 'User';
+        const metaInitials = authName.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2) || authName[0].toUpperCase();
+        writeAuthDisplayCache(user.id, authName, metaInitials, undefined);
         setAuthState(prev => ({
           ...prev,
           userFullName: authName,
-          userInitials: authName.split(' ').map((n: string) => n[0]).join('').toUpperCase(),
+          userInitials: metaInitials,
         }));
       }
     } catch (error) {
       console.error('Error fetching user details:', error);
       // Fallback to email or default
       const fallbackName = user.email || 'User';
+      const fi = fallbackName[0]?.toUpperCase() || 'U';
+      writeAuthDisplayCache(user.id, fallbackName, fi, undefined);
       setAuthState(prev => ({
         ...prev,
         userFullName: fallbackName,
-        userInitials: fallbackName[0].toUpperCase(),
+        userInitials: fi,
       }));
     }
   }, []);
@@ -170,6 +243,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           console.log('Session is expired - logging out');
           // Only sign out if we actually had a user
           if (prev.user) {
+            const uid = prev.user.id;
+            if (uid) clearAuthDisplayCache(String(uid));
             supabase.auth.signOut().then(() => {
               if (typeof window !== 'undefined') {
                 window.location.href = '/login';
@@ -181,25 +256,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             user: null,
             userFullName: null,
             userInitials: null,
+            profilePhotoUrl: null,
             isLoading: false,
-            isInitialized: true
+            isInitialized: true,
+            sessionRefreshNonce: 0,
           };
         }
 
-        // Only fetch user details if we don't have them or user changed
-        if ((!prev.userFullName || prev.user?.id !== session.user.id) && session.user) {
+        // Always refresh from API in background (display cache already prevents email flash on first paint)
+        if (session.user) {
           fetchUserDetails(session.user);
         }
 
-        // Set temporary display name from email so we never show "User" while details load (fixes mobile/deployed)
-        const tempName = session.user.email || '';
-        const tempInitials = tempName ? tempName[0].toUpperCase() : '';
+        const uid = session.user.id ? String(session.user.id) : '';
+        const display = uid ? readAuthDisplayCache(uid) : null;
+        const email = (session.user.email as string) || '';
+        const tempName = display?.userFullName || email;
+        const tempInitials =
+          display?.userInitials || (tempName ? deriveInitialsFromDisplayName(tempName) : '');
+        const tempPhoto = display?.profilePhotoUrl ?? null;
 
         return {
           ...prev,
           user: session.user,
-          userFullName: prev.userFullName || tempName,
-          userInitials: prev.userInitials || tempInitials,
+          userFullName: prev.userFullName || tempName || null,
+          userInitials: prev.userInitials || tempInitials || null,
+          profilePhotoUrl: prev.profilePhotoUrl ?? tempPhoto,
           isLoading: false,
           isInitialized
         };
@@ -216,8 +298,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           user: null,
           userFullName: null,
           userInitials: null,
+          profilePhotoUrl: null,
           isLoading: false,
-          isInitialized
+          isInitialized,
+          sessionRefreshNonce: 0,
         };
       }
     });
@@ -274,14 +358,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (!prev.user) {
             return prev; // Already cleared
           }
+          const uid = prev.user.id;
+          if (uid) clearAuthDisplayCache(String(uid));
           lastUserIdRef.current = null;
           return {
             ...prev,
             user: null,
             userFullName: null,
             userInitials: null,
+            profilePhotoUrl: null,
             isLoading: false,
-            isInitialized: true
+            isInitialized: true,
+            sessionRefreshNonce: 0,
           };
         });
         // Don't redirect here - let the component handle it
@@ -298,6 +386,51 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }, 100);
     }
   }, [updateAuthState]);
+
+  // Single debounced visibility refresh (avoids duplicate work with Header; Chrome/Safari friendly)
+  const visibilityDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const visibilityRefreshInFlight = useRef(false);
+
+  useEffect(() => {
+    if (typeof document === 'undefined' || !authState.user) return;
+
+    const VISIBILITY_DEBOUNCE_MS = 450;
+
+    const runRefresh = async () => {
+      if (document.visibilityState !== 'visible' || visibilityRefreshInFlight.current) return;
+      visibilityRefreshInFlight.current = true;
+      try {
+        const { data: { session }, error } = await supabase.auth.refreshSession();
+        if (!error && session?.user) {
+          updateAuthState(session, true);
+          await fetchUserDetails(session.user).catch(() => {});
+          setAuthState((prev) => ({
+            ...prev,
+            sessionRefreshNonce: prev.sessionRefreshNonce + 1,
+          }));
+        }
+      } catch {
+        /* non-fatal */
+      } finally {
+        visibilityRefreshInFlight.current = false;
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (visibilityDebounceRef.current) clearTimeout(visibilityDebounceRef.current);
+      visibilityDebounceRef.current = setTimeout(() => {
+        visibilityDebounceRef.current = null;
+        void runRefresh();
+      }, VISIBILITY_DEBOUNCE_MS);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (visibilityDebounceRef.current) clearTimeout(visibilityDebounceRef.current);
+    };
+  }, [authState.user, updateAuthState, fetchUserDetails]);
 
   // Session expiration monitoring - only when user exists
   // LESS AGGRESSIVE - trust Supabase's auto-refresh and only check occasionally
@@ -384,8 +517,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 user: null,
                 userFullName: null,
                 userInitials: null,
+                profilePhotoUrl: null,
                 isLoading: false,
-                isInitialized: true
+                isInitialized: true,
+                sessionRefreshNonce: 0,
               };
             });
           } else {
@@ -438,35 +573,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const initializeAuth = async () => {
       try {
-        // INSTANT: Check cached session from localStorage immediately (synchronous)
-        // This allows immediate render without waiting for async checks
-        const getCachedSession = () => {
-          try {
-            const keyFromUrl = `sb-${supabaseUrl.split('//')[1]?.split('.')[0]}-auth-token`;
-            for (const key of [keyFromUrl, ...Object.keys(localStorage)]) {
-              if (!key || (!key.includes('supabase.auth.token') && !(key.startsWith('sb-') && key.includes('-auth-token')))) continue;
-              const cached = localStorage.getItem(key);
-              if (cached) {
-                const parsed = JSON.parse(cached);
-                if (parsed?.currentSession?.user) {
-                  return parsed.currentSession;
-                }
-              }
-            }
-          } catch (e) {
-            // Ignore errors
-          }
-          return null;
-        };
+        const cachedSession = readCachedSupabaseSessionFromStorage();
 
-        const cachedSession = getCachedSession();
-        if (cachedSession?.user) {
-          // INSTANT: Set user immediately from cache
+        if (syncHydratedRef.current && authState.user?.id) {
+          // First paint already hydrated from buildSyncInitialAuthState — avoid duplicate updateAuthState
+          lastUserIdRef.current = authState.user.id;
+          restoredFromCacheRef.current = true;
+          fetchUserDetails(authState.user).catch(() => {});
+          console.log('[AuthContext] Sync-hydrated session (first paint); background user details only');
+        } else if (cachedSession?.user) {
           console.log('[AuthContext] Using cached session for instant initialization');
           restoredFromCacheRef.current = true;
           updateAuthState(cachedSession, true);
           setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
-          // Fetch user details in background (non-blocking)
           fetchUserDetails(cachedSession.user).catch(() => {});
         } else {
           // Even if no cached session, check localStorage for tokens
@@ -543,17 +662,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   }
                 }
                 // 3) Mark session check complete; delayed getSession() retries can still restore session.
-                setAuthState(prev => ({
-                  ...prev,
-                  user: null,
-                  userFullName: null,
-                  userInitials: null,
-                  isLoading: false,
-                  isInitialized: true,
-                  sessionCheckComplete: true
-                }));
+                // Do not wipe user if state already has one and auth keys still exist (new tab / race with sync hydrate).
+                const keysStillPresent = hasAnySupabaseAuthKey();
+                setAuthState((prev) => {
+                  if (prev.user?.id && keysStillPresent) {
+                    return { ...prev, sessionCheckComplete: true };
+                  }
+                  return {
+                    ...prev,
+                    user: null,
+                    userFullName: null,
+                    userInitials: null,
+                    profilePhotoUrl: null,
+                    isLoading: false,
+                    isInitialized: true,
+                    sessionCheckComplete: true,
+                    sessionRefreshNonce: prev.sessionRefreshNonce,
+                  };
+                });
                 // 4) Retry getSession() after delays (storage may hydrate late on mobile/slow devices).
-                const retryDelays = [800, 2000, 4500];
+                const retryDelays = [300, 900, 2000];
                 retryDelays.forEach((delayMs) => {
                   setTimeout(async () => {
                     if (!isMounted) return;
@@ -569,9 +697,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
             return;
           }
-          // Handle TOKEN_REFRESHED so we keep the session alive without re-fetching user details every time
+          // Handle TOKEN_REFRESHED: refresh session state, user details, and signal Header once
           if (event === 'TOKEN_REFRESHED' && session?.user && isMounted) {
             updateAuthState(session, true);
+            fetchUserDetails(session.user).catch(() => {});
+            setAuthState((prev) => ({
+              ...prev,
+              sessionRefreshNonce: prev.sessionRefreshNonce + 1,
+            }));
             return;
           }
           // Handle all other events normally
@@ -595,10 +728,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               sessionCheckComplete: true,
               isLoading: false,
               isInitialized: true,
-              ...(prev.user ? {} : { user: null, userFullName: null, userInitials: null }),
+              ...(prev.user
+                ? {}
+                : { user: null, userFullName: null, userInitials: null, profilePhotoUrl: null }),
             };
           });
-        }, 3500);
+        }, 1500);
 
         // Listen for localStorage changes from other tabs
         // Add debouncing to prevent excessive checks
