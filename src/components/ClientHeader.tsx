@@ -1426,9 +1426,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         })()}
                     </div>
 
-                    {/* Total Value - Mobile: Centered under stage badge (moved from below) */}
+                    {/* Total Value - Mobile: Centered with extra space below contact details */}
                     {!hideTotalValueBadge && (
-                    <div className="flex md:hidden flex-col items-center my-4">
+                    <div className="flex md:hidden flex-col items-center mt-10 mb-4">
                         {(() => {
                             const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
 

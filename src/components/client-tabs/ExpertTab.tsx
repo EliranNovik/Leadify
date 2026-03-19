@@ -2266,7 +2266,7 @@ ${combinedText}`;
   return (
     <div className="p-2 sm:p-4 md:p-6">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-6">
+      <div className="flex items-center gap-3 mb-8">
         <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
           <AcademicCapIcon className="w-5 h-5 text-gray-600" />
         </div>
@@ -2278,13 +2278,13 @@ ${combinedText}`;
 
       {/* Main Content Grid - Left side with all boxes, Right side with summary (when expanded) */}
       <div className="relative">
-      <div className={`grid gap-6 ${isSummaryCollapsed ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-3'}`}>
+      <div className={`grid gap-8 ${isSummaryCollapsed ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-3'}`}>
         {/* Left Column - All existing boxes (full width when summary collapsed) */}
-        <div className={`space-y-8 sm:space-y-12 ${!isSummaryCollapsed ? 'lg:col-span-2' : ''}`}>
+        <div className={`space-y-12 sm:space-y-16 ${!isSummaryCollapsed ? 'lg:col-span-2' : ''}`}>
 
           {/* Expert Information */}
-          <div className="mb-12">
-            <h4 className="text-base font-semibold text-gray-900 mb-3">Expert Information</h4>
+          <div className="mb-14">
+            <h4 className="text-base font-semibold text-gray-900 mb-4">Expert Information</h4>
             <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
                 <div className="space-y-6">
                   <div className="flex items-center gap-3">
@@ -2350,11 +2350,11 @@ ${combinedText}`;
           </div>
 
           {/* Section Eligibility and Document Upload Row */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
             {/* Section Eligibility */}
             <div>
-              <h4 className="text-base font-semibold text-gray-900 mb-3">Section Eligibility</h4>
-              <div className="space-y-4">
+              <h4 className="text-base font-semibold text-gray-900 mb-4">Section Eligibility</h4>
+              <div className="space-y-5">
                   {/* Eligibility Dropdown */}
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Eligibility Assessment</label>
@@ -2421,8 +2421,8 @@ ${combinedText}`;
 
             {/* Document Upload Section */}
             <div>
-              <h4 className="text-base font-semibold text-gray-900 mb-3">Document Upload</h4>
-              <div className="space-y-4">
+              <h4 className="text-base font-semibold text-gray-900 mb-4">Document Upload</h4>
+              <div className="space-y-5">
                   {/* Upload Area */}
                   <div
                     className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors duration-200 ${isUploading
@@ -2526,7 +2526,7 @@ ${combinedText}`;
 
           {/* Expert Notes */}
           <div>
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center justify-between mb-4">
               <h4 className="text-base font-semibold text-gray-900">Expert Notes</h4>
               <div className="flex gap-2">
                 {!isAddingExpertNote && !editingExpertNoteId && (
@@ -2585,7 +2585,7 @@ ${combinedText}`;
                 )}
 
                 {/* Expert Notes List */}
-                <div className="space-y-4 overflow-y-auto max-h-[300px]">
+                <div className="space-y-6 overflow-y-auto max-h-[300px]">
                   {expertNotes.length > 0 ? (
                     expertNotes.map((note, index) => (
                       <div
@@ -2676,8 +2676,8 @@ ${combinedText}`;
           </div>
 
           {/* Handler Notes */}
-          <div className="mt-12">
-            <div className="flex items-center justify-between mb-3">
+          <div className="mt-16">
+            <div className="flex items-center justify-between mb-4">
               <h4 className="text-base font-semibold text-gray-900">Handler Notes</h4>
               {!isAddingHandlerNote && !editingHandlerNoteId && (
                 <button
@@ -2725,7 +2725,7 @@ ${combinedText}`;
                 )}
 
                 {/* Handler Notes List */}
-                <div className="space-y-4 overflow-y-auto max-h-[300px]">
+                <div className="space-y-6 overflow-y-auto max-h-[300px]">
                   {handlerNotes.length > 0 ? (
                     handlerNotes.map((note, index) => (
                       <div
@@ -2941,9 +2941,9 @@ ${combinedText}`;
         </div>
         )}
 
-        {/* Collapsed Summary - Fixed on right edge of screen */}
+        {/* Collapsed Summary - Fixed on right edge; on mobile sit lower to clear bottom tabs */}
         {isSummaryCollapsed && (
-          <div className="fixed right-0 top-1/2 -translate-y-1/2 z-50">
+          <div className="fixed right-0 bottom-28 md:bottom-auto md:top-1/2 md:-translate-y-1/2 z-50">
             <button
               onClick={() => setIsSummaryCollapsed(false)}
               className="flex flex-col items-center justify-center gap-2 w-12 py-6 bg-white border border-gray-200 rounded-l-2xl shadow-lg hover:shadow-xl hover:bg-gray-50 transition-all duration-200"
