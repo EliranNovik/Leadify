@@ -102,6 +102,32 @@ const resolveSourceCodeFromIdentifier = (identifier) => {
 };
 
 /**
+ * Google Ads / landing page param names we persist as JSONB in leads.utm_params.
+ * If any of these are present in body or query, they are saved; otherwise column stays NULL.
+ */
+const UTM_PARAM_KEYS = [
+  'lpurl', 'targetid', 'matchtype', 'device', 'campaignid', 'adgroupid',
+  'keyword', 'target', 'subid'
+];
+
+/**
+ * Build utm_params object from request data (body or query). Only includes keys that exist and have a value.
+ * @param {Object} data - req.body.query, req.body, or req.query
+ * @returns {Object|null} Object with param key-value pairs, or null if none present
+ */
+function buildUtmParams(data) {
+  if (!data || typeof data !== 'object') return null;
+  const out = {};
+  for (const key of UTM_PARAM_KEYS) {
+    const value = data[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      out[key] = String(value).trim();
+    }
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
  * Look up language_id from misc_language table
  * Handles full text (e.g., "Hebrew", "English"), ISO codes (e.g., "HE", "EN"), and Hebrew text (e.g., "עברית")
  * @param {string} languageText - Language text, ISO code, or Hebrew text
@@ -487,6 +513,9 @@ const webhookController = {
         source_code: parsedSourceCode
       };
 
+      // Extract Google Ads / landing page params (from body or query) for utm_params column
+      const utmParams = buildUtmParams({ ...(req.query || {}), ...(bodyData || {}) });
+
       // Log all extracted form data for debugging
       console.log('📋 Extracted form data:', {
         name: formData.name,
@@ -499,6 +528,7 @@ const webhookController = {
         language: formData.language,
         country: formData.country,
         source_code: formData.source_code,
+        utm_params: utmParams || null,
         allBodyDataKeys: bodyData ? Object.keys(bodyData) : [],
         bodyData: bodyData
       });
@@ -828,21 +858,26 @@ const webhookController = {
       const createdLead = newLead[0];
       console.log('✅ Lead created successfully:', createdLead);
 
-      // If facts data is provided, update the lead with facts
-      if (formData.facts) {
+      // Post-insert updates: facts and/or utm_params (single UPDATE to avoid extra trigger fires).
+      // RPC create_lead_with_source_validation does not set these; trg_auto_create_main_contact runs only on INSERT, so contact is already created.
+      const postInsertUpdates = {};
+      if (formData.facts) postInsertUpdates.facts = formData.facts;
+      if (utmParams) postInsertUpdates.utm_params = utmParams; // requires sql/add_utm_params_to_leads.sql migration
+      if (Object.keys(postInsertUpdates).length > 0) {
         try {
-          const { error: factsError } = await supabase
+          const { error: updateError } = await supabase
             .from('leads')
-            .update({ facts: formData.facts })
+            .update(postInsertUpdates)
             .eq('id', createdLead.id);
 
-          if (factsError) {
-            console.error('Error updating facts:', factsError);
+          if (updateError) {
+            console.error('Error updating lead (facts/utm_params):', updateError);
           } else {
-            console.log('✅ Facts updated successfully');
+            if (formData.facts) console.log('✅ Facts updated successfully');
+            if (utmParams) console.log('✅ utm_params saved:', Object.keys(utmParams));
           }
-        } catch (factsError) {
-          console.error('Error updating facts:', factsError);
+        } catch (updateErr) {
+          console.error('Error updating lead (facts/utm_params):', updateErr);
         }
       }
 
