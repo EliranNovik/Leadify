@@ -41,6 +41,7 @@ interface Case {
   next_followup?: string | null; // Follow-up date
   active_handler_type?: number; // 2 = Case Handler active (Default), 1 = Retention active
   retentionHandlerName?: string | null; // Name of the retention handler
+  isInactive?: boolean; // New: unactivated_at set; Legacy: status === 10 (excluded from New/Active tables)
 }
 
 // Helper function to get contrasting text color based on background
@@ -306,6 +307,7 @@ const MyCasesPage: React.FC = () => {
             country_id,
             phone,
             mobile,
+            unactivated_at,
             misc_country!country_id (
               id,
               name,
@@ -346,6 +348,7 @@ const MyCasesPage: React.FC = () => {
             phone,
             active_handler_type,
             retainer_handler_id,
+            status,
             accounting_currencies!leads_lead_currency_id_fkey (
               name,
               iso_code
@@ -784,6 +787,8 @@ const MyCasesPage: React.FC = () => {
         const phone = lead.phone || null;
         const mobile = lead.mobile || null;
         const next_followup = followUpsMap.get(lead.id) || null;
+        // Inactive = deactivated (same as LeadSearchPage: new lead with unactivated_at set)
+        const isInactive = (lead as any).unactivated_at != null;
 
         return {
           id: lead.id,
@@ -808,7 +813,8 @@ const MyCasesPage: React.FC = () => {
           phone: phone,
           mobile: mobile,
           next_followup: next_followup,
-          active_handler_type: Number((lead as any).active_handler_type) === 1 ? 1 : 2, retentionHandlerName: getEmployeeDisplayName((lead as any).retainer_handler_id)
+          active_handler_type: Number((lead as any).active_handler_type) === 1 ? 1 : 2, retentionHandlerName: getEmployeeDisplayName((lead as any).retainer_handler_id),
+          isInactive
         };
       });
 
@@ -831,6 +837,8 @@ const MyCasesPage: React.FC = () => {
         const phone = (lead as any).phone || null;
         const mobile = null; // Legacy leads don't have mobile field
         const next_followup = followUpsMap.get(String(lead.id)) || null;
+        // Inactive = status 10 (same as LeadSearchPage: legacy lead with status 10)
+        const isInactive = Number((lead as any).status) === 10 || (lead as any).status === '10';
 
         return {
           id: String(lead.id),
@@ -855,19 +863,21 @@ const MyCasesPage: React.FC = () => {
           phone: phone,
           mobile: mobile,
           next_followup: next_followup,
-          active_handler_type: Number((lead as any).active_handler_type) === 1 ? 1 : 2, retentionHandlerName: getEmployeeDisplayName((lead as any).retainer_handler_id)
+          active_handler_type: Number((lead as any).active_handler_type) === 1 ? 1 : 2, retentionHandlerName: getEmployeeDisplayName((lead as any).retainer_handler_id),
+          isInactive
         };
       });
 
       // Combine all cases
       const allProcessedCases = [...processedNewLeads, ...processedLegacyLeads];
 
-      // Separate into new, active, and non-active cases
-      // New cases: stage <= 105
+      // Separate into new, active, and non-active cases (exclude inactive leads from new and active tables only)
+      // New cases: stage <= 105, active handler, and lead is active (same inactive logic as LeadSearchPage)
       const newCasesList = allProcessedCases.filter(caseItem => {
         const stageId = (caseItem as any).stageId;
         const activeHandlerType = (caseItem as any).active_handler_type;
-        return stageId !== undefined && stageId !== null && stageId <= 105 && Number(activeHandlerType) === 2;
+        const isInactive = (caseItem as any).isInactive === true;
+        return !isInactive && stageId !== undefined && stageId !== null && stageId <= 105 && Number(activeHandlerType) === 2;
       });
 
       // Non-Active cases: active_handler_type === 1 AND stage !== 200
@@ -883,12 +893,12 @@ const MyCasesPage: React.FC = () => {
         return Number(stageId) === 200;
       });
 
-      // Active cases: stage >= 110 AND active_handler_type === 2 AND stage !== 200
+      // Active cases: stage >= 110 AND active_handler_type === 2 AND stage !== 200; exclude inactive leads
       const activeCasesList = allProcessedCases.filter(caseItem => {
         const stageId = (caseItem as any).stageId;
         const activeHandlerType = (caseItem as any).active_handler_type;
-
-        if (stageId === undefined || stageId === null || Number(stageId) === 200 || Number(activeHandlerType) === 1) return false;
+        const isInactive = (caseItem as any).isInactive === true;
+        if (isInactive || stageId === undefined || stageId === null || Number(stageId) === 200 || Number(activeHandlerType) === 1) return false;
         return Number(stageId) >= 110;
       });
 
