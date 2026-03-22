@@ -40,7 +40,7 @@ import EmployeeModal from './EmployeeModal';
 import RMQMessagesPage from '../pages/RMQMessagesPage';
 import HighlightsPanel from './HighlightsPanel';
 import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
-import { getRecentSearches, getRecentLeads, addRecentSearch, addRecentLead, type RecentLead } from '../lib/recentSearchStorage';
+import { getRecentLeads, addRecentLead, type RecentLead } from '../lib/recentSearchStorage';
 import { useExternalUser } from '../hooks/useExternalUser';
 import { useAuthContext } from '../contexts/AuthContext';
 
@@ -5842,8 +5842,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // New leads: use lead_number
       path = `/clients/${encodeURIComponent(lead.lead_number)}`;
     }
-    // Store for mobile recent items
-    addRecentSearch(searchValue.trim());
+    // Store for recent items (recently viewed leads)
     addRecentLead({
       id: lead.lead_type === 'legacy' ? String(lead.id).replace(/^legacy_/, '') : String(lead.lead_number),
       name: lead.contactName || lead.name || '',
@@ -5907,6 +5906,147 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const closeFilterDropdown = () => {
     setShowFilterDropdown(false);
   };
+
+  /** Shared search results UI — used in desktop dropdown and inline on mobile overlay */
+  const renderHeaderSearchDropdownBody = () => (
+    <>
+      {isSearching || isAdvancedSearching ? (
+        <div className="p-4 text-center text-base-content/70">
+          <div className="loading loading-spinner loading-sm"></div>
+          <span className="ml-2">Searching...</span>
+        </div>
+      ) : searchResults.length > 0 ? (
+        <div className="space-y-2 md:space-y-2 p-2 md:p-0">
+          {(() => {
+            const { exactMatches, fuzzyMatches } = processedSearchResults;
+
+            return (
+              <>
+                {exactMatches.length > 0 && (
+                  <>
+                    {exactMatches.map((result, index) => {
+                      const uniqueKey = result.lead_type === 'legacy'
+                        ? `exact_legacy_${result.id}_${result.contactName || result.name}_${index}`
+                        : `exact_${result.id}_${result.contactName || result.name}_${index}`;
+
+                      const displayName = result.contactName || result.name || '';
+
+                      const inactive = isInactiveLead(result);
+                      return (
+                        <button
+                          key={uniqueKey}
+                          onClick={() => handleSearchResultClick(result)}
+                          className={`w-full px-4 py-3.5 md:px-4 md:py-3 text-left transition-colors rounded-lg border relative ${inactive ? 'bg-gray-100 hover:bg-gray-200 border-gray-200 text-black' : 'hover:bg-base-200 border-base-300'}`}
+                        >
+                          {inactive && (
+                            <div className="absolute top-1 left-1/2 -translate-x-1/2 text-xs md:text-xs text-black font-medium z-10">Inactive</div>
+                          )}
+                          <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10 flex flex-row items-center gap-1.5 justify-end">
+                            {getStageBadge(result.stage, result.stage_colour, inactive)}
+                          </div>
+                          <div className={`flex items-start gap-2 md:gap-3 pr-20 md:pr-20 ${inactive ? 'text-black' : ''}`}>
+                            <div className="flex-1 min-w-0">
+                              <div className="mb-0.5 md:mb-1">
+                                <p className={`text-base md:text-base font-semibold break-words line-clamp-2 leading-tight ${inactive ? 'text-black' : 'text-base-content'}`} style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                  {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
+                                </p>
+                              </div>
+                              <div className="mb-0.5 md:mb-1">
+                                <span className={`text-sm md:text-sm font-mono ${inactive ? 'text-black' : 'text-base-content/70'}`}>{result.lead_number ? `#${result.lead_number}` : ''}</span>
+                              </div>
+                              {result.category && (
+                                <p className={`text-sm md:text-sm truncate ${inactive ? 'text-black' : 'text-base-content/80'}`}>
+                                  <span className="font-medium">Category:</span> {result.category}
+                                </p>
+                              )}
+                              {result.topic && (
+                                <p className={`text-sm md:text-sm truncate flex items-center gap-1 ${inactive ? 'text-black' : 'text-base-content/80'}`}>
+                                  <ChatBubbleLeftRightIcon className="w-4 h-4 flex-shrink-0 opacity-70" aria-hidden />
+                                  {result.topic}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </>
+                )}
+
+                {showNoExactMatch && exactMatches.length === 0 && fuzzyMatches.length > 0 && !isSearching && !isAdvancedSearching && (
+                  <div className="px-4 py-2 md:px-4 md:py-2 border-b border-base-300">
+                    <p className="text-sm md:text-sm text-base-content/70 font-medium">No exact matches found</p>
+                  </div>
+                )}
+
+                {exactMatches.length > 0 && fuzzyMatches.length > 0 && (
+                  <div className="px-4 py-2 md:px-4 md:py-2 border-t border-base-300">
+                    <p className="text-sm md:text-sm text-base-content/60 font-medium">Similar matches</p>
+                  </div>
+                )}
+
+                {fuzzyMatches.length > 0 && (
+                  <>
+                    {fuzzyMatches.map((result, index) => {
+                      const uniqueKey = result.lead_type === 'legacy'
+                        ? `fuzzy_legacy_${result.id}_${result.contactName || result.name}_${index}`
+                        : `fuzzy_${result.id}_${result.contactName || result.name}_${index}`;
+
+                      const displayName = result.contactName || result.name || '';
+
+                      const inactive = isInactiveLead(result);
+                      return (
+                        <button
+                          key={uniqueKey}
+                          onClick={() => handleSearchResultClick(result)}
+                          className={`w-full px-4 py-3.5 md:px-4 md:py-3 text-left transition-colors rounded-lg border relative ${inactive ? 'bg-gray-100 hover:bg-gray-200 border-gray-200 text-black opacity-90' : 'hover:bg-base-200 border-base-300 opacity-90'}`}
+                        >
+                          {inactive && (
+                            <div className="absolute top-1 left-1/2 -translate-x-1/2 text-xs md:text-xs text-black font-medium z-10">Inactive</div>
+                          )}
+                          <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10 flex flex-row items-center gap-1.5 justify-end">
+                            {getStageBadge(result.stage, result.stage_colour, inactive)}
+                          </div>
+                          <div className={`flex items-start gap-2 md:gap-3 pr-20 md:pr-20 ${inactive ? 'text-black' : ''}`}>
+                            <div className="flex-1 min-w-0">
+                              <div className="mb-0.5 md:mb-1">
+                                <p className={`text-base md:text-base font-semibold break-words line-clamp-2 leading-tight ${inactive ? 'text-black' : 'text-base-content'}`} style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                  {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
+                                </p>
+                              </div>
+                              <div className="mb-0.5 md:mb-1">
+                                <span className={`text-sm md:text-sm font-mono ${inactive ? 'text-black' : 'text-base-content/70'}`}>{result.lead_number ? `#${result.lead_number}` : ''}</span>
+                              </div>
+                              {result.category && (
+                                <p className={`text-sm md:text-sm truncate ${inactive ? 'text-black' : 'text-base-content/80'}`}>
+                                  <span className="font-medium">Category:</span> {result.category}
+                                </p>
+                              )}
+                              {result.topic && (
+                                <p className={`text-sm md:text-sm truncate flex items-center gap-1 ${inactive ? 'text-black' : 'text-base-content/80'}`}>
+                                  <ChatBubbleLeftRightIcon className="w-4 h-4 flex-shrink-0 opacity-70" aria-hidden />
+                                  {result.topic}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </>
+                )}
+              </>
+            );
+          })()}
+        </div>
+      ) : searchValue.trim() ? (
+        <div className="text-center py-8 text-base-content/70">
+          <p className="text-base md:text-sm">No contacts found</p>
+          <p className="text-sm mt-1 md:text-xs">Try a different search term</p>
+        </div>
+      ) : null}
+    </>
+  );
 
   const clearSearchHoverCloseTimer = useCallback(() => {
     if (searchHoverCloseTimeoutRef.current != null) {
@@ -7444,77 +7584,61 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         {/* End of search bar container */}
         {isSearchActive && typeof window !== 'undefined' && createPortal(
           <>
-            {/* Mobile overlay - white full-screen background with recent searches/leads (no live preview) */}
+            {/* Mobile: full-screen white panel — search results scroll inline here; recently viewed when no query */}
             {isMobile && (
               <div
-                className="fixed inset-x-0 top-14 bottom-0 bg-white dark:bg-gray-900 z-[49] md:hidden flex flex-col"
+                className="fixed inset-x-0 top-14 bottom-0 bg-white dark:bg-gray-900 z-[49] md:hidden flex flex-col min-h-0"
                 onClick={() => {
                   setIsSearchActive(false);
                   searchInputRef.current?.blur();
                 }}
               >
-                {/* Recent searches and leads - clickable, navigates to clients/lead-search. Stop propagation so clicking content doesn't close. */}
-                <div className="flex-1 overflow-y-auto pt-6 px-4 pb-8" onClick={(e) => e.stopPropagation()}>
+                <div
+                  ref={searchDropdownRef}
+                  className="flex-1 overflow-y-auto min-h-0 pt-4 px-4 pb-8"
+                  onClick={(e) => e.stopPropagation()}
+                >
                   <div className="max-w-xl mx-auto space-y-6">
-                  {(getRecentSearches().length > 0 || getRecentLeads().length > 0) ? (
-                    <>
-                      {getRecentSearches().length > 0 && (
-                        <div>
-                          <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400 mb-2">Recent searches</h3>
-                          <div className="space-y-1">
-                            {getRecentSearches().map((q, i) => (
-                              <button
-                                key={`search-${i}-${q}`}
-                                onClick={() => {
-                                  navigate(`/lead-search?q=${encodeURIComponent(q)}`);
-                                  closeSearchBar();
-                                }}
-                                className="w-full px-4 py-3 text-left rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-base-content flex items-center gap-2"
-                              >
-                                <MagnifyingGlassIcon className="w-5 h-5 text-gray-400 flex-shrink-0" />
-                                <span className="truncate">{q}</span>
-                              </button>
-                            ))}
-                          </div>
+                    {(searchValue.trim() || isAdvancedSearching || hasAppliedFilters) ? (
+                      <div className="text-base-content">
+                        {renderHeaderSearchDropdownBody()}
+                      </div>
+                    ) : getRecentLeads().length > 0 ? (
+                      <div>
+                        <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400 mb-2">Recently viewed</h3>
+                        <div className="space-y-1">
+                          {getRecentLeads().map((lead) => (
+                            <button
+                              key={`lead-${lead.id}`}
+                              onClick={() => {
+                                navigate(`/clients/${encodeURIComponent(lead.id)}`);
+                                closeSearchBar();
+                              }}
+                              className="w-full px-4 py-3 text-left rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-base-content flex items-center gap-2"
+                            >
+                              <UserIcon className="w-5 h-5 text-gray-400 flex-shrink-0" />
+                              <div className="min-w-0 flex-1">
+                                <p className="font-medium truncate">{lead.name || 'Unknown'}</p>
+                                <p className="text-sm text-gray-500 dark:text-gray-400 truncate">#{lead.lead_number}</p>
+                              </div>
+                            </button>
+                          ))}
                         </div>
-                      )}
-                      {getRecentLeads().length > 0 && (
-                        <div>
-                          <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400 mb-2">Recently viewed</h3>
-                          <div className="space-y-1">
-                            {getRecentLeads().map((lead) => (
-                              <button
-                                key={`lead-${lead.id}`}
-                                onClick={() => {
-                                  navigate(`/clients/${encodeURIComponent(lead.id)}`);
-                                  closeSearchBar();
-                                }}
-                                className="w-full px-4 py-3 text-left rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-base-content flex items-center gap-2"
-                              >
-                                <UserIcon className="w-5 h-5 text-gray-400 flex-shrink-0" />
-                                <div className="min-w-0 flex-1">
-                                  <p className="font-medium truncate">{lead.name || 'Unknown'}</p>
-                                  <p className="text-sm text-gray-500 dark:text-gray-400 truncate">#{lead.lead_number}</p>
-                                </div>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <div className="py-8 text-center text-base-content/60 text-sm">
-                      <p className="mb-2">No recent searches or leads yet.</p>
-                      <p>Search above or visit a client to see them here.</p>
-                    </div>
-                  )}
+                      </div>
+                    ) : (
+                      <div className="py-8 text-center text-base-content/60 text-sm">
+                        <p className="mb-2">No recently viewed leads yet.</p>
+                        <p>Search above or visit a client to see them here.</p>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
             )}
-            {/* Search Results / Recent items - on top of white overlay (z-[10000] > overlay z-[49]) */}
+            {/* Desktop: floating search dropdown below the bar (mobile uses inline panel above) */}
+            {!isMobile && (
             <div
-              className={`fixed z-[10000] flex gap-4 pointer-events-auto ${!isMobile ? '-mt-1.5 pt-1.5' : ''}`}
+              className="fixed z-[10000] flex gap-4 pointer-events-auto -mt-1.5 pt-1.5"
               style={{
                 top: searchDropdownStyle.top,
                 left: searchDropdownStyle.left,
@@ -7525,7 +7649,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             {(searchValue.trim() || isAdvancedSearching || hasAppliedFilters) ? (
               <div
                 ref={searchDropdownRef}
-                className="bg-base-100 rounded-xl shadow-xl border border-base-300 max-h-96 overflow-y-auto search-dropdown min-w-[92vw] md:min-w-0"
+                className="bg-base-100 rounded-xl shadow-xl border border-base-300 max-h-96 overflow-y-auto search-dropdown min-w-0"
                 style={{
                   width: searchDropdownStyle.width,
                   zIndex: 10000,
@@ -7533,154 +7657,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 onMouseEnter={handleDesktopSearchDropdownMouseEnter}
                 onMouseLeave={handleDesktopSearchDropdownMouseLeave}
               >
-                {isSearching || isAdvancedSearching ? (
-                  <div className="p-4 text-center text-base-content/70">
-                    <div className="loading loading-spinner loading-sm"></div>
-                    <span className="ml-2">Searching...</span>
-                  </div>
-                ) : searchResults.length > 0 ? (
-                  <div className="space-y-2 md:space-y-2 p-2 md:p-0">
-                    {/* Separate exact matches from fuzzy matches */}
-                    {(() => {
-                      const { exactMatches, fuzzyMatches } = processedSearchResults;
-
-                      return (
-                        <>
-                          {/* Exact Matches Section - ALWAYS show first if they exist */}
-                          {exactMatches.length > 0 && (
-                            <>
-                              {exactMatches.map((result, index) => {
-                                const uniqueKey = result.lead_type === 'legacy'
-                                  ? `exact_legacy_${result.id}_${result.contactName || result.name}_${index}`
-                                  : `exact_${result.id}_${result.contactName || result.name}_${index}`;
-
-                                const displayName = result.contactName || result.name || '';
-
-                                const inactive = isInactiveLead(result);
-                                return (
-                                  <button
-                                    key={uniqueKey}
-                                    onClick={() => handleSearchResultClick(result)}
-                                    className={`w-full px-4 py-3.5 md:px-4 md:py-3 text-left transition-colors rounded-lg border relative ${inactive ? 'bg-gray-100 hover:bg-gray-200 border-gray-200 text-black' : 'hover:bg-base-200 border-base-300'}`}
-                                  >
-                                    {inactive && (
-                                      <div className="absolute top-1 left-1/2 -translate-x-1/2 text-xs md:text-xs text-black font-medium z-10">Inactive</div>
-                                    )}
-                                    <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10 flex flex-row items-center gap-1.5 justify-end">
-                                      {getStageBadge(result.stage, result.stage_colour, inactive)}
-                                    </div>
-                                    <div className={`flex items-start gap-2 md:gap-3 pr-20 md:pr-20 ${inactive ? 'text-black' : ''}`}>
-                                      <div className="flex-1 min-w-0">
-                                        <div className="mb-0.5 md:mb-1">
-                                          <p className={`text-base md:text-base font-semibold break-words line-clamp-2 leading-tight ${inactive ? 'text-black' : 'text-base-content'}`} style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
-                                            {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
-                                          </p>
-                                        </div>
-                                        <div className="mb-0.5 md:mb-1">
-                                          <span className={`text-sm md:text-sm font-mono ${inactive ? 'text-black' : 'text-base-content/70'}`}>{result.lead_number ? `#${result.lead_number}` : ''}</span>
-                                        </div>
-                                        {result.category && (
-                                          <p className={`text-sm md:text-sm truncate ${inactive ? 'text-black' : 'text-base-content/80'}`}>
-                                            <span className="font-medium">Category:</span> {result.category}
-                                          </p>
-                                        )}
-                                        {result.topic && (
-                                          <p className={`text-sm md:text-sm truncate flex items-center gap-1 ${inactive ? 'text-black' : 'text-base-content/80'}`}>
-                                            <ChatBubbleLeftRightIcon className="w-4 h-4 flex-shrink-0 opacity-70" aria-hidden />
-                                            {result.topic}
-                                          </p>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </button>
-                                );
-                              })}
-                            </>
-                          )}
-
-                          {/* No exact match message - ONLY show when:
-                          1. showNoExactMatch state is true (debounced, user stopped typing)
-                          2. There are no exact matches
-                          3. There are fuzzy matches to show
-                          4. We're not currently searching (all queries completed)
-                          5. Not in advanced search mode */}
-                          {showNoExactMatch && exactMatches.length === 0 && fuzzyMatches.length > 0 && !isSearching && !isAdvancedSearching && (
-                            <div className="px-4 py-2 md:px-4 md:py-2 border-b border-base-300">
-                              <p className="text-sm md:text-sm text-base-content/70 font-medium">No exact matches found</p>
-                            </div>
-                          )}
-
-                          {/* Divider between exact and fuzzy matches */}
-                          {exactMatches.length > 0 && fuzzyMatches.length > 0 && (
-                            <div className="px-4 py-2 md:px-4 md:py-2 border-t border-base-300">
-                              <p className="text-sm md:text-sm text-base-content/60 font-medium">Similar matches</p>
-                            </div>
-                          )}
-
-                          {/* Fuzzy Matches Section - limited to 5, sorted by closest match first */}
-                          {fuzzyMatches.length > 0 && (
-                            <>
-                              {fuzzyMatches.map((result, index) => {
-                                const uniqueKey = result.lead_type === 'legacy'
-                                  ? `fuzzy_legacy_${result.id}_${result.contactName || result.name}_${index}`
-                                  : `fuzzy_${result.id}_${result.contactName || result.name}_${index}`;
-
-                                const displayName = result.contactName || result.name || '';
-
-                                const inactive = isInactiveLead(result);
-                                return (
-                                  <button
-                                    key={uniqueKey}
-                                    onClick={() => handleSearchResultClick(result)}
-                                    className={`w-full px-4 py-3.5 md:px-4 md:py-3 text-left transition-colors rounded-lg border relative ${inactive ? 'bg-gray-100 hover:bg-gray-200 border-gray-200 text-black opacity-90' : 'hover:bg-base-200 border-base-300 opacity-90'}`}
-                                  >
-                                    {inactive && (
-                                      <div className="absolute top-1 left-1/2 -translate-x-1/2 text-xs md:text-xs text-black font-medium z-10">Inactive</div>
-                                    )}
-                                    <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10 flex flex-row items-center gap-1.5 justify-end">
-                                      {getStageBadge(result.stage, result.stage_colour, inactive)}
-                                    </div>
-                                    <div className={`flex items-start gap-2 md:gap-3 pr-20 md:pr-20 ${inactive ? 'text-black' : ''}`}>
-                                      <div className="flex-1 min-w-0">
-                                        <div className="mb-0.5 md:mb-1">
-                                          <p className={`text-base md:text-base font-semibold break-words line-clamp-2 leading-tight ${inactive ? 'text-black' : 'text-base-content'}`} style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
-                                            {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
-                                          </p>
-                                        </div>
-                                        <div className="mb-0.5 md:mb-1">
-                                          <span className={`text-sm md:text-sm font-mono ${inactive ? 'text-black' : 'text-base-content/70'}`}>{result.lead_number ? `#${result.lead_number}` : ''}</span>
-                                        </div>
-                                        {result.category && (
-                                          <p className={`text-sm md:text-sm truncate ${inactive ? 'text-black' : 'text-base-content/80'}`}>
-                                            <span className="font-medium">Category:</span> {result.category}
-                                          </p>
-                                        )}
-                                        {result.topic && (
-                                          <p className={`text-sm md:text-sm truncate flex items-center gap-1 ${inactive ? 'text-black' : 'text-base-content/80'}`}>
-                                            <ChatBubbleLeftRightIcon className="w-4 h-4 flex-shrink-0 opacity-70" aria-hidden />
-                                            {result.topic}
-                                          </p>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </button>
-                                );
-                              })}
-                            </>
-                          )}
-                        </>
-                      );
-                    })()}
-                  </div>
-                ) : searchValue.trim() ? (
-                  <div className="text-center py-8 text-base-content/70">
-                    <p className="text-base md:text-sm">No contacts found</p>
-                    <p className="text-sm mt-1 md:text-xs">Try a different search term</p>
-                  </div>
-                ) : null}
+                {renderHeaderSearchDropdownBody()}
               </div>
-            ) : !isMobile && isSearchActive && isSearchAnimationDone ? (
-              /* Desktop: Recent searches and leads - white box below search bar when no query (appears when search bar is fully open) */
+            ) : isSearchActive && isSearchAnimationDone ? (
+              /* Desktop: Recently viewed leads - white box below search bar when no query (appears when search bar is fully open) */
               <div
                 ref={searchDropdownRef}
                 className="bg-white dark:bg-gray-900 rounded-xl shadow-xl border border-base-300 max-h-96 overflow-y-auto search-dropdown md:min-w-0"
@@ -7692,55 +7672,31 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 onMouseLeave={handleDesktopSearchDropdownMouseLeave}
               >
                 <div className="p-4 space-y-4">
-                  {(getRecentSearches().length > 0 || getRecentLeads().length > 0) ? (
-                    <>
-                      {getRecentSearches().length > 0 && (
-                        <div>
-                          <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400 mb-2">Recent searches</h3>
-                          <div className="space-y-1">
-                            {getRecentSearches().map((q, i) => (
-                              <button
-                                key={`search-${i}-${q}`}
-                                onClick={() => {
-                                  navigate(`/lead-search?q=${encodeURIComponent(q)}`);
-                                  closeSearchBar();
-                                }}
-                                className="w-full px-3 py-2 text-left rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-base-content flex items-center gap-2 text-sm"
-                              >
-                                <MagnifyingGlassIcon className="w-4 h-4 text-gray-400 flex-shrink-0" />
-                                <span className="truncate">{q}</span>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {getRecentLeads().length > 0 && (
-                        <div>
-                          <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400 mb-2">Recently viewed</h3>
-                          <div className="space-y-1">
-                            {getRecentLeads().map((lead) => (
-                              <button
-                                key={`lead-${lead.id}`}
-                                onClick={() => {
-                                  navigate(`/clients/${encodeURIComponent(lead.id)}`);
-                                  closeSearchBar();
-                                }}
-                                className="w-full px-3 py-2 text-left rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-base-content flex items-center gap-2 text-sm"
-                              >
-                                <UserIcon className="w-4 h-4 text-gray-400 flex-shrink-0" />
-                                <div className="min-w-0 flex-1">
-                                  <p className="font-medium truncate">{lead.name || 'Unknown'}</p>
-                                  <p className="text-xs text-gray-500 dark:text-gray-400 truncate">#{lead.lead_number}</p>
-                                </div>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </>
+                  {getRecentLeads().length > 0 ? (
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400 mb-2">Recently viewed</h3>
+                      <div className="space-y-1">
+                        {getRecentLeads().map((lead) => (
+                          <button
+                            key={`lead-${lead.id}`}
+                            onClick={() => {
+                              navigate(`/clients/${encodeURIComponent(lead.id)}`);
+                              closeSearchBar();
+                            }}
+                            className="w-full px-3 py-2 text-left rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-base-content flex items-center gap-2 text-sm"
+                          >
+                            <UserIcon className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                            <div className="min-w-0 flex-1">
+                              <p className="font-medium truncate">{lead.name || 'Unknown'}</p>
+                              <p className="text-xs text-gray-500 dark:text-gray-400 truncate">#{lead.lead_number}</p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   ) : (
                     <div className="py-6 text-center text-base-content/60 text-sm">
-                      <p className="mb-1">No recent searches or leads yet.</p>
+                      <p className="mb-1">No recently viewed leads yet.</p>
                       <p>Search above or visit a client to see them here.</p>
                     </div>
                   )}
@@ -8013,6 +7969,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               </div>
             )}
           </div>
+          )}
           </>
           , document.body)}
 

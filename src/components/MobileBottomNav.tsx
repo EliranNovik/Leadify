@@ -4,6 +4,8 @@ import { createPortal } from 'react-dom';
 import {
   CalendarIcon,
   MagnifyingGlassIcon,
+  FireIcon,
+  ChartBarIcon,
   DocumentChartBarIcon,
   FolderPlusIcon,
   BoltIcon,
@@ -14,6 +16,8 @@ import {
 import {
   CalendarIcon as CalendarIconSolid,
   MagnifyingGlassIcon as MagnifyingGlassIconSolid,
+  FireIcon as FireIconSolid,
+  ChartBarIcon as ChartBarIconSolid,
   DocumentChartBarIcon as DocumentChartBarIconSolid,
   FolderPlusIcon as FolderPlusIconSolid,
 } from '@heroicons/react/24/solid';
@@ -39,6 +43,18 @@ const navItems = [
     label: 'Lead Search',
     Icon: MagnifyingGlassIcon,
     IconActive: MagnifyingGlassIconSolid,
+  },
+  {
+    path: '/scheduler-tool',
+    label: 'Hot Leads',
+    Icon: FireIcon,
+    IconActive: FireIconSolid,
+  },
+  {
+    path: '/pipeline',
+    label: 'Pipeline',
+    Icon: ChartBarIcon,
+    IconActive: ChartBarIconSolid,
   },
   {
     path: '/reports',

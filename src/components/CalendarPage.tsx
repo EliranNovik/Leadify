@@ -1150,11 +1150,13 @@ const CalendarPage: React.FC = () => {
       return '--';
     }
 
-    // If allCategories is not loaded yet, return the original value
+    // If allCategories is not loaded yet, prefer plain text from leads.category when present
     if (!allCategories || allCategories.length === 0) {
-      return String(categoryId);
+      if (fallbackCategory && String(fallbackCategory).trim() !== '') {
+        return String(fallbackCategory).trim();
+      }
+      return categoryId != null && String(categoryId).trim() !== '' ? String(categoryId) : '--';
     }
-
 
     // First try to find by ID
     const categoryById = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
@@ -1178,6 +1180,11 @@ const CalendarPage: React.FC = () => {
       } else {
         return categoryByName.name; // Fallback if no main category
       }
+    }
+
+    // New leads: no valid category_id join but category (text) saved on leads row
+    if (fallbackCategory && String(fallbackCategory).trim() !== '') {
+      return String(fallbackCategory).trim();
     }
 
     return String(categoryId); // Fallback to original value if not found
@@ -1373,7 +1380,7 @@ const CalendarPage: React.FC = () => {
       // Process legacy meetings
       const processedLegacyMeetings = legacyData.map((legacyLead: any) => {
         const languageName = getLanguageDisplayFromJoin(legacyLead) ?? '';
-        const categoryDisplay = getCategoryDisplayFromJoin(legacyLead) ?? getCategoryName(legacyLead.category_id) ?? legacyLead.category ?? 'Unassigned';
+        const categoryDisplay = getCategoryDisplayFromJoin(legacyLead) ?? getCategoryName(legacyLead.category_id, legacyLead.category) ?? legacyLead.category ?? 'Unassigned';
 
         const meeting = {
           id: `legacy_${legacyLead.id}`,
@@ -1890,7 +1897,7 @@ const CalendarPage: React.FC = () => {
           } else {
             lead.balance_currency = lead.balance_currency || '₪';
           }
-          lead.category = getCategoryDisplayFromJoin(lead) ?? getCategoryName(lead.category_id) ?? lead.category;
+          lead.category = getCategoryDisplayFromJoin(lead) ?? getCategoryName(lead.category_id, lead.category) ?? lead.category;
           lead.language = getLanguageDisplayFromJoin(lead) ?? lead.language;
         };
 
@@ -2913,7 +2920,7 @@ const CalendarPage: React.FC = () => {
               lead.balance_currency = lead.balance_currency || '₪';
             }
 
-            lead.category = getCategoryDisplayFromJoin(lead) ?? getCategoryName(lead.category_id) ?? lead.category;
+            lead.category = getCategoryDisplayFromJoin(lead) ?? getCategoryName(lead.category_id, lead.category) ?? lead.category;
             lead.language = getLanguageDisplayFromJoin(lead) ?? lead.language;
             leadsMap[lead.id] = lead;
           });
@@ -2990,7 +2997,7 @@ const CalendarPage: React.FC = () => {
               legacyLead.balance_currency = '₪';
             }
 
-            legacyLead.category = getCategoryDisplayFromJoin(legacyLead) ?? getCategoryName(legacyLead.category_id) ?? legacyLead.category;
+            legacyLead.category = getCategoryDisplayFromJoin(legacyLead) ?? getCategoryName(legacyLead.category_id, legacyLead.category) ?? legacyLead.category;
             legacyLead.language = getLanguageDisplayFromJoin(legacyLead) ?? legacyLead.language;
             legacyLeadsMap[String(legacyLead.id)] = legacyLead;
           });
@@ -3139,7 +3146,7 @@ const CalendarPage: React.FC = () => {
             expert_examination: legacyLead.expert_examination || '',
             probability: parseFloat(legacyLead.probability || '0'),
             category_id: legacyLead.category_id || null,
-            category: getCategoryDisplayFromJoin(legacyLead) ?? getCategoryName(legacyLead.category_id) ?? legacyLead.category ?? 'Unassigned',
+            category: getCategoryDisplayFromJoin(legacyLead) ?? getCategoryName(legacyLead.category_id, legacyLead.category) ?? legacyLead.category ?? 'Unassigned',
             language: getLanguageDisplayFromJoin(legacyLead) ?? 'N/A',
             lead_type: 'legacy' as const
           }
@@ -6762,7 +6769,7 @@ const CalendarPage: React.FC = () => {
                                     {/* Category */}
                                     <td className="text-base">
                                       {(() => {
-                                        const categoryText = getCategoryName(meeting.lead?.category_id, meeting.lead?.category) || 'N/A';
+                                        const categoryText = getCategoryName(meeting.lead?.category_id, meeting.lead?.category || meeting.category) || 'N/A';
                                         // Split category name and main category (in parentheses) into two rows
                                         const match = categoryText.match(/^(.+?)\s*\((.+?)\)$/);
                                         if (match) {

@@ -811,10 +811,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         }
 
         // Add /1 suffix to master leads (frontend only)
-        // A lead is a master if: it has no master_id AND it has subleads
+        // A lead is a master if: it has no master_id AND it has subleads (count > 0).
+        // Do not use isMasterLead alone — Clients used to set it optimistically before fetch, which caused flicker.
         const hasNoMasterId = !selectedClient.master_id || String(selectedClient.master_id).trim() === '';
         const hasSubLeads = (subLeadsCount || 0) > 0;
-        const isMasterWithSubLeads = hasNoMasterId && (isMasterLead || hasSubLeads);
+        const isMasterWithSubLeads = hasNoMasterId && hasSubLeads;
 
         // Only add /1 to master leads that actually have subleads
         if (isMasterWithSubLeads && !hasExistingSuffix) {
@@ -881,7 +882,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         <span className="mx-1.5 text-gray-300">|</span>
                                         {selectedClient.name || 'Unnamed Lead'}
                                     </h1>
-                                    {(isSubLead && masterLeadNumber) || (isMasterLead && subLeadsCount !== undefined && subLeadsCount >= 0) ? (
+                                    {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
                                         <button
                                             onClick={() => {
                                                 if (isSubLead && masterLeadNumber) navigate(`/clients/${masterLeadNumber}/master`);
@@ -1019,7 +1020,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </h1>
                                     {/* Master/Sub Links - Icon Button with Count Badge */}
                                     {/* Show button for sub-leads OR master leads, but only one */}
-                                    {(isSubLead && masterLeadNumber) || (isMasterLead && subLeadsCount !== undefined && subLeadsCount >= 0) ? (
+                                    {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
                                         <button
                                             onClick={() => {
                                                 if (isSubLead && masterLeadNumber) {
@@ -1279,7 +1280,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 </div>
                             )}
                             {/* Source - Mobile only */}
-                            <div className="flex md:hidden items-center gap-2 group">
+                            <div className="flex md:hidden items-center gap-2 group mb-6 md:mb-0">
                                 <div className="w-8 h-8 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center text-black flex-shrink-0">
                                     <LinkIcon className="w-4 h-4 text-gray-500" />
                                 </div>
@@ -1428,7 +1429,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                     {/* Total Value - Mobile: Centered with extra space below contact details */}
                     {!hideTotalValueBadge && (
-                    <div className="flex md:hidden flex-col items-center mt-10 mb-4">
+                    <div className="flex md:hidden flex-col items-center mt-10 mb-10 pb-2">
                         {(() => {
                             const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
 
@@ -1915,39 +1916,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     })()}
                 </div>
 
-                {/* Info Grid - Flattened (No Boxes) */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-
-                    {/* Section 1: Contact Info - Removed (moved to top) */}
-                    <div>
-                        {/* This section is now empty - email, phone, source moved to top */}
-                    </div>
-
-                    {/* Section 2: Financials - Removed (moved to top row) */}
-                    <div>
-                        {/* This section is now empty - finances moved to top row */}
-                    </div>
-
-                    {/* Section 3: Progress & Assignment */}
-                    <div className="h-full md:col-span-1">
-                        <div className="space-y-5">
-
-
-
-
-
-
-                            {/* Dropdowns Content (Stages/Actions Inputs) from props */}
-                            {
-                                dropdownsContent && (
-                                    <div className="pt-2">
-                                        {dropdownsContent}
-                                    </div>
-                                )
-                            }
+                {/* Assign scheduler / handler — centered (compact width) */}
+                {dropdownsContent && (
+                    <div className="flex justify-center w-full pt-2">
+                        <div className="w-full max-w-xs sm:max-w-sm">
+                            {dropdownsContent}
                         </div>
                     </div>
-                </div>
+                )}
+
 
                 {/* Workflow Actions Bar - Roles and Quick Actions */}
                 <div className="mt-1.5 md:mt-6 pt-1.5 md:pt-6 border-t border-gray-100 dark:border-gray-800 w-full">

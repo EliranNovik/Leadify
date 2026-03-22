@@ -1,5 +1,5 @@
 /**
- * Storage for recent searches and recently viewed leads (Header search on mobile).
+ * Storage for recently viewed leads (Header search preview). Optional recent-search helpers remain for other use.
  * Uses sessionStorage - persists for the browser session only.
  */
 

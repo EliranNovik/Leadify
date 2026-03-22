@@ -2223,8 +2223,14 @@ ${combinedText}`;
   ];
 
   const selectedSectionLabel = sections.find(s => s.value === selectedSection)?.label.split(' - ')[1] || '';
-  const selectedEligibilityLabel = eligibilityOptions.find(opt => opt.value === eligibilityStatus.value)?.label || '';
-
+  /** Normalized eligibility value — empty when null/undefined/blank so UI can show -- */
+  const eligibilityValueStr =
+    eligibilityStatus.value != null && String(eligibilityStatus.value).trim() !== ''
+      ? String(eligibilityStatus.value).trim()
+      : '';
+  const selectedEligibilityLabel = eligibilityValueStr
+    ? eligibilityOptions.find(opt => opt.value === eligibilityValueStr)?.label || eligibilityValueStr
+    : '--';
 
   const selectedEligibility = eligibilityOptions.find(opt => opt.value === eligibilityStatus.value);
 
@@ -2283,24 +2289,25 @@ ${combinedText}`;
         <div className={`space-y-12 sm:space-y-16 ${!isSummaryCollapsed ? 'lg:col-span-2' : ''}`}>
 
           {/* Expert Information */}
-          <div className="mb-14">
+          <div className="mb-14 w-full max-w-2xl mx-auto flex flex-col items-center text-center">
             <h4 className="text-base font-semibold text-gray-900 mb-4">Expert Information</h4>
-            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
-                <div className="space-y-6">
-                  <div className="flex items-center gap-3">
+            <div className="flex flex-col items-center gap-6 w-full">
+                <div className="space-y-6 w-full">
+                  <div className="flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-3">
                     <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Assigned Expert</label>
                     <span className="text-2xl font-bold text-gray-900">{expertName}</span>
                   </div>
-                  <div className="space-y-2">
+                  <div className="space-y-2 flex flex-col items-center">
                     <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Eligibility Status</label>
-                    <span className={`inline-flex items-center px-3 py-1 rounded-full text-base font-medium ${eligibilityStatus.value === 'Not checked' ? 'bg-gray-100 text-gray-800' :
-                      eligibilityStatus.value.includes('feasible_no_check') ? 'bg-green-100 text-green-800' :
-                        eligibilityStatus.value.includes('feasible_check') ? 'bg-yellow-100 text-yellow-800' :
-                          eligibilityStatus.value.includes('not_feasible') ? 'bg-red-100 text-red-800' :
+                    <span className={`inline-flex items-center px-3 py-1 rounded-full text-base font-medium ${!eligibilityValueStr ? 'bg-gray-100 text-gray-500' :
+                      eligibilityValueStr === 'Not checked' ? 'bg-gray-100 text-gray-800' :
+                      eligibilityValueStr.includes('feasible_no_check') ? 'bg-green-100 text-green-800' :
+                        eligibilityValueStr.includes('feasible_check') ? 'bg-yellow-100 text-yellow-800' :
+                          eligibilityValueStr.includes('not_feasible') ? 'bg-red-100 text-red-800' :
                             'bg-gray-100 text-gray-800'
                       }`}>
                       {selectedEligibilityLabel}
-                      {selectedSection && ['feasible_no_check', 'feasible_check'].includes(eligibilityStatus.value) && (
+                      {eligibilityValueStr && selectedSection && ['feasible_no_check', 'feasible_check'].includes(eligibilityValueStr) && (
                         <span className="ml-2 px-2 py-0.5 rounded text-white font-semibold text-xs bg-[#3b28c7]">
                           {selectedSectionLabel}
                         </span>
@@ -2308,7 +2315,7 @@ ${combinedText}`;
                     </span>
                   </div>
                 </div>
-                <div className="flex flex-col items-center gap-2">
+                <div className="flex flex-col items-stretch gap-2 w-full max-w-xs">
                   {/* Documents Link button for legacy leads */}
                   {hasDocsUrl && (
                     <button
@@ -2349,183 +2356,179 @@ ${combinedText}`;
               </div>
           </div>
 
-          {/* Section Eligibility and Document Upload Row */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
-            {/* Section Eligibility */}
-            <div>
-              <h4 className="text-base font-semibold text-gray-900 mb-4">Section Eligibility</h4>
-              <div className="space-y-5">
-                  {/* Eligibility Dropdown */}
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Eligibility Assessment</label>
-                    <div className={!canEditEligibility ? "tooltip tooltip-top w-full" : ""} data-tip={!canEditEligibility ? "Only the assigned expert is able to save changes" : ""}>
-                      <select
-                        className="select select-bordered w-full"
-                        value={eligibilityStatus.value}
-                        onChange={(e) => handleEligibilityChange(e.target.value)}
-                        disabled={!canEditEligibility}
+          {/* Section Eligibility + Citizenship + Document Upload (centered, single column; upload below citizenship) */}
+          <div className="w-full max-w-2xl mx-auto flex flex-col items-stretch text-center">
+            <div className="space-y-8">
+              <h4 className="text-base font-semibold text-gray-900">Section Eligibility</h4>
+
+              {/* Eligibility Dropdown */}
+              <div className="space-y-2 text-left">
+                <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Eligibility Assessment</label>
+                <div className={!canEditEligibility ? "tooltip tooltip-top w-full" : ""} data-tip={!canEditEligibility ? "Only the assigned expert is able to save changes" : ""}>
+                  <select
+                    className="select select-bordered w-full"
+                    value={eligibilityStatus.value}
+                    onChange={(e) => handleEligibilityChange(e.target.value)}
+                    disabled={!canEditEligibility}
+                  >
+                    <option value="">Set Eligibility...</option>
+                    {eligibilityOptions.map((option) => (
+                      <option
+                        key={option.value}
+                        value={option.value}
                       >
-                        <option value="">Set Eligibility...</option>
-                        {eligibilityOptions.map((option) => (
-                          <option
-                            key={option.value}
-                            value={option.value}
-                          >
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Citizenship Section Dropdown */}
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">
-                      Citizenship Section
-                      {isLegacyLead && (
-                        <span className="text-sm font-normal text-gray-400 ml-2">(Optional)</span>
-                      )}
-                    </label>
-                    <div className="relative">
-                      <div className={!canEditEligibility ? "tooltip tooltip-top w-full" : ""} data-tip={!canEditEligibility ? "Only the assigned expert is able to save changes" : ""}>
-                        <select
-                          className="select select-bordered w-full"
-                          value={selectedSection}
-                          onChange={(e) => handleSectionChange(e.target.value)}
-                          disabled={!canEditEligibility || !eligibilityStatus.value || eligibilityStatus.value === 'not_feasible'}
-                        >
-                          <option value="">Select citizenship section...</option>
-                          {sections.map((section) => (
-                            <option
-                              key={section.value}
-                              value={section.value}
-                            >
-                              {section.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <HashtagIcon className="w-5 h-5 absolute right-10 top-1/2 transform -translate-y-1/2 pointer-events-none text-gray-400" />
-                    </div>
-                  </div>
-
-                  {/* Section Eligibility Last Edited */}
-                  {sectionEligibilityLastEditedBy && sectionEligibilityLastEditedAt && (
-                    <div className="text-sm text-gray-400 flex justify-between border-t border-gray-100 pt-3">
-                      <span>Last edited by {sectionEligibilityLastEditedBy}</span>
-                      <span>{new Date(sectionEligibilityLastEditedAt).toLocaleString()}</span>
-                    </div>
-                  )}
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
-            </div>
 
-            {/* Document Upload Section */}
-            <div>
-              <h4 className="text-base font-semibold text-gray-900 mb-4">Document Upload</h4>
-              <div className="space-y-5">
-                  {/* Upload Area */}
-                  <div
-                    className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors duration-200 ${isUploading
-                      ? 'bg-gray-50 border-gray-300'
-                      : 'bg-gray-50 border-gray-300'
-                      }`}
-                    style={{
-                      borderColor: isUploading ? '#3b28c7' : '',
-                      backgroundColor: isUploading ? '#f3f0ff' : ''
-                    }}
+              {/* Citizenship Section Dropdown */}
+              <div className="space-y-2 text-left mb-6">
+                <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">
+                  Citizenship Section
+                  {isLegacyLead && (
+                    <span className="text-sm font-normal text-gray-400 ml-2">(Optional)</span>
+                  )}
+                </label>
+                <div className="relative">
+                  <div className={!canEditEligibility ? "tooltip tooltip-top w-full" : ""} data-tip={!canEditEligibility ? "Only the assigned expert is able to save changes" : ""}>
+                    <select
+                      className="select select-bordered w-full"
+                      value={selectedSection}
+                      onChange={(e) => handleSectionChange(e.target.value)}
+                      disabled={!canEditEligibility || !eligibilityStatus.value || eligibilityStatus.value === 'not_feasible'}
+                    >
+                      <option value="">Select citizenship section...</option>
+                      {sections.map((section) => (
+                        <option
+                          key={section.value}
+                          value={section.value}
+                        >
+                          {section.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <HashtagIcon className="w-5 h-5 absolute right-10 top-1/2 transform -translate-y-1/2 pointer-events-none text-gray-400" />
+                </div>
+              </div>
+
+              {/* Section Eligibility Last Edited */}
+              {sectionEligibilityLastEditedBy && sectionEligibilityLastEditedAt && (
+                <div className="text-sm text-gray-400 flex flex-col sm:flex-row sm:justify-between gap-1 border-t border-gray-100 pt-3 text-left">
+                  <span>Last edited by {sectionEligibilityLastEditedBy}</span>
+                  <span>{new Date(sectionEligibilityLastEditedAt).toLocaleString()}</span>
+                </div>
+              )}
+
+              {/* Document Upload — below citizenship selector */}
+              <div className="space-y-5 pt-6 border-t border-gray-100">
+                <h4 className="text-base font-semibold text-gray-900">Document Upload</h4>
+                {/* Upload Area */}
+                <div
+                  className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors duration-200 ${isUploading
+                    ? 'bg-gray-50 border-gray-300'
+                    : 'bg-gray-50 border-gray-300'
+                    }`}
+                  style={{
+                    borderColor: isUploading ? '#3b28c7' : '',
+                    backgroundColor: isUploading ? '#f3f0ff' : ''
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isUploading) {
+                      e.currentTarget.style.borderColor = '#3b28c7';
+                      e.currentTarget.style.backgroundColor = '#f3f0ff';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isUploading) {
+                      e.currentTarget.style.borderColor = '#d1d5db';
+                      e.currentTarget.style.backgroundColor = '#f9fafb';
+                    }
+                  }}
+                  onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                  onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                  onDrop={handleFileDrop}
+                >
+                  <DocumentArrowUpIcon className="w-12 h-12 mx-auto text-gray-400 mb-4" />
+                  <div className="text-base text-gray-600 mb-4">
+                    {isUploading ? 'Processing files...' : 'Drag and drop files here, or click to select files'}
+                  </div>
+                  <input
+                    type="file"
+                    className="hidden"
+                    id="file-upload"
+                    multiple
+                    onChange={handleFileInput}
+                    disabled={isUploading}
+                  />
+                  <label
+                    htmlFor="file-upload"
+                    className={`btn btn-outline bg-white ${isUploading ? 'btn-disabled' : ''}`}
+                    style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
                     onMouseEnter={(e) => {
                       if (!isUploading) {
-                        e.currentTarget.style.borderColor = '#3b28c7';
                         e.currentTarget.style.backgroundColor = '#f3f0ff';
                       }
                     }}
                     onMouseLeave={(e) => {
                       if (!isUploading) {
-                        e.currentTarget.style.borderColor = '#d1d5db';
-                        e.currentTarget.style.backgroundColor = '#f9fafb';
+                        e.currentTarget.style.backgroundColor = 'white';
                       }
                     }}
-                    onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                    onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                    onDrop={handleFileDrop}
                   >
-                    <DocumentArrowUpIcon className="w-12 h-12 mx-auto text-gray-400 mb-4" />
-                    <div className="text-base text-gray-600 mb-4">
-                      {isUploading ? 'Processing files...' : 'Drag and drop files here, or click to select files'}
-                    </div>
-                    <input
-                      type="file"
-                      className="hidden"
-                      id="file-upload"
-                      multiple
-                      onChange={handleFileInput}
-                      disabled={isUploading}
-                    />
-                    <label
-                      htmlFor="file-upload"
-                      className={`btn btn-outline bg-white ${isUploading ? 'btn-disabled' : ''}`}
-                      style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
-                      onMouseEnter={(e) => {
-                        if (!isUploading) {
-                          e.currentTarget.style.backgroundColor = '#f3f0ff';
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!isUploading) {
-                          e.currentTarget.style.backgroundColor = 'white';
-                        }
-                      }}
-                    >
-                      <PaperClipIcon className="w-5 h-5" />
-                      Choose Files
-                    </label>
-                  </div>
+                    <PaperClipIcon className="w-5 h-5" />
+                    Choose Files
+                  </label>
+                </div>
 
-                  {/* Uploaded Files List */}
-                  {uploadedFiles.length > 0 && (
-                    <div className="space-y-2">
-                      {uploadedFiles.map((file, index) => (
-                        <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
-                          <div className="flex items-center gap-3">
-                            <PaperClipIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
-                            <span className="text-base font-medium text-gray-900">{file.name}</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {file.status === 'uploading' && (
-                              <div className="flex items-center gap-2">
-                                <div className="radial-progress text-xs" style={{ "--value": file.progress || 0, "--size": "2.5rem", color: '#3b28c7' } as any}>
-                                  <span className="text-xs font-semibold">{Math.round(file.progress || 0)}%</span>
-                                </div>
-                                <div className="text-xs text-gray-500 font-medium">
-                                  Uploading...
-                                </div>
-                              </div>
-                            )}
-                            {file.status === 'success' && (
-                              <div className="flex items-center gap-2">
-                                <CheckCircleIcon className="w-6 h-6 text-green-500" />
-                                <span className="text-xs text-green-600 font-medium">Complete</span>
-                              </div>
-                            )}
-                            {file.status === 'error' && (
-                              <div className="tooltip tooltip-error" data-tip={file.error}>
-                                <div className="flex items-center gap-2">
-                                  <XCircleIcon className="w-6 h-6 text-red-500" />
-                                  <span className="text-xs text-red-600 font-medium">Failed</span>
-                                </div>
-                              </div>
-                            )}
-                          </div>
+                {/* Uploaded Files List */}
+                {uploadedFiles.length > 0 && (
+                  <div className="space-y-2 text-left">
+                    {uploadedFiles.map((file, index) => (
+                      <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <PaperClipIcon className="w-5 h-5 flex-shrink-0" style={{ color: '#3b28c7' }} />
+                          <span className="text-base font-medium text-gray-900 truncate">{file.name}</span>
                         </div>
-                      ))}
-                    </div>
-                  )}
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {file.status === 'uploading' && (
+                            <div className="flex items-center gap-2">
+                              <div className="radial-progress text-xs" style={{ "--value": file.progress || 0, "--size": "2.5rem", color: '#3b28c7' } as any}>
+                                <span className="text-xs font-semibold">{Math.round(file.progress || 0)}%</span>
+                              </div>
+                              <div className="text-xs text-gray-500 font-medium">
+                                Uploading...
+                              </div>
+                            </div>
+                          )}
+                          {file.status === 'success' && (
+                            <div className="flex items-center gap-2">
+                              <CheckCircleIcon className="w-6 h-6 text-green-500" />
+                              <span className="text-xs text-green-600 font-medium">Complete</span>
+                            </div>
+                          )}
+                          {file.status === 'error' && (
+                            <div className="tooltip tooltip-error" data-tip={file.error}>
+                              <div className="flex items-center gap-2">
+                                <XCircleIcon className="w-6 h-6 text-red-500" />
+                                <span className="text-xs text-red-600 font-medium">Failed</span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>
 
-          {/* Expert Notes */}
-          <div>
+          {/* Expert Notes — full width like Handler Notes */}
+          <div className="w-full">
             <div className="flex items-center justify-between mb-4">
               <h4 className="text-base font-semibold text-gray-900">Expert Notes</h4>
               <div className="flex gap-2">

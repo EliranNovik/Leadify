@@ -1,9 +1,61 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { ClientTabProps } from '../../types/client';
 import { InformationCircleIcon, ExclamationCircleIcon, PencilIcon, CheckIcon, XMarkIcon, PencilSquareIcon, PlusIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 
 const INFOTAB_DEBUG = typeof window !== 'undefined' && (window as any).__INFOTAB_DEBUG__ === true;
+
+/** Full-screen bottom sheet on small screens only — used for editing Info tab fields on mobile */
+function MobileEditModal({
+  open,
+  title,
+  onClose,
+  onSave,
+  children,
+}: {
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  onSave: () => void | Promise<void>;
+  children: React.ReactNode;
+}) {
+  if (!open) return null;
+  return createPortal(
+    <div className="fixed inset-0 z-[100] md:hidden flex items-end justify-center sm:items-center p-0 sm:p-4">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden="true" />
+      <div
+        className="relative w-full sm:max-w-lg max-h-[92vh] flex flex-col bg-base-100 rounded-t-2xl sm:rounded-2xl shadow-2xl border border-base-300 mt-auto sm:mt-0"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="mobile-edit-modal-title"
+      >
+        <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-base-200 shrink-0">
+          <h3 id="mobile-edit-modal-title" className="text-lg font-bold text-base-content pr-2">
+            {title}
+          </h3>
+          <button type="button" className="btn btn-sm btn-circle btn-ghost" onClick={onClose} aria-label="Close">
+            <XMarkIcon className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4">{children}</div>
+        <div
+          className="flex gap-2 p-4 border-t border-base-200 bg-base-100 shrink-0"
+          style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}
+        >
+          <button type="button" className="btn btn-outline flex-1" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn-primary flex-1" onClick={() => void onSave()}>
+            Save
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
 
 // Helper function to decode HTML entities
 const decodeHtmlEntities = (text: string): string => {
@@ -386,6 +438,18 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
   // Tags state and functionality
   const [allTags, setAllTags] = useState<any[]>([]);
   const [tagsList, setTagsList] = useState<string[]>([]);
+
+  const [isMdUp, setIsMdUp] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(min-width: 768px)').matches : true
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 768px)');
+    const handler = () => setIsMdUp(mq.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+  /** On viewports &lt; md, open edit flows in a modal instead of inline */
+  const useMobileEditModal = !readOnly && !isMdUp;
 
   // Fetch all tags on mount
   useEffect(() => {
@@ -1029,6 +1093,204 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
     }
   };
 
+  const saveFileIdEdits = async () => {
+    try {
+      const tableName = isLegacy ? 'leads_lead' : 'leads';
+      const raw = (editedFileId || '').trim();
+      const valueToSave = raw === '' || raw === '0000' ? null : raw;
+      if (isLegacy) {
+        const legacyIdStr = client.id.toString().replace('legacy_', '');
+        const legacyId = parseInt(legacyIdStr, 10);
+        if (isNaN(legacyId)) {
+          console.error('Invalid legacy ID:', legacyIdStr);
+          throw new Error('Invalid legacy ID');
+        }
+        const { error } = await supabase
+          .from(tableName)
+          .update({ file_id: valueToSave })
+          .eq('id', legacyId)
+          .select('file_id')
+          .single();
+        if (error) throw error;
+        const savedFileId = valueToSave ?? '';
+        setFileId(savedFileId);
+        setLegacyFileId(savedFileId);
+        setIsEditingFileId(false);
+      } else {
+        const { error } = await supabase
+          .from(tableName)
+          .update({ file_id: valueToSave })
+          .eq('id', client.id)
+          .select('file_id')
+          .single();
+        if (error) throw error;
+        setFileId(valueToSave ?? '');
+        setIsEditingFileId(false);
+      }
+      if (onClientUpdate) await onClientUpdate();
+    } catch (error) {
+      console.error('Error updating file ID:', error);
+      alert('Failed to update file ID');
+    }
+  };
+
+  const saveSpecialNotesEdits = async () => {
+    try {
+      const userName = currentUserName;
+      const tableName = isLegacy ? 'leads_lead' : 'leads';
+      if (isLegacy) {
+        const legacyIdStr = client.id.toString().replace('legacy_', '');
+        const legacyId = parseInt(legacyIdStr, 10);
+        if (isNaN(legacyId)) {
+          console.error('Invalid legacy ID:', legacyIdStr);
+          throw new Error('Invalid legacy ID');
+        }
+        const { error } = await supabase
+          .from(tableName)
+          .update({
+            special_notes: formatNoteText(editedSpecialNotes),
+            special_notes_last_edited_by: userName,
+            special_notes_last_edited_at: new Date().toISOString(),
+          })
+          .eq('id', legacyId)
+          .select('special_notes')
+          .single();
+        if (error) throw error;
+        setSpecialNotes(formatNoteText(editedSpecialNotes).split('\n').filter((note) => note.trim() !== ''));
+        setIsEditingSpecialNotes(false);
+      } else {
+        const { error } = await supabase
+          .from(tableName)
+          .update({
+            special_notes: formatNoteText(editedSpecialNotes),
+            special_notes_last_edited_by: userName,
+            special_notes_last_edited_at: new Date().toISOString(),
+          })
+          .eq('id', client.id)
+          .select('special_notes')
+          .single();
+        if (error) throw error;
+        setSpecialNotes(formatNoteText(editedSpecialNotes).split('\n').filter((note) => note.trim() !== ''));
+        setIsEditingSpecialNotes(false);
+      }
+      if (onClientUpdate) await onClientUpdate();
+    } catch (error) {
+      console.error('Error updating special notes:', error);
+      alert('Failed to update special notes');
+    }
+  };
+
+  const saveGeneralNotesEdits = async () => {
+    try {
+      const userName = currentUserName;
+      const tableName = isLegacy ? 'leads_lead' : 'leads';
+      if (isLegacy) {
+        const legacyIdStr = client.id.toString().replace('legacy_', '');
+        const legacyId = parseInt(legacyIdStr, 10);
+        if (isNaN(legacyId)) {
+          console.error('Invalid legacy ID:', legacyIdStr);
+          throw new Error('Invalid legacy ID');
+        }
+        const { error } = await supabase
+          .from(tableName)
+          .update({
+            notes: formatNoteText(editedGeneralNotes),
+            notes_last_edited_by: userName,
+            notes_last_edited_at: new Date().toISOString(),
+          })
+          .eq('id', legacyId)
+          .select('notes')
+          .single();
+        if (error) throw error;
+        setGeneralNotes(formatNoteText(editedGeneralNotes));
+        setIsEditingGeneralNotes(false);
+      } else {
+        const { error } = await supabase
+          .from(tableName)
+          .update({
+            general_notes: formatNoteText(editedGeneralNotes),
+            general_notes_last_edited_by: userName,
+            general_notes_last_edited_at: new Date().toISOString(),
+          })
+          .eq('id', client.id)
+          .select('general_notes')
+          .single();
+        if (error) throw error;
+        setGeneralNotes(formatNoteText(editedGeneralNotes));
+        setIsEditingGeneralNotes(false);
+      }
+      if (onClientUpdate) await onClientUpdate();
+    } catch (error) {
+      console.error('Error updating general notes:', error);
+      alert('Failed to update general notes');
+    }
+  };
+
+  const saveFactsEdits = async () => {
+    try {
+      const userName = currentUserName;
+      const tableName = isLegacy ? 'leads_lead' : 'leads';
+      const formattedFacts = formatNoteText(editedFacts);
+      if (isLegacy) {
+        const legacyIdStr = client.id.toString().replace('legacy_', '');
+        const legacyId = parseInt(legacyIdStr, 10);
+        if (isNaN(legacyId)) {
+          console.error('Invalid legacy ID:', legacyIdStr);
+          throw new Error('Invalid legacy ID');
+        }
+        const { error } = await supabase
+          .from(tableName)
+          .update({
+            description: formattedFacts,
+            description_last_edited_by: userName,
+            description_last_edited_at: new Date().toISOString(),
+          })
+          .eq('id', legacyId)
+          .select('description')
+          .single();
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from(tableName)
+          .update({
+            facts: formattedFacts,
+            facts_last_edited_by: userName,
+            facts_last_edited_at: new Date().toISOString(),
+          })
+          .eq('id', client.id)
+          .select('facts')
+          .single();
+        if (error) throw error;
+      }
+      const processedFacts = formattedFacts.replace(/n\//g, '\n');
+      const factsArray = processedFacts
+        .split('\n')
+        .filter((fact) => fact.trim() !== '')
+        .map((line) => {
+          const trimmedLine = line.trim();
+          return { key: 'facts', value: trimmedLine };
+        });
+      setFactsOfCase(factsArray);
+      setIsEditingFacts(false);
+      if (onClientUpdate) await onClientUpdate();
+    } catch (error) {
+      console.error('Error updating facts:', error);
+      alert('Failed to update facts');
+    }
+  };
+
+  const saveTagsEdits = async () => {
+    try {
+      await saveLeadTags(client.id, editedTags);
+      setTags(editedTags);
+      setIsEditingTags(false);
+      if (onClientUpdate) await onClientUpdate();
+    } catch (error) {
+      console.error('Error updating tags:', error);
+      alert('Failed to update tags');
+    }
+  };
+
   const EditButtons = readOnly
     ? () => null
     : ({ isEditing, onEdit, onSave, onCancel, editButtonClassName, editIconClassName }: {
@@ -1121,7 +1383,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
       {/* Main Info Grid */}
       <div className="space-y-12">
         {/* Row 1: Case Probability, Follow-up Status, Eligibility Status, File ID */}
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 gap-y-12">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 gap-y-12 lg:mb-14">
           {/* Case Probability */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="pl-6 pt-2 pb-2 w-2/5">
@@ -1307,80 +1569,26 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
             <div className="pl-6 pt-2 pb-2 w-2/5">
               <div className="flex items-center justify-between">
                 <h4 className="text-lg font-semibold text-black">File ID</h4>
-                <EditButtons
-                  isEditing={isEditingFileId}
-                  onEdit={() => {
-                    setIsEditingFileId(true);
-                    setEditedFileId(fileId);
-                  }}
-                  onSave={async () => {
-                    try {
-                      const userName = currentUserName;
-                      const tableName = isLegacy ? 'leads_lead' : 'leads';
-                      // Normalize: treat empty or placeholder "0000" as null so we don't persist 0000
-                      const raw = (editedFileId || '').trim();
-                      const valueToSave = (raw === '' || raw === '0000') ? null : raw;
-
-                      if (isLegacy) {
-                        // For legacy leads, convert ID to integer
-                        const legacyIdStr = client.id.toString().replace('legacy_', '');
-                        const legacyId = parseInt(legacyIdStr, 10);
-
-                        if (isNaN(legacyId)) {
-                          console.error('Invalid legacy ID:', legacyIdStr);
-                          throw new Error('Invalid legacy ID');
-                        }
-
-                        const { data, error } = await supabase
-                          .from(tableName)
-                          .update({
-                            file_id: valueToSave,
-                          })
-                          .eq('id', legacyId)
-                          .select('file_id')
-                          .single();
-
-                        if (error) throw error;
-
-                        const savedFileId = valueToSave ?? '';
-                        setFileId(savedFileId);
-                        setLegacyFileId(savedFileId); // Update legacy state
-                        setIsEditingFileId(false);
-                      } else {
-                        // For new leads, use UUID directly
-                        const { data, error } = await supabase
-                          .from(tableName)
-                          .update({
-                            file_id: valueToSave,
-                          })
-                          .eq('id', client.id)
-                          .select('file_id')
-                          .single();
-
-                        if (error) throw error;
-
-                        setFileId(valueToSave ?? '');
-                        setIsEditingFileId(false);
-                      }
-
-                      // Refresh client data in parent component
-                      if (onClientUpdate) {
-                        await onClientUpdate();
-                      }
-                    } catch (error) {
-                      console.error('Error updating file ID:', error);
-                      alert('Failed to update file ID');
-                    }
-                  }}
-                  onCancel={() => setIsEditingFileId(false)}
-                  editButtonClassName="btn btn-ghost btn-sm"
-                  editIconClassName="w-5 h-5 text-black"
-                />
+                {useMobileEditModal && isEditingFileId ? (
+                  <span className="text-xs text-gray-400 shrink-0">Editing…</span>
+                ) : (
+                  <EditButtons
+                    isEditing={isEditingFileId && !useMobileEditModal}
+                    onEdit={() => {
+                      setIsEditingFileId(true);
+                      setEditedFileId(fileId);
+                    }}
+                    onSave={saveFileIdEdits}
+                    onCancel={() => setIsEditingFileId(false)}
+                    editButtonClassName="btn btn-ghost btn-sm"
+                    editIconClassName="w-5 h-5 text-black"
+                  />
+                )}
               </div>
               <div className="border-b border-gray-200 mt-2"></div>
             </div>
             <div className="p-6">
-              {isEditingFileId ? (
+              {isEditingFileId && !useMobileEditModal ? (
                 <div className="space-y-3">
                   <input
                     type="text"
@@ -1405,83 +1613,30 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
           </div>
         </div>
 
-        {/* Row 2: Special Notes and General Notes */}
+        {/* Row 2: Special Notes and General Notes — each section in its own card on mobile */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 gap-y-12">
           {/* Special Notes */}
-          <div className="mb-6">
+          <div className="mb-6 max-lg:rounded-2xl max-lg:border max-lg:border-gray-200 max-lg:bg-base-100 max-lg:p-4 max-lg:sm:p-5 max-lg:shadow-md lg:mb-12 lg:pb-2">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-base font-semibold text-gray-900">Special Notes</h4>
-                <EditButtons
-                  isEditing={isEditingSpecialNotes}
-                  onEdit={() => {
-                    setIsEditingSpecialNotes(true);
-                    setEditedSpecialNotes(specialNotes.map(note => formatNoteText(note)).join('\n'));
-                  }}
-                  onSave={async () => {
-                    try {
-                      const userName = currentUserName;
-                      const tableName = isLegacy ? 'leads_lead' : 'leads';
-
-                      if (isLegacy) {
-                        // For legacy leads, convert ID to integer
-                        const legacyIdStr = client.id.toString().replace('legacy_', '');
-                        const legacyId = parseInt(legacyIdStr, 10);
-
-                        if (isNaN(legacyId)) {
-                          console.error('Invalid legacy ID:', legacyIdStr);
-                          throw new Error('Invalid legacy ID');
-                        }
-
-                        const { data, error } = await supabase
-                          .from(tableName)
-                          .update({
-                            special_notes: formatNoteText(editedSpecialNotes),
-                            special_notes_last_edited_by: userName,
-                            special_notes_last_edited_at: new Date().toISOString(),
-                          })
-                          .eq('id', legacyId)
-                          .select('special_notes')
-                          .single();
-
-                        if (error) throw error;
-
-                        setSpecialNotes(formatNoteText(editedSpecialNotes).split('\n').filter(note => note.trim() !== ''));
-                        setIsEditingSpecialNotes(false);
-                      } else {
-                        // For new leads, use UUID directly
-                        const { data, error } = await supabase
-                          .from(tableName)
-                          .update({
-                            special_notes: formatNoteText(editedSpecialNotes),
-                            special_notes_last_edited_by: userName,
-                            special_notes_last_edited_at: new Date().toISOString(),
-                          })
-                          .eq('id', client.id)
-                          .select('special_notes')
-                          .single();
-
-                        if (error) throw error;
-
-                        setSpecialNotes(formatNoteText(editedSpecialNotes).split('\n').filter(note => note.trim() !== ''));
-                        setIsEditingSpecialNotes(false);
-                      }
-
-                      // Refresh client data in parent component
-                      if (onClientUpdate) {
-                        await onClientUpdate();
-                      }
-                    } catch (error) {
-                      console.error('Error updating special notes:', error);
-                      alert('Failed to update special notes');
-                    }
-                  }}
-                  onCancel={() => setIsEditingSpecialNotes(false)}
-                  editButtonClassName="btn btn-ghost btn-sm"
-                  editIconClassName="w-5 h-5 text-black"
-                />
+                {useMobileEditModal && isEditingSpecialNotes ? (
+                  <span className="text-xs text-gray-400 shrink-0">Editing…</span>
+                ) : (
+                  <EditButtons
+                    isEditing={isEditingSpecialNotes && !useMobileEditModal}
+                    onEdit={() => {
+                      setIsEditingSpecialNotes(true);
+                      setEditedSpecialNotes(specialNotes.map(note => formatNoteText(note)).join('\n'));
+                    }}
+                    onSave={saveSpecialNotesEdits}
+                    onCancel={() => setIsEditingSpecialNotes(false)}
+                    editButtonClassName="btn btn-ghost btn-sm"
+                    editIconClassName="w-5 h-5 text-black"
+                  />
+                )}
             </div>
             <div>
-              {isEditingSpecialNotes ? (
+              {isEditingSpecialNotes && !useMobileEditModal ? (
                 <textarea
                   dir="auto"
                   className="textarea textarea-bordered w-full h-32 text-start"
@@ -1518,80 +1673,27 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
           </div>
 
           {/* General Notes */}
-          <div className="mb-6">
+          <div className="mb-6 max-lg:rounded-2xl max-lg:border max-lg:border-gray-200 max-lg:bg-base-100 max-lg:p-4 max-lg:sm:p-5 max-lg:shadow-md lg:mb-12 lg:pb-2">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-base font-semibold text-gray-900">General Notes</h4>
-                <EditButtons
-                  isEditing={isEditingGeneralNotes}
-                  onEdit={() => {
-                    setIsEditingGeneralNotes(true);
-                    setEditedGeneralNotes(formatNoteText(generalNotes));
-                  }}
-                  onSave={async () => {
-                    try {
-                      const userName = currentUserName;
-                      const tableName = isLegacy ? 'leads_lead' : 'leads';
-
-                      if (isLegacy) {
-                        // For legacy leads, convert ID to integer
-                        const legacyIdStr = client.id.toString().replace('legacy_', '');
-                        const legacyId = parseInt(legacyIdStr, 10);
-
-                        if (isNaN(legacyId)) {
-                          console.error('Invalid legacy ID:', legacyIdStr);
-                          throw new Error('Invalid legacy ID');
-                        }
-
-                        const { data, error } = await supabase
-                          .from(tableName)
-                          .update({
-                            notes: formatNoteText(editedGeneralNotes),
-                            notes_last_edited_by: userName,
-                            notes_last_edited_at: new Date().toISOString(),
-                          })
-                          .eq('id', legacyId)
-                          .select('notes')
-                          .single();
-
-                        if (error) throw error;
-
-                        setGeneralNotes(formatNoteText(editedGeneralNotes));
-                        setIsEditingGeneralNotes(false);
-                      } else {
-                        // For new leads, use UUID directly
-                        const { data, error } = await supabase
-                          .from(tableName)
-                          .update({
-                            general_notes: formatNoteText(editedGeneralNotes),
-                            general_notes_last_edited_by: userName,
-                            general_notes_last_edited_at: new Date().toISOString(),
-                          })
-                          .eq('id', client.id)
-                          .select('general_notes')
-                          .single();
-
-                        if (error) throw error;
-
-                        setGeneralNotes(formatNoteText(editedGeneralNotes));
-                        setIsEditingGeneralNotes(false);
-                      }
-
-                      // Refresh client data in parent component
-                      if (onClientUpdate) {
-                        await onClientUpdate();
-                      }
-                    } catch (error) {
-                      console.error('Error updating general notes:', error);
-                      alert('Failed to update general notes');
-                    }
-                  }}
-                  onCancel={() => setIsEditingGeneralNotes(false)}
-                  editButtonClassName="btn btn-ghost btn-sm"
-                  editIconClassName="w-5 h-5 text-black"
-                />
+                {useMobileEditModal && isEditingGeneralNotes ? (
+                  <span className="text-xs text-gray-400 shrink-0">Editing…</span>
+                ) : (
+                  <EditButtons
+                    isEditing={isEditingGeneralNotes && !useMobileEditModal}
+                    onEdit={() => {
+                      setIsEditingGeneralNotes(true);
+                      setEditedGeneralNotes(formatNoteText(generalNotes));
+                    }}
+                    onSave={saveGeneralNotesEdits}
+                    onCancel={() => setIsEditingGeneralNotes(false)}
+                    editButtonClassName="btn btn-ghost btn-sm"
+                    editIconClassName="w-5 h-5 text-black"
+                  />
+                )}
             </div>
             <div>
-              {isEditingGeneralNotes ? (
+              {isEditingGeneralNotes && !useMobileEditModal ? (
                 <textarea
                   dir="auto"
                   className="textarea textarea-bordered w-full h-32 text-start"
@@ -1625,91 +1727,30 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
           </div>
         </div>
 
-        {/* Row 4: Facts of Case and Tags */}
+        {/* Row 4: Facts of Case and Tags — each section in its own card on mobile */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 gap-y-12">
           {/* Facts of Case */}
-          <div>
+          <div className="max-lg:rounded-2xl max-lg:border max-lg:border-gray-200 max-lg:bg-base-100 max-lg:p-4 max-lg:sm:p-5 max-lg:shadow-md">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-base font-semibold text-gray-900">Facts of Case</h4>
-                <EditButtons
-                  isEditing={isEditingFacts}
-                  onEdit={() => {
-                    setIsEditingFacts(true);
-                    // Join facts with line breaks, preserving any existing line breaks from "n/" conversion
-                    setEditedFacts(factsOfCase.map(fact => fact.value).join('\n'));
-                  }}
-                  onSave={async () => {
-                    try {
-                      const userName = currentUserName;
-                      const tableName = isLegacy ? 'leads_lead' : 'leads';
-                      const formattedFacts = formatNoteText(editedFacts);
-
-                      if (isLegacy) {
-                        // For legacy leads, convert ID to integer
-                        const legacyIdStr = client.id.toString().replace('legacy_', '');
-                        const legacyId = parseInt(legacyIdStr, 10);
-
-                        if (isNaN(legacyId)) {
-                          console.error('Invalid legacy ID:', legacyIdStr);
-                          throw new Error('Invalid legacy ID');
-                        }
-
-                        const { data, error } = await supabase
-                          .from(tableName)
-                          .update({
-                            description: formattedFacts,
-                            description_last_edited_by: userName,
-                            description_last_edited_at: new Date().toISOString(),
-                          })
-                          .eq('id', legacyId)
-                          .select('description')
-                          .single();
-
-                        if (error) {
-                          throw error;
-                        }
-                      } else {
-                        // For new leads, use UUID directly
-                        const { data, error } = await supabase
-                          .from(tableName)
-                          .update({
-                            facts: formattedFacts,
-                            facts_last_edited_by: userName,
-                            facts_last_edited_at: new Date().toISOString(),
-                          })
-                          .eq('id', client.id)
-                          .select('facts')
-                          .single();
-
-                        if (error) throw error;
-                      }
-
-                      // Process edited facts: convert "n/" to line breaks, then parse
-                      const processedFacts = formattedFacts.replace(/n\//g, '\n');
-                      const factsArray = processedFacts.split('\n').filter(fact => fact.trim() !== '').map(line => {
-                        const trimmedLine = line.trim();
-                        return { key: 'facts', value: trimmedLine };
-                      });
-
-                      setFactsOfCase(factsArray);
-                      setIsEditingFacts(false);
-
-                      // Refresh client data in parent component
-                      if (onClientUpdate) {
-                        await onClientUpdate();
-                      }
-                    } catch (error) {
-                      console.error('Error updating facts:', error);
-                      alert('Failed to update facts');
-                    }
-                  }}
-                  onCancel={() => setIsEditingFacts(false)}
-                  editButtonClassName="btn btn-ghost btn-sm"
-                  editIconClassName="w-5 h-5 text-black"
-                />
+                {useMobileEditModal && isEditingFacts ? (
+                  <span className="text-xs text-gray-400 shrink-0">Editing…</span>
+                ) : (
+                  <EditButtons
+                    isEditing={isEditingFacts && !useMobileEditModal}
+                    onEdit={() => {
+                      setIsEditingFacts(true);
+                      setEditedFacts(factsOfCase.map(fact => fact.value).join('\n'));
+                    }}
+                    onSave={saveFactsEdits}
+                    onCancel={() => setIsEditingFacts(false)}
+                    editButtonClassName="btn btn-ghost btn-sm"
+                    editIconClassName="w-5 h-5 text-black"
+                  />
+                )}
             </div>
             <div>
-              {isEditingFacts ? (
+              {isEditingFacts && !useMobileEditModal ? (
                 <textarea
                   dir="auto"
                   className="textarea textarea-bordered w-full h-32 text-start"
@@ -1757,42 +1798,27 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
           </div>
 
           {/* Tags */}
-          <div>
+          <div className="max-lg:rounded-2xl max-lg:border max-lg:border-gray-200 max-lg:bg-base-100 max-lg:p-4 max-lg:sm:p-5 max-lg:shadow-md">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-base font-semibold text-gray-900">Tags</h4>
-                <EditButtons
-                  isEditing={isEditingTags}
-                  onEdit={() => {
-                    setIsEditingTags(true);
-                    setEditedTags(tags);
-                  }}
-                  onSave={async () => {
-                    try {
-                      const userName = currentUserName;
-                      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
-
-                      // Use saveLeadTags function for proper tag management
-                      await saveLeadTags(client.id, editedTags);
-
-                      setTags(editedTags);
-                      setIsEditingTags(false);
-
-                      // Refresh client data in parent component
-                      if (onClientUpdate) {
-                        await onClientUpdate();
-                      }
-                    } catch (error) {
-                      console.error('Error updating tags:', error);
-                      alert('Failed to update tags');
-                    }
-                  }}
-                  onCancel={() => setIsEditingTags(false)}
-                  editButtonClassName="btn btn-ghost btn-sm"
-                  editIconClassName="w-5 h-5 text-black"
-                />
+                {useMobileEditModal && isEditingTags ? (
+                  <span className="text-xs text-gray-400 shrink-0">Editing…</span>
+                ) : (
+                  <EditButtons
+                    isEditing={isEditingTags && !useMobileEditModal}
+                    onEdit={() => {
+                      setIsEditingTags(true);
+                      setEditedTags(tags);
+                    }}
+                    onSave={saveTagsEdits}
+                    onCancel={() => setIsEditingTags(false)}
+                    editButtonClassName="btn btn-ghost btn-sm"
+                    editIconClassName="w-5 h-5 text-black"
+                  />
+                )}
             </div>
             <div>
-              {isEditingTags ? (
+              {isEditingTags && !useMobileEditModal ? (
                 <>
                   <input
                     type="text"
@@ -1909,6 +1935,103 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
             </div>
           </div>
         </div> */}
+
+        {/* Mobile (< md): full-screen editors — desktop keeps inline editing in cards */}
+        {useMobileEditModal && isEditingFileId && (
+          <MobileEditModal
+            open
+            title="File ID"
+            onClose={() => setIsEditingFileId(false)}
+            onSave={saveFileIdEdits}
+          >
+            <label className="label">
+              <span className="label-text">File ID</span>
+            </label>
+            <input
+              type="text"
+              className="input input-bordered w-full"
+              value={editedFileId}
+              onChange={(e) => setEditedFileId(e.target.value)}
+              placeholder="Enter file ID..."
+            />
+          </MobileEditModal>
+        )}
+        {useMobileEditModal && isEditingSpecialNotes && (
+          <MobileEditModal
+            open
+            title="Special Notes"
+            onClose={() => setIsEditingSpecialNotes(false)}
+            onSave={saveSpecialNotesEdits}
+          >
+            <textarea
+              dir="auto"
+              className="textarea textarea-bordered w-full min-h-[240px] text-start"
+              rows={10}
+              value={editedSpecialNotes}
+              onChange={(e) => setEditedSpecialNotes(e.target.value)}
+              placeholder="Add special notes here..."
+            />
+          </MobileEditModal>
+        )}
+        {useMobileEditModal && isEditingGeneralNotes && (
+          <MobileEditModal
+            open
+            title="General Notes"
+            onClose={() => setIsEditingGeneralNotes(false)}
+            onSave={saveGeneralNotesEdits}
+          >
+            <textarea
+              dir="auto"
+              className="textarea textarea-bordered w-full min-h-[240px] text-start"
+              rows={10}
+              value={editedGeneralNotes}
+              onChange={(e) => setEditedGeneralNotes(e.target.value)}
+              placeholder="Add general notes here..."
+            />
+          </MobileEditModal>
+        )}
+        {useMobileEditModal && isEditingFacts && (
+          <MobileEditModal
+            open
+            title="Facts of Case"
+            onClose={() => setIsEditingFacts(false)}
+            onSave={saveFactsEdits}
+          >
+            <textarea
+              dir="auto"
+              className="textarea textarea-bordered w-full min-h-[240px] text-start"
+              rows={10}
+              value={editedFacts}
+              onChange={(e) => setEditedFacts(e.target.value)}
+              placeholder="Add case facts here..."
+            />
+          </MobileEditModal>
+        )}
+        {useMobileEditModal && isEditingTags && (
+          <MobileEditModal
+            open
+            title="Tags"
+            onClose={() => setIsEditingTags(false)}
+            onSave={saveTagsEdits}
+          >
+            <label className="label">
+              <span className="label-text">Search or select tags</span>
+            </label>
+            <input
+              type="text"
+              className="input input-bordered w-full"
+              placeholder="Search or select tags..."
+              value={editedTags}
+              onChange={(e) => setEditedTags(e.target.value)}
+              list="tags-options-mobile"
+            />
+            <datalist id="tags-options-mobile">
+              {tagsList.map((name, index) => (
+                <option key={`mobile-${name}-${index}`} value={name} />
+              ))}
+            </datalist>
+          </MobileEditModal>
+        )}
       </div>
 
     </div>

@@ -28,7 +28,6 @@ import {
   CalendarDaysIcon,
   ChevronDownIcon,
   ChevronUpIcon,
-  ChevronLeftIcon,
   CheckCircleIcon,
   EnvelopeIcon,
   PhoneIcon,
@@ -3563,7 +3562,8 @@ const Clients: React.FC<ClientsProps> = ({
               if (!isSubLeadPersisted) {
                 setMasterLeadNumberForNewLead(null);
                 setMasterLeadNumberForLegacy(null);
-                setIsMasterLead(true); // Optimistic for master
+                // Do not set isMasterLead optimistically — fetchSubLeads resolves it (avoids /1 + dashboard flicker)
+                setIsMasterLead(false);
               } else if (masterNumPersisted) {
                 if (isLegacyPersisted) setMasterLeadNumberForLegacy(masterNumPersisted);
                 else setMasterLeadNumberForNewLead(masterNumPersisted);
@@ -4305,9 +4305,8 @@ const Clients: React.FC<ClientsProps> = ({
               } else {
                 setMasterLeadNumberForLegacy(null);
               }
-              // Optimistic: show master dashboard button for leads with no master_id
-              // fetchSubLeads will correct to false if no sub-leads found
-              setIsMasterLead(true);
+              // Do not set isMasterLead optimistically — fetchSubLeads sets true only when sub-leads exist (avoids /1 + dashboard flicker)
+              setIsMasterLead(false);
             } else if (calculatedMasterLeadNumber) {
               // For new leads, set the master lead number immediately if we extracted it from pattern
               if (!isLegacyForCalc) {
@@ -14947,9 +14946,9 @@ const Clients: React.FC<ClientsProps> = ({
                         {tabs.map((tab, index) => (
                           <button
                             key={tab.id}
-                            className={`relative flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg font-semibold text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
-                              ? 'bg-primary text-primary-content'
-                              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700/50'
+                            className={`relative flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
+                              ? 'bg-transparent text-[#471CCA] font-bold'
+                              : 'font-semibold text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700/50'
                               }`}
                             style={{
                               animation: `fadeInSlide 0.3s ease-out ${index * 0.03}s both`
@@ -14960,20 +14959,22 @@ const Clients: React.FC<ClientsProps> = ({
                             }}
                           >
                             <div className="relative inline-flex items-center justify-center">
-                              <tab.icon className={`w-6 h-6 flex-shrink-0 ${activeTab === tab.id ? 'text-primary-content' : 'text-gray-500'}`} />
+                              <tab.icon className={`w-6 h-6 flex-shrink-0 ${activeTab === tab.id ? 'text-[#471CCA]' : 'text-gray-500'}`} />
                               {tab.id === 'interactions' && tab.badge && (
                                 <div className={`absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap ${activeTab === tab.id
-                                  ? 'bg-primary-content/20 text-primary-content'
+                                  ? 'bg-purple-200/90 text-[#471CCA] dark:bg-purple-900/50 dark:text-purple-200'
                                   : 'bg-primary/10 text-primary'
                                   }`} style={{ minWidth: '1.25rem' }}>
                                   {tab.badge}
                                 </div>
                               )}
                             </div>
-                            <span className={`saira-light font-bold text-xs ${activeTab === tab.id ? 'text-primary-content' : 'text-gray-600'}`}>{tab.label}</span>
-                            {activeTab === tab.id && (
-                              <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-primary-content rounded-full"></div>
-                            )}
+                            <div className="flex flex-col items-center gap-0.5">
+                              <span className={`saira-light text-xs ${activeTab === tab.id ? 'font-bold text-[#471CCA]' : 'font-bold text-gray-600 dark:text-gray-400'}`}>{tab.label}</span>
+                              {activeTab === tab.id && (
+                                <span className="h-1.5 w-1.5 rounded-full bg-[#471CCA]" aria-hidden />
+                              )}
+                            </div>
                           </button>
                         ))}
                       </div>
@@ -15138,31 +15139,32 @@ const Clients: React.FC<ClientsProps> = ({
                     <button
                       key={tab.id}
                       className={`relative flex flex-col items-center justify-center p-3 rounded-lg transition-all duration-300 min-w-[85px] ${isActive
-                        ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
-                        : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
+                        ? 'bg-transparent text-[#471CCA] font-bold shadow-none scale-100'
+                        : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 font-semibold'
                         }`}
                       onClick={() => setActiveTab(tab.id)}
                       onMouseEnter={() => prefetchTabChunk(tab.id)}
                       onTouchStart={() => prefetchTabChunk(tab.id)}
                     >
                       <div className="relative inline-flex items-center justify-center">
-                        <tab.icon className={`w-5 h-5 mb-1 ${isActive ? 'text-white' : 'text-gray-500'}`} />
+                        <tab.icon className={`w-5 h-5 mb-1 ${isActive ? 'text-[#471CCA]' : 'text-gray-500'}`} />
                         {tab.id === 'interactions' && tab.badge && (
                           <div className={`absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap ${isActive
-                            ? 'bg-white/20 text-white'
+                            ? 'bg-purple-200/90 text-[#471CCA]'
                             : 'bg-purple-100 text-purple-700'
                             }`} style={{ minWidth: '1.25rem' }}>
                             {tab.badge}
                           </div>
                         )}
                       </div>
-                      <span className={`text-xs font-semibold truncate max-w-[80px] ${isActive ? 'text-white' : 'text-gray-600'
-                        }`}>
-                        {tab.label}
-                      </span>
-                      {isActive && (
-                        <div className="absolute -bottom-0.5 left-1/2 transform -translate-x-1/2 w-1 h-1 bg-white dark:bg-gray-800 rounded-full"></div>
-                      )}
+                      <div className="flex flex-col items-center gap-0.5 w-full">
+                        <span className={`text-xs truncate max-w-[80px] ${isActive ? 'font-bold text-[#471CCA]' : 'font-semibold text-gray-600'}`}>
+                          {tab.label}
+                        </span>
+                        {isActive && (
+                          <span className="h-1.5 w-1.5 rounded-full bg-[#471CCA]" aria-hidden />
+                        )}
+                      </div>
                     </button>
                   );
                 })}
@@ -17816,75 +17818,102 @@ const Clients: React.FC<ClientsProps> = ({
             }}
           />
 
-          {/* Mobile Tabs Navigation - Arrow on right, opens tab panel */}
-          {/* Hide when edit drawer, balance modal, schedule meeting panel, reschedule drawer, or update drawer is open */}
-          {/* Overlay when tabs box is open */}
-          {isMobileTabPanelOpen && !showEditLeadDrawer && !isBalanceModalOpen && !showScheduleMeetingPanel && !showRescheduleDrawer && !showUpdateDrawer && (
-            <div
-              className="md:hidden fixed inset-0 bg-black/40 z-[38]"
-              onClick={() => setIsMobileTabPanelOpen(false)}
-              aria-hidden="true"
-            />
-          )}
-          {/* z-40: above mobile tab backdrop z-[38]; desktop sidebar is z-40 (Clients bottom tabs are z-30 on lg) */}
-          <div ref={mobileTabPanelRef} className={`md:hidden fixed right-0 top-1/2 -translate-y-1/2 z-40 flex items-center ${showEditLeadDrawer || isBalanceModalOpen || showScheduleMeetingPanel || showRescheduleDrawer || showUpdateDrawer ? 'hidden' : ''}`}>
-            {/* Vertical tab panel - appears when arrow is clicked */}
-            {isMobileTabPanelOpen && (
-              <div
-                className="absolute right-12 top-1/2 -translate-y-1/2 bg-white/95 dark:bg-gray-800/95 backdrop-blur-md rounded-xl shadow-xl border border-gray-200/60 dark:border-gray-600/60 px-4 py-3 overflow-y-auto scrollbar-hide"
-                style={{ maxWidth: 'min(90vw, 290px)', maxHeight: '78vh' }}
-              >
-                <div className="flex flex-col gap-1" style={{ scrollBehavior: 'smooth' }}>
-                  {tabs.map((tab) => (
-                    <button
-                      key={tab.id}
-                      className={`relative flex flex-row items-center justify-start gap-3 w-full px-4 py-2.5 rounded-lg font-semibold text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
-                        ? 'text-black dark:text-white bg-black/5 dark:bg-white/10'
-                        : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-100/50 dark:hover:bg-gray-700/30'
-                        }`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleMobileTabSelect(tab.id);
-                      }}
-                      onMouseEnter={() => prefetchTabChunk(tab.id)}
-                      onTouchStart={() => prefetchTabChunk(tab.id)}
-                    >
-                      <div className="relative inline-flex items-center justify-center flex-shrink-0">
-                        <tab.icon className={`w-6 h-6 ${activeTab === tab.id ? '!text-black dark:!text-white' : 'text-gray-500 dark:text-gray-400'}`} />
-                        {tab.id === 'interactions' && tab.badge && (
-                          <div className={`absolute -top-0.5 -right-0.5 min-w-[1.25rem] h-5 px-1 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap ${activeTab === tab.id
-                            ? 'bg-black/10 dark:bg-white/20 text-black dark:text-white'
-                            : 'bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300'
-                            }`}>
-                            {tab.badge}
-                          </div>
-                        )}
+          {/* Mobile Tabs — centered modal (2 columns); FAB opens picker */}
+          {!showEditLeadDrawer && !isBalanceModalOpen && !showScheduleMeetingPanel && !showRescheduleDrawer && !showUpdateDrawer && (
+            <>
+              {isMobileTabPanelOpen && (
+                <div className="md:hidden fixed inset-0 z-[50] flex items-center justify-center p-3 sm:p-5">
+                  <div
+                    className="absolute inset-0 bg-black/50 backdrop-blur-[2px]"
+                    onClick={() => setIsMobileTabPanelOpen(false)}
+                    aria-hidden="true"
+                  />
+                  <div
+                    ref={mobileTabPanelRef}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="Choose client tab"
+                    className="relative w-full max-w-xl max-h-[min(88vh,820px)] rounded-2xl bg-base-100 border border-base-300 shadow-2xl flex flex-col overflow-hidden"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-base-200 bg-base-100/95 shrink-0">
+                      <span className="font-bold text-lg text-base-content">Tabs</span>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-circle btn-ghost"
+                        onClick={() => setIsMobileTabPanelOpen(false)}
+                        aria-label="Close tabs"
+                      >
+                        <XMarkIcon className="w-5 h-5" />
+                      </button>
+                    </div>
+                    <div className="overflow-y-auto overscroll-contain flex-1 min-h-0 p-3 sm:p-4">
+                      <div className="grid grid-cols-2 gap-2.5 sm:gap-3 content-start">
+                        {tabs.map((tab) => {
+                          const isActive = activeTab === tab.id;
+                          return (
+                            <button
+                              key={tab.id}
+                              type="button"
+                              className={`relative flex flex-col items-center justify-center gap-1 min-h-0 py-3 px-2 sm:py-3.5 sm:px-2.5 rounded-lg border-2 transition-all duration-200 active:scale-[0.98] ${
+                                isActive
+                                  ? 'border-[#471CCA] bg-[#471CCA]/5 text-[#471CCA] font-bold shadow-md'
+                                  : 'border-base-200 bg-base-200/40 text-base-content/80 font-semibold hover:bg-base-200 hover:border-base-300'
+                              }`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMobileTabSelect(tab.id);
+                              }}
+                              onMouseEnter={() => prefetchTabChunk(tab.id)}
+                              onTouchStart={() => prefetchTabChunk(tab.id)}
+                            >
+                              <div className="relative inline-flex items-center justify-center">
+                                <tab.icon className={`w-7 h-7 sm:w-8 sm:h-8 flex-shrink-0 ${isActive ? 'text-[#471CCA]' : 'text-base-content/70'}`} />
+                                {tab.id === 'interactions' && tab.badge && (
+                                  <div
+                                    className={`absolute -top-1 -right-2 min-w-[1.25rem] h-5 px-1 rounded-full text-[10px] font-bold flex items-center justify-center ${
+                                      isActive
+                                        ? 'bg-purple-200 text-[#471CCA]'
+                                        : 'bg-primary/15 text-primary'
+                                    }`}
+                                  >
+                                    {tab.badge}
+                                  </div>
+                                )}
+                              </div>
+                              <span className="saira-light text-xs sm:text-sm text-center leading-tight line-clamp-2">{tab.label}</span>
+                              {isActive && <span className="h-1.5 w-1.5 rounded-full bg-[#471CCA] shrink-0 mt-0.5" aria-hidden />}
+                            </button>
+                          );
+                        })}
                       </div>
-                      <span className={`saira-light font-bold text-sm leading-tight truncate ${activeTab === tab.id ? 'text-black dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>{tab.label}</span>
-                    </button>
-                  ))}
+                    </div>
+                  </div>
                 </div>
-              </div>
-            )}
-            {/* Tabs toggle button - fixed on right edge, same purple as Quick Actions */}
-            <button
-              type="button"
-              data-mobile-tab-arrow-btn
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsMobileTabPanelOpen((v) => !v);
-              }}
-              className="flex items-center justify-center w-10 h-12 rounded-l-lg backdrop-blur-md shadow-lg border border-r-0 border-[#471CCA]/30 text-white hover:opacity-90 transition-colors"
-              style={{ backgroundColor: '#471CCA' }}
-              aria-label={isMobileTabPanelOpen ? 'Close tabs' : 'Open tabs'}
-            >
-              {(() => {
-                const activeTabData = tabs.find((t) => t.id === activeTab);
-                const IconComponent = activeTabData?.icon ?? ChevronLeftIcon;
-                return <IconComponent className="w-6 h-6" />;
-              })()}
-            </button>
-          </div>
+              )}
+              {/* Floating button — opens tab picker (above bottom nav); hidden while modal open */}
+              {!isMobileTabPanelOpen && (
+                <button
+                  type="button"
+                  data-mobile-tab-arrow-btn
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsMobileTabPanelOpen(true);
+                  }}
+                  className="md:hidden fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom,0px))] right-4 z-[45] flex items-center justify-center w-14 h-14 rounded-full shadow-xl border-2 border-white/20 text-white hover:opacity-95 active:scale-95 transition-all"
+                  style={{ backgroundColor: '#471CCA' }}
+                  aria-expanded={false}
+                  aria-label="Open tabs"
+                >
+                  {(() => {
+                    const activeTabData = tabs.find((t) => t.id === activeTab);
+                    const IconComponent = activeTabData?.icon ?? InformationCircleIcon;
+                    return <IconComponent className="w-7 h-7" />;
+                  })()}
+                </button>
+              )}
+            </>
+          )}
         </>
       )}
     </div>

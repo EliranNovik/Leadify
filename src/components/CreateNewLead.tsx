@@ -20,7 +20,8 @@ const CreateNewLead: React.FC = () => {
     phone: '',
     source: '',
     language: '',
-    category: '',
+    /** Selected misc_category.id — saved to leads.category_id */
+    category_id: null as number | null,
     country_id: '',
     topic: '',
     facts: '',
@@ -255,10 +256,9 @@ const CreateNewLead: React.FC = () => {
                   category.name.toLowerCase() === categorySearchTerm.toLowerCase()
     );
     if (exactMatch) {
-      setForm(prev => ({ ...prev, category: exactMatch.displayName }));
+      setForm(prev => ({ ...prev, category_id: exactMatch.id }));
     } else if (categorySearchTerm && !exactMatch) {
-      // Clear form.category if search term doesn't match exactly
-      setForm(prev => ({ ...prev, category: '' }));
+      setForm(prev => ({ ...prev, category_id: null }));
     }
   }, [categorySearchTerm, categoryOptions]);
 
@@ -405,8 +405,8 @@ const CreateNewLead: React.FC = () => {
     setShowSourceDropdown(false);
   };
 
-  const handleCategorySelect = (categoryDisplayName: string) => {
-    setForm({ ...form, category: categoryDisplayName });
+  const handleCategorySelect = (categoryId: number, categoryDisplayName: string) => {
+    setForm(prev => ({ ...prev, category_id: categoryId }));
     setCategorySearchTerm(categoryDisplayName);
     setShowCategoryDropdown(false);
   };
@@ -477,12 +477,6 @@ const CreateNewLead: React.FC = () => {
       } else if (form.phone) {
         // If no country code selected but phone provided, use phone as is
         fullPhoneNumber = form.phone.trim();
-      }
-
-      // Extract category name from display format (remove main category part if present)
-      let categoryName = form.category;
-      if (categoryName && categoryName.includes(' (')) {
-        categoryName = categoryName.split(' (')[0];
       }
 
       // Call the wrapper database function that syncs sequences before creating the lead
@@ -576,10 +570,10 @@ const CreateNewLead: React.FC = () => {
       
       if (!newLead) throw new Error("Could not create lead.");
 
-      // Update the lead with category, facts, special_notes, and country_id if provided
-      const updateData: { category?: string; facts?: string; special_notes?: string; country_id?: number } = {};
-      if (categoryName && categoryName.trim()) {
-        updateData.category = categoryName.trim();
+      // Update the lead with category_id (misc_category), facts, special_notes, and country_id if provided
+      const updateData: { category_id?: number; facts?: string; special_notes?: string; country_id?: number } = {};
+      if (form.category_id != null) {
+        updateData.category_id = form.category_id;
       }
       if (form.facts && form.facts.trim()) {
         updateData.facts = form.facts.trim();
@@ -831,11 +825,17 @@ const CreateNewLead: React.FC = () => {
               className="input input-bordered w-full"
               value={categorySearchTerm}
               onChange={(e) => {
-                setCategorySearchTerm(e.target.value);
+                const v = e.target.value;
+                setCategorySearchTerm(v);
                 setShowCategoryDropdown(true);
-                if (e.target.value !== form.category) {
-                  setForm({ ...form, category: '' });
-                }
+                setForm(prev => {
+                  const selected = categoryOptions.find(c => c.id === prev.category_id);
+                  const selectedLabel = selected?.displayName ?? '';
+                  if (v !== selectedLabel) {
+                    return { ...prev, category_id: null };
+                  }
+                  return prev;
+                });
               }}
               onFocus={() => setShowCategoryDropdown(true)}
               placeholder="Search or type category..."
@@ -847,7 +847,7 @@ const CreateNewLead: React.FC = () => {
                     key={category.id}
                     type="button"
                     className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
-                    onClick={() => handleCategorySelect(category.displayName)}
+                    onClick={() => handleCategorySelect(category.id, category.displayName)}
                   >
                     {category.displayName}
                   </button>
